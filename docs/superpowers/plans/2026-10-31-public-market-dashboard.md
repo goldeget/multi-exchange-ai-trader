@@ -17,7 +17,10 @@
 - Never read, modify, close, hedge, or claim to protect the user's manual Bybit positions.
 - Use only public HTTPS market data; the initial UI does not submit even simulated orders.
 - Use REST polling in the first milestone; do not claim WebSocket support without proxy verification.
+- Keep OKX disabled with zero upstream requests and an unavailable/unverified UI/API state until authoritative V5 routes, schemas, limits, mappings, timestamps and candle semantics are verified and recorded. The cloud draft includes `www.okx.com` but needs user save/publish; allowlisting alone never satisfies this verification gate. Do not implement or call guessed endpoints.
 - Use fixtures in tests and CI. CI must not call exchange APIs or require exchange secrets.
+- Use HTTPX adapters limited to the documented public read endpoints; do not add CCXT's broader authenticated/order surface to the first process.
+- Select NautilusTrader as the one future execution/backtesting core, but qualify the version labeled Beta before Phase 3; do not install it for the public-only dashboard.
 - Keep synthetic preview data visibly labeled as synthetic and keep it off by default.
 - Preserve TLS and certificate validation. Respect provider limits and bounded request timeouts.
 - Commit and push each reviewed milestone on the work branch; never force-push.
@@ -47,7 +50,9 @@
 - Produces: source-linked engine recommendation, exchange capability matrix with unknowns, application architecture, AI/security/QA policies, and timestamped work log.
 
 - [ ] Review the three open-source audit files from the research agents; remove unsupported factual claims and ensure all requested projects appear.
-- [ ] Define and document the 0–5 fit rubric and cite evidence per scored dimension; label scores as this project's decision aid rather than external measurements.
+- [ ] Define and document a transparent 0–5 role-fit rubric for each reviewed project group and cite evidence for every score; label scores as this project's decision aid rather than external measurements.
+- [ ] Reconcile engine conclusions: select NautilusTrader for the full multi-venue event-driven product; record Hummingbot's no-key Binance paper example as a faster one-venue alternative, not a second core engine. Note that the inspected NautilusTrader v1.231.0 GitHub release title says “Beta” and require package/API qualification before Phase 3.
+- [ ] Reconcile exchange-library conclusions: use narrow HTTPX public-read adapters in the initial dashboard to avoid importing private/order methods; record CCXT MIT as an alternative if exchange coverage later expands, and note that CCXT Pro WebSockets have separate terms.
 - [ ] Align phase names with the user directive: Phase 1 audit, Phase 2 dashboard, Phase 3 PAPER, Phase 4 backtesting, Phase 5 AI, Phase 6 Demo, Phase 7 approval workflow, Phase 8 AUTO, Phase 9 QA/security, Phase 10 live readiness.
 - [ ] Run `git diff --check` and review all links and unverified items.
 - [ ] Commit and push the reviewed documents.
@@ -72,11 +77,14 @@
 - `Candle`: UTC `timestamp`, decimal-safe OHLCV values, and `is_closed`.
 - `MarketAdapter.get_ticker(symbol: str, market_type: MarketType) -> Ticker` (async).
 - `MarketAdapter.get_candles(symbol: str, market_type: MarketType, interval: str, limit: int) -> list[Candle]` (async).
-- Each adapter accepts an injected `httpx.AsyncClient`; it owns no credentials and cannot submit or query private account/order APIs.
+- Each enabled adapter accepts an injected `httpx.AsyncClient`; it owns no credentials and cannot submit or query private account/order APIs.
+- Until the official-source gate above is met, `okx.py` is a disabled adapter: both read methods return a typed unavailable/unverified failure before any transport call. No guessed routes or normalization code is needed for this state.
 
-- [ ] Write one fixture-based failing contract test per venue for BTCUSDT spot and perpetual mapping, numeric validation, timestamps, and candle ordering.
+- [ ] Write fixture-based failing Binance/Bybit contract tests for BTCUSDT spot and perpetual mapping, numeric validation, timestamps, and candle ordering.
+- [ ] Write fixture-based OKX disabled-state tests for ticker/candle reads, spot/perpetual and BTC/ETH selections. Inject a transport that fails on any call; assert a typed unavailable/unverified result and zero upstream requests.
+- [ ] Before replacing the disabled OKX adapter, record authoritative V5 route/schema/limit/mapping/time/candle evidence and add corresponding source-backed fixtures. If verification remains unavailable, deliver the disabled state and keep parsing/enablement deferred.
 - [ ] Run each new test and confirm the expected missing-adapter or parsing failure.
-- [ ] Implement only the minimal Pydantic models, protocol, and response normalizers needed to pass.
+- [ ] Implement only the minimal Pydantic models, protocol, verified Binance/Bybit response normalizers and disabled OKX behavior needed to pass. Do not infer OKX routes from unofficial SDKs.
 - [ ] Add malformed payload, negative/non-finite price, unsupported symbol/interval, and open-candle tests.
 - [ ] Run `uv run pytest tests/market_data -q` and `uv run ruff check src tests`.
 - [ ] Commit and push the reviewed adapter slice.
@@ -97,6 +105,7 @@
 - Exchange/client registry is injected into the service for fixture-backed route tests; external network is never a test requirement.
 
 - [ ] Write route tests for success, invalid query input, unsupported venue, provider timeout, and malformed provider payload.
+- [ ] Add fixture-backed OKX ticker/candle route tests that assert a typed unavailable/unverified API error and zero upstream calls while its verification gate is unmet; configured host access must not enable it.
 - [ ] Run the tests and confirm the missing route/service behavior fails as expected.
 - [ ] Implement the async service and route handlers with request timeouts, bounded response handling, and safe error mapping.
 - [ ] Add an explicit no-order-route assertion to API tests or route inventory check.
@@ -118,7 +127,8 @@
 - Query parameter `preview=1` enables a deterministic synthetic fixture with a persistent visible `샘플 데이터 · 실제 시세 아님` banner. Preview is disabled otherwise.
 
 - [ ] Add frontend tests first for the synthetic banner, default live-data state, and stale/error labels; run them to confirm expected failures.
-- [ ] Implement the responsive Korean dark dashboard with exchange/market selectors, BTC/ETH overview, candle chart, and clear PAPER/public-data-only safety label.
+- [ ] Add a fixture-backed UI test showing an explicit OKX unavailable/unverified state while the gate is unmet; selecting OKX must not initiate provider polling or show synthetic data as verified market data.
+- [ ] Implement the responsive Korean dark dashboard with exchange/market selectors, BTC/ETH overview, candle chart, and clear `공개 시세 전용 · PAPER 엔진 미구현` safety label.
 - [ ] Add Lightweight Charts with visible TradingView attribution; do not load CDN assets.
 - [ ] Run `npm ci`, `npm test -- --run`, `npm run typecheck`, and `npm run build` from `apps/web`.
 - [ ] Start the backend and frontend, call the local health endpoint, and open the requested preview tab using `?preview=1` so synthetic values are explicitly labeled.
