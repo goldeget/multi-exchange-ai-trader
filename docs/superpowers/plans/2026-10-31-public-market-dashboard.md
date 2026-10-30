@@ -147,11 +147,11 @@
 - Start instructions include health checks and say to use the existing checkout; do not create or propose a worktree unless explicitly requested.
 - No environment secrets or variables are required for the dashboard.
 
-- [ ] Add CI jobs for Python tests/lint/typecheck and frontend tests/typecheck/build; include a secret scan using public-repository-safe configuration.
-- [ ] Run every configured CI command locally from the same directories and fix setup defects before committing.
-- [ ] Document install/start/preview commands and explain that real exchange connectivity requires the user to save/publish the network draft.
+- [x] Add CI jobs for Python tests/lint/typecheck and frontend tests/lint/typecheck/build; include a secret scan using public-repository-safe configuration.
+- [x] Run every configured CI command locally from the same directories and fix setup defects before committing.
+- [x] Document install/start/preview commands and explain that real exchange connectivity requires the user to save/publish the network draft.
 - [ ] Save the tested install/start instructions and only the required exchange hostnames in the environment draft; do not overwrite unknown custom hosts.
-- [ ] Commit and push CI and README changes.
+- [x] Commit the verified Task 5 implementation; parent reviews and pushes.
 
 ### Task 6: Final integration and report
 
