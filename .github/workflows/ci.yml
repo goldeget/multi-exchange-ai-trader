@@ -99,7 +99,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks" gitleaks
 
       - name: Scan repository history for secrets
-        run: "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --no-banner .
+        run: |
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --no-banner .
 
   dependency-review:
     name: Dependency review
