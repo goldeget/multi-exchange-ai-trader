@@ -34,7 +34,7 @@ No exchange credentials, private account routes, manual Bybit position data, ord
 
 | Check | Scope / environment | Status | Evidence and limitation |
 |---|---|---|---|
-| Backend unit/API tests | Python 3.12; local fixtures and mock HTTP transports | PASS | 241 tests passed. No exchange calls. |
+| Backend unit/API tests | Python 3.12; local fixtures and mock HTTP transports | PASS | 242 tests passed. No exchange calls. |
 | Python lint and typecheck | `uv run ruff check src tests`; `uv run mypy src` | PASS | Both exit 0. |
 | Frontend UI tests | Vitest with jsdom and mocked fetch/chart | PASS | 8 tests passed, including both-asset overview, disabled OKX, preview zero-fetch, stale/error states and polling cleanup. |
 | Frontend lint/typecheck/build | ESLint, TypeScript, Vite production build | PASS | All commands exit 0. |
@@ -44,7 +44,7 @@ No exchange credentials, private account routes, manual Bybit position data, ord
 | Synthetic browser preview | Vite at `127.0.0.1:5173/?preview=1` | PASS (HTTP) | Preview URL returned HTTP 200 and the Codex browser tab was queued. No screenshot-based responsive audit was performed. |
 | Exchange connectivity / official OKX contracts | Current managed cloud runtime | UNVERIFIED / DEFERRED | Current egress policy does not include draft custom hosts. Do not infer live health from local fixtures or health endpoint. OKX stays disabled until official contract evidence is recorded. |
 
-Reviewed implementation commits on the work branch: `ca01d13` (market-data contracts/adapters), `79cbfc8` (API), `d046386` (dashboard), `261bd34` (BTC/ETH overview review fix), `6882747` (CI and setup docs), and `7532564` (Node 24-compatible lint tooling), in addition to the Phase 1 documentation commits above. Each reviewed slice was pushed to `origin/codex/initial-platform`.
+Reviewed implementation commits on the work branch: `ca01d13` (market-data contracts/adapters), `79cbfc8` (API), `d046386` (dashboard), `261bd34` (BTC/ETH overview review fix), `6882747` (CI and setup docs), `7532564` (Node 24-compatible lint tooling), `6b6da05` (deterministic candle and default API lifespan coverage), and `d4c7ac2` (assert the default adapter registry), in addition to the Phase 1 documentation commits above. Each reviewed slice was pushed to `origin/codex/initial-platform`.
 
 Cloud setup uses the existing repository checkout and writable `/tmp` caches for uv/npm. The environment draft has been saved with the `multi-exchange-ai-trader` mount path, tested install/start instructions and the four public hostname rules; draft saving does not apply them. User review and publication are still required before real public market data can connect. No custom credentials or runtime secrets are required.
 
