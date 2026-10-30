@@ -2,6 +2,22 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
+## Cloud save-failure recovery work
+
+The user reports Cloud settings cannot be saved. Current attached runtime still enforces revision1 with no exchange custom hosts; no saved/published settings or live data success is inferred. Retained environment diagnostic metadata contains no records, so the platform UI save error itself cannot be diagnosed with available tools. Git commit/push and the local execution environment remain usable.
+
+Added a [repeatable public evidence CLI](live-runner.md) and [Cloud recovery instructions](CLOUD_RECOVERY.md). The CLI reuses production adapters for all eight markets, records sanitized timings/statuses/normalized candles, distinguishes proxy/upstream denial and schema/timeout/stale failures, and exits nonzero for incomplete matrices. Fifteen new offline tests prove these behaviors. **No live run was performed on denied hosts; no mocked response is stored as market evidence.** The runner covers one-minute candles only and cannot certify all intervals or full Phase2A acceptance.
+
+Fresh parent verification: Python **257 passed**, frontend **8 passed**, Ruff (`src tests scripts`), mypy (`src scripts`, 12 files), frontend lint/typecheck/build all PASS. CI now includes the verification script in existing Ruff/mypy checks; pinned actions, permissions, security gates and runner class are preserved. One normal PR run is appropriate for this new code; later report-only commits skip duplicate CI.
+
+[Independent CI diagnosis](cloud-recovery-ci.md) inspected the exact pinned action source: its generic Dependency graph message represents a caught HTTP403 and does not prove which repository setting is disabled. No supported repository code fix or justification for weakening permissions/checks was found. The direct comparison endpoint is outside the connector's supported read paths.
+
+Independent code review identified missing fixture provenance; the fix records `evidence_mode` and ensures injected transports always set `live_verified: false`, even when their fixture matrix passes. Its regression test was observed failing before the fix and passes after it.
+
+A full-history Git bundle and a tracked-source ZIP will be delivered outside the Cloud runtime along with checksums. These restore committed work; they cannot repair the Cloud control plane or establish missing live verification.
+
+PHASE2A remains incomplete, actual-data browser QA and successful Dependency review remain required, and PHASE3 readiness remains NOT MET.
+
 ## Latest external-settings recheck
 
 Baseline `24b625a6e18a6467624eff98921449615321869e` was confirmed on the remote branch. Despite the reported settings changes, **both external prerequisites remain unconfirmed in actual execution**:
