@@ -2,6 +2,38 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
+## Latest final recheck — 2026-10-31 KST
+
+Baseline `2fd0b8f754c4d62ff5d8e26e33c2594ad64ee1b3` matched local and remote. **The CI blocker is resolved. Cloud policy application remains blocked.** This section supersedes earlier failure/unconfirmed-graph statuses below; earlier records remain historical evidence.
+
+| Acceptance gate | Current result | Evidence |
+| --- | --- | --- |
+| All required hosted checks, including Dependency review | **PASS** | [CI recheck](final-recheck-ci.md): run41135809249 attempt2 SUCCESS after one targeted failed-job retry; Python, Frontend, Secret scan, Dependency review all SUCCESS |
+| Eight actual public-market ticker/candle checks | **BLOCKED** | [Current Cloud audit](final-recheck-cloud.md): attached runtime revision1/current/restricted/enforced, custom hosts empty; required exchange hosts absent |
+| Actual-data desktop1440×1000/mobile390×844 QA | **BLOCKED** | No current live data; normal-price screenshots, chart/interval/selection/stale/recovery validation remain UNRUN; no preview substitution |
+| Full local regression and remote checkpoint | **PASS** | [257 Python + 8 frontend tests and all static/build/secret checks](final-recheck-tests.md); completed documentation slices pushed; final SHA compared in handoff |
+
+The Dependency review log now says no vulnerable packages of moderate severity or higher and no denied packages. The action's dependency comparison is operationally available with its existing read permissions; the administrator's setting toggle was not directly read. Thirty-one non-failing OpenSSF Scorecard warnings remain informational. Security gates were not weakened.
+
+Hosted PASS applies to source head `6c19097a2f265a37db004bafc3c8f44f1266c192`. Source/workflow/tests/locks match the current branch; only documentation changed, so no extra full CI or backup run was needed. Existing backup artifact13015637577 remains unchanged; the user has downloaded it separately.
+
+Current environment `ccarenv_b64_Y2NhcmVudl8yNGJmOTNjY2IxYzA4MTkxODhiZjJmZDcyMDZiYjljNg` still uses source config/version ending `cecfg_6ae4f2cc06308193a2fbe43d20278aa1` / `cecfgver_6ae4f35f6ae881939d2b90c28e381c20`, revision1. The later editable draft and its relation to this runtime cannot be inspected. No save/Publish/restart tool or settings UI is exposed; retained diagnostics contain no records. Actual save errors and exact UI/Publish procedure remain unavailable, rather than presumed successful.
+
+| Exchange | Market | Symbol | Actual price / OHLCV / timestamp / latency / HTTP / rate limits |
+| --- | --- | --- | --- |
+| Binance | Spot | BTCUSDT | BLOCKED — required host not allowed |
+| Binance | Spot | ETHUSDT | BLOCKED — required host not allowed |
+| Binance | USDT perpetual | BTCUSDT | BLOCKED — required host not allowed |
+| Binance | USDT perpetual | ETHUSDT | BLOCKED — required host not allowed |
+| Bybit | Spot | BTCUSDT | BLOCKED — required host not allowed |
+| Bybit | Spot | ETHUSDT | BLOCKED — required host not allowed |
+| Bybit | Linear perpetual | BTCUSDT | BLOCKED — required host not allowed |
+| Bybit | Linear perpetual | ETHUSDT | BLOCKED — required host not allowed |
+
+Per the requested gate, the live collector and real-data browser QA were **not run** while policy was unchanged. No new exchange requests or provider HTTP statuses are claimed. Earlier proxy CONNECT403 evidence is historical; it is not an exchange HTTP403 response. Fixture tests for malformed/stale/error behavior cannot establish actual rate-limit or live recovery behavior. Existing manual Bybit positions were neither queried nor changed; no authenticated exchange API or key was used.
+
+**PHASE2A remains PARTIAL / CLOUD PREREQUISITE BLOCKED. PHASE3 PAPER implementation is not authorized and its readiness gate remains NOT MET.**
+
 ## Cloud save-failure recovery work
 
 The user reports Cloud settings cannot be saved. Current attached runtime still enforces revision1 with no exchange custom hosts; no saved/published settings or live data success is inferred. Retained environment diagnostic metadata contains no records, so the platform UI save error itself cannot be diagnosed with available tools. Git commit/push and the local execution environment remain usable.

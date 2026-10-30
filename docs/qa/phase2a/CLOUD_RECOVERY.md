@@ -2,6 +2,32 @@
 
 상태: **검증 완료 아님**. Cloud 설정 저장 오류가 보고됐으나, 현재 런타임의 Git 작업과 테스트 실행은 가능하다. 현재 런타임 revision 1은 거래소 호스트가 없는 제한 정책을 적용하고 있다. 플랫폼 저장 UI의 내부 오류 원인은 제공 도구로 관측할 수 없다. 보존 진단 메타데이터 조회는 `history_status: not_found`, records 0을 반환했다. 로그 부재는 플랫폼 정상의 증거가 아니다.
 
+## 최신 재검증 상태 — 2026-10-31 KST
+
+- **GitHub CI 해결:** [run41135809249 attempt2](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41135809249/attempts/2)의 필수 검사 네 개가 모두 성공했다. Dependency review 기존 실패 작업만 한 번 재실행했고 비교 결과도 성공했다. 더 이상 동일 오류 재실행이나 설정 변경은 필요하지 않다. [실제 CI 기록](final-recheck-ci.md).
+- **Cloud 정책 미적용:** 연결 환경은 여전히 revision1/current/enforced이며, `allowed_hosts: []`, preset `package_managers`다. 필요한 네 호스트가 모두 없다. 설정 저장·Publish·환경 재시작/선택을 수행할 도구는 제공되지 않는다. [환경/config/version ID와 진단 근거](final-recheck-cloud.md).
+- **회귀 검사 성공:** Python257개, frontend8개와 린트·타입 검사·빌드·Gitleaks가 통과했다. 기존 scratch 복원본이 테스트 중복 수집을 일으켜 내용을 보존한 채 숨김 work 폴더로 옮긴 뒤 기본 pytest257개 통과도 확인했다. [실행 기록](final-recheck-tests.md).
+- 사용자는 기존 복구 ZIP을 별도로 다운로드했다. 이번 검증에서는 백업 생성·삭제·덮어쓰기를 요청하지 않았으며 기존 artifact13015637577 하나가 유지되는 것을 확인했다. 보고서 변경 커밋에는 `[skip ci]`를 써 불필요한 CI와 백업 생성을 피한다.
+
+### 사용자 환경 설정에서 필요한 값과 확인 조건
+
+현재 대화에 연결된 환경의 설정을 편집해야 한다. 현재 확인된 source config ID는 위 환경 기록에 있으며, 최신 초안 ID/내용은 도구에서 볼 수 없다. 이 둘이 같은 환경인지 단정하지 않는다.
+
+필요한 값은 아래 공개 HTTPS 호스트 네 개다. 기존 package-manager preset은 유지하고 키/Secret을 추가하지 않는다:
+
+```text
+data-api.binance.vision
+fapi.binance.com
+api.bybit.com
+api.github.com
+```
+
+공식 설정 workflow가 `requires_publish: true`를 반환하는 경우 검토·저장 후 Publish까지 완료해야 한다. 현재 화면의 정확한 메뉴 이름과 Publish 클릭 절차, 현재 초안의 Publish 필요 여부는 검증할 UI/API가 없어 **미확인**이다. 현재 도구로 저장 오류를 재현하거나 새 실행 환경을 연결할 수 없다. 이 문서는 검증되지 않은 메뉴 경로나 저장 성공을 지어내지 않는다.
+
+설정 적용 이후 같은 작업에 연결된 런타임에서 `observations_current: true`, spec/observed revision 일치, `network_policy.state: enforced`, 네 호스트가 `effective_allowed_hosts`에 포함되는지 다시 확인해야 한다. 새 런타임이면 environment/source config/version ID도 함께 대조한다. 저장·게시 메시지만으로 통과 처리하지 않는다. 저장 오류가 계속되면 실제 오류 문구/시각/요청 식별자/편집 환경 ID가 추가로 필요하며 현재 진단에는 해당 기록이 없다.
+
+정책 적용 확인 전에는 아래 live collector나 정상 화면 QA를 실행하지 않는다. 정책이 확인되면 공개 데이터만 수집하고, 기존 Bybit 포지션/주문/계정·키는 접근하지 않는다. PHASE3 구현은 이번 작업 범위 밖이다.
+
 ## 보존한 결과
 
 - 모든 완료 작업을 `codex/initial-platform`에 순차 커밋·푸시한다. `main`과 Draft PR 상태는 유지한다.
