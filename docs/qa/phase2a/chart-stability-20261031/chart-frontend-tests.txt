@@ -1,0 +1,15 @@
+
+> market-dashboard@0.1.0 test
+> vitest --run
+
+
+ RUN  v4.0.14 /workspace/multi-exchange-ai-trader/apps/web
+
+ ✓ src/App.test.tsx (8 tests) 828ms
+     ✓ shows BTC and ETH overview prices for both venues and selects a chart row  365ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  23:11:37
+   Duration  1.79s (transform 148ms, setup 84ms, import 217ms, tests 828ms, environment 516ms)
+

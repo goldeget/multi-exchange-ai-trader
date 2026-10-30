@@ -1,0 +1,28 @@
+[
+  {
+    "host": "fapi.binance.com",
+    "path": "/fapi/v2/ticker/price",
+    "method": "GET",
+    "request_body_bytes": 0,
+    "started_at_utc": "2026-10-30T23:05:30.365100+00:00",
+    "http_status": 451,
+    "attempt": 1,
+    "denial_category": "geographic_restriction",
+    "safe_evidence": "restricted location",
+    "response_source": "upstream_http",
+    "elapsed_ms": 320.33
+  },
+  {
+    "host": "api.bybit.com",
+    "path": "/v5/market/tickers",
+    "method": "GET",
+    "request_body_bytes": 0,
+    "started_at_utc": "2026-10-30T23:05:30.685640+00:00",
+    "http_status": 403,
+    "attempt": 1,
+    "denial_category": "geographic_restriction",
+    "safe_evidence": "block access from your country",
+    "response_source": "upstream_http",
+    "elapsed_ms": 247.566
+  }
+]

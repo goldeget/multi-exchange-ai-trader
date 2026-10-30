@@ -1,0 +1,4 @@
+Offline MockTransport RED on baseline6a28d63, before production change.
+6 failed,16 passed.451 host stop assertion: actual fapi transport count4 != expected1.
+403 case passed. Five new fixed-phrase evidence cases failed with missing denial_category.
+No live network or real credentials in these fixtures.

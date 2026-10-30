@@ -1,0 +1,66 @@
+[
+  {
+    "viewport": "desktop",
+    "started_at_kst": "2026-10-31T08:11:15.479000+09:00",
+    "ended_at_kst": "2026-10-31T08:13:13.626000+09:00",
+    "height_min": 380,
+    "height_max": 380,
+    "samples": 27,
+    "checks": 20,
+    "responses": 36,
+    "images": {
+      "green-desktop-interaction.png": [
+        1440,
+        1270
+      ],
+      "green-desktop-normal.png": [
+        1440,
+        1270
+      ],
+      "green-desktop-70s-stale.png": [
+        1440,
+        1270
+      ],
+      "green-desktop-resized.png": [
+        1000,
+        1817
+      ],
+      "green-desktop-recovered.png": [
+        1440,
+        1270
+      ]
+    }
+  },
+  {
+    "viewport": "mobile",
+    "started_at_kst": "2026-10-31T08:11:15.482000+09:00",
+    "ended_at_kst": "2026-10-31T08:13:13.085000+09:00",
+    "height_min": 380,
+    "height_max": 380,
+    "samples": 27,
+    "checks": 20,
+    "responses": 36,
+    "images": {
+      "green-mobile-resized.png": [
+        844,
+        1817
+      ],
+      "green-mobile-normal.png": [
+        390,
+        2119
+      ],
+      "green-mobile-recovered.png": [
+        390,
+        2119
+      ],
+      "green-mobile-70s-stale.png": [
+        390,
+        2119
+      ],
+      "green-mobile-interaction.png": [
+        390,
+        2119
+      ]
+    }
+  }
+]

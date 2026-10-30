@@ -1,0 +1,38 @@
+[
+  {
+    "evidence_file": "red-official.txt",
+    "completed_at_kst": "2026-10-31T08:05:08.292935+09:00"
+  },
+  {
+    "evidence_file": "green.txt",
+    "completed_at_kst": "2026-10-31T08:05:16.648631+09:00"
+  },
+  {
+    "evidence_file": "pytest.txt",
+    "completed_at_kst": "2026-10-31T08:05:38.535833+09:00"
+  },
+  {
+    "evidence_file": "ruff.txt",
+    "completed_at_kst": "2026-10-31T08:05:38.663828+09:00"
+  },
+  {
+    "evidence_file": "mypy.txt",
+    "completed_at_kst": "2026-10-31T08:05:43.359659+09:00"
+  },
+  {
+    "evidence_file": "frontend-tests.txt",
+    "completed_at_kst": "2026-10-31T08:05:39.891784+09:00"
+  },
+  {
+    "evidence_file": "frontend-lint.txt",
+    "completed_at_kst": "2026-10-31T08:05:40.071778+09:00"
+  },
+  {
+    "evidence_file": "frontend-types.txt",
+    "completed_at_kst": "2026-10-31T08:05:42.727682+09:00"
+  },
+  {
+    "evidence_file": "frontend-build.txt",
+    "completed_at_kst": "2026-10-31T08:05:48.071488+09:00"
+  }
+]

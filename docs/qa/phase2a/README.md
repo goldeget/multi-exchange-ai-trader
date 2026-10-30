@@ -2,7 +2,15 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
-## Current live checkpoint — 2026-10-31 (Asia/Seoul · KST)
+## Current chart correction checkpoint — 2026-10-31 KST
+
+**PARTIAL / EXTERNAL GEOGRAPHIC RESTRICTIONS BLOCKED.** Collector451 stop fixed in dcd571d; chart growth fixed separately in345add1. Actual DOM experiments confirmed global market-table border/layout leaking into Lightweight Charts and resize feedback; scoping selectors to `.markets` resolves it without adding fixed-height masking. PC1440x1000/mobile390x844 GREEN:54 total height samples all380px, resize/restore,BTC/ETH,six intervals,zoom/drag/touch,70-second induced stale and actual recovery. No horizontal overflow or uncaught JS errors. [Initial FAIL,causal experiments,source diff,actual screenshots/JSON and GREEN](chart-stability-20261031/README.md). Both necessary source CIs[41142392526](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41142392526) and[41143157865](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41143157865) PASS in all four jobs, each run once. [Exactly two new diagnostic requests](followup-20261031/one-shot-diagnostics.json) identified geographic restrictions; six markets remainBLOCKED. OriginalUTC JSON and backups retained. No eight-market/full Phase2A success claim. Earlier chart FAIL is historical and now corrected; pinch,zoom persistence across polling,and exhaustive accessibility remainUNRUN.
+
+## Historical / superseded — Follow-up checkpoint — 2026-10-31 KST
+
+**PARTIAL / NOT COMPLETE.** The451 host-stop defect is fixed with offline RED/GREEN,264 Python/8 frontend and static/build PASS. Single code[CI41142392526](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41142392526) PASS in all four jobs. Exactly one new ticker probe per denied host found geographic response phrases: Binance451 restricted location; Bybit403 block access from your country. Both GET bodies0bytes. PC/mobile70s ticker/candle stale and actual-response recovery observed; **new chart height growth FAIL remains unresolved**. See[latest sanitized diagnostics,code diff,regression,CI,QA JSON/screenshots and remaining gates](followup-20261031/README.md). No eight-market/full Phase2A completion claim. Earlier checkpoints are historical.
+
+## Historical / superseded — Current live checkpoint — 2026-10-31 (Asia/Seoul · KST)
 
 **PARTIAL / NOT COMPLETE.** Official execution permission resolved the default sandbox EPERM; the four-host restricted/enforced allowlist is current and applied. Actual collector: Binance BTC/ETH spot PASS within snapshot scope; Binance perpetual HTTP 451 and Bybit upstream HTTP 403 prevent full acceptance. See [current live JSON, policy, eight-market matrix and browser evidence](live-20261031/README.md). The older missing-allowlist conclusions below are historical. No full CI rerun; prior CI and 257/8 test results remain historical.
 
