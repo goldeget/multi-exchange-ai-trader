@@ -178,3 +178,39 @@ async def test_main_exports_the_api_app_without_provider_access():
         transport=httpx.ASGITransport(app=main_app), base_url="http://local.test"
     ) as client:
         assert (await client.get("/api/v1/health")).json() == {"status": "ok"}
+
+
+async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
+    from multi_exchange_trader import api
+
+    exchange_requests = []
+
+    def record_exchange_request(request):
+        exchange_requests.append(request)
+        return httpx.Response(200)
+
+    provider_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(record_exchange_request)
+    )
+    client_constructions = 0
+
+    def make_provider_client():
+        nonlocal client_constructions
+        client_constructions += 1
+        return provider_client
+
+    monkeypatch.setattr(api.httpx, "AsyncClient", make_provider_client)
+
+    async with api.app.router.lifespan_context(api.app):
+        service = api.app.state.market_data_service
+        assert isinstance(service, api.MarketDataService)
+        assert client_constructions == 1
+        assert all(
+            adapter.client is provider_client
+            for adapter in service._adapters.values()
+        )
+        assert not provider_client.is_closed
+        assert exchange_requests == []
+
+    assert provider_client.is_closed
+    assert exchange_requests == []

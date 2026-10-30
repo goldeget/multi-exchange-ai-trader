@@ -63,13 +63,25 @@ async def test_candle_dispatch(symbol, market, host, path, interval):
         assert items[0].volume == Decimal("2.5") and items[0].is_closed is True
 
 
-async def test_candles_sorted_with_unfinished_latest(make_client):
-    now_ms = int(datetime.now(UTC).timestamp() * 1000)
-    current = now_ms // 60000 * 60000
-    async with make_client([binance_row(current), binance_row(current - 60000)]) as client:
+async def test_candles_sorted_with_unfinished_latest(make_client, monkeypatch):
+    fetched_at = datetime(2024, 1, 1, 0, 0, 59, 999000, tzinfo=UTC)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fetched_at
+
+    monkeypatch.setattr(
+        "multi_exchange_trader.market_data.adapters.base.datetime", FixedDatetime
+    )
+    async with make_client(
+        [binance_row(1704067200000), binance_row(1704067140000)]
+    ) as client:
         items = await BinanceAdapter(client).get_candles("BTCUSDT", "spot", "1m", 2)
-        assert items[0].timestamp < items[1].timestamp
-        assert [item.is_closed for item in items] == [True, False]
+        assert [(item.timestamp, item.is_closed) for item in items] == [
+            (datetime(2023, 12, 31, 23, 59, tzinfo=UTC), True),
+            (datetime(2024, 1, 1, 0, 0, tzinfo=UTC), False),
+        ]
 
 
 @pytest.mark.parametrize("change", [{"time": True}, {"time": "bad"}, {"symbol": "ETHUSDT"}])
