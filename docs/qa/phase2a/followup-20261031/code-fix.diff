@@ -2,10 +2,7 @@ diff --git a/scripts/verify_phase2a_live.py b/scripts/verify_phase2a_live.py
 index cadc104..ea93acf 100644
 --- a/scripts/verify_phase2a_live.py
 +++ b/scripts/verify_phase2a_live.py
-@@ -30,6 +30,20 @@ def utc_now() -> datetime:
-     return datetime.now(UTC)
- 
- 
+@@ -32,0 +33,14 @@ def utc_now() -> datetime:
 +def safe_denial_evidence(response: httpx.Response) -> dict[str, str]:
 +    """Recognize bounded phrases; never copy arbitrary provider diagnostics."""
 +    text = response.content[:8192].decode("utf-8", errors="replace").lower()
@@ -20,29 +17,16 @@ index cadc104..ea93acf 100644
 +    return {"denial_category": "unknown", "safe_evidence": "unclassified denial"}
 +
 +
- class EvidenceClient(httpx.AsyncClient):
-     """Record safe metadata, preserve environment proxy/TLS, and stop denied hosts."""
- 
-@@ -59,9 +73,10 @@ class EvidenceClient(httpx.AsyncClient):
-             kwargs["timeout"] = httpx.Timeout(5)
-             response = await super().get(url, **kwargs)
-             record["http_status"] = response.status_code
+@@ -62 +76 @@ class EvidenceClient(httpx.AsyncClient):
 -            if response.status_code == 403:
 +            if response.status_code in (403, 451):
-                 self.denied.add(target.host)
-                 record["denial_source"] = "upstream_http"
+@@ -64,0 +79 @@ class EvidenceClient(httpx.AsyncClient):
 +                record.update(safe_denial_evidence(response))
-                 raise MarketDataUnavailable("host_denied", "Host denied request")
-             return response
-         except httpx.HTTPError as exc:
 diff --git a/tests/qa/test_live_runner.py b/tests/qa/test_live_runner.py
 index 429d5ff..dd4ddbe 100644
 --- a/tests/qa/test_live_runner.py
 +++ b/tests/qa/test_live_runner.py
-@@ -228,3 +228,55 @@ async def test_injected_transport_cannot_be_reported_as_live_verified():
-     assert report["matrix_passed"] is True
-     assert report["evidence_mode"] == "injected_transport"
-     assert report["live_verified"] is False
+@@ -230,0 +231,52 @@ async def test_injected_transport_cannot_be_reported_as_live_verified():
 +
 +
 +@pytest.mark.asyncio
