@@ -11,6 +11,7 @@ import {
 } from "./api";
 import CandleChart from "./chart/CandleChart";
 const venues: Venue[] = ["binance", "bybit"];
+const symbols = ["BTCUSDT", "ETHUSDT"];
 const names = { binance: "Binance", bybit: "Bybit" };
 const price = (value: string) =>
   Number(value).toLocaleString("en-US", {
@@ -219,18 +220,23 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {venues.map((item) => (
-                  <MarketRow
-                    key={`${item}-${symbol}-${market}`}
-                    venue={item}
-                    symbol={symbol}
-                    market={market}
-                    preview={preview}
-                    selected={venue === item}
-                    onSelect={() => setVenue(item)}
-                    now={now}
-                  />
-                ))}
+                {venues.flatMap((item) =>
+                  symbols.map((instrument) => (
+                    <MarketRow
+                      key={`${item}-${instrument}-${market}`}
+                      venue={item}
+                      symbol={instrument}
+                      market={market}
+                      preview={preview}
+                      selected={venue === item && symbol === instrument}
+                      onSelect={() => {
+                        setVenue(item);
+                        setSymbol(instrument);
+                      }}
+                      now={now}
+                    />
+                  )),
+                )}
               </tbody>
             </table>
             <div className="disabled-venue">

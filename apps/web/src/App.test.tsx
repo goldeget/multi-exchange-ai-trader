@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -33,7 +34,7 @@ function response(url: string) {
             exchange: q.get("exchange"),
             symbol: q.get("symbol"),
             market_type: q.get("market_type"),
-            last_price: "105",
+            last_price: q.get("symbol") === "ETHUSDT" ? "205" : "105",
             observed_at: epoch,
             fetched_at: epoch,
             source: "fixture",
@@ -65,6 +66,53 @@ describe("공개 시세 대시보드", () => {
     expect(screen.getByText("샘플 데이터 · 실제 시세 아님")).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByText(/형성 중/)).toBeVisible();
+  });
+  it("shows BTC and ETH overview prices for both venues and selects a chart row", async () => {
+    fetchMock.mockImplementation(response);
+    render(<App />);
+    await settle();
+    for (const venue of ["Binance", "Bybit"]) {
+      for (const [symbol, price] of [
+        ["BTC", "105.00"],
+        ["ETH", "205.00"],
+      ]) {
+        const row = screen.getByRole("row", {
+          name: new RegExp(`${venue}.*${symbol} / USDT`),
+        });
+        expect(within(row).getByText(price)).toBeVisible();
+        expect(
+          fetchMock.mock.calls.some(([url]) => {
+            const requested = new URL(String(url), "http://localhost");
+            return (
+              requested.pathname.endsWith("/ticker") &&
+              requested.searchParams.get("exchange") === venue.toLowerCase() &&
+              requested.searchParams.get("symbol") === `${symbol}USDT`
+            );
+          }),
+        ).toBe(true);
+      }
+    }
+    fireEvent.click(
+      screen.getByRole("button", { name: "BybitETH / USDT · 현물" }),
+    );
+    await settle();
+    expect(screen.getByRole("combobox", { name: "종목" })).toHaveValue(
+      "ETHUSDT",
+    );
+    expect(
+      screen.getByRole("heading", { name: "ETH / USDT Bybit · 현물 · 15m" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "BybitETH / USDT · 현물" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "BybitBTC / USDT · 현물" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("/candles?exchange=bybit&symbol=ETHUSDT"),
+      ),
+    ).toBe(true);
   });
   it("shows mocked live data and semantic controls", async () => {
     fetchMock.mockImplementation(response);
@@ -143,8 +191,10 @@ describe("공개 시세 대시보드", () => {
     });
     await settle();
     expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).includes("symbol=ETHUSDT"),
+      fetchMock.mock.calls.some(
+        ([url]) =>
+          String(url).includes("/candles?") &&
+          String(url).includes("symbol=ETHUSDT"),
       ),
     ).toBe(true);
   });
