@@ -1,0 +1,134 @@
+[
+  {
+    "file": "python-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:41.214540+09:00"
+  },
+  {
+    "file": "ruff-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:41.330534+09:00"
+  },
+  {
+    "file": "mypy-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:41.726514+09:00"
+  },
+  {
+    "file": "frontend-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:44.094382+09:00"
+  },
+  {
+    "file": "lint-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:44.242373+09:00"
+  },
+  {
+    "file": "types-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:45.886280+09:00"
+  },
+  {
+    "file": "build-final.txt",
+    "completed_at_kst": "2026-10-31T08:28:50.933997+09:00"
+  },
+  {
+    "browser": "desktop",
+    "started_at_kst": "2026-10-31T08:29:23.523000+09:00",
+    "ended_at_kst": "2026-10-31T08:30:14.855000+09:00",
+    "responses": 48,
+    "checks": 11,
+    "pinch": "not applicable"
+  },
+  {
+    "browser": "mobile",
+    "started_at_kst": "2026-10-31T08:29:23.523000+09:00",
+    "ended_at_kst": "2026-10-31T08:30:15.012000+09:00",
+    "responses": 48,
+    "checks": 11,
+    "pinch": "PASS"
+  },
+  {
+    "file": "rolling-red.txt",
+    "completed_at_kst": "2026-10-31T08:32:52.673351+09:00"
+  },
+  {
+    "file": "rolling-green.txt",
+    "completed_at_kst": "2026-10-31T08:33:28.567694+09:00"
+  },
+  {
+    "file": "rolling-lint.txt",
+    "completed_at_kst": "2026-10-31T08:33:28.703688+09:00"
+  },
+  {
+    "file": "rolling-types.txt",
+    "completed_at_kst": "2026-10-31T08:33:30.239616+09:00"
+  },
+  {
+    "file": "rolling-build.txt",
+    "completed_at_kst": "2026-10-31T08:33:35.379378+09:00"
+  },
+  {
+    "browser_rolling": "desktop",
+    "started_at_kst": "2026-10-31T08:34:12.107000+09:00",
+    "ended_at_kst": "2026-10-31T08:35:20.189000+09:00",
+    "dropped": 1,
+    "before": {
+      "created": 2,
+      "logical": {
+        "from": 6.951574649284709,
+        "to": 187.76975646746655
+      },
+      "time": {
+        "from": 1793391660,
+        "to": 1793402580
+      },
+      "height": 380,
+      "viewport": 1440,
+      "scrollWidth": 1440
+    },
+    "after": {
+      "created": 2,
+      "logical": {
+        "from": 5.951574649284709,
+        "to": 186.76975646746655
+      },
+      "time": {
+        "from": 1793391660,
+        "to": 1793402580
+      },
+      "height": 380,
+      "viewport": 1440,
+      "scrollWidth": 1440
+    }
+  },
+  {
+    "browser_rolling": "mobile",
+    "started_at_kst": "2026-10-31T08:34:12.107000+09:00",
+    "ended_at_kst": "2026-10-31T08:35:20.466000+09:00",
+    "dropped": 1,
+    "before": {
+      "created": 2,
+      "logical": {
+        "from": 3.1370039295774177,
+        "to": 183.95518574775926
+      },
+      "time": {
+        "from": 1793391480,
+        "to": 1793402340
+      },
+      "height": 380,
+      "viewport": 390,
+      "scrollWidth": 390
+    },
+    "after": {
+      "created": 2,
+      "logical": {
+        "from": 2.1370039295774177,
+        "to": 182.95518574775926
+      },
+      "time": {
+        "from": 1793391480,
+        "to": 1793402340
+      },
+      "height": 380,
+      "viewport": 390,
+      "scrollWidth": 390
+    }
+  }
+]

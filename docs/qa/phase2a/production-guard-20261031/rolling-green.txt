@@ -1,0 +1,17 @@
+
+> market-dashboard@0.1.0 test
+> vitest --run
+
+
+ RUN  v4.0.14 /workspace/multi-exchange-ai-trader/apps/web
+
+ ✓ src/chart/CandleChart.test.tsx (6 tests) 58ms
+ ✓ src/api.test.tsx (6 tests) 321ms
+ ✓ src/App.test.tsx (9 tests) 893ms
+     ✓ preview is explicit and makes zero API requests  326ms
+     ✓ shows BTC and ETH overview prices for both venues and selects a chart row  336ms
+
+ Test Files  3 passed (3)
+      Tests  21 passed (21)
+   Start at  23:33:26
+   Duration  1.94s (transform 253ms, setup 173ms, import 516ms, tests 1.27s, environment 1.78s)

@@ -1,0 +1,52 @@
+[
+  {
+    "name": "desktop",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
+    "before": {
+      "count": 1,
+      "removed": 0,
+      "range": {
+        "from": 1.1832313174896,
+        "to": 182.00141313567144
+      }
+    },
+    "after": {
+      "count": 2,
+      "removed": 1,
+      "range": {
+        "from": 0,
+        "to": 199
+      }
+    },
+    "expected_red_failure": "periodic polling recreated chart\n\n2 !== 1\n",
+    "mode": "actual spot polling; chart API instrumented locally, no data injection"
+  },
+  {
+    "name": "mobile",
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "before": {
+      "count": 1,
+      "removed": 0,
+      "range": {
+        "from": -12.868117709347018,
+        "to": 167.95006410883482
+      }
+    },
+    "after": {
+      "count": 2,
+      "removed": 1,
+      "range": {
+        "from": 0,
+        "to": 199
+      }
+    },
+    "expected_red_failure": "periodic polling recreated chart\n\n2 !== 1\n",
+    "mode": "actual spot polling; chart API instrumented locally, no data injection"
+  }
+]
