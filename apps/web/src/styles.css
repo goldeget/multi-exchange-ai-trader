@@ -190,39 +190,39 @@ select {
   color: #a8b5c4;
   margin-left: 10px;
 }
-table {
+.markets table {
   border-collapse: collapse;
   width: 100%;
   table-layout: fixed;
   text-align: left;
 }
-thead th {
+.markets thead th {
   font-size: 11px;
   font-weight: 500;
   color: #a8b5c4;
   background: #0f161f;
   padding: 12px 10px;
 }
-thead th:first-child {
+.markets thead th:first-child {
   width: 36%;
   padding-left: 20px;
 }
-thead th:nth-child(2) {
+.markets thead th:nth-child(2) {
   width: 25%;
 }
-tbody th,
-td {
+.markets tbody th,
+.markets td {
   border-bottom: 1px solid #2a3745;
   padding: 18px 10px;
   vertical-align: top;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-tbody th {
+.markets tbody th {
   padding-left: 16px;
   font-weight: 500;
 }
-tbody th button {
+.markets tbody th button {
   padding: 4px;
   background: transparent;
   border: 0;
@@ -231,18 +231,18 @@ tbody th button {
   width: 100%;
   font-size: 14px;
 }
-tbody th button span {
+.markets tbody th button span {
   display: block;
   font-size: 11px;
   color: #a8b5c4;
 }
-tr.selected {
+.markets tr.selected {
   background: #18232e;
 }
-tr.selected th {
+.markets tr.selected th {
   box-shadow: inset 3px 0 #43c6d8;
 }
-td strong {
+.markets td strong {
   font-variant-numeric: tabular-nums;
   font-size: 16px;
   font-weight: 500;
@@ -410,17 +410,17 @@ footer {
     display: block;
     margin-left: 0;
   }
-  td strong {
+  .markets td strong {
     font-size: 14px;
   }
-  tbody th,
-  td {
+  .markets tbody th,
+  .markets td {
     padding: 14px 7px;
   }
-  tbody th {
+  .markets tbody th {
     padding-left: 10px;
   }
-  thead th:first-child {
+  .markets thead th:first-child {
     padding-left: 14px;
   }
   .preview {
