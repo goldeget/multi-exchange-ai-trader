@@ -82,7 +82,7 @@
 
 - [x] Write fixture-based failing Binance/Bybit contract tests for BTCUSDT spot and perpetual mapping, numeric validation, timestamps, and candle ordering.
 - [x] Write fixture-based OKX disabled-state tests for ticker/candle reads, spot/perpetual and BTC/ETH selections. Inject a transport that fails on any call; assert a typed unavailable/unverified result and zero upstream requests.
-- [x] Before replacing the disabled OKX adapter, record authoritative V5 route/schema/limit/mapping/time/candle evidence and add corresponding source-backed fixtures. If verification remains unavailable, deliver the disabled state and keep parsing/enablement deferred.
+- [x] Keep OKX disabled with typed unverified failures and zero-call tests; authoritative V5 evidence was unavailable, so parsing and enablement remain deferred until that evidence is recorded.
 - [x] Run each new test and confirm the expected missing-adapter or parsing failure.
 - [x] Implement only the minimal Pydantic models, protocol, verified Binance/Bybit response normalizers and disabled OKX behavior needed to pass. Do not infer OKX routes from unofficial SDKs.
 - [x] Add malformed payload, negative/non-finite price, unsupported symbol/interval, and open-candle tests.
@@ -160,7 +160,7 @@
 - [x] Re-run the complete configured local CI command set and inspect `git status`, `git diff --check`, and the final branch history.
 - [x] Check no credentials, private endpoints, live-order routes, user account data, or unlabelled synthetic data entered the branch.
 - [x] Verify each required document exists and distinguish implemented, deferred, unverified, failed, skipped, and unrun items.
-- [x] Push the final work-branch commit and verify its remote SHA with a read-only Git command.
+- [ ] Push the final work-branch commit and verify its remote SHA with a read-only Git command.
 - [x] Report current-runtime validation separately from draft persistence and future environment publication.
 
 ## Coverage gaps tracked for later phases
