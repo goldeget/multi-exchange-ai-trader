@@ -9,6 +9,10 @@
 - 실제 시세 수집 도구: [live-runner.md](live-runner.md). 기본 출력은 `work/phase2a-live.json`이며 자동 커밋하지 않는다. 테스트용 응답은 실제 시장 검증 증거가 아니다.
 - CI 재진단: [cloud-recovery-ci.md](cloud-recovery-ci.md). pinned action은 공개 저장소에서 HTTP403을 일반적인 Dependency graph 안내문으로 바꾸므로, 현재 오류만으로 설정 토글이 꺼졌다고 확정할 수 없다.
 
+## 다운로드
+
+[검증된 복구 백업](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41135809249/artifacts/13015637577) — GitHub 로그인 필요. 스냅샷 SHA: `6c19097a2f265a37db004bafc3c8f44f1266c192`. **2026-11-03 07:06 KST 만료**이므로 미리 다운로드한다. ZIP을 풀면 bundle/source ZIP/스냅샷 SHA/체크섬이 나온다. 아래 Git clone은 압축을 푼 폴더에서 실행한다. 최신 보고서의 원격 SHA와 이 코드 백업 SHA는 서로 다를 수 있다.
+
 ## Git bundle에서 복구
 
 다운로드한 bundle이 있는 폴더에서 기존 프로젝트를 덮어쓰지 않고 복원한다:
