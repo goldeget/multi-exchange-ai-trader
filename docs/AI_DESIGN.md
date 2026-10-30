@@ -1,12 +1,12 @@
 # Advisory analysis design
 
-Status: proposed architecture for a PAPER and public-market-data MVP. This document specifies intended behavior; it does not claim an implemented or validated trading system. No model or machine learning efficacy has been demonstrated.
+Status: future Phase 5 advisory architecture following the Phase 2 public-market-data dashboard and Phase 3–4 PAPER/backtesting work. This document specifies intended behavior; it does not claim an implemented or validated trading system. No model or machine learning efficacy has been demonstrated.
 
-## First release: free deterministic analysis
+## Phase 5 starting point: free deterministic analysis
 
 Begin with versioned, deterministic rules over normalized public market data. Given the same input snapshot and rule version, analysis must return the same result. Use explicitly configured calculations such as moving-average trend, recent volatility, spread, and volume conditions. Each rule must identify its required history, calculation, threshold, and reason for passing or abstaining. Thresholds are hypotheses to evaluate, not evidence of profitability.
 
-The initial release requires no language model, paid account, model credentials, or external inference calls. Missing history, stale observations, crossed or invalid quotes, inconsistent instrument metadata, or an unavailable venue must produce an explicit abstention. Report data quality and assumptions alongside any directional hypothesis.
+The future deterministic baseline requires no language model, paid account, model credentials, or external inference calls. Phase 2 displays public data only; even this analysis baseline is not implemented or enabled in that dashboard. Missing history, stale observations, crossed or invalid quotes, inconsistent instrument metadata, or an unavailable venue must produce an explicit abstention. Report data quality and assumptions alongside any directional hypothesis.
 
 Public data collection, simulation, portfolio accounting, and order execution belong to deterministic services. The analysis component consumes immutable snapshots and produces advisory records. It cannot submit, amend, cancel, or size an order in the execution engine. A separate deterministic strategy may use an advisory record as one input under a documented policy, but every proposed action still passes independent risk and mode checks.
 
@@ -62,3 +62,7 @@ Model and ML efficacy is unvalidated. Provider integration, model selection, tra
 Before treating a model as useful, compare it against the frozen deterministic baseline using chronological holdouts and forward PAPER observations. Record fees, spread, latency, slippage, failed data fetches, abstentions, and selection effects. Prevent future-data leakage; separate development from evaluation periods; document model/prompt changes and repeated trials. Evaluate incremental value, stability, cost, and operational reliability rather than treating fluent explanations or isolated profitable examples as evidence.
 
 Any later proposal to expand model authority, process private data, incur new costs, or enable LIVE execution requires a separate explicit decision. This design grants none of those permissions.
+
+## Related delivery documents
+
+The [architecture and phase map](ARCHITECTURE.md#phase-map-and-gates), [research audit](OPEN_SOURCE_AUDIT.md), [exchange capabilities](EXCHANGE_CAPABILITIES.md), [security requirements](SECURITY.md), [QA plan](QA_PLAN.md), [design](superpowers/specs/2026-10-31-multi-exchange-trader-design.md), [implementation plan](superpowers/plans/2026-10-31-public-market-dashboard.md), and [work log](WORK_LOG.md) define the current public-only scope. Phase 6 Demo, Phase 7 approval, Phase 8 AUTO, Phase 9 QA/security expansion and Phase 10 live readiness remain future work. No phase is enabled by this policy.
