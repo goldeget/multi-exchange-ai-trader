@@ -161,3 +161,8 @@ Ran specified live collector once: Binance BTC/ETH spot ticker/OHLCV PASS within
 Desktop/mobile QA uses actual successful Binance spot data only, with denied local API routes aborted before backend/upstream. Any induced failure/recovery is supplemental, not evidence of denied-exchange recovery. No preview or synthetic prices. Source unchanged; historical CI41135809249 attempt2 PASS on6c19097 and historical257 Python/8 frontend passes were not rerun. Documentation/evidence commit uses [skip ci]. Existing backup and main preserved; no orders/accounts/keys/paid services/deployment/Phase3. Phase2A remains PARTIAL/NOT COMPLETE.
 
 Current live browser outcome: PC1440x1000/mobile390x844 populated spot charts, 24 symbol/interval response checks, no document horizontal overflow or uncaught JS errors; desktop automatic polling and induced ticker stale/recovery observed. Eight PNGs and61 actual API responses retained. Mobile stale/recovery and60-second candle stale behavior UNRUN; denied-exchange live/recovery BLOCKED. See current evidence for scope limits.
+
+
+## 2026-10-31T08:06:09.596779+09:00 — 451 denial regression fix
+
+Baseline6a28d63 preserved; systematic debugging traced451 repeat sends to the403-only deny branch. Offline MockTransport RED:6 failed/16 passed, including fapi actual transport4 vs expected1. Minimum fix adds451 to host_denied and bounded fixed-phrase denial evidence (no arbitrary body/header copy). GREEN22 runner tests; full Python264, frontend8 PASS; Ruff, mypy12 files, ESLint, TypeScript, production build PASS. No redirect/retry/proxy/TLS/host changes. Source fix and tests are one code checkpoint with one normal PR CI; later evidence-only pushes skip CI. Live acceptance remains incomplete.

@@ -228,3 +228,55 @@ async def test_injected_transport_cannot_be_reported_as_live_verified():
     assert report["matrix_passed"] is True
     assert report["evidence_mode"] == "injected_transport"
     assert report["live_verified"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [451, 403])
+async def test_host_denial_stops_transport_without_affecting_other_hosts(status):
+    attempts = []
+
+    def wire(request):
+        attempts.append(request.url.host)
+        assert request.method == "GET" and request.content == b""
+        if request.url.host == "fapi.binance.com":
+            return httpx.Response(status, json={"code": 0, "msg": "denied"})
+        return response(request)
+
+    report, code = await runner().run(httpx.MockTransport(wire))
+    assert attempts.count("fapi.binance.com") == 1
+    assert attempts.count("data-api.binance.vision") == 4
+    assert attempts.count("api.bybit.com") == 8
+    assert code == 1 and report["matrix_passed"] is False
+    assert report["live_verified"] is False
+    assert [row["status"] for row in report["markets"]] == [
+        "valid", "valid", "blocked", "blocked", "valid", "valid", "valid", "valid"
+    ]
+    denied = [r for r in report["requests"] if r["host"] == "fapi.binance.com"]
+    assert denied[0]["http_status"] == status
+    assert denied[0]["denial_source"] == "upstream_http"
+    assert all(r["skipped"] and r["http_status"] is None for r in denied[1:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "category", "evidence"),
+    [
+        ('{"code":0,"msg":"Service unavailable from a restricted location. TOP_SECRET 192.0.2.1"}',
+         "geographic_restriction", "restricted location"),
+        ("CloudFront is configured to block access from your country. Request ID: PRIVATE",
+         "geographic_restriction", "block access from your country"),
+        ("Too many requests; token=TOP_SECRET", "rate_limit", "too many requests"),
+        ("Web application firewall blocked; account=PRIVATE", "waf", "web application firewall"),
+        ('{"msg":"US IP possibly? secret=TOP_SECRET"}', "unknown", "unclassified denial"),
+    ],
+)
+async def test_denial_evidence_uses_fixed_phrases_never_raw_diagnostics(body, category, evidence):
+    report, code = await runner().run(
+        httpx.MockTransport(lambda request: httpx.Response(451, text=body))
+    )
+    assert code == 1 and report["live_verified"] is False
+    attempted = [r for r in report["requests"] if not r.get("skipped")]
+    assert all(r["denial_category"] == category for r in attempted)
+    assert all(r["safe_evidence"] == evidence for r in attempted)
+    serialized = json.dumps(report)
+    assert all(secret not in serialized for secret in ["TOP_SECRET", "192.0.2.1", "PRIVATE"])

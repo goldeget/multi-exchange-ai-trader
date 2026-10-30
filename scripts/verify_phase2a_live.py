@@ -30,6 +30,20 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def safe_denial_evidence(response: httpx.Response) -> dict[str, str]:
+    """Recognize bounded phrases; never copy arbitrary provider diagnostics."""
+    text = response.content[:8192].decode("utf-8", errors="replace").lower()
+    for phrase, category in (
+        ("restricted location", "geographic_restriction"),
+        ("block access from your country", "geographic_restriction"),
+        ("too many requests", "rate_limit"),
+        ("web application firewall", "waf"),
+    ):
+        if phrase in text:
+            return {"denial_category": category, "safe_evidence": phrase}
+    return {"denial_category": "unknown", "safe_evidence": "unclassified denial"}
+
+
 class EvidenceClient(httpx.AsyncClient):
     """Record safe metadata, preserve environment proxy/TLS, and stop denied hosts."""
 
@@ -59,9 +73,10 @@ class EvidenceClient(httpx.AsyncClient):
             kwargs["timeout"] = httpx.Timeout(5)
             response = await super().get(url, **kwargs)
             record["http_status"] = response.status_code
-            if response.status_code == 403:
+            if response.status_code in (403, 451):
                 self.denied.add(target.host)
                 record["denial_source"] = "upstream_http"
+                record.update(safe_denial_evidence(response))
                 raise MarketDataUnavailable("host_denied", "Host denied request")
             return response
         except httpx.HTTPError as exc:
