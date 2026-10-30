@@ -2,6 +2,17 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
+## Latest external-settings recheck
+
+Baseline `24b625a6e18a6467624eff98921449615321869e` was confirmed on the remote branch. Despite the reported settings changes, **both external prerequisites remain unconfirmed in actual execution**:
+
+- [CI recheck](external-settings-ci.md): one retry of the existing failed Dependency review job was accepted. Run `41133846306`, attempt 2, still fails with “Dependency review is not supported … ensure that Dependency graph is enabled”. Python, Frontend and Secret scan report SUCCESS. No security check was disabled and no unchanged full run was dispatched.
+- [Current environment and live probes](external-settings-live.md): attached runtime remains revision 1, observations current, restricted/enforced, custom hosts empty. Each configured exchange API host again returned proxy CONNECT 403 before provider response. All eight ticker/candle markets are BLOCKED. Exact runtime/config/version IDs, timestamps, denial headers and probe durations are preserved.
+- [Fresh full automated checks](external-settings-tests.md): 242 Python tests, 8 frontend tests, Ruff, mypy, ESLint, TypeScript, build and checksum-verified Gitleaks passed.
+- **Actual-data browser QA: BLOCKED** at both 1440px and 390px. No normal-price screenshot can be captured without successful exchange data. Live selections, populated charts, timestamps, stale-after-success and error recovery remain unverified. Synthetic preview, sample injection and denial bypass were not used. Existing supplementary error screenshots below are historical and do not satisfy normal-data QA.
+
+Draft PR #1 remains draft and unmerged; `main` is preserved. **Phase 2-A is incomplete. Phase 3 PAPER engine development is not ready to start under the requested gate.** No engine implementation was started.
+
 ## Latest resumed verification
 
 Remote baseline was confirmed as `90efa83cbfcc4272dd3b1baeb5097001d44d766b`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached environment is spec/observed revision **1**, observations current, connected, with network policy **restricted / enforced**. Its only preset is `package_managers`, and custom hosts are empty. This supersedes the previous environment's revision-7/draft observations below: published settings with exchange hosts are **not applied to this attached runtime**.
