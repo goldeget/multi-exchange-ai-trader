@@ -205,6 +205,7 @@ async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
         service = api.app.state.market_data_service
         assert isinstance(service, api.MarketDataService)
         assert client_constructions == 1
+        assert set(service._adapters) == {"binance", "bybit", "okx"}
         assert all(
             adapter.client is provider_client
             for adapter in service._adapters.values()
