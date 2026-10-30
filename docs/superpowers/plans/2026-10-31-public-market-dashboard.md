@@ -160,7 +160,7 @@
 - [x] Re-run the complete configured local CI command set and inspect `git status`, `git diff --check`, and the final branch history.
 - [x] Check no credentials, private endpoints, live-order routes, user account data, or unlabelled synthetic data entered the branch.
 - [x] Verify each required document exists and distinguish implemented, deferred, unverified, failed, skipped, and unrun items.
-- [ ] Push the final work-branch commit and verify its remote SHA with a read-only Git command.
+- [x] Push the reviewed Task 6 commit and verify its remote SHA with a read-only Git command.
 - [x] Report current-runtime validation separately from draft persistence and future environment publication.
 
 ## Coverage gaps tracked for later phases
