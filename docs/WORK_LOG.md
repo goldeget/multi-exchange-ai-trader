@@ -24,4 +24,28 @@ Decisions recorded:
 
 Known source limitations: logged-out advisory pages without visible IDs mean unknown status, not absence of vulnerabilities. SDK package streams differ by language/product; unverified publication dates remain unknown. Qlib's config-driven execution hardening commit needs a separate version/exposure review. The unofficial OKX wrapper's license was not verified. CI definitions and test trees were inspected, not executed. GitHub non-prerelease metadata does not remove NautilusTrader's Beta title.
 
-This milestone commits documentation only, without pushing. The task report records the exact command results and commit handoff; later code/build/CI/connectivity results must be added by the milestone that executes them. No API keys, paid calls, live/PAPER/Demo orders or production-readiness claims are introduced.
+The Phase 1 documentation milestone was committed and pushed to `codex/initial-platform` in `a5d2c45`, `40eb6f5`, and `fe4014f`. Later milestones and current evidence follow.
+
+## 2026-10-30 UTC — Phase 2 public market dashboard and cloud setup
+
+Implemented the public-only local dashboard and read-only API on `codex/initial-platform`. The overview shows BTC and ETH public tickers from Binance and Bybit for spot or perpetual markets; the chart follows the selected venue/instrument. REST polling is bounded and displays source/fetch state. OKX remains explicitly disabled and no OKX upstream request is made because authoritative V5 route/schema/limit/mapping/time/candle verification is still unavailable. The opt-in `?preview=1` mode uses deterministic local fixtures, labels them `샘플 데이터 · 실제 시세 아님`, and its UI test asserts zero API requests.
+
+No exchange credentials, private account routes, manual Bybit position data, order transport, or future PAPER/backtest/AI/Demo/approval/AUTO/live capabilities were added. No exchange endpoint was contacted. Live provider connectivity is **unverified**: the Cloud Environment settings draft contains the approved public host allowlist but the current runtime still enforces the old network policy until the draft is reviewed and published.
+
+| Check | Scope / environment | Status | Evidence and limitation |
+|---|---|---|---|
+| Backend unit/API tests | Python 3.12; local fixtures and mock HTTP transports | PASS | 241 tests passed. No exchange calls. |
+| Python lint and typecheck | `uv run ruff check src tests`; `uv run mypy src` | PASS | Both exit 0. |
+| Frontend UI tests | Vitest with jsdom and mocked fetch/chart | PASS | 8 tests passed, including both-asset overview, disabled OKX, preview zero-fetch, stale/error states and polling cleanup. |
+| Frontend lint/typecheck/build | ESLint, TypeScript, Vite production build | PASS | All commands exit 0. |
+| Secret scan | Gitleaks v8.30.1, verified Linux archive SHA-256 | PASS | Redacted full-history scan reported no leaks; no API key values were read or added. |
+| Dependency and action review | Locked Python/npm dependencies; GitHub workflow | PASS (local review) | Action release tags were matched to full commit SHAs; dependency-review is read-only. A hosted GitHub Actions run has not occurred. |
+| Local health endpoint | FastAPI at `127.0.0.1:8000` | PASS | `GET /api/v1/health` returned `{"status":"ok"}`. |
+| Synthetic browser preview | Vite at `127.0.0.1:5173/?preview=1` | PASS (HTTP) | Preview URL returned HTTP 200 and the Codex browser tab was queued. No screenshot-based responsive audit was performed. |
+| Exchange connectivity / official OKX contracts | Current managed cloud runtime | UNVERIFIED / DEFERRED | Current egress policy does not include draft custom hosts. Do not infer live health from local fixtures or health endpoint. OKX stays disabled until official contract evidence is recorded. |
+
+Reviewed implementation commits on the work branch: `ca01d13` (market-data contracts/adapters), `79cbfc8` (API), `d046386` (dashboard), `261bd34` (BTC/ETH overview review fix), `6882747` (CI and setup docs), and `7532564` (Node 24-compatible lint tooling), in addition to the Phase 1 documentation commits above. Each reviewed slice was pushed to `origin/codex/initial-platform`; the final remote SHA is verified during Task 6.
+
+Cloud setup uses the existing repository checkout and writable `/tmp` caches for uv/npm. The environment draft has been saved with the `multi-exchange-ai-trader` mount path, tested install/start instructions and the four public hostname rules; draft saving does not apply them. The saved repository ref is refreshed after the final Task 6 commit. User review and publication are still required before real public market data can connect. No custom credentials or runtime secrets are required.
+
+Maintenance note: final `npm ci` reports one upstream deprecated transitive package, `whatwg-encoding@3.1.1`, pulled by the jsdom test environment. The direct unsupported ESLint 9 warning was resolved by pinning the Node 24-compatible ESLint 10 toolchain. The remaining deprecation notice did not fail install, tests, lint, typecheck or build.

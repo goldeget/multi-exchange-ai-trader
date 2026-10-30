@@ -49,13 +49,13 @@
 - Consumes: the user directive and the cited research outputs.
 - Produces: source-linked engine recommendation, exchange capability matrix with unknowns, application architecture, AI/security/QA policies, and timestamped work log.
 
-- [ ] Review the three open-source audit files from the research agents; remove unsupported factual claims and ensure all requested projects appear.
-- [ ] Define and document a transparent 0–5 role-fit rubric for each reviewed project group and cite evidence for every score; label scores as this project's decision aid rather than external measurements.
-- [ ] Reconcile engine conclusions: select NautilusTrader for the full multi-venue event-driven product; record Hummingbot's no-key Binance paper example as a faster one-venue alternative, not a second core engine. Note that the inspected NautilusTrader v1.231.0 GitHub release title says “Beta” and require package/API qualification before Phase 3.
-- [ ] Reconcile exchange-library conclusions: use narrow HTTPX public-read adapters in the initial dashboard to avoid importing private/order methods; record CCXT MIT as an alternative if exchange coverage later expands, and note that CCXT Pro WebSockets have separate terms.
-- [ ] Align phase names with the user directive: Phase 1 audit, Phase 2 dashboard, Phase 3 PAPER, Phase 4 backtesting, Phase 5 AI, Phase 6 Demo, Phase 7 approval workflow, Phase 8 AUTO, Phase 9 QA/security, Phase 10 live readiness.
-- [ ] Run `git diff --check` and review all links and unverified items.
-- [ ] Commit and push the reviewed documents.
+- [x] Review the three open-source audit files from the research agents; remove unsupported factual claims and ensure all requested projects appear.
+- [x] Define and document a transparent 0–5 role-fit rubric for each reviewed project group and cite evidence for every score; label scores as this project's decision aid rather than external measurements.
+- [x] Reconcile engine conclusions: select NautilusTrader for the full multi-venue event-driven product; record Hummingbot's no-key Binance paper example as a faster one-venue alternative, not a second core engine. Note that the inspected NautilusTrader v1.231.0 GitHub release title says “Beta” and require package/API qualification before Phase 3.
+- [x] Reconcile exchange-library conclusions: use narrow HTTPX public-read adapters in the initial dashboard to avoid importing private/order methods; record CCXT MIT as an alternative if exchange coverage later expands, and note that CCXT Pro WebSockets have separate terms.
+- [x] Align phase names with the user directive: Phase 1 audit, Phase 2 dashboard, Phase 3 PAPER, Phase 4 backtesting, Phase 5 AI, Phase 6 Demo, Phase 7 approval workflow, Phase 8 AUTO, Phase 9 QA/security, Phase 10 live readiness.
+- [x] Run `git diff --check` and review all links and unverified items.
+- [x] Commit and push the reviewed documents.
 
 ### Task 2: Backend data contracts and exchange adapters
 
@@ -80,14 +80,14 @@
 - Each enabled adapter accepts an injected `httpx.AsyncClient`; it owns no credentials and cannot submit or query private account/order APIs.
 - Until the official-source gate above is met, `okx.py` is a disabled adapter: both read methods return a typed unavailable/unverified failure before any transport call. No guessed routes or normalization code is needed for this state.
 
-- [ ] Write fixture-based failing Binance/Bybit contract tests for BTCUSDT spot and perpetual mapping, numeric validation, timestamps, and candle ordering.
-- [ ] Write fixture-based OKX disabled-state tests for ticker/candle reads, spot/perpetual and BTC/ETH selections. Inject a transport that fails on any call; assert a typed unavailable/unverified result and zero upstream requests.
-- [ ] Before replacing the disabled OKX adapter, record authoritative V5 route/schema/limit/mapping/time/candle evidence and add corresponding source-backed fixtures. If verification remains unavailable, deliver the disabled state and keep parsing/enablement deferred.
-- [ ] Run each new test and confirm the expected missing-adapter or parsing failure.
-- [ ] Implement only the minimal Pydantic models, protocol, verified Binance/Bybit response normalizers and disabled OKX behavior needed to pass. Do not infer OKX routes from unofficial SDKs.
-- [ ] Add malformed payload, negative/non-finite price, unsupported symbol/interval, and open-candle tests.
-- [ ] Run `uv run pytest tests/market_data -q` and `uv run ruff check src tests`.
-- [ ] Commit and push the reviewed adapter slice.
+- [x] Write fixture-based failing Binance/Bybit contract tests for BTCUSDT spot and perpetual mapping, numeric validation, timestamps, and candle ordering.
+- [x] Write fixture-based OKX disabled-state tests for ticker/candle reads, spot/perpetual and BTC/ETH selections. Inject a transport that fails on any call; assert a typed unavailable/unverified result and zero upstream requests.
+- [x] Before replacing the disabled OKX adapter, record authoritative V5 route/schema/limit/mapping/time/candle evidence and add corresponding source-backed fixtures. If verification remains unavailable, deliver the disabled state and keep parsing/enablement deferred.
+- [x] Run each new test and confirm the expected missing-adapter or parsing failure.
+- [x] Implement only the minimal Pydantic models, protocol, verified Binance/Bybit response normalizers and disabled OKX behavior needed to pass. Do not infer OKX routes from unofficial SDKs.
+- [x] Add malformed payload, negative/non-finite price, unsupported symbol/interval, and open-candle tests.
+- [x] Run `uv run pytest tests/market_data -q` and `uv run ruff check src tests`.
+- [x] Commit and push the reviewed adapter slice.
 
 ### Task 3: FastAPI market-data service
 
@@ -104,18 +104,18 @@
 - `GET /api/v1/market/candles?...&interval=1m&limit=200` returns normalized ascending `Candle[]`; validate `1 <= limit <= 500`.
 - Exchange/client registry is injected into the service for fixture-backed route tests; external network is never a test requirement.
 
-- [ ] Write route tests for success, invalid query input, unsupported venue, provider timeout, and malformed provider payload.
-- [ ] Add fixture-backed OKX ticker/candle route tests that assert a typed unavailable/unverified API error and zero upstream calls while its verification gate is unmet; configured host access must not enable it.
-- [ ] Run the tests and confirm the missing route/service behavior fails as expected.
-- [ ] Implement the async service and route handlers with request timeouts, bounded response handling, and safe error mapping.
-- [ ] Add an explicit no-order-route assertion to API tests or route inventory check.
-- [ ] Run `uv run pytest -q`, `uv run ruff check src tests`, and `uv run mypy src`.
-- [ ] Commit and push the reviewed API slice.
+- [x] Write route tests for success, invalid query input, unsupported venue, provider timeout, and malformed provider payload.
+- [x] Add fixture-backed OKX ticker/candle route tests that assert a typed unavailable/unverified API error and zero upstream calls while its verification gate is unmet; configured host access must not enable it.
+- [x] Run the tests and confirm the missing route/service behavior fails as expected.
+- [x] Implement the async service and route handlers with request timeouts, bounded response handling, and safe error mapping.
+- [x] Add an explicit no-order-route assertion to API tests or route inventory check.
+- [x] Run `uv run pytest -q`, `uv run ruff check src tests`, and `uv run mypy src`.
+- [x] Commit and push the reviewed API slice.
 
 ### Task 4: Korean dashboard and synthetic preview mode
 
 **Files:**
-- Create: `apps/web/package.json`, `apps/web/package-lock.json`, `apps/web/tsconfig.json`, `apps/web/vite.config.ts`
+- Create: `apps/web/package.json`, `apps/web/package-lock.json`, `apps/web/tsconfig.json`, `apps/web/vite.config.ts`, `apps/web/eslint.config.js`
 - Create: `apps/web/src/main.tsx`, `apps/web/src/App.tsx`, `apps/web/src/api.ts`, `apps/web/src/chart/CandleChart.tsx`, `apps/web/src/styles.css`
 - Create: `apps/web/src/App.test.tsx`, `apps/web/vitest.config.ts`
 - Modify: `.gitignore`
@@ -126,19 +126,19 @@
 - Poll ticker data no faster than every 5 seconds; refresh candles no faster than every 30 seconds; prevent overlapping requests and show last source time, loading, error, and stale status.
 - Query parameter `preview=1` enables a deterministic synthetic fixture with a persistent visible `샘플 데이터 · 실제 시세 아님` banner. Preview is disabled otherwise.
 
-- [ ] Add frontend tests first for the synthetic banner, default live-data state, and stale/error labels; run them to confirm expected failures.
-- [ ] Add a fixture-backed UI test showing an explicit OKX unavailable/unverified state while the gate is unmet; selecting OKX must not initiate provider polling or show synthetic data as verified market data.
-- [ ] Implement the responsive Korean dark dashboard with exchange/market selectors, BTC/ETH overview, candle chart, and clear `공개 시세 전용 · PAPER 엔진 미구현` safety label.
-- [ ] Add Lightweight Charts with visible TradingView attribution; do not load CDN assets.
-- [ ] Run `npm ci`, `npm test -- --run`, `npm run typecheck`, and `npm run build` from `apps/web`.
-- [ ] Start the backend and frontend, call the local health endpoint, and open the requested preview tab using `?preview=1` so synthetic values are explicitly labeled.
-- [ ] Commit and push the reviewed frontend slice.
+- [x] Add frontend tests first for the synthetic banner, default live-data state, and stale/error labels; run them to confirm expected failures.
+- [x] Add a fixture-backed UI test showing an explicit OKX unavailable/unverified state while the gate is unmet; selecting OKX must not initiate provider polling or show synthetic data as verified market data.
+- [x] Implement the responsive Korean dark dashboard with exchange/market selectors, BTC/ETH overview, candle chart, and clear `공개 시세 전용 · PAPER 엔진 미구현` safety label.
+- [x] Add Lightweight Charts with visible TradingView attribution; do not load CDN assets.
+- [x] Run `npm ci`, `npm test -- --run`, `npm run lint`, `npm run typecheck`, and `npm run build` from `apps/web`.
+- [x] Start the backend and frontend, call the local health endpoint, and open the requested preview tab using `?preview=1` so synthetic values are explicitly labeled.
+- [x] Commit and push the reviewed frontend slice.
 
 ### Task 5: CI and reproducible cloud setup
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
-- Modify: `README.md`, `.gitignore`
+- Modify: `README.md`
 - Cloud draft: `install_script`, `start_skill`, and custom network hosts `data-api.binance.vision`, `fapi.binance.com`, `api.bybit.com`, `www.okx.com`.
 
 **Interfaces:**
@@ -150,18 +150,18 @@
 - [x] Add CI jobs for Python tests/lint/typecheck and frontend tests/lint/typecheck/build; include a secret scan using public-repository-safe configuration.
 - [x] Run every configured CI command locally from the same directories and fix setup defects before committing.
 - [x] Document install/start/preview commands and explain that real exchange connectivity requires the user to save/publish the network draft.
-- [ ] Save the tested install/start instructions and only the required exchange hostnames in the environment draft; do not overwrite unknown custom hosts.
-- [x] Commit the verified Task 5 implementation; parent reviews and pushes.
+- [x] Save the tested install/start instructions and only the required exchange hostnames in the environment draft; do not overwrite unknown custom hosts.
+- [x] Commit and push the reviewed Task 5 changes on the work branch.
 
 ### Task 6: Final integration and report
 
 **Files:** all files created in Tasks 1–5.
 
-- [ ] Re-run the complete configured local CI command set and inspect `git status`, `git diff --check`, and the final branch history.
-- [ ] Check no credentials, private endpoints, live-order routes, user account data, or unlabelled synthetic data entered the branch.
-- [ ] Verify each required document exists and distinguish implemented, deferred, unverified, failed, skipped, and unrun items.
-- [ ] Push the final work-branch commit and verify its remote SHA with a read-only Git command.
-- [ ] Report current-runtime validation separately from draft persistence and future environment publication.
+- [x] Re-run the complete configured local CI command set and inspect `git status`, `git diff --check`, and the final branch history.
+- [x] Check no credentials, private endpoints, live-order routes, user account data, or unlabelled synthetic data entered the branch.
+- [x] Verify each required document exists and distinguish implemented, deferred, unverified, failed, skipped, and unrun items.
+- [x] Push the final work-branch commit and verify its remote SHA with a read-only Git command.
+- [x] Report current-runtime validation separately from draft persistence and future environment publication.
 
 ## Coverage gaps tracked for later phases
 
