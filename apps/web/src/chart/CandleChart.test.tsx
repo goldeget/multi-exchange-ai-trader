@@ -31,3 +31,24 @@ it("initializes empty-to-live, clears empty data, and fits a new selection lifec
  view.rerender(<CandleChart key="ETH" candles={[]}/>);expect(second.setData).toHaveBeenLastCalledWith([]);
  view.unmount();expect(second.remove).toHaveBeenCalledTimes(1);
 });
+
+const stamps = ["2026-10-31T00:00:00Z", "2026-10-31T00:01:00Z", "2026-10-31T00:02:00Z", "2026-10-31T00:03:00Z"];
+it.each([
+  ["rolling drop", [stamps[1],stamps[2],stamps[3]], {from:-0.5,to:0.5}],
+  ["append only", stamps, {from:0.5,to:1.5}],
+  ["prepend", ["2026-10-30T23:59:00Z",...stamps.slice(0,3)], {from:1.5,to:2.5}],
+])("preserves historical timestamp position and zoom width on %s", (_label,next,want)=>{
+  const view=render(<CandleChart candles={stamps.slice(0,3).map(timestamp=>({...candle,timestamp}))}/>);
+  const first=mocks.charts[0];
+  first.timeScale.mockReturnValue({fitContent:first.fit,getVisibleLogicalRange:()=>({from:0.5,to:1.5}),setVisibleLogicalRange:first.setRange});
+  view.rerender(<CandleChart candles={next.map(timestamp=>({...candle,timestamp}))}/>);
+  expect(first.setRange).toHaveBeenLastCalledWith(want);
+  expect(first.fit).toHaveBeenCalledTimes(1);expect(mocks.createChart).toHaveBeenCalledTimes(1);
+});
+it("fits a disjoint replacement batch instead of preserving an empty old time window",()=>{
+  const view=render(<CandleChart candles={stamps.slice(0,3).map(timestamp=>({...candle,timestamp}))}/>);
+  const first=mocks.charts[0];
+  view.rerender(<CandleChart candles={[{...candle,timestamp:"2026-11-01T00:00:00Z"}]}/>);
+  expect(first.fit).toHaveBeenCalledTimes(2);expect(first.setRange).not.toHaveBeenCalled();
+  expect(mocks.createChart).toHaveBeenCalledTimes(1);
+});

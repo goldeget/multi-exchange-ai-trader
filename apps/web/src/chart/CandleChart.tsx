@@ -16,9 +16,11 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     volume: ISeriesApi<"Histogram">;
     fitted: boolean;
   } | null>(null);
+  const previousTimes = useRef<string[]>([]);
   useEffect(() => () => {
     instance.current?.chart.remove();
     instance.current = null;
+    previousTimes.current = [];
   }, []);
   useEffect(() => {
     if (!container.current) return;
@@ -62,6 +64,12 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     if (!current) return;
     const {chart, series, volume} = current;
     const range = chart.timeScale().getVisibleLogicalRange();
+    // Logical indices move when the bounded batch drops/prepends leading bars.
+    const newIndices = new Map(candles.map((c, index) => [c.timestamp, index]));
+    const oldIndex = previousTimes.current.findIndex(time => newIndices.has(time));
+    const newIndex = oldIndex >= 0 ? newIndices.get(previousTimes.current[oldIndex]) : undefined;
+    const offset = newIndex === undefined ? null : newIndex - oldIndex;
+    previousTimes.current = candles.map(c => c.timestamp);
     series.setData(
       candles.map((c) => ({
         time: Math.floor(Date.parse(c.timestamp) / 1000) as UTCTimestamp,
@@ -79,10 +87,13 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       })),
     );
     if (!candles.length) current.fitted = false;
-    else if (!current.fitted) {
+    else if (!current.fitted || offset === null) {
       chart.timeScale().fitContent();
       current.fitted = true;
-    } else if (range) chart.timeScale().setVisibleLogicalRange(range);
+    } else if (range) chart.timeScale().setVisibleLogicalRange({
+      from: range.from + offset,
+      to: range.to + offset,
+    });
   }, [candles]);
   return (
     <div
