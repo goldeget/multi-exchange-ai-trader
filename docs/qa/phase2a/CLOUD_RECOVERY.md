@@ -1,3 +1,9 @@
+## Current recovery checkpoint — 2026-10-31 (Asia/Singapore)
+
+The allowlist is now applied: revision 1/current/running/connected/restricted/enforced, four approved hosts and package-manager preset. Default socket EPERM was not evidence of an external proxy failure: official `require_escalated` git read succeeded, followed by fetch of existing codex/initial-platform. Keep proxy/CA/TLS intact and use only supported execution permission. Do not regenerate source from main. See [current evidence and remaining gates](live-20261031/README.md).
+
+Live snapshot passed two Binance spot markets; fapi HTTP 451 and Bybit upstream HTTP 403 block six markets. Do not retry denied hosts or substitute hosts, relays, VPN, preview or synthetic data. Existing runner does not stop on 451; that limitation is explicitly recorded. Full Phase 2-A acceptance remains unmet. Historical procedures/results below are retained; they do not describe the current applied policy.
+
 # PHASE 2-A Cloud 장애 복구 및 재개
 
 상태: **검증 완료 아님**. Cloud 설정 저장 오류가 보고됐으나, 현재 런타임의 Git 작업과 테스트 실행은 가능하다. 현재 런타임 revision 1은 거래소 호스트가 없는 제한 정책을 적용하고 있다. 플랫폼 저장 UI의 내부 오류 원인은 제공 도구로 관측할 수 없다. 보존 진단 메타데이터 조회는 `history_status: not_found`, records 0을 반환했다. 로그 부재는 플랫폼 정상의 증거가 아니다.

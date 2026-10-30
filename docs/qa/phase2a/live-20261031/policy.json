@@ -1,0 +1,22 @@
+{
+  "spec_revision": "1",
+  "observed_spec_revision": "1",
+  "observations_current": true,
+  "observed_phase": "running",
+  "connectivity": "connected",
+  "mode": "restricted",
+  "state": "enforced",
+  "allowed_hosts": [
+    "api.bybit.com",
+    "api.github.com",
+    "data-api.binance.vision",
+    "fapi.binance.com"
+  ],
+  "presets": [
+    "package_managers"
+  ],
+  "vpn_configured": false,
+  "proxy_matches_HTTPS_PROXY": true,
+  "default_socket_errno": 1,
+  "official_escalated_git_read": "PASS"
+}

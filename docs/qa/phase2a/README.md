@@ -2,6 +2,10 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
+## Current live checkpoint — 2026-10-31 (Asia/Singapore)
+
+**PARTIAL / NOT COMPLETE.** Official execution permission resolved the default sandbox EPERM; the four-host restricted/enforced allowlist is current and applied. Actual collector: Binance BTC/ETH spot PASS within snapshot scope; Binance perpetual HTTP 451 and Bybit upstream HTTP 403 prevent full acceptance. See [current live JSON, policy, eight-market matrix and browser evidence](live-20261031/README.md). The older missing-allowlist conclusions below are historical. No full CI rerun; prior CI and 257/8 test results remain historical.
+
 ## Latest network recovery check — 2026-10-31 07:36 KST
 
 Remote baseline and PR #1 head matched `ed9ac0c083c27d83ab3a6280699cdf08e887c61a`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached running environment still enforces a restricted policy omitting all four required hosts. **BLOCKED:** zero exchange calls; collector and actual-data browser QA not run. All eight markets remain unverified, and no normal-data screenshots were captured. See [fresh policy evidence, full market matrix and resume gates](network-recovery.md) and [machine-readable runtime policy](network-recovery-gate.json). Prior CI/test passes are retained without repetition; this checkpoint changes documentation only. Earlier environment identities and results below are historical.
@@ -172,3 +176,5 @@ DOM measurements and intercepted request URLs: [browser-qa.json](browser-qa.json
 3. Probe ticker and candle responses for all eight matrix rows, retaining sanitized status, payload shape, price, source/fetch timestamps, latency and rate-limit headers. Distinguish upstream HTTP errors, provider errors, proxy errors and timeouts. Do not retry unchanged access denials or bypass regional restrictions.
 4. Repeat desktop/mobile QA with actual data and no request interception. Verify populated charts, exchange/market choices, stale states and overflow. Never replace a failed provider with samples.
 5. Update this report and WORK_LOG, commit/push each completed slice and confirm remote SHA. Phase 3 PAPER implementation remains gated on completion of these checks.
+
+Current live browser outcome: PC1440x1000/mobile390x844 populated spot charts, 24 symbol/interval response checks, no document horizontal overflow or uncaught JS errors; desktop automatic polling and induced ticker stale/recovery observed. Eight PNGs and61 actual API responses retained. Mobile stale/recovery and60-second candle stale behavior UNRUN; denied-exchange live/recovery BLOCKED. See current evidence for scope limits.
