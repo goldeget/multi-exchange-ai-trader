@@ -189,17 +189,17 @@ async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
         exchange_requests.append(request)
         return httpx.Response(200)
 
-    provider_client = httpx.AsyncClient(
+    provider_client = api.PublicMarketClient(
         transport=httpx.MockTransport(record_exchange_request)
     )
     client_constructions = 0
 
-    def make_provider_client():
+    def make_provider_client(**kwargs):
         nonlocal client_constructions
         client_constructions += 1
         return provider_client
 
-    monkeypatch.setattr(api.httpx, "AsyncClient", make_provider_client)
+    monkeypatch.setattr(api, "PublicMarketClient", make_provider_client)
 
     async with api.app.router.lifespan_context(api.app):
         service = api.app.state.market_data_service

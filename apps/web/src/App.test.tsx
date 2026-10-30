@@ -199,3 +199,13 @@ describe("공개 시세 대시보드", () => {
     ).toBe(true);
   });
 });
+
+it("keeps terminal restriction visible instead of replacing it with generic stale state", async()=>{
+  fetchMock.mockImplementation(response);render(<App/>);await settle();
+  fetchMock.mockResolvedValue({ok:false,json:async()=>({reason:"operator_disabled"})});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(65000);});
+  expect(screen.getAllByText(/운영 설정으로 비활성화/).length).toBe(5);
+  expect(screen.queryByText("지연 · 마지막 수신 캔들")).not.toBeInTheDocument();
+  expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/fixture/).length).toBeGreaterThan(0);
+});

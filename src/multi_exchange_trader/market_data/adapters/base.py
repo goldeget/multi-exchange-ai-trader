@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from multi_exchange_trader.market_data.denials import safe_denial_evidence
 from multi_exchange_trader.market_data.models import Candle, MarketType, Ticker
 
 SYMBOLS = {"BTCUSDT": "BTCUSDT", "ETHUSDT": "ETHUSDT"}
@@ -55,6 +56,13 @@ async def request_json(
         response = await client.get(
             url, params=params, timeout=10, follow_redirects=False, auth=None
         )
+        if response.status_code in (403, 451):
+            reason = (
+                "geographic_restriction"
+                if safe_denial_evidence(response)["denial_category"] == "geographic_restriction"
+                else "access_restricted"
+            )
+            raise MarketDataUnavailable(reason, "Public market access is restricted")
         if response.status_code == 429:
             raise MarketDataUnavailable("rate_limited", "Provider rate limit reached")
         if not 200 <= response.status_code < 300:

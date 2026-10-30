@@ -54,6 +54,8 @@ function MarketRow({
   const stale = !preview && !!live.successAt && now - live.successAt >= 15000;
   const state = preview
     ? "합성 샘플"
+    : live.blocked
+      ? `${live.error}${data ? " · 마지막 수신값" : ""}`
     : stale
       ? "지연 · 마지막 수신값"
       : live.error
@@ -80,7 +82,7 @@ function MarketRow({
       <td>
         <span
           role="status"
-          className={stale ? "stale" : live.error ? "error" : "muted"}
+          className={live.blocked ? "error" : stale ? "stale" : live.error ? "error" : "muted"}
         >
           {state}
         </span>
@@ -100,6 +102,7 @@ function MarketRow({
                   ? `관측 ${Math.max(0, Math.floor((now - Date.parse(observed)) / 1000))}초 전`
                   : "관측 시각 미제공 · 수집 시각 표시"}
             </small>
+            <small>마지막 수신: {new Date(data.fetched_at).toISOString().replace("T", " ").slice(0, 19)} UTC</small>
             <small>출처: {data.source}</small>
           </>
         )}
@@ -274,12 +277,19 @@ export default function App() {
             >
               {preview
                 ? "로컬 합성 캔들"
+                : candles.blocked
+                  ? `${candles.error}${last ? " · 마지막 수신 캔들" : ""}`
                 : candleStale
                   ? "지연 · 마지막 수신 캔들"
                   : (candles.error ??
                     (!last ? "불러오는 중" : "캔들 수신 완료"))}
             </div>
-            <CandleChart candles={data} />
+            {candles.successAt && !preview && (
+              <p className="chart-status">
+                마지막 수신: {new Date(candles.successAt).toISOString().replace("T", " ").slice(0, 19)} UTC · 출처: {names[venue]} 공개 캔들
+              </p>
+            )}
+            <CandleChart key={`${venue}/${symbol}/${market}/${interval}`} candles={data} />
             <p aria-label="캔들 요약" className="summary">
               {last
                 ? `마지막 봉: 시가 ${price(last.open)} · 고가 ${price(last.high)} · 저가 ${price(last.low)} · 종가 ${price(last.close)} USDT · 거래량 ${price(last.volume)} · ${last.is_closed ? "마감" : "형성 중"}`

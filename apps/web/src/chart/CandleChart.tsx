@@ -5,45 +5,63 @@ import {
   createChart,
   HistogramSeries,
   type UTCTimestamp,
+  type ISeriesApi,
 } from "lightweight-charts";
 import type { Candle } from "../api";
 export default function CandleChart({ candles }: { candles: Candle[] }) {
   const container = useRef<HTMLDivElement>(null);
+  const instance = useRef<{
+    chart: ReturnType<typeof createChart>;
+    series: ISeriesApi<"Candlestick">;
+    volume: ISeriesApi<"Histogram">;
+    fitted: boolean;
+  } | null>(null);
+  useEffect(() => () => {
+    instance.current?.chart.remove();
+    instance.current = null;
+  }, []);
   useEffect(() => {
-    if (!container.current || !candles.length) return;
-    const chart = createChart(container.current, {
-      height: 380,
-      autoSize: true,
-      layout: {
-        background: { type: ColorType.Solid, color: "#121A23" },
-        textColor: "#A8B5C4",
-        attributionLogo: true,
-      },
-      grid: {
-        vertLines: { color: "#18232E" },
-        horzLines: { color: "#18232E" },
-      },
-      rightPriceScale: {
-        borderColor: "#2A3745",
-        scaleMargins: { top: 0.08, bottom: 0.25 },
-      },
-      timeScale: { borderColor: "#2A3745", timeVisible: true },
-      handleScroll: { vertTouchDrag: false },
-    });
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#36C99A",
-      downColor: "#FF737D",
-      borderVisible: false,
-      wickUpColor: "#36C99A",
-      wickDownColor: "#FF737D",
-    });
-    const volume = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: "volume" },
-      priceScaleId: "volume",
-    });
-    volume
-      .priceScale()
-      .applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
+    if (!container.current) return;
+    if (!instance.current && candles.length) {
+      const chart = createChart(container.current, {
+        height: 380,
+        autoSize: true,
+        layout: {
+          background: { type: ColorType.Solid, color: "#121A23" },
+          textColor: "#A8B5C4",
+          attributionLogo: true,
+        },
+        grid: {
+          vertLines: { color: "#18232E" },
+          horzLines: { color: "#18232E" },
+        },
+        rightPriceScale: {
+          borderColor: "#2A3745",
+          scaleMargins: { top: 0.08, bottom: 0.25 },
+        },
+        timeScale: { borderColor: "#2A3745", timeVisible: true },
+        handleScroll: { vertTouchDrag: false },
+      });
+      const series = chart.addSeries(CandlestickSeries, {
+        upColor: "#36C99A",
+        downColor: "#FF737D",
+        borderVisible: false,
+        wickUpColor: "#36C99A",
+        wickDownColor: "#FF737D",
+      });
+      const volume = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: "volume" },
+        priceScaleId: "volume",
+      });
+      volume
+        .priceScale()
+        .applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
+      instance.current = {chart, series, volume, fitted: false};
+    }
+    const current = instance.current;
+    if (!current) return;
+    const {chart, series, volume} = current;
+    const range = chart.timeScale().getVisibleLogicalRange();
     series.setData(
       candles.map((c) => ({
         time: Math.floor(Date.parse(c.timestamp) / 1000) as UTCTimestamp,
@@ -60,8 +78,11 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
         color: Number(c.close) >= Number(c.open) ? "#267E67" : "#A34F59",
       })),
     );
-    chart.timeScale().fitContent();
-    return () => chart.remove();
+    if (!candles.length) current.fitted = false;
+    else if (!current.fitted) {
+      chart.timeScale().fitContent();
+      current.fitted = true;
+    } else if (range) chart.timeScale().setVisibleLogicalRange(range);
   }, [candles]);
   return (
     <div

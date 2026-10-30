@@ -15,6 +15,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from multi_exchange_trader.market_data.adapters import binance, bybit
 from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
+from multi_exchange_trader.market_data.denials import safe_denial_evidence
 from multi_exchange_trader.market_data.models import MarketType
 
 ALLOWED_URLS = {
@@ -28,20 +29,6 @@ MAX_AGE_SECONDS = 120
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
-
-
-def safe_denial_evidence(response: httpx.Response) -> dict[str, str]:
-    """Recognize bounded phrases; never copy arbitrary provider diagnostics."""
-    text = response.content[:8192].decode("utf-8", errors="replace").lower()
-    for phrase, category in (
-        ("restricted location", "geographic_restriction"),
-        ("block access from your country", "geographic_restriction"),
-        ("too many requests", "rate_limit"),
-        ("web application firewall", "waf"),
-    ):
-        if phrase in text:
-            return {"denial_category": category, "safe_evidence": phrase}
-    return {"denial_category": "unknown", "safe_evidence": "unclassified denial"}
 
 
 class EvidenceClient(httpx.AsyncClient):

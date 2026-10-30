@@ -1,10 +1,10 @@
 """Typed public market API; no account, credential, or execution routes."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal, cast
 
-import httpx
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -13,6 +13,7 @@ from .market_data.adapters.binance import BinanceAdapter
 from .market_data.adapters.bybit import BybitAdapter
 from .market_data.adapters.okx import OKXAdapter
 from .market_data.models import Candle, MarketType, Ticker
+from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 
 Exchange = Literal["binance", "bybit", "okx"]
@@ -33,7 +34,9 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         if service is not None:
             yield
             return
-        async with httpx.AsyncClient() as client:
+        blocked = parse_blocked_hosts(os.environ.get("MARKET_DATA_BLOCKED_HOSTS", ""))
+        async with PublicMarketClient(blocked_hosts=blocked) as client:
+            application.state.public_market_client = client
             application.state.market_data_service = MarketDataService({
                 "binance": BinanceAdapter(client),
                 "bybit": BybitAdapter(client),

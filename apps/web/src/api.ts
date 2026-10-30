@@ -19,7 +19,17 @@ export interface Candle {
   volume: string;
   is_closed: boolean;
 }
+export type TerminalReason = "operator_disabled" | "access_restricted" | "geographic_restriction";
+const terminalMessages: Record<TerminalReason, string> = {
+  operator_disabled: "운영 설정으로 비활성화 · 재시도 중단",
+  access_restricted: "상류 접근 제한 · 재시도 중단",
+  geographic_restriction: "지역 제한 확인 · 재시도 중단",
+};
+function terminalReason(value: unknown): value is TerminalReason {
+  return value === "operator_disabled" || value === "access_restricted" || value === "geographic_restriction";
+}
 export interface Resource<T> {
+  blocked?: TerminalReason;
   data?: T;
   error?: string;
   successAt?: number;
@@ -64,16 +74,30 @@ export function usePolling<T>(
     if (!enabled) return;
     let disposed = false;
     let pending = false;
+    let stopped = false;
     const controllers = new Set<AbortController>();
     async function load() {
-      if (pending) return;
+      if (pending || stopped) return;
       pending = true;
       const controller = new AbortController();
       controllers.add(controller);
       const timeout = window.setTimeout(() => controller.abort(), 10000);
       try {
         const response = await fetch(url, { signal: controller.signal });
-        if (!response.ok) throw new Error("unavailable");
+        if (!response.ok) {
+          const body: {reason?: unknown} = await response.json().catch(() => ({}));
+          if (terminalReason(body.reason)) {
+            const reason = body.reason;
+            stopped = true;
+            window.clearInterval(timer);
+            if (!disposed) setResult(previous => ({url, value: {
+              ...(previous.url === url ? previous.value : {}),
+              blocked: reason, error: terminalMessages[reason],
+            }}));
+            return;
+          }
+          throw new Error("unavailable");
+        }
         const data = (await response.json()) as T;
         if (!disposed)
           setResult({ url, value: { data, successAt: Date.now() } });
@@ -92,10 +116,10 @@ export function usePolling<T>(
         pending = false;
       }
     }
-    void load();
     const timer = window.setInterval(() => {
       void load();
     }, interval);
+    void load();
     return () => {
       disposed = true;
       window.clearInterval(timer);
