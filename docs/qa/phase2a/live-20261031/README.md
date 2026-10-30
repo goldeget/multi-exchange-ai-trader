@@ -1,4 +1,4 @@
-# PHASE 2-A live checkpoint — 2026-10-31 (Asia/Singapore)
+# PHASE 2-A live checkpoint — 2026-10-31 (Asia/Seoul · KST)
 
 Overall: **PARTIAL / NOT COMPLETE**. This checkpoint supersedes earlier missing-allowlist and proxy-infrastructure conclusions. Existing source baseline is `ed30b94d9c77c8924dbef0cf97df91853ea04269`.
 
@@ -12,7 +12,7 @@ Remote main remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`; initial remote w
 
 ## Eight-market live collection
 
-Command: `uv run python scripts/verify_phase2a_live.py --output work/phase2a-live.json`, official execution permission, unchanged environment proxy/TLS. Exit 1; matrix_passed=false, live_verified=false. [Original live JSON](phase2a-live.json) retains prices, normalized OHLCV, UTC source/receipt timestamps, HTTP and request latency. Collection window: 2026-10-30 22:54:07–22:54:12 UTC (2026-10-31 06:54 Singapore).
+Command: `uv run python scripts/verify_phase2a_live.py --output work/phase2a-live.json`, official execution permission, unchanged environment proxy/TLS. Exit 1; matrix_passed=false, live_verified=false. [Original live JSON](phase2a-live.json) retains prices, normalized OHLCV, UTC source/receipt timestamps, HTTP and request latency. Collection window: 2026-10-30 22:54:07–22:54:12 UTC (2026-10-31 07:54 KST).
 
 | Exchange | Market | Symbol | Acceptance | Actual result |
 | --- | --- | --- | --- | --- |

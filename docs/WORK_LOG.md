@@ -152,7 +152,7 @@ Per the user's prerequisite, no live collector, exchange probe or real-data brow
 PHASE2A is not complete: hosted CI and full local regression are PASS, Cloud allowlist readiness and actual eight-market/browser verification remain BLOCKED. PHASE3 PAPER readiness is NOT MET and implementation remains unapproved. Final documentation pushes use [skip ci]; final full-history secret scan and local/remote SHA comparison are recorded in the task handoff.
 
 
-## 2026-10-31 (Asia/Singapore) — Official execution recovery and first live evidence
+## 2026-10-31 (Asia/Seoul · KST) — Official execution recovery and first live evidence
 
 Corrected earlier infrastructure conclusion: proxy DNS succeeded and HTTPS_PROXY matched startup policy, but default executor socket access returned EPERM. Current revision1/current/running/connected/restricted/enforced applies all four approved hosts. Official require_escalated ls-remote succeeded; remote work SHA ed30b94d9c77c8924dbef0cf97df91853ea04269 and main7ddcded673ab9b0168fccf1aac106d02ff5a0b6d matched. Fetched and checked out existing codex/initial-platform, preserving work/ files; no source regeneration. PR#1 confirmed open/draft/unmerged. No proxy/TLS/CA or policy bypass.
 

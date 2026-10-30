@@ -1,4 +1,4 @@
-## Current recovery checkpoint — 2026-10-31 (Asia/Singapore)
+## Current recovery checkpoint — 2026-10-31 (Asia/Seoul · KST)
 
 The allowlist is now applied: revision 1/current/running/connected/restricted/enforced, four approved hosts and package-manager preset. Default socket EPERM was not evidence of an external proxy failure: official `require_escalated` git read succeeded, followed by fetch of existing codex/initial-platform. Keep proxy/CA/TLS intact and use only supported execution permission. Do not regenerate source from main. See [current evidence and remaining gates](live-20261031/README.md).
 

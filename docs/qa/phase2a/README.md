@@ -2,15 +2,15 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
-## Current live checkpoint — 2026-10-31 (Asia/Singapore)
+## Current live checkpoint — 2026-10-31 (Asia/Seoul · KST)
 
 **PARTIAL / NOT COMPLETE.** Official execution permission resolved the default sandbox EPERM; the four-host restricted/enforced allowlist is current and applied. Actual collector: Binance BTC/ETH spot PASS within snapshot scope; Binance perpetual HTTP 451 and Bybit upstream HTTP 403 prevent full acceptance. See [current live JSON, policy, eight-market matrix and browser evidence](live-20261031/README.md). The older missing-allowlist conclusions below are historical. No full CI rerun; prior CI and 257/8 test results remain historical.
 
-## Latest network recovery check — 2026-10-31 07:36 KST
+## Historical / superseded — Latest network recovery check — 2026-10-31 07:36 KST
 
 Remote baseline and PR #1 head matched `ed9ac0c083c27d83ab3a6280699cdf08e887c61a`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached running environment still enforces a restricted policy omitting all four required hosts. **BLOCKED:** zero exchange calls; collector and actual-data browser QA not run. All eight markets remain unverified, and no normal-data screenshots were captured. See [fresh policy evidence, full market matrix and resume gates](network-recovery.md) and [machine-readable runtime policy](network-recovery-gate.json). Prior CI/test passes are retained without repetition; this checkpoint changes documentation only. Earlier environment identities and results below are historical.
 
-## Latest final recheck — 2026-10-31 KST
+## Historical / superseded — Latest final recheck — 2026-10-31 KST
 
 Baseline `2fd0b8f754c4d62ff5d8e26e33c2594ad64ee1b3` matched local and remote. **The CI blocker is resolved. Cloud policy application remains blocked.** This section supersedes earlier failure/unconfirmed-graph statuses below; earlier records remain historical evidence.
 
@@ -42,7 +42,7 @@ Per the requested gate, the live collector and real-data browser QA were **not r
 
 **PHASE2A remains PARTIAL / CLOUD PREREQUISITE BLOCKED. PHASE3 PAPER implementation is not authorized and its readiness gate remains NOT MET.**
 
-## Cloud save-failure recovery work
+## Historical / superseded — Cloud save-failure recovery work
 
 The user reports Cloud settings cannot be saved. Current attached runtime still enforces revision1 with no exchange custom hosts; no saved/published settings or live data success is inferred. Retained environment diagnostic metadata contains no records, so the platform UI save error itself cannot be diagnosed with available tools. Git commit/push and the local execution environment remain usable.
 
@@ -64,7 +64,7 @@ The added upload action is pinned to official `actions/upload-artifact` v7.0.2 `
 
 PHASE2A remains incomplete, actual-data browser QA and successful Dependency review remain required, and PHASE3 readiness remains NOT MET.
 
-## Latest external-settings recheck
+## Historical / superseded — Latest external-settings recheck
 
 Baseline `24b625a6e18a6467624eff98921449615321869e` was confirmed on the remote branch. Despite the reported settings changes, **both external prerequisites remain unconfirmed in actual execution**:
 
@@ -75,7 +75,7 @@ Baseline `24b625a6e18a6467624eff98921449615321869e` was confirmed on the remote 
 
 Draft PR #1 remains draft and unmerged; `main` is preserved. **Phase 2-A is incomplete. Phase 3 PAPER engine development is not ready to start under the requested gate.** No engine implementation was started.
 
-## Latest resumed verification
+## Historical / superseded — Latest resumed verification
 
 Remote baseline was confirmed as `90efa83cbfcc4272dd3b1baeb5097001d44d766b`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached environment is spec/observed revision **1**, observations current, connected, with network policy **restricted / enforced**. Its only preset is `package_managers`, and custom hosts are empty. This supersedes the previous environment's revision-7/draft observations below: published settings with exchange hosts are **not applied to this attached runtime**.
 
@@ -100,7 +100,7 @@ The connected GitHub tools expose no repository settings mutation; its generic f
 
 Requested per-task checkpoint pushes automatically triggered PR synchronization runs. The first two were superseded/cancelled by the existing concurrency rule; no manual reruns or dispatches occurred. Subsequent evidence-only commits use `[skip ci]` to avoid further duplicate runs. Hosted results apply to the linked head, not later skipped documentation SHAs.
 
-## Remaining completion gates
+## Historical / superseded — Remaining completion gates
 
 1. Apply exchange allowlist hosts `data-api.binance.vision`, `fapi.binance.com`, `api.bybit.com` to the **attached** cloud runtime and confirm current enforced readiness. No exchange API keys are required.
 2. Obtain actual ticker and candle evidence for all eight markets, then QA populated normal-data screens at 1440px and 390px with no samples or interception. Current screenshots cannot satisfy this gate.
@@ -108,9 +108,9 @@ Requested per-task checkpoint pushes automatically triggered PR synchronization 
 
 The previous verification follows as historical evidence; its claims that a PR did not exist and policy enforcement was unknown are superseded by this section.
 
-## Earlier verification record
+## Historical / superseded — Earlier verification record
 
-## CI
+## Historical / superseded — CI
 
 Baseline: `1e6d833c3e6c4aab4ce046cd3680bddf1cbfc2c1`. Repair pushed as `6297cc2a077a3fa5f44e2d000a1dbf02d7a9e487`.
 
@@ -124,7 +124,7 @@ PyYAML reproduced an unexpected scalar at original line 102 column 47. A block s
 
 The valid workflow runs for PR events or pushes to `main`. Work-branch pushes do not run it. A draft PR targeting `main` is required for the intended verification without changing `main`. GitHub API access returned destination Forbidden before a GitHub JSON response, so no draft PR, new hosted run, or hosted PASS is claimed. No repeated workflow dispatches were attempted.
 
-## Environment and live matrix
+## Historical / superseded — Environment and live matrix
 
 Runtime spec/observed revision 7, observations current; policy state `unknown`. The configured exchange hosts are `data-api.binance.vision`, `fapi.binance.com`, `api.bybit.com` and `www.okx.com`. Local policy also lists these hosts, but the runtime skill requires `enforced` before readiness is established. No exchange request was sent in this phase.
 
@@ -143,7 +143,7 @@ Saved draft additions: `api.github.com`, `developers.binance.com`, `bybit-exchan
 
 Current behavior inspected, not live-qualified: upstream requests time out at 10 seconds, redirects are disabled, HTTP 429 maps to `rate_limited`, and there are no immediate backend retries. Browser polling retries tickers at 5 seconds and candles at 30 seconds with no overlapping requests per resource. Provider-specific rate-limit headers/backoff and successful recovery after actual provider rejection remain unverified. The generic Korean UI connection error does not expose the original provider HTTP status; exact live diagnosis must retain sanitized upstream status separately.
 
-## Browser error-path QA
+## Historical / superseded — Browser error-path QA
 
 Chromium with Playwright, real-mode URL (no `preview=1`), viewport 1440×1000 and 390×844. All market requests were aborted locally by a browser route installed before navigation. This verifies browser network-error handling only; it is not evidence of actual provider failure or successful live connectivity. No prices or candles were injected. Forty requests were aborted and no browser JavaScript error was observed.
 
@@ -156,7 +156,7 @@ Both sizes display Korean connection errors, unavailable prices (`—`), empty c
 
 DOM measurements and intercepted request URLs: [browser-qa.json](browser-qa.json).
 
-## Local regression
+## Historical / superseded — Local regression
 
 | Check | Result |
 |---|---|
@@ -169,7 +169,7 @@ DOM measurements and intercepted request URLs: [browser-qa.json](browser-qa.json
 | Local health | `GET /api/v1/health` → `{"status":"ok"}` |
 | Hosted Actions after repair | UNRUN: API destination unavailable, PR not created |
 
-## Resume gates
+## Historical / superseded — Resume gates
 
 1. Review/save the environment draft and publish when required. Confirm current observations and `network_policy.state == enforced`, with exchange and GitHub API hosts allowed. No credential is needed for the market endpoints.
 2. Inspect repository Actions/runner/billing settings read-only; create a draft PR from `codex/initial-platform` into `main`, attach it to the task, and observe one PR CI run. Do not merge or purchase capacity.
