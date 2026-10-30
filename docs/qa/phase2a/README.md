@@ -14,7 +14,9 @@ Fresh parent verification: Python **257 passed**, frontend **8 passed**, Ruff (`
 
 Independent code review identified missing fixture provenance; the fix records `evidence_mode` and ensures injected transports always set `live_verified: false`, even when their fixture matrix passes. Its regression test was observed failing before the fix and passes after it.
 
-A full-history Git bundle and a tracked-source ZIP are packaged outside the Cloud runtime along with checksums; final artifact restore/SHA verification is included in the task handoff. These restore committed work; they cannot repair the Cloud control plane or establish missing live verification.
+The selected executor cannot create the project's prescribed downloadable output path (`/codex/.../output`, PermissionError; no sudo available), so a local-download artifact could not be delivered through that path. The supported fallback preserves a full-history Git bundle, tracked-source ZIP, source SHA and SHA256SUMS as a GitHub Actions artifact **after** the full-history secret scan succeeds. The exact packaging commands passed a local scratch-clone test: bundle verify, bare clone with recovery-source branch, restored SHA equality, git fsck and file checksums. No GitHub release or external storage service was created.
+
+The added upload action is pinned to official `actions/upload-artifact` v7.0.2 `cf430e030ddbb5b0abf93d22962f4752f3646cd9` (verified exact release tag/package version; Node24). Existing runner class and read-only permissions are unchanged. Artifacts are limited to this PR work branch and retained for 3 days; download promptly while the GitHub remote history remains durable. Workflow syntax passed checksum-verified Actionlint v1.7.7. A normal PR run is required to verify this new backup packaging/upload; it is not a manual repeat of an unchanged failure. These restore committed work; they cannot repair the Cloud control plane or establish missing live verification.
 
 PHASE2A remains incomplete, actual-data browser QA and successful Dependency review remain required, and PHASE3 readiness remains NOT MET.
 

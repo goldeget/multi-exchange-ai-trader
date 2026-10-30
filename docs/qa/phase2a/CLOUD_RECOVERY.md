@@ -5,7 +5,7 @@
 ## 보존한 결과
 
 - 모든 완료 작업을 `codex/initial-platform`에 순차 커밋·푸시한다. `main`과 Draft PR 상태는 유지한다.
-- Git bundle 백업은 커밋된 저장소 이력을 담는다. 소스 ZIP은 같은 커밋의 추적 파일만 담는다. 둘 다 Cloud 임시 파일이나 설치된 의존성/비밀 파일을 포함하지 않는다.
+- GitHub Actions의 Secret scan 작업은 Gitleaks 성공 뒤에만 복구 산출물을 만든다. 별도 bare clone 복원·SHA 일치·git fsck·파일 체크섬을 확인한 후 업로드한다. Git bundle 백업은 산출물의 SNAPSHOT_SHA.txt 커밋까지 저장소 이력을 담는다. 소스 ZIP은 같은 커밋의 추적 파일만 담는다. 둘 다 Cloud 임시 파일이나 설치된 의존성/비밀 파일을 포함하지 않는다. Actions 산출물은 GitHub 로그인 후 다운로드하며 보존기간은 3일이다. 반드시 다운로드해 별도 보관한다. 만료 이후에도 원격 브랜치의 Git 이력은 유지된다.
 - 실제 시세 수집 도구: [live-runner.md](live-runner.md). 기본 출력은 `work/phase2a-live.json`이며 자동 커밋하지 않는다. 테스트용 응답은 실제 시장 검증 증거가 아니다.
 - CI 재진단: [cloud-recovery-ci.md](cloud-recovery-ci.md). pinned action은 공개 저장소에서 HTTP403을 일반적인 Dependency graph 안내문으로 바꾸므로, 현재 오류만으로 설정 토글이 꺼졌다고 확정할 수 없다.
 
@@ -14,8 +14,9 @@
 다운로드한 bundle이 있는 폴더에서 기존 프로젝트를 덮어쓰지 않고 복원한다:
 
 ```sh
-git clone --branch codex/initial-platform phase2a-recovery.bundle multi-exchange-ai-trader
+git clone --branch recovery-source phase2a-recovery.bundle multi-exchange-ai-trader
 cd multi-exchange-ai-trader
+git switch -c codex/initial-platform
 git bundle verify ../phase2a-recovery.bundle
 git remote set-url origin https://github.com/goldeget/multi-exchange-ai-trader.git
 git rev-parse HEAD
