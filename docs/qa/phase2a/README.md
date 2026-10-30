@@ -1,6 +1,41 @@
 # Phase 2-A verification evidence — 2026-10-31 KST
 
-Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**, not complete or live-ready.
+Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
+
+## Latest resumed verification
+
+Remote baseline was confirmed as `90efa83cbfcc4272dd3b1baeb5097001d44d766b`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached environment is spec/observed revision **1**, observations current, connected, with network policy **restricted / enforced**. Its only preset is `package_managers`, and custom hosts are empty. This supersedes the previous environment's revision-7/draft observations below: published settings with exchange hosts are **not applied to this attached runtime**.
+
+- [Live API evidence](resume-live.md): one unauthenticated public probe per configured exchange host returned proxy CONNECT **403 Forbidden**, curl exit 56. All eight ticker/candle markets are BLOCKED. This is a proxy denial before provider response, so provider geographic restrictions, data values, candles and timestamps remain unverified. Denied hosts were not retried or bypassed.
+- [Fresh automated checks](resume-tests.md): **242 Python tests, 8 frontend tests**, Ruff, mypy, ESLint, TypeScript and production build passed. Checksum-verified Gitleaks v8.30.1 scanned baseline history with no leaks. No application or lockfile changes were needed.
+- [Responsive browser evidence](resume-browser.md): actual Chromium at 1440×1000 and 390×844, without preview/interception/injection. Supplementary local-backend-unavailable state showed correct selection, no horizontal overflow or JavaScript page errors. The backend was stopped to avoid repeating denied exchange requests; local Vite proxy HTTP 500 is not an exchange response. Populated normal-data QA remains BLOCKED. Four screenshots and DOM/request JSON were pushed as `f3f53b4359dcd3b13ed247cfcf35ba0ca0b5125f`.
+- [Draft PR #1](https://github.com/goldeget/multi-exchange-ai-trader/pull/1) now exists from `codex/initial-platform` to `main`. It remains draft and unmerged. GitHub connector access works independently of the executor's blocked `api.github.com`; the executor's API request also received proxy CONNECT 403.
+
+[Hosted run 41133846306](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41133846306), head `2dbb6b4965936fe01189760cbddc8eb64b64ddf6`, reports a Dependency review failure. Job `124331284281` logs the root-cause message:
+
+> Dependency review is not supported on this repository. Please ensure that Dependency graph is enabled, see https://github.com/goldeget/multi-exchange-ai-trader/settings/security_analysis
+
+| Hosted job | Result |
+| --- | --- |
+| Python checks | PASS |
+| Frontend checks | PASS |
+| Secret scan | PASS |
+| Dependency review | FAIL — Dependency graph prerequisite |
+| Overall run | FAILURE |
+
+The connected GitHub tools expose no repository settings mutation; its generic fetch rejects the dependency-graph API path, and executor API access is proxy-blocked. Repository administration / dependency-graph activation cannot be completed through the available connection. No `continue-on-error`, disabling, permission broadening, purchase, paid runner, or manual rerun was used. To resolve this prerequisite, an administrator must enable Dependency graph in [repository security settings](https://github.com/goldeget/multi-exchange-ai-trader/settings/security_analysis), then validate the failed job. A no-op rerun before that change would reproduce the same failure.
+
+Requested per-task checkpoint pushes automatically triggered PR synchronization runs. The first two were superseded/cancelled by the existing concurrency rule; no manual reruns or dispatches occurred. Subsequent evidence-only commits use `[skip ci]` to avoid further duplicate runs. Hosted results apply to the linked head, not later skipped documentation SHAs.
+
+## Remaining completion gates
+
+1. Apply exchange allowlist hosts `data-api.binance.vision`, `fapi.binance.com`, `api.bybit.com` to the **attached** cloud runtime and confirm current enforced readiness. No exchange API keys are required.
+2. Obtain actual ticker and candle evidence for all eight markets, then QA populated normal-data screens at 1440px and 390px with no samples or interception. Current screenshots cannot satisfy this gate.
+3. Enable repository Dependency graph and obtain a successful hosted Dependency review result. Preserve read-only workflow permissions and existing security gates.
+
+The previous verification follows as historical evidence; its claims that a PR did not exist and policy enforcement was unknown are superseded by this section.
+
+## Earlier verification record
 
 ## CI
 
