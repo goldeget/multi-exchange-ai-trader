@@ -2,6 +2,10 @@
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.
 
+## Latest network recovery check — 2026-10-31 07:36 KST
+
+Remote baseline and PR #1 head matched `ed9ac0c083c27d83ab3a6280699cdf08e887c61a`; `main` remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The newly attached running environment still enforces a restricted policy omitting all four required hosts. **BLOCKED:** zero exchange calls; collector and actual-data browser QA not run. All eight markets remain unverified, and no normal-data screenshots were captured. See [fresh policy evidence, full market matrix and resume gates](network-recovery.md) and [machine-readable runtime policy](network-recovery-gate.json). Prior CI/test passes are retained without repetition; this checkpoint changes documentation only. Earlier environment identities and results below are historical.
+
 ## Latest final recheck — 2026-10-31 KST
 
 Baseline `2fd0b8f754c4d62ff5d8e26e33c2594ad64ee1b3` matched local and remote. **The CI blocker is resolved. Cloud policy application remains blocked.** This section supersedes earlier failure/unconfirmed-graph statuses below; earlier records remain historical evidence.

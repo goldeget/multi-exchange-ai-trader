@@ -1,5 +1,15 @@
 # Work log
 
+## 2026-10-31 07:36 KST — Phase 2-A network recovery gate remains BLOCKED
+
+Confirmed remote `codex/initial-platform` and PR #1 head at requested baseline `ed9ac0c083c27d83ab3a6280699cdf08e887c61a`; main remains `7ddcded673ab9b0168fccf1aac106d02ff5a0b6d`. The clean initial local `work` checkout was at main; fetched and checked out the existing work branch locally. Existing Draft PR #1 is retained without metadata changes or merge.
+
+Applied the cloud-environment-runtime and verification-before-completion skills. After startup, runtime observations are current, running/connected, revision 1/observed 1, HTTP policy restricted/enforced, custom allowed hosts empty. Both current effective policy and `/etc/codex/network-policy.json` omit `data-api.binance.vision`, `fapi.binance.com`, `api.bybit.com`, and `api.github.com`. No VPN or TCP grants exist. Required host policy is **not applied**, so no exchange/API probe or live collector was executed. Git operations use the separately allowed `github.com` path.
+
+[Current QA report](qa/phase2a/network-recovery.md) records all eight BTC/ETH spot/perpetual markets as BLOCKED, with prices/candles/observation and collection timestamps unavailable and response latency unmeasured. [Runtime policy record](qa/phase2a/network-recovery-gate.json) is explicitly preflight evidence, not collector output. Actual-data 1440px/390px charts, prices, refresh, connection error/recovery and normal-data screenshots remain BLOCKED/UNRUN. No synthetic values substituted.
+
+Prior four hosted checks and 257 Python/8 frontend tests remain recorded PASS evidence; code/workflow/dependency paths match the previously validated source head, so no full CI/test rerun was performed. This documentation checkpoint is committed/pushed with `[skip ci]`; final remote SHA comparison is reported in the handoff. No exchange keys, account/position/order operations, paid services, force push, main change or Phase 3 development occurred. **Phase 2-A is incomplete.**
+
 ## 2026-10-30 UTC — Phase 1 research and documentation milestone
 
 The repository began as a README and Python `.gitignore` skeleton, without application code, dependency manifests, CI or a test suite. Work is on `codex/initial-platform`; `main` is preserved. Specification/plan filenames use 2026-10-31; the source-review date is **2026-10-30 UTC**.
