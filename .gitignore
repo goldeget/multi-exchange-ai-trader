@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Frontend generated files
+apps/web/node_modules/
+apps/web/dist/
+apps/web/coverage/
+*.tsbuildinfo
