@@ -29,7 +29,7 @@
 - 확인한 태그/커밋: `v1.231.0` / `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317` (태그 객체 `d3e1685e979925d7b0ffacd1b3f442547686e18f`)
 - 참고 내용: `adapters/{bybit,binance,okx}`의 데이터/실행 어댑터, 환경(DEMO/TESTNET), 포지션 모드, 외부 주문 분류, 응답 유실 시 재제출 금지 원칙.
 - 분류: **핵심 의존성**. 현재는 BacktestEngine/SimulatedExchange로 PAPER·연구에 사용 중 (`src/multi_exchange_trader/paper/native.py`, `research/native.py`).
-- 적용: Phase 3부터 Bybit Demo용 라이브 실행 클라이언트를 같은 엔진 위에서 사용. Phase 7에서 Binance/OKX.
+- 적용: Phase 4(Bybit Demo 선물)부터 라이브 실행 클라이언트를 같은 엔진 위에서 사용. Phase 8에서 Binance/OKX.
 - 라이선스: LGPL-3.0. 고지는 `docs/licenses/NAUTILUS_NOTICE.md` 유지, 원본 수정 없음.
 - 미지원/미검증: 실제 거래소 연결 동작, 재시작 reconcile 세부 옵션, 부분 체결/취소 실패 동작. Bybit Demo는 WS Trade API와 `tp_trigger_price`/`sl_trigger_price` 미지원 (문서 기준). OKX는 TESTNET 환경 없음(DEMO만). 자세한 표는 `ROADMAP_FINAL_PRODUCT.md` 2절.
 
@@ -46,7 +46,7 @@
 - 확인: 릴리스 `v4.5.91` (`53b46f3f839ffe0db35c7d78610b9539eee631cc`), MIT.
 - 참고 내용: 거래소 간 심볼/시장 정규화 방식, `exchange.has` 기능 점검 방식.
 - 분류: 현재 미사용. Binance/OKX 공개 시세 확장 시 읽기 전용 후보. 주문 생성에는 사용하지 않음.
-- 적용: Phase 7의 시장 메타데이터(최소 수량 등) 조회 보조. 단, 정규화된 파라미터가 거래소마다 같은 의미라고 가정하지 않음.
+- 적용: Phase 8의 시장 메타데이터(최소 수량 등) 조회 보조. 단, 정규화된 파라미터가 거래소마다 같은 의미라고 가정하지 않음.
 - 미확인: WebSocket은 별도 상품(CCXT Pro)이며 약관 별도 확인 필요. 이번 감사에서 실행하지 않음.
 
 ### 4. Freqtrade / FreqAI
@@ -54,7 +54,7 @@
 - 확인: 릴리스 `2026.10` (태그 참조 `4cf0351e08d26e96a6429ef48103b726bb230cf8`), GPL-3.0.
 - 참고 내용: dry-run → 소액 실거래 순서, 전략/백테스트/하이퍼옵트 워크플로, FreqAI의 시간순 재학습 개념.
 - 분류: **설계 참고만**. 코드 복사·의존성 추가 없음 (GPL-3.0, 또한 별도 실행 엔진이 되어 주문 경로가 둘이 되는 것을 피함).
-- 적용: Phase 5 검증 절차, Phase 4/6의 명령(명시 승인) 개념 참고.
+- 적용: Phase 6 검증 절차, Phase 5/7의 명령(명시 승인) 개념 참고.
 - 미확인: FreqAI 세부 구현, 현재 버전의 거래소 지원 범위.
 
 ### 5. FreqUI
@@ -62,7 +62,7 @@
 - 확인: 릴리스 `3.2.1` (`4e1717ad1eaaf98447ebe2bdf4c00c8d755d2191`), GPL-3.0.
 - 참고 내용: 화면 구성 아이디어(거래 목록, 성과, 로그 등)만.
 - 분류: **디자인 참고만, 코드 복사 금지**. 파일을 열어 코드를 옮겨 쓰지 않고, 필요 시 문서만 보고 독자적으로 구현.
-- 적용: Phase 4~6의 승인 화면/포지션/기록 화면 구성.
+- 적용: Phase 5~7의 승인 화면/포지션/기록 화면 구성.
 - 미확인: 소스 내용 (일부러 읽지 않음).
 
 ### 6. TradingView Lightweight Charts
@@ -78,7 +78,7 @@
 - 확인: 릴리스 `v0.7.1` (`c4544913a14ed3df5f1ed7b9e8483270ce20682a`), Apache-2.0.
 - 참고 내용: 역할별 분석(찬반 토론, 위험 검토) 구조를 "설명 생성" 단계의 설계 아이디어로만 참고.
 - 분류: **설계 참고만**. 코드/에이전트 도구 실행 권한을 가져오지 않음. 이 프로젝트에서 AI는 주문·위험 한도 변경 권한이 없음 (`docs/AI_DESIGN.md`).
-- 적용: Phase 4의 찬반 근거(pro/con) 필드 작성 방식.
+- 적용: Phase 5의 찬반 근거(pro/con) 필드 작성 방식.
 - 미확인: 성능/수익성 주장은 검증하지 않음. 외부 LLM 호출은 사용자 승인 전까지 금지.
 
 ## 역할 분담도
