@@ -137,3 +137,15 @@ npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5173
 4. 전체 테스트와 Gitleaks, 보고서 갱신, 최종 원격 SHA 대조.
 
 모두 충족되기 전에는 PHASE2A 완료 또는 PHASE3 PAPER 개발 준비 완료로 표시하지 않는다. 실주문, 거래소 API Key 입력, 유료 API/러너/서버 구매, `main` 병합은 금지한다.
+
+## PHASE3 local PAPER recovery supplement — 2026-10-31 KST
+
+Preserve existing branch `codex/initial-platform`, DraftPR1, main7ddcded and all existing backups/work files. PHASE2A remains PARTIAL with six restricted markets BLOCKED. Keep `MARKET_DATA_BLOCKED_HOSTS=fapi.binance.com,api.bybit.com`; do not probe these hosts again.
+
+PAPER design/report: `docs/superpowers/specs/2026-10-31-phase3-paper-design.md`, `docs/qa/phase3/README.md`. Use Python3.12/Linuxx86_64, `uv sync --locked` (exact native1.231.0 plus documented fixed fsspec2026.6.0 override), and a preserved `PAPER_DB_PATH`. Default DB: `work/phase3-data/paper.sqlite3`; runtime DB/WAL/SHM must stay uncommitted. Bind API only to127.0.0.1:8000, web only127.0.0.1:5173; anonymous PAPER mutations must not be externally deployed. Do not delete an existing DB or clear browser pending-command storage as a recovery shortcut. Preserve both and reconcile/restart; startup replay fails closed on corruption/version mismatch. There is no live/reset mode or endpoint. Browser uncertain commands resume their stored original key/payload after refresh/tab recovery.
+
+Code checkpoint1 `f486c6714878c2e702f3923713db13c34e5119ea`; checkpoint2 `feefbe7c7c8af161fb913b82253338f5215056ee`. Source CI1 failed on actual fsspec High GHSA-27vj-qcqg-25rc; do not waive it. The patched dependency review passed in CI41151437466. Latest report records final CI and evidence. Only local synthetic PAPER data is public evidence; neither real positions/keys nor runtime state is committed.
+
+Security checkpoint4: `edf89138ee2c58446db5d922726f368f6137aa2b`, user-authorized after whole-tree npm High/Critical discovery. Use the exact updated npm lock (Vite7.3.7/Vitest4.1.12/scoped minimatch11.0.1 override); resolved audit0. Preserve `browser-20261031/process-restart.json`: actual PID18265→23233, same DB/native cash/position/protection/audit, restored TP once, fundingonce. Never replace this proof with a new seed. Patched-toolchain evidence and final CI are linked in `docs/qa/phase3/README.md`.
+
+Final security-source CI41152341568: all four jobs SUCCESS (Python319/frontend30/static/build, locked npm install audit0, secret scan, unchanged dependency-review policy). Full report includes actual job logs/API results and source `edf89138ee2c58446db5d922726f368f6137aa2b`. Final evidence-only commit uses `[skip ci]`; recover its exact SHA from branch history. PHASE2A sixBLOCKED and local-only PAPER boundaries remain unchanged.

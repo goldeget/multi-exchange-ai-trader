@@ -1,0 +1,22 @@
+
+> market-dashboard@0.1.0 test
+> vitest --run
+
+
+ RUN  v4.0.14 /workspace/multi-exchange-ai-trader/apps/web
+
+ ✓ src/api.test.tsx (6 tests) 490ms
+ ✓ src/App.test.tsx (9 tests) 1433ms
+     ✓ preview is explicit and makes zero API requests  523ms
+     ✓ shows BTC and ETH overview prices for both venues and selects a chart row  577ms
+ ✓ src/chart/CandleChart.test.tsx (6 tests) 65ms
+ ✓ src/paper/Paper.test.tsx (9 tests) 2099ms
+   ✓ always labels virtual prices/funds and creates a separately identified scenario  590ms
+   ✓ restores and retries uncertain partial close (network) with the same key  409ms
+   ✓ restores and retries uncertain partial close (committed-5xx) with the same key  324ms
+   ✓ restores and retries uncertain partial close (invalid-json) with the same key  418ms
+
+ Test Files  4 passed (4)
+      Tests  30 passed (30)
+   Start at  00:41:36
+   Duration  3.33s (transform 401ms, setup 356ms, import 702ms, tests 4.09s, environment 3.22s)

@@ -20,7 +20,7 @@ The first source CI, [41150363112](https://github.com/goldeget/multi-exchange-ai
 
 NautilusTrader 1.231.0 wheel metadata pins `fsspec==2026.2.0`. The project therefore explicitly pins and applies a uv transitive override to **fsspec==2026.6.0**, while keeping the original Nautilus 1.231.0 wheel and library sources unmodified. This is a documented departure from its strict upstream dependency metadata, not an advisory exception. Dependency review severity policy and all CI security gates remain unchanged. Qualification is for this application's local simulated-exchange/replay paths; compatibility of every upstream adapter or fsspec integration is not claimed.
 
-`uv lock` and `uv sync --locked` accepted this resolution. Repeating the actual native probe under the patched dependency produced the same three fills, `4.79200000` fees and `9975.18800000` native cash. Integrated tests and the next source CI must also pass before final acceptance. Official advisory: https://github.com/advisories/GHSA-27vj-qcqg-25rc .
+`uv lock` and `uv sync --locked` accepted this resolution. Repeating the actual native probe under the patched dependency produced the same three fills, `4.79200000` fees and `9975.18800000` native cash. Integrated319-test regression and source CIs41151437466/41151674087/41152341568 subsequently passed all required jobs; final evidence is in the Phase3 report. Official advisory: https://github.com/advisories/GHSA-27vj-qcqg-25rc .
 
 ## Frontend security toolchain qualification
 

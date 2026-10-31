@@ -1,0 +1,12 @@
+
+> market-dashboard@0.1.0 test
+> vitest --run
+
+
+ RUN  v4.1.12 /workspace/multi-exchange-ai-trader/apps/web
+
+
+ Test Files  4 passed (4)
+      Tests  30 passed (30)
+   Start at  00:49:26
+   Duration  3.10s (transform 611ms, setup 325ms, import 780ms, tests 3.43s, environment 3.31s)

@@ -63,3 +63,11 @@ For every milestone, publish a compact results table with: check, phase/scope, c
 ## Related delivery documents
 
 See the [architecture and phase map](ARCHITECTURE.md#phase-map-and-gates), [research audit](OPEN_SOURCE_AUDIT.md), [exchange capabilities](EXCHANGE_CAPABILITIES.md), [AI design](AI_DESIGN.md), [design specification](superpowers/specs/2026-10-31-multi-exchange-trader-design.md), [implementation plan](superpowers/plans/2026-10-31-public-market-dashboard.md), and [work log](WORK_LOG.md). Current delivery is Phase 1 research/docs and Phase 2 public dashboard. Phase 3 PAPER, Phase 4 backtesting, Phase 5 AI, Phase 6 Demo, Phase 7 approval, Phase 8 AUTO, Phase 9 QA/security expansion and Phase 10 live readiness are future phases; none is enabled by this document. QA and security checks for the public dashboard begin in Phase 2 rather than waiting for Phase 9.
+
+## PHASE3 executed-scope supplement — 2026-10-31 KST
+
+The original plan above is not blanket acceptance. [Phase3 results](qa/phase3/README.md) distinguish actual local native integration, offline UI/HTTP fixtures, real local browser/procedure evidence and unimplemented scope. The current locked configuration runs Nautilus1.231.0 with the documented fsspec security override; import alone is not engine qualification.
+
+Required observed gates: hand-verifiable long/short fees/PnL/slippage; partial-close/reservation invariants; native SL/TP OCO and gap/liquidation/negative-balance behavior; SQLite idempotency/concurrency/rollback/append-only/corruption/replay; OS outbound denial; local API Host/Origin/JSON and no-live/reset inventory; persisted uncertain command recovery after network/5xx/invalid-JSON and scenario-load isolation; PC1440x1000/mobile390x844 PAPER workflow; actual backend process restart with same DB, native cash/positions/protection and seed reconciliation. Browser keyboard/labels/focus checks are basic checks, not complete accessibility certification.
+
+Pending/expiration/liquidity partial-fill plans remain UNRUN/unsupported in this implementation. No PAPER result establishes real-market connectivity, returns or full PHASE2A completion. Six previously region-blocked markets stay BLOCKED, and CI makes no external market calls.

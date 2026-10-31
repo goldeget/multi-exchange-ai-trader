@@ -190,3 +190,7 @@ DOM measurements and intercepted request URLs: [browser-qa.json](browser-qa.json
 5. Update this report and WORK_LOG, commit/push each completed slice and confirm remote SHA. Phase 3 PAPER implementation remains gated on completion of these checks.
 
 Current live browser outcome: PC1440x1000/mobile390x844 populated spot charts, 24 symbol/interval response checks, no document horizontal overflow or uncaught JS errors; desktop automatic polling and induced ticker stale/recovery observed. Eight PNGs and61 actual API responses retained. Mobile stale/recovery and60-second candle stale behavior UNRUN; denied-exchange live/recovery BLOCKED. See current evidence for scope limits.
+
+### PHASE3 local PAPER addition — separate from PHASE2A acceptance
+
+[PHASE3 report](../phase3/README.md) records local synthetic native simulation, durable ledger/UI, actual process restart and security toolchain validation. Its mock prices/funds are not live success evidence. This does **not** change PHASE2A's PARTIAL judgment or the six restricted markets' BLOCKED status. Both restricted hosts remain preblocked; PHASE3 QA made0market requests.

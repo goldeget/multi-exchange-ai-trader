@@ -1,0 +1,323 @@
+{
+  "scope": "Existing unchanged frontend package manifests/lock since ee49820a; not introduced by PHASE3. Not a clean whole-repository audit. No dependency/security-rule change performed outside authorized final-review scope.",
+  "counts": {
+    "info": 0,
+    "low": 0,
+    "moderate": 12,
+    "high": 1,
+    "critical": 1,
+    "total": 14
+  },
+  "packages": {
+    "@eslint-community/eslint-utils": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "4.0.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@eslint-community/eslint-utils"
+      ],
+      "all_paths_dev": true
+    },
+    "@eslint/config-array": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "4.0.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@eslint/config-array"
+      ],
+      "all_paths_dev": true
+    },
+    "@eslint/js": {
+      "severity": "moderate",
+      "range": ">=10.0.1",
+      "fixAvailable": {
+        "name": "@eslint/js",
+        "version": "9.39.5",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": true,
+      "lockfile_paths": [
+        "node_modules/@eslint/js"
+      ],
+      "all_paths_dev": true
+    },
+    "@typescript-eslint/eslint-plugin": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@typescript-eslint/eslint-plugin"
+      ],
+      "all_paths_dev": true
+    },
+    "@typescript-eslint/parser": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@typescript-eslint/parser"
+      ],
+      "all_paths_dev": true
+    },
+    "@typescript-eslint/type-utils": {
+      "severity": "moderate",
+      "range": ">=5.9.2-alpha.0",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@typescript-eslint/type-utils"
+      ],
+      "all_paths_dev": true
+    },
+    "@typescript-eslint/typescript-estree": {
+      "severity": "moderate",
+      "range": ">=6.16.0",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@typescript-eslint/typescript-estree"
+      ],
+      "all_paths_dev": true
+    },
+    "@typescript-eslint/utils": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@typescript-eslint/utils"
+      ],
+      "all_paths_dev": true
+    },
+    "@vitest/mocker": {
+      "severity": "moderate",
+      "range": "<=4.1.11",
+      "fixAvailable": {
+        "name": "vitest",
+        "version": "4.1.12",
+        "isSemVerMajor": false
+      },
+      "advisories": [
+        {
+          "title": "Vitest: Path Traversal / Arbitrary File Read via @vitest/mocker Redirect Mock",
+          "url": "https://github.com/advisories/GHSA-82fw-gwwq-j7x9",
+          "severity": "moderate",
+          "range": ">=2.1.0 <4.1.11"
+        },
+        {
+          "title": "Vitest: Code injection via unauthenticated manual mock registration",
+          "url": "https://github.com/advisories/GHSA-qxg6-89mg-rqv8",
+          "severity": "moderate",
+          "range": ">=2.1.0-beta.7 <4.1.12"
+        }
+      ],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@vitest/mocker"
+      ],
+      "all_paths_dev": true
+    },
+    "eslint": {
+      "severity": "moderate",
+      "range": "0.7.1 - 2.0.0-rc.1 || >=4.1.0",
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "4.0.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": true,
+      "lockfile_paths": [
+        "node_modules/eslint"
+      ],
+      "all_paths_dev": true
+    },
+    "minimatch": {
+      "severity": "moderate",
+      "range": "<11.0.1",
+      "fixAvailable": {
+        "name": "eslint",
+        "version": "4.0.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [
+        {
+          "title": "minimatch has potential denial of service via globparts amplification",
+          "url": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+          "severity": "moderate",
+          "range": "<11.0.1"
+        }
+      ],
+      "isDirect": false,
+      "lockfile_paths": [
+        "node_modules/@eslint/config-array/node_modules/minimatch",
+        "node_modules/@typescript-eslint/typescript-estree/node_modules/minimatch",
+        "node_modules/eslint/node_modules/minimatch"
+      ],
+      "all_paths_dev": true
+    },
+    "typescript-eslint": {
+      "severity": "moderate",
+      "range": "*",
+      "fixAvailable": {
+        "name": "typescript-eslint",
+        "version": "8.14.0",
+        "isSemVerMajor": true
+      },
+      "advisories": [],
+      "isDirect": true,
+      "lockfile_paths": [
+        "node_modules/typescript-eslint"
+      ],
+      "all_paths_dev": true
+    },
+    "vite": {
+      "severity": "high",
+      "range": "7.0.0 - 7.3.6",
+      "fixAvailable": {
+        "name": "vite",
+        "version": "7.3.7",
+        "isSemVerMajor": false
+      },
+      "advisories": [
+        {
+          "title": "Vite Vulnerable to Path Traversal in Optimized Deps `.map` Handling",
+          "url": "https://github.com/advisories/GHSA-4w7w-66w2-5vf9",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.1"
+        },
+        {
+          "title": "Vite: `server.fs.deny` bypassed with queries",
+          "url": "https://github.com/advisories/GHSA-v2wj-q39q-566r",
+          "severity": "high",
+          "range": ">=7.1.0 <=7.3.1"
+        },
+        {
+          "title": "Vite Vulnerable to Arbitrary File Read via Vite Dev Server WebSocket",
+          "url": "https://github.com/advisories/GHSA-p9ff-h696-f583",
+          "severity": "high",
+          "range": ">=7.0.0 <=7.3.1"
+        },
+        {
+          "title": "launch-editor: NTLMv2 hash disclosure via UNC path handling on Windows",
+          "url": "https://github.com/advisories/GHSA-v6wh-96g9-6wx3",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.4"
+        },
+        {
+          "title": "launch-editor: escapeCmdArgs() omits % escaping on Windows",
+          "url": "https://github.com/advisories/GHSA-698v-4r3x-3vcv",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.6"
+        },
+        {
+          "title": "launch-editor: Editor CLI flag misinterpretation causing arbitrary command execution for some editors",
+          "url": "https://github.com/advisories/GHSA-r825-w8mm-5pxw",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.6"
+        },
+        {
+          "title": "launch-editor: `fs.existsSync()` existence check can be bypassed on Windows",
+          "url": "https://github.com/advisories/GHSA-587h-7wmj-h5pm",
+          "severity": "high",
+          "range": ">=7.0.0 <=7.3.6"
+        },
+        {
+          "title": "Vite: Cross origin script execution through Vite custom middleware",
+          "url": "https://github.com/advisories/GHSA-9jrq-w75r-8gcw",
+          "severity": "low",
+          "range": ">=7.0.0 <=7.3.6"
+        },
+        {
+          "title": "Vite: Files outside `server.fs.allow` could be served when project paths match system paths on non-Windows machine",
+          "url": "https://github.com/advisories/GHSA-rq7h-c2jc-7f22",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.6"
+        },
+        {
+          "title": "vite: `server.fs.deny` bypass on Windows alternate paths",
+          "url": "https://github.com/advisories/GHSA-fx2h-pf6j-xcff",
+          "severity": "moderate",
+          "range": ">=7.0.0 <=7.3.4"
+        }
+      ],
+      "isDirect": true,
+      "lockfile_paths": [
+        "node_modules/vite"
+      ],
+      "all_paths_dev": true
+    },
+    "vitest": {
+      "severity": "critical",
+      "range": "2.1.0-beta.1 - 4.1.10",
+      "fixAvailable": {
+        "name": "vitest",
+        "version": "4.1.12",
+        "isSemVerMajor": false
+      },
+      "advisories": [
+        {
+          "title": "When Vitest UI server is listening, arbitrary file can be read and executed",
+          "url": "https://github.com/advisories/GHSA-5xrq-8626-4rwp",
+          "severity": "critical",
+          "range": ">=4.0.0 <4.1.0"
+        },
+        {
+          "title": "Vitest: Path Traversal / Arbitrary File Read via @vitest/mocker Redirect Mock",
+          "url": "https://github.com/advisories/GHSA-82fw-gwwq-j7x9",
+          "severity": "moderate",
+          "range": ">=2.1.0 <4.1.11"
+        }
+      ],
+      "isDirect": true,
+      "lockfile_paths": [
+        "node_modules/vitest"
+      ],
+      "all_paths_dev": true
+    }
+  },
+  "collected_at_utc": "2026-10-31T00:46:05.071537+00:00",
+  "collected_at_kst": "2026-10-31T09:46:05.071537+09:00",
+  "collection_limits": "Complete original npm registry audit JSON after delayed response. Later bounded diagnostic was interrupted and is not evidence. Registry-known advisories at collection time; no exploit/reachability determination or ecosystem-wide guarantee. Counts group vulnerable packages, not unique advisories.",
+  "status": "Historical pre-repair FAIL; superseded by npm-audit-after.json (0 findings)."
+}

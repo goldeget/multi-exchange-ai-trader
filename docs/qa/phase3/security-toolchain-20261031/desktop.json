@@ -1,0 +1,926 @@
+{
+  "synthetic": true,
+  "name": "desktop",
+  "viewport": {
+    "width": 1440,
+    "height": 1000
+  },
+  "at_utc": "2026-10-31T00:50:07.871Z",
+  "toolchain": {
+    "vite": "7.3.7",
+    "vitest": "4.1.12",
+    "minimatch": "11.0.1"
+  },
+  "errors": [],
+  "market_requests": [],
+  "responses": [
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10000.00000000",
+        "reserved_margin": "0.00000000",
+        "available_balance": "10000.00000000",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "0.00000000",
+        "equity": "10000.00000000",
+        "closed_net_pnl": "0.00000000",
+        "realized_wallet_delta": "0.00000000",
+        "realized_gross": "0.00000000",
+        "fees": "0.00000000",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [],
+        "orders": [],
+        "fills": [],
+        "marks": {
+          "BTC-PAPER": "60000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 1,
+        "latest_sequence": 0,
+        "last_tick_at": "2026-10-31T00:50:08.411321+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:08.411321+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "9997.59999600",
+        "reserved_margin": "600.00100000",
+        "available_balance": "9397.59899600",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "-0.01000000",
+        "equity": "9997.58999600",
+        "closed_net_pnl": "0.00000000",
+        "realized_wallet_delta": "-2.40000400",
+        "realized_gross": "0.00000000",
+        "fees": "2.40000400",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [
+          {
+            "instrument": "BTC-PAPER",
+            "side": "long",
+            "quantity": "0.100",
+            "entry_price": "60000.1",
+            "leverage": 10,
+            "reserved_margin": "600.00100000",
+            "unrealized_pnl": "-0.01000000",
+            "mark": "60000.0"
+          }
+        ],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 2,
+        "latest_sequence": 0,
+        "last_tick_at": "2026-10-31T00:50:08.411321+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:08.411321+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "9997.59999600",
+        "reserved_margin": "600.00100000",
+        "available_balance": "9397.59899600",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "99.99000000",
+        "equity": "10097.58999600",
+        "closed_net_pnl": "0.00000000",
+        "realized_wallet_delta": "-2.40000400",
+        "realized_gross": "0.00000000",
+        "fees": "2.40000400",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [
+          {
+            "instrument": "BTC-PAPER",
+            "side": "long",
+            "quantity": "0.100",
+            "entry_price": "60000.1",
+            "leverage": 10,
+            "reserved_margin": "600.00100000",
+            "unrealized_pnl": "99.99000000",
+            "mark": "61000.0"
+          }
+        ],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "61000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 3,
+        "latest_sequence": 1,
+        "last_tick_at": "2026-10-31T00:50:12.831000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:12.831000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10036.61599760",
+        "reserved_margin": "360.00060000",
+        "available_balance": "9676.61539760",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "59.99400000",
+        "equity": "10096.60999760",
+        "closed_net_pnl": "38.05600000",
+        "realized_wallet_delta": "36.61599760",
+        "realized_gross": "39.99200000",
+        "fees": "3.37600240",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [
+          {
+            "instrument": "BTC-PAPER",
+            "side": "long",
+            "quantity": "0.060",
+            "entry_price": "60000.1",
+            "leverage": 10,
+            "reserved_margin": "360.00060000",
+            "unrealized_pnl": "59.99400000",
+            "mark": "61000.0"
+          }
+        ],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.040",
+            "trigger": null,
+            "reduce_only": true
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 3,
+            "order_id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.040",
+            "fee": "0.97599840",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "61000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 4,
+        "latest_sequence": 1,
+        "last_tick_at": "2026-10-31T00:50:12.831000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:12.831000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10095.14000000",
+        "reserved_margin": "0.00000000",
+        "available_balance": "10095.14000000",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "0.00000000",
+        "equity": "10095.14000000",
+        "closed_net_pnl": "95.14000000",
+        "realized_wallet_delta": "95.14000000",
+        "realized_gross": "99.98000000",
+        "fees": "4.84000000",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.040",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.060",
+            "trigger": null,
+            "reduce_only": true
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 3,
+            "order_id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.040",
+            "fee": "0.97599840",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 4,
+            "order_id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.060",
+            "fee": "1.46399760",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "61000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 5,
+        "latest_sequence": 1,
+        "last_tick_at": "2026-10-31T00:50:12.831000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:12.831000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10092.70000400",
+        "reserved_margin": "609.99900000",
+        "available_balance": "9482.70100400",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "-0.01000000",
+        "equity": "10092.69000400",
+        "closed_net_pnl": "95.14000000",
+        "realized_wallet_delta": "92.70000400",
+        "realized_gross": "99.98000000",
+        "fees": "7.27999600",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [
+          {
+            "instrument": "BTC-PAPER",
+            "side": "short",
+            "quantity": "0.100",
+            "entry_price": "60999.9",
+            "leverage": 10,
+            "reserved_margin": "609.99900000",
+            "unrealized_pnl": "-0.01000000",
+            "mark": "61000.0"
+          }
+        ],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.040",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.060",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 3,
+            "order_id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.040",
+            "fee": "0.97599840",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 4,
+            "order_id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.060",
+            "fee": "1.46399760",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 5,
+            "order_id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "enter",
+            "price": "60999.9",
+            "quantity": "0.100",
+            "fee": "2.43999600",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "61000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 6,
+        "latest_sequence": 1,
+        "last_tick_at": "2026-10-31T00:50:12.831000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:12.831000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10092.70000400",
+        "reserved_margin": "609.99900000",
+        "available_balance": "9482.70100400",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "99.99000000",
+        "equity": "10192.69000400",
+        "closed_net_pnl": "95.14000000",
+        "realized_wallet_delta": "92.70000400",
+        "realized_gross": "99.98000000",
+        "fees": "7.27999600",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [
+          {
+            "instrument": "BTC-PAPER",
+            "side": "short",
+            "quantity": "0.100",
+            "entry_price": "60999.9",
+            "leverage": 10,
+            "reserved_margin": "609.99900000",
+            "unrealized_pnl": "99.99000000",
+            "mark": "60000.0"
+          }
+        ],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.040",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.060",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 3,
+            "order_id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.040",
+            "fee": "0.97599840",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 4,
+            "order_id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.060",
+            "fee": "1.46399760",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 5,
+            "order_id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "enter",
+            "price": "60999.9",
+            "quantity": "0.100",
+            "fee": "2.43999600",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 7,
+        "latest_sequence": 2,
+        "last_tick_at": "2026-10-31T00:50:23.014000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:23.014000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    },
+    {
+      "http": 200,
+      "body": {
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "mode": "PAPER",
+        "assumptions": "PAPER-v1",
+        "wallet_balance": "10190.28000000",
+        "reserved_margin": "0.00000000",
+        "available_balance": "10190.28000000",
+        "deficit": "0.00000000",
+        "unrealized_pnl": "0.00000000",
+        "equity": "10190.28000000",
+        "closed_net_pnl": "190.28000000",
+        "realized_wallet_delta": "190.28000000",
+        "realized_gross": "199.96000000",
+        "fees": "9.68000000",
+        "native_rounding_adjustment": "0.00000000",
+        "positions": [],
+        "orders": [
+          {
+            "id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.040",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.060",
+            "trigger": null,
+            "reduce_only": true
+          },
+          {
+            "id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "role": "enter",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": false
+          },
+          {
+            "id": "P000007-close",
+            "instrument": "BTC-PAPER",
+            "role": "close",
+            "status": "FILLED",
+            "quantity": "0.100",
+            "trigger": null,
+            "reduce_only": true
+          }
+        ],
+        "fills": [
+          {
+            "event_seq": 1,
+            "order_id": "P000001-enter",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "enter",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 3,
+            "order_id": "P000003-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.040",
+            "fee": "0.97599840",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 4,
+            "order_id": "P000004-close",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "close",
+            "price": "60999.9",
+            "quantity": "0.060",
+            "fee": "1.46399760",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 5,
+            "order_id": "P000005-enter",
+            "instrument": "BTC-PAPER",
+            "side": "SELL",
+            "role": "enter",
+            "price": "60999.9",
+            "quantity": "0.100",
+            "fee": "2.43999600",
+            "clock": "PAPER_REPLAY_V1"
+          },
+          {
+            "event_seq": 7,
+            "order_id": "P000007-close",
+            "instrument": "BTC-PAPER",
+            "side": "BUY",
+            "role": "close",
+            "price": "60000.1",
+            "quantity": "0.100",
+            "fee": "2.40000400",
+            "clock": "PAPER_REPLAY_V1"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60000.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+        "created_at": "2026-10-31T00:50:10.411321+00:00",
+        "revision": 8,
+        "latest_sequence": 2,
+        "last_tick_at": "2026-10-31T00:50:23.014000+00:00",
+        "mark_times": {
+          "BTC-PAPER": "2026-10-31T00:50:23.014000+00:00",
+          "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+        },
+        "tick_source": "LOCAL_SCENARIO_V1",
+        "synthetic": true
+      }
+    }
+  ],
+  "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+  "state": {
+    "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+    "mode": "PAPER",
+    "assumptions": "PAPER-v1",
+    "wallet_balance": "10190.28000000",
+    "reserved_margin": "0.00000000",
+    "available_balance": "10190.28000000",
+    "deficit": "0.00000000",
+    "unrealized_pnl": "0.00000000",
+    "equity": "10190.28000000",
+    "closed_net_pnl": "190.28000000",
+    "realized_wallet_delta": "190.28000000",
+    "realized_gross": "199.96000000",
+    "fees": "9.68000000",
+    "native_rounding_adjustment": "0.00000000",
+    "positions": [],
+    "orders": [
+      {
+        "id": "P000001-enter",
+        "instrument": "BTC-PAPER",
+        "role": "enter",
+        "status": "FILLED",
+        "quantity": "0.100",
+        "trigger": null,
+        "reduce_only": false
+      },
+      {
+        "id": "P000003-close",
+        "instrument": "BTC-PAPER",
+        "role": "close",
+        "status": "FILLED",
+        "quantity": "0.040",
+        "trigger": null,
+        "reduce_only": true
+      },
+      {
+        "id": "P000004-close",
+        "instrument": "BTC-PAPER",
+        "role": "close",
+        "status": "FILLED",
+        "quantity": "0.060",
+        "trigger": null,
+        "reduce_only": true
+      },
+      {
+        "id": "P000005-enter",
+        "instrument": "BTC-PAPER",
+        "role": "enter",
+        "status": "FILLED",
+        "quantity": "0.100",
+        "trigger": null,
+        "reduce_only": false
+      },
+      {
+        "id": "P000007-close",
+        "instrument": "BTC-PAPER",
+        "role": "close",
+        "status": "FILLED",
+        "quantity": "0.100",
+        "trigger": null,
+        "reduce_only": true
+      }
+    ],
+    "fills": [
+      {
+        "event_seq": 1,
+        "order_id": "P000001-enter",
+        "instrument": "BTC-PAPER",
+        "side": "BUY",
+        "role": "enter",
+        "price": "60000.1",
+        "quantity": "0.100",
+        "fee": "2.40000400",
+        "clock": "PAPER_REPLAY_V1"
+      },
+      {
+        "event_seq": 3,
+        "order_id": "P000003-close",
+        "instrument": "BTC-PAPER",
+        "side": "SELL",
+        "role": "close",
+        "price": "60999.9",
+        "quantity": "0.040",
+        "fee": "0.97599840",
+        "clock": "PAPER_REPLAY_V1"
+      },
+      {
+        "event_seq": 4,
+        "order_id": "P000004-close",
+        "instrument": "BTC-PAPER",
+        "side": "SELL",
+        "role": "close",
+        "price": "60999.9",
+        "quantity": "0.060",
+        "fee": "1.46399760",
+        "clock": "PAPER_REPLAY_V1"
+      },
+      {
+        "event_seq": 5,
+        "order_id": "P000005-enter",
+        "instrument": "BTC-PAPER",
+        "side": "SELL",
+        "role": "enter",
+        "price": "60999.9",
+        "quantity": "0.100",
+        "fee": "2.43999600",
+        "clock": "PAPER_REPLAY_V1"
+      },
+      {
+        "event_seq": 7,
+        "order_id": "P000007-close",
+        "instrument": "BTC-PAPER",
+        "side": "BUY",
+        "role": "close",
+        "price": "60000.1",
+        "quantity": "0.100",
+        "fee": "2.40000400",
+        "clock": "PAPER_REPLAY_V1"
+      }
+    ],
+    "marks": {
+      "BTC-PAPER": "60000.0",
+      "ETH-PAPER": "3000.00"
+    },
+    "scenario_id": "paper-6685226e-c8db-4c83-b8f6-2810205ed397",
+    "created_at": "2026-10-31T00:50:10.411321+00:00",
+    "revision": 8,
+    "latest_sequence": 2,
+    "last_tick_at": "2026-10-31T00:50:23.014000+00:00",
+    "mark_times": {
+      "BTC-PAPER": "2026-10-31T00:50:23.014000+00:00",
+      "ETH-PAPER": "2026-10-31T00:50:08.411321+00:00"
+    },
+    "tick_source": "LOCAL_SCENARIO_V1",
+    "synthetic": true
+  },
+  "layout": {
+    "width": 1440,
+    "scrollWidth": 1440,
+    "korean": true
+  },
+  "status": "PASS"
+}
