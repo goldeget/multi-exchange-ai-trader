@@ -1,5 +1,9 @@
 # Architecture and delivery boundaries
 
+**Current delivery:** Phase2A PARTIAL + qualified manual PAPER + Phase4 local native research/synthetic automation. [Executed scope and evidence](qa/phase4/README.md). The initial plan below is historical; current supplements at the end describe implementation.
+
+## Historical initial architecture
+
 Status: Phase 1 research/design for the Phase 2 public market dashboard, reviewed 2026-10-30 UTC. This is intended architecture, not an implementation or validation report. The [design specification](superpowers/specs/2026-10-31-multi-exchange-trader-design.md) and [implementation plan](superpowers/plans/2026-10-31-public-market-dashboard.md) govern delivery. [Research](OPEN_SOURCE_AUDIT.md) and [exchange evidence](EXCHANGE_CAPABILITIES.md) explain the selections and unknowns.
 
 ## Phase 2 data flow
@@ -68,6 +72,12 @@ SQLite schema1 uses BEGIN IMMEDIATE/WAL/FULL, a process-local lock, append-only 
 
 Before POST, the browser durably stores the exact uncertain intent/key/payload. Refresh/tab restoration selects its scenario and retries the same key. Only recognized PAPER validation4xx are definitive rejections; network failure, invalid JSON and5xx preserve uncertainty. Unknown outcomes cannot be dismissed to generate a fresh key. Scenario loads hide old account data; success must match the requested scenario. Anonymous mutation is local-only and must not be deployed externally; start on127.0.0.1 with trusted local users. Local browser storage durability assumes the browser profile/storage is preserved; clearing storage is not a safe recovery/reset procedure.
 
-Unsupported: strategy backtesting, AI, live/Demo trading, funding, exchange mark integration, discretionary pending/expiry, limit entries and liquidity-based partial fills. See the [Phase3 report](qa/phase3/README.md) for executed checks rather than interpreting architecture as a test result.
+At the PHASE3 checkpoint, unsupported: strategy backtesting, AI, live/Demo trading, funding, exchange mark integration, discretionary pending/expiry, limit entries and liquidity-based partial fills. See the [Phase3 report](qa/phase3/README.md) for executed checks rather than interpreting architecture as a test result.
 
 The final toolchain also has explicit security-only overrides: fsspec2026.6.0 for native1.231.0's vulnerable strict pin, and minimatch11.0.1 for existing dev-tool10.x constraints. They are documented dependency-contract departures with application-specific integration/toolchain qualification, not modified upstream libraries or vulnerability exemptions. Vite7.3.7/Vitest4.1.12 are patched same-major pins; resolved npm audit0. See [qualification](qa/phase3/qualification.md).
+
+## Current PHASE4 implemented boundary — 2026-10-31 KST
+
+The original phase map and PHASE3 unsupported-backtest statement are historical checkpoint context. [PHASE4 report](qa/phase4/README.md) is the current implementation/acceptance scope. Content-addressed validated spot snapshots or labeled synthetic perpetual datasets feed chronological prefix-only native1.231.0 replay; native CASH spot research is separate from synthetic PAPER margin execution. BTC/ETH are independent accounts, shared portfolio replay UNRUN. No live futures data/AI/Demo/live integration exists. Thirty-day720bar samples establish functionality, not profitability.
+
+A separate Phase4 SQLite atomically records pure native replay outputs/cursor/hash-linked journal/idempotent response in one transaction, without writing the original manual PaperStore. Sixteen sessions,500events,80bars,max6ordinary events/bar and10exitreserve bound replay and termination. RestartRUNNING recoversPAUSED_RECOVERY and requires explicitresume. The scheduler exposes actual health independently of saved run status. Korean UI separates new-session form from selected immutable risk settings and shows native OOS equity/trades. OS-denied worker sockets, local Host/Origin/JSON limits and fixed preblocked public hosts remain in force. See spec/QA evidence for tested limits; multi-worker/distributed execution remains unqualified.

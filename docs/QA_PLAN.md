@@ -1,5 +1,8 @@
 # QA plan
 
+**Current executed scope:** [Phase4 report](qa/phase4/README.md) distinguishes native/local functional PASS from real-futures BLOCKED and shared-portfolio UNRUN. Earlier future-phase wording below is retained as historical planning context.
+
+
 This document defines planned quality gates. It does not assert that an application, test suite, CI workflow, or any check described below has been implemented or run.
 
 ## Safety and evidence policy
@@ -71,3 +74,9 @@ The original plan above is not blanket acceptance. [Phase3 results](qa/phase3/RE
 Required observed gates: hand-verifiable long/short fees/PnL/slippage; partial-close/reservation invariants; native SL/TP OCO and gap/liquidation/negative-balance behavior; SQLite idempotency/concurrency/rollback/append-only/corruption/replay; OS outbound denial; local API Host/Origin/JSON and no-live/reset inventory; persisted uncertain command recovery after network/5xx/invalid-JSON and scenario-load isolation; PC1440x1000/mobile390x844 PAPER workflow; actual backend process restart with same DB, native cash/positions/protection and seed reconciliation. Browser keyboard/labels/focus checks are basic checks, not complete accessibility certification.
 
 Pending/expiration/liquidity partial-fill plans remain UNRUN/unsupported in this implementation. No PAPER result establishes real-market connectivity, returns or full PHASE2A completion. Six previously region-blocked markets stay BLOCKED, and CI makes no external market calls.
+
+## Current PHASE4 acceptance supplement — 2026-10-31 KST
+
+Earlier phase descriptions are historical plans. [Executed PHASE4 gates](qa/phase4/README.md) cover validated immutable actual SPOT snapshots versus synthetic perpetual fixtures; actual native replay/accounting, no future-prefix signal leakage, next-open execution/cost/path assumptions, chronological OOS/walk-forward, reproducibility, net return/drawdown/Wilson uncertainty/net loss streak; risk-bounded synthetic automation, cursor/idempotency/concurrency/rollback/corruption/eventreserve/restartPAUSED recovery; local API boundaries and Korean desktop/mobile native workflows. Actual full regression368Python and final45frontend plus static/build are recorded with CI evidence.
+
+Original multi-instrument replay gate: BTC/ETH independent account research supported, **shared portfolio native replay UNRUN**. No combined portfolio return. Real futures data/performance BLOCKED;30day720bar actual spot is short functional evidence. Physical-device/full accessibility and Phase4 pinch revalidation UNRUN. Browser response-loss tests are induced localabort/502, not exchange failures. All source/history failures and exact historical false-positive handling are retained; final evidence head runs normal CI including full-history Secret scan.

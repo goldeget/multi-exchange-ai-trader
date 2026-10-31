@@ -1,0 +1,12 @@
+{
+  "scope": "QA app public client request hook observed counts; not a machine-wide network capture",
+  "configured_blocked_hosts": [
+    "fapi.binance.com",
+    "api.bybit.com"
+  ],
+  "public_client_outgoing_counts": {},
+  "restricted_host_transmissions": 0,
+  "browser_market_requests": 0,
+  "collector_separate_approved_spot_GET_count": 2,
+  "ci_market_calls": 0
+}

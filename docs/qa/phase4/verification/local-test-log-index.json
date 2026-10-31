@@ -1,0 +1,173 @@
+[
+  {
+    "local_original": "work/phase4/data-red.txt",
+    "sha256": "d98bc181283b395614a1315c79dc27a8bc5d81a09cd460a9195c9b4eb66f85a8",
+    "finished_file_mtime_kst": "2026-10-31T10:09:29.480311+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "19 failed in 0.21s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/data-full-python.txt",
+    "sha256": "abafaece5e8b0860708456de8c325ec38ce205100acb177f41dbd41caeb206f2",
+    "finished_file_mtime_kst": "2026-10-31T10:12:13.167470+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "338 passed, 29 warnings in 81.66s (0:01:21)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/native-red.txt",
+    "sha256": "3f9eff522f9e700673fbe6925771b9918caf6ea5f41a51c7d4c595b87a43b1c5",
+    "finished_file_mtime_kst": "2026-10-31T10:12:23.570952+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "8 failed in 0.79s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/native-green.txt",
+    "sha256": "e76ef4176c79d456169ffb0ffd6557732e928e5e02532f4cd7e456a09499cc6b",
+    "finished_file_mtime_kst": "2026-10-31T10:17:23.336625+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "8 passed, 50 warnings in 3.06s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/native-checkpoint-full-green.txt",
+    "sha256": "39634958a11957f66b4ef399a9641a26566ae0bce4720049dec540716ed4fd18",
+    "finished_file_mtime_kst": "2026-10-31T10:25:23.017778+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "346 passed, 79 warnings in 83.65s (0:01:23)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/risk-time-red-real.txt",
+    "sha256": "be50b1b1a0b2f4ed1c0d34df8918931bff27d81036a31f368c3854fe8a5beecb",
+    "finished_file_mtime_kst": "2026-10-31T10:25:25.449620+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "1 failed in 3.33s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/auto-idempotency-corruption-red.txt",
+    "sha256": "ce053d06f333cde1f7f0a4031269370d24da151cd4ccd0d33d8848d23a7fb768",
+    "finished_file_mtime_kst": "2026-10-31T10:26:23.941798+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "1 failed in 1.06s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/metrics-cadence-red.txt",
+    "sha256": "49eb2e96a18b742e637d2cf14636e27eddbe80524f821e62113ad80dd2b76005",
+    "finished_file_mtime_kst": "2026-10-31T10:30:05.585765+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "2 failed in 1.76s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/zero-net-exit-red.txt",
+    "sha256": "94d5b9ba22939da12c8e1b62221cf7d7d3fe8954a57926b3cd4c675f88e96501",
+    "finished_file_mtime_kst": "2026-10-31T10:33:17.431890+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "1 failed in 2.42s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/redundant-resume-red.txt",
+    "sha256": "3bbd932a700b3c7fef6f0f93233e9261abdfc19912266847a95129c66ef2d600",
+    "finished_file_mtime_kst": "2026-10-31T10:37:38.741036+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "1 failed in 1.72s"
+    ]
+  },
+  {
+    "local_original": "work/phase4/auto-full-python.txt",
+    "sha256": "47023d91bcdfae63733be28f55131b9bc9201b2ea3aa6137e8baea7d41928166",
+    "finished_file_mtime_kst": "2026-10-31T10:38:41.746592+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "364 passed, 79 warnings in 227.81s (0:03:47)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-api-full-python.txt",
+    "sha256": "a5e3edbe80ff36cf034a0f37b0c8a53e2b310beb164706f7be1062053250b0b3",
+    "finished_file_mtime_kst": "2026-10-31T10:54:44.037640+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "368 passed, 79 warnings in 248.30s (0:04:08)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-api-full-ruff.txt",
+    "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "finished_file_mtime_kst": "2026-10-31T10:54:44.333628+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "All checks passed!"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-api-full-mypy.txt",
+    "sha256": "81b8a767756bd649de91d7b0c104614fe1e706bce451b754a92161491825cfde",
+    "finished_file_mtime_kst": "2026-10-31T10:54:44.701614+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "Success: no issues found in 33 source files"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-final-contract-red.txt",
+    "sha256": "078d2c9bc12a8b19c5ea23f152c05ee04d0a41f227e4dd251ab02f6885411c54",
+    "finished_file_mtime_kst": "2026-10-31T11:00:15.491558+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      " \u276f src/research/Research.test.tsx (15 tests | 3 failed) 2756ms",
+      "\u23af\u23af\u23af\u23af\u23af\u23af\u23af Failed Tests 3 \u23af\u23af\u23af\u23af\u23af\u23af\u23af",
+      " Test Files  1 failed (1)",
+      "      Tests  3 failed | 12 passed (15)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-info-final-tests.txt",
+    "sha256": "bbcf70ef89398d48e17230fd81e999f853edac058fc7346c05e9c3691db163d2",
+    "finished_file_mtime_kst": "2026-10-31T11:06:04.757427+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      " Test Files  5 passed (5)",
+      "      Tests  45 passed (45)"
+    ]
+  },
+  {
+    "local_original": "work/phase4/ui-info-final-eslint.txt",
+    "sha256": "95bec6f212b18259fae299b4a9dc6cfeadf78d9c1a04a4c0edcd28e3c7883d28",
+    "finished_file_mtime_kst": "2026-10-31T11:06:04.893421+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": []
+  },
+  {
+    "local_original": "work/phase4/ui-info-final-types.txt",
+    "sha256": "a07cfc2b5997bddcfb5620070c608ae7f8cf45daf898d18c3e94566ccb5cd952",
+    "finished_file_mtime_kst": "2026-10-31T11:06:08.089271+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": []
+  },
+  {
+    "local_original": "work/phase4/ui-info-final-build.txt",
+    "sha256": "637eff53aa57974e6c123d4c1932e2a7e5483a8dac4a648326eb227e4d90f3cc",
+    "finished_file_mtime_kst": "2026-10-31T11:06:15.056943+09:00",
+    "scope": "Historical RED or executed GREEN as named; original local log retained, selected summary only",
+    "summary_lines": [
+      "\u2713 built in 1.56s"
+    ]
+  }
+]

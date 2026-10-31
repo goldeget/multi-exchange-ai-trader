@@ -1,0 +1,11 @@
+{
+  "datasets_reloaded_and_validated": 2,
+  "dataset_bars_each": 720,
+  "native_report_canonical_hashes_verified": 2,
+  "qa_final_public_transport_counts": {},
+  "qa_run_status_counts": {
+    "HALTED": 1,
+    "STOPPED": 4
+  },
+  "scope": "Final read-only evidence integrity/status review; not a fresh market collection or rerun of the already passed test suite"
+}

@@ -1,3 +1,5 @@
+> Current delivery also includes [PHASE3 manual PAPER](../phase3/README.md) and [PHASE4 local native research/synthetic automation](../phase4/README.md). These do not resolve the six restricted markets: full PHASE2A remains PARTIAL/BLOCKED.
+
 # Phase 2-A verification evidence — 2026-10-31 KST
 
 Status: **PARTIAL / EXTERNAL PREREQUISITES BLOCKED**. Phase 2-A is not complete; Phase 3 has not started.

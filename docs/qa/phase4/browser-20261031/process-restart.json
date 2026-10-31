@@ -1,0 +1,4047 @@
+{
+  "scope": "Local synthetic PAPER only; no exchange or key; original manual DB untouched",
+  "at_utc": "2026-10-31T01:56:22.003025+00:00",
+  "old_pid": 34698,
+  "before_shutdown_observation_summary": {
+    "desktop": {
+      "status": "PAUSED",
+      "cursor": 11,
+      "native_fill_count": 1
+    },
+    "mobile": {
+      "status": "RUNNING",
+      "cursor": 36,
+      "native_fill_count": 3
+    }
+  },
+  "before": {
+    "desktop": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:20.989985+00:00",
+      "cursor": 11,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "604.0000",
+      "funding_entries": 1,
+      "high_water": "10000.55755960",
+      "last_closed_net": "0.00000000",
+      "last_virtual_time_ms": 1767226259999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9939.39845960",
+        "closed_net_pnl": "0.00000000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10000.15755960",
+        "fees": "0.24144040",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60400.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60360.1",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60400.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.36010000",
+            "side": "long",
+            "unrealized_pnl": "0.39900000"
+          }
+        ],
+        "realized_gross": "0.00000000",
+        "realized_wallet_delta": "-0.24144040",
+        "reserved_margin": "60.36010000",
+        "unrealized_pnl": "0.39900000",
+        "wallet_balance": "9999.75855960"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:53:45.634614+00:00",
+      "processed_closed_trades": 0,
+      "reason": "operator_pause",
+      "run_id": "auto-aedbb050-5479-4c4a-ba58-54c7bb2c60c8",
+      "status": "PAUSED",
+      "synthetic": true
+    },
+    "mobile": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:57.776809+00:00",
+      "cursor": 36,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "605.2000",
+      "funding_entries": 1,
+      "high_water": "10006.86916040",
+      "last_closed_net": "3.91336000",
+      "last_virtual_time_ms": 1767227759999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9942.87026040",
+        "closed_net_pnl": "3.91336000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10006.46916040",
+        "fees": "0.72783960",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 119,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000119-close",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "close",
+            "side": "SELL"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 120,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000120-enter",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "SELL"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60520.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000119-close",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": true,
+            "role": "close",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000120-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60799.9",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60520.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.79990000",
+            "side": "short",
+            "unrealized_pnl": "2.79900000"
+          }
+        ],
+        "realized_gross": "4.39800000",
+        "realized_wallet_delta": "3.67016040",
+        "reserved_margin": "60.79990000",
+        "unrealized_pnl": "2.79900000",
+        "wallet_balance": "10003.67016040"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "close",
+          "quantity": "0.010"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "short"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:56:21.904799+00:00",
+      "processed_closed_trades": 1,
+      "reason": "explicit_resume",
+      "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+      "status": "RUNNING",
+      "synthetic": true
+    }
+  },
+  "actual_sql_counts": {
+    "desktop": {
+      "funding_records": 1,
+      "journal_records": 14
+    },
+    "mobile": {
+      "funding_records": 1,
+      "journal_records": 40
+    }
+  },
+  "capture_boundary": "After old process fully stopped; inflight transaction allowed to finish. Comparison is against committed shutdown snapshots, not an earlier possibly stale HTTP read.",
+  "outgoing_before_restart": {},
+  "new_pid": 36667,
+  "after_audit": {
+    "desktop": {
+      "run_id": "auto-aedbb050-5479-4c4a-ba58-54c7bb2c60c8",
+      "funding_entries": 1,
+      "native_fills": [
+        {
+          "clock": "PAPER_REPLAY_V1",
+          "event_seq": 42,
+          "fee": "0.24144040",
+          "instrument": "BTC-PAPER",
+          "order_id": "P000042-enter",
+          "price": "60360.1",
+          "quantity": "0.010",
+          "role": "enter",
+          "side": "BUY"
+        }
+      ],
+      "native_event_count": 45,
+      "journal": [
+        {
+          "sequence": 1,
+          "operation": "create:c3e16b4449e1867b954bc4643fc8b6c8b5cbb36b07291e6c8bf69b13cc7001b5",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "hash": "29bfda0edfb15708de7eba667ca1d5779f87df9320299b23430f68d5c882b9a1",
+          "snapshot_digest": "57c0eadf8f83825dea4cde4e9e32b8b91a02b4274b50af0a359722989e44a2c8"
+        },
+        {
+          "sequence": 2,
+          "operation": "resume:849c6b93805dacc0cffd90e8b1def22143cb449ef544918e9acbe4101cd0839e",
+          "previous": "29bfda0edfb15708de7eba667ca1d5779f87df9320299b23430f68d5c882b9a1",
+          "hash": "17c744e52be9d78d4d792c9ae6477255354acca25b1c96da98db5e130e0d78b4",
+          "snapshot_digest": "c3a50a6a545cfde59be9cb15de7b81ec0b3cf5718826e2bc6fbda99a8756eb6e"
+        },
+        {
+          "sequence": 3,
+          "operation": "step:0",
+          "previous": "17c744e52be9d78d4d792c9ae6477255354acca25b1c96da98db5e130e0d78b4",
+          "hash": "5508c00455b2580e5750a9a3f6b50ac47b125491e8f0c08788e62f026449c57a",
+          "snapshot_digest": "45cf48ec13c6c45b4195b5bd34d5f402979e3461279761a5c1774631f85eaad6"
+        },
+        {
+          "sequence": 4,
+          "operation": "step:1",
+          "previous": "5508c00455b2580e5750a9a3f6b50ac47b125491e8f0c08788e62f026449c57a",
+          "hash": "c1e8f31a244f3373b86b6426bdaae029cd0cf69cb2cb257c3a432496f591b875",
+          "snapshot_digest": "4f958d68a8a5296ad1299dd53c38d45771ef4eb3c518f78ac21d14904178dae1"
+        },
+        {
+          "sequence": 5,
+          "operation": "step:2",
+          "previous": "c1e8f31a244f3373b86b6426bdaae029cd0cf69cb2cb257c3a432496f591b875",
+          "hash": "c9248dae37ffa77b60ae90c554d2540a40ebb5eb243e628dc265a92dd439f5a1",
+          "snapshot_digest": "c9202879d48281ca15afd8e1979733247b20d8c7236c06858f8fcf0a9284e3ab"
+        },
+        {
+          "sequence": 6,
+          "operation": "step:3",
+          "previous": "c9248dae37ffa77b60ae90c554d2540a40ebb5eb243e628dc265a92dd439f5a1",
+          "hash": "7f671011486f9319e389aac65a33c92e86ba8e04dbf65b7a641b2b13aa8728f4",
+          "snapshot_digest": "61e3585d391ae96807958d93066443e0d24eb73a8f222637ea3906527631d036"
+        },
+        {
+          "sequence": 7,
+          "operation": "step:4",
+          "previous": "7f671011486f9319e389aac65a33c92e86ba8e04dbf65b7a641b2b13aa8728f4",
+          "hash": "70cfbe19a096d1ab751d9f00f3574f9e71e0bbfab0be26c792901e3dcc48b221",
+          "snapshot_digest": "b9329846439123b99c4639999541cac7a237a67e341f32d691c891eeb960c4f5"
+        },
+        {
+          "sequence": 8,
+          "operation": "step:5",
+          "previous": "70cfbe19a096d1ab751d9f00f3574f9e71e0bbfab0be26c792901e3dcc48b221",
+          "hash": "8892fd3c4d17d34be3248348a803357e88f373f981c9e722f2fc2c39572ac8d8",
+          "snapshot_digest": "cc664e1492bba27e487214fb51a5d21530a77ca0f6e3fb962ec79b338b8ad3ce"
+        },
+        {
+          "sequence": 9,
+          "operation": "step:6",
+          "previous": "8892fd3c4d17d34be3248348a803357e88f373f981c9e722f2fc2c39572ac8d8",
+          "hash": "24b4cc0755724edba958b3eca4015913c43bb4ee924c3e3652fc7d74b5e9ab7a",
+          "snapshot_digest": "033177c909df44d5fa32bef0fc35e8eb407e80261f9a60af6e28819df3f768a3"
+        },
+        {
+          "sequence": 10,
+          "operation": "step:7",
+          "previous": "24b4cc0755724edba958b3eca4015913c43bb4ee924c3e3652fc7d74b5e9ab7a",
+          "hash": "b37a3c118f3bc59ac11bfd93bb5fa012133938351a0a73072c538425ccb2d9f4",
+          "snapshot_digest": "a69dc81980f05266047f0c8f57e4eb99d50289cf7aca61704a055021f2962dc8"
+        },
+        {
+          "sequence": 11,
+          "operation": "step:8",
+          "previous": "b37a3c118f3bc59ac11bfd93bb5fa012133938351a0a73072c538425ccb2d9f4",
+          "hash": "391a3ef6ae6b54dd675b9d6fa126791d1bb781958ad90ecba0b657c0a12ce4e2",
+          "snapshot_digest": "64b8e3e8de225b5f30a54dd33dbfcfa16f86016cd965c27e25a6cb7d915248b0"
+        },
+        {
+          "sequence": 12,
+          "operation": "step:9",
+          "previous": "391a3ef6ae6b54dd675b9d6fa126791d1bb781958ad90ecba0b657c0a12ce4e2",
+          "hash": "4f182bc35245e15253cf32da3f6891cac5711d228b13aa07def9d8d789dddc9c",
+          "snapshot_digest": "9ff0a5cf63ee7128b67ec1add45381f1555a937a6089de3b61819ec053e1a3de"
+        },
+        {
+          "sequence": 13,
+          "operation": "step:10",
+          "previous": "4f182bc35245e15253cf32da3f6891cac5711d228b13aa07def9d8d789dddc9c",
+          "hash": "610aca56358284f680c4b59a7f3cb2b20b47c82d88ee137920da884daae10195",
+          "snapshot_digest": "2900ab17fd5e9ecda2af8ef491043dffb7edb78d10f5576f9184fbc71b5c2d7f"
+        },
+        {
+          "sequence": 14,
+          "operation": "pause:fb36834a4b2371c0ed1b5ff8f5a457efdda87e4fa2b7bbb42ed7fe596fab44a1",
+          "previous": "610aca56358284f680c4b59a7f3cb2b20b47c82d88ee137920da884daae10195",
+          "hash": "90a6361ce7c4a79e95425a4da341e2d33b978fb3e2c01715a08bd3b236d32bc9",
+          "snapshot_digest": "7db458356b54046463695ef889f25f755acd49c856659d9a372d8605ecbc4c1c"
+        }
+      ],
+      "command_digests": [
+        "832839b7e8b7ed268ba5bc22a4d06614f362468477ac5ee3c2f06296666206bf",
+        "45c5e1645148ca232f83c3257d89a86902f276f5379c8bfc6219812cfe21d6b6",
+        "0c4351cc87a128e40b4ecbcaea98d80f8d53909c398cde86c3e38540f82ee7dd"
+      ],
+      "scope": "No raw idempotency keys in public audit summary; digests summarize actual command payloads."
+    },
+    "mobile": {
+      "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+      "funding_entries": 1,
+      "native_fills": [
+        {
+          "clock": "PAPER_REPLAY_V1",
+          "event_seq": 42,
+          "fee": "0.24144040",
+          "instrument": "BTC-PAPER",
+          "order_id": "P000042-enter",
+          "price": "60360.1",
+          "quantity": "0.010",
+          "role": "enter",
+          "side": "BUY"
+        },
+        {
+          "clock": "PAPER_REPLAY_V1",
+          "event_seq": 119,
+          "fee": "0.24319960",
+          "instrument": "BTC-PAPER",
+          "order_id": "P000119-close",
+          "price": "60799.9",
+          "quantity": "0.010",
+          "role": "close",
+          "side": "SELL"
+        },
+        {
+          "clock": "PAPER_REPLAY_V1",
+          "event_seq": 120,
+          "fee": "0.24319960",
+          "instrument": "BTC-PAPER",
+          "order_id": "P000120-enter",
+          "price": "60799.9",
+          "quantity": "0.010",
+          "role": "enter",
+          "side": "SELL"
+        }
+      ],
+      "native_event_count": 147,
+      "journal": [
+        {
+          "sequence": 1,
+          "operation": "create:a11173df2009cafb40465244d83433196dab6805c2b665841b542126e13be109",
+          "previous": "0000000000000000000000000000000000000000000000000000000000000000",
+          "hash": "46ef1b47d8776e6bef3a262bf002b9ebade6014733a907c108b37b751a23832c",
+          "snapshot_digest": "58aa1f414c8b6250168932958a082d8bac80f79610d05f20761ac8210f2af207"
+        },
+        {
+          "sequence": 2,
+          "operation": "resume:c88e10598692258eeff355c363ac22b397848168465e7b4ca28ce4b9ed29f890",
+          "previous": "46ef1b47d8776e6bef3a262bf002b9ebade6014733a907c108b37b751a23832c",
+          "hash": "7b81869fe82abd22b35949385b650a03e82278f5f84a0e353bdc7f0faa591226",
+          "snapshot_digest": "8131a4f1667ce8eb13de86f4d7550dfb1bf6f033c00f1937857d1025a21b7f0c"
+        },
+        {
+          "sequence": 3,
+          "operation": "step:0",
+          "previous": "7b81869fe82abd22b35949385b650a03e82278f5f84a0e353bdc7f0faa591226",
+          "hash": "3d8215d813003a83050a0d36f93ac86b4765144acfc1baef7e8a2d7833c51329",
+          "snapshot_digest": "bd56e42cc03bffdec3d34ff636a02f028d3381a2d78415bc9a814c0345424299"
+        },
+        {
+          "sequence": 4,
+          "operation": "step:1",
+          "previous": "3d8215d813003a83050a0d36f93ac86b4765144acfc1baef7e8a2d7833c51329",
+          "hash": "1d731bda861387f54b93b7aac80877cbe3dc0efad43e8ababd54c8cc96444bfd",
+          "snapshot_digest": "721002a9547d6edf0bbd3a5d769cf44d6fde81d487ae075f26b1e9f0ef39c726"
+        },
+        {
+          "sequence": 5,
+          "operation": "step:2",
+          "previous": "1d731bda861387f54b93b7aac80877cbe3dc0efad43e8ababd54c8cc96444bfd",
+          "hash": "270a1c5830fae57f71d302ee27615ebaf79c6d0c57ad2571d359ecbb6efd5e94",
+          "snapshot_digest": "a2d29c4e46044e5dde8d455dff1532248158c04b90fc0be15c8773ca8a90c5e6"
+        },
+        {
+          "sequence": 6,
+          "operation": "step:3",
+          "previous": "270a1c5830fae57f71d302ee27615ebaf79c6d0c57ad2571d359ecbb6efd5e94",
+          "hash": "0cf5b8e527643a928af063c205f5bd0e6c831ac37c5e641d076ed3c899216aac",
+          "snapshot_digest": "2333f485a09891215e16e154f2ab94c39bc3c9c46728e48b84c800103c5696a4"
+        },
+        {
+          "sequence": 7,
+          "operation": "step:4",
+          "previous": "0cf5b8e527643a928af063c205f5bd0e6c831ac37c5e641d076ed3c899216aac",
+          "hash": "7c5bb477911f5dece49f6307b79ebc413953128261bb3601b22744f965aca774",
+          "snapshot_digest": "d7d34eadb2b5191a2e2ca9284d33db637e83b145389e0c0bcada844e8ceb30e0"
+        },
+        {
+          "sequence": 8,
+          "operation": "step:5",
+          "previous": "7c5bb477911f5dece49f6307b79ebc413953128261bb3601b22744f965aca774",
+          "hash": "65874a4bad90c4729123561043ab650ee60e605843b38bafebd18e3656aa27f7",
+          "snapshot_digest": "5ebe7b9c65b6a10389406be7b8eb0b5d646d3ef5685665dcb7c5033c80935bea"
+        },
+        {
+          "sequence": 9,
+          "operation": "step:6",
+          "previous": "65874a4bad90c4729123561043ab650ee60e605843b38bafebd18e3656aa27f7",
+          "hash": "74d4e336351427a831b4b51c663a45f7d81399864238a20bd7497ba966d555dc",
+          "snapshot_digest": "fc56710b237637cf8a8e2b0b28892cac233fc945d3e3689dbd4624f29d75c600"
+        },
+        {
+          "sequence": 10,
+          "operation": "step:7",
+          "previous": "74d4e336351427a831b4b51c663a45f7d81399864238a20bd7497ba966d555dc",
+          "hash": "ba00663198096f1e1b155f667bd44da730a019db76516ba8116036cf3dc9cf3b",
+          "snapshot_digest": "a4c424502ed718a06ffaea977975b89ee5e0b2728733b4f0851e99d91a3941c4"
+        },
+        {
+          "sequence": 11,
+          "operation": "step:8",
+          "previous": "ba00663198096f1e1b155f667bd44da730a019db76516ba8116036cf3dc9cf3b",
+          "hash": "d2582ddd38307a3e59941b4c65eea68ad6984b36f2f0783a27ff9a2f4452589b",
+          "snapshot_digest": "3dde40fe482899c4259f5d30a1199bc545a61c164680bd345a5bf73bd5d79fa2"
+        },
+        {
+          "sequence": 12,
+          "operation": "step:9",
+          "previous": "d2582ddd38307a3e59941b4c65eea68ad6984b36f2f0783a27ff9a2f4452589b",
+          "hash": "e874060c6d41ca43e6e463603261c8de1ec2aa3b7e478e52e2c32f470f0f8ff5",
+          "snapshot_digest": "d9d3d1d3886cffc5bb24d85b46c8795aecee547472a4d15ec23f0f6efe99ed65"
+        },
+        {
+          "sequence": 13,
+          "operation": "step:10",
+          "previous": "e874060c6d41ca43e6e463603261c8de1ec2aa3b7e478e52e2c32f470f0f8ff5",
+          "hash": "bc4ff44bee2ab50d1bce6eb0aa8fde65795d9db9d9bd0c9e9668d5ad4548d7fd",
+          "snapshot_digest": "9489e9af8bf41efd4b6382c4f807181d0d1766404d42dace305838b1fb7061d4"
+        },
+        {
+          "sequence": 14,
+          "operation": "pause:7f1deb1896dc55f5e72058c1dcfba374def46a7f2df3ddb94107ab813c720893",
+          "previous": "bc4ff44bee2ab50d1bce6eb0aa8fde65795d9db9d9bd0c9e9668d5ad4548d7fd",
+          "hash": "691715a33cf2e77736753b053d9cff8e6643146f00bd9f9df13f5b70c5c3bad4",
+          "snapshot_digest": "a6a040c7d49bb21bad4d7c88bfec51fd0495e609d3310c4877f302576baac911"
+        },
+        {
+          "sequence": 15,
+          "operation": "resume:a79a57088165cf0bd045bd852e98a0adae8c2fc25a26e8ba8f76177853dadd2b",
+          "previous": "691715a33cf2e77736753b053d9cff8e6643146f00bd9f9df13f5b70c5c3bad4",
+          "hash": "7252e1c694db0eb5f7737a3cec7fd6084349bb7617810fdc03c762283335ae0c",
+          "snapshot_digest": "ea47c8d6654a1f7620b435fa5d4ee304060a1bdb1de501576dc9b6040d500ed4"
+        },
+        {
+          "sequence": 16,
+          "operation": "step:11",
+          "previous": "7252e1c694db0eb5f7737a3cec7fd6084349bb7617810fdc03c762283335ae0c",
+          "hash": "a55887f53073b42320abde8ea6e8e3c975155463d141eda60264dcbb6c915460",
+          "snapshot_digest": "d34d3515f340007ffcd4c513889bd6d2d3906091134bdb0a9aa636637c80d2ae"
+        },
+        {
+          "sequence": 17,
+          "operation": "step:12",
+          "previous": "a55887f53073b42320abde8ea6e8e3c975155463d141eda60264dcbb6c915460",
+          "hash": "e27c14107a11ff90d505677f767cc285c0208ca8da1622308acc7166009dc858",
+          "snapshot_digest": "1be8f3cb034b6eedd62a0cc3793645679670e3efec67ae86a38f8721f85576da"
+        },
+        {
+          "sequence": 18,
+          "operation": "step:13",
+          "previous": "e27c14107a11ff90d505677f767cc285c0208ca8da1622308acc7166009dc858",
+          "hash": "8b3a6c3707be7e1def0c654d82aeade4e8dcc54d3844001ee029c255bcec7467",
+          "snapshot_digest": "3e83930a20507b8e1da9967fe0bec88bb7e25ab61c22cd47c6aecf7569c40d62"
+        },
+        {
+          "sequence": 19,
+          "operation": "step:14",
+          "previous": "8b3a6c3707be7e1def0c654d82aeade4e8dcc54d3844001ee029c255bcec7467",
+          "hash": "3219a685fc38d9560d06a3521709c20986e54bf35e67dfa4eec0c8891b4fc99a",
+          "snapshot_digest": "a3781848f82721897005e778a021ff182a4e6444ad4c97e9d38f82c939b8d685"
+        },
+        {
+          "sequence": 20,
+          "operation": "step:15",
+          "previous": "3219a685fc38d9560d06a3521709c20986e54bf35e67dfa4eec0c8891b4fc99a",
+          "hash": "bb6f80291cdea73a1702557d63ee3c41a1c6e34aa0669ca0034c427322980712",
+          "snapshot_digest": "5e1c709be2660ba99d2925fcbc7c1b9f75f05cce5858b2a2651f5e5b8f83b4e0"
+        },
+        {
+          "sequence": 21,
+          "operation": "step:16",
+          "previous": "bb6f80291cdea73a1702557d63ee3c41a1c6e34aa0669ca0034c427322980712",
+          "hash": "9777bcdfe2a0df84477edcd5cfd133b76065364d2b6ddf216d7e0df2503d250d",
+          "snapshot_digest": "64d6ac81c107da9d63c0a9aa2dae6c84a053574c3a02691c600e0406d639395c"
+        },
+        {
+          "sequence": 22,
+          "operation": "step:17",
+          "previous": "9777bcdfe2a0df84477edcd5cfd133b76065364d2b6ddf216d7e0df2503d250d",
+          "hash": "a12767c13e6f37885a4200352e498d8add8823cc9c1e1b93581791e361d54b01",
+          "snapshot_digest": "50cb8577b64cf0bed44559b2fc81ded39be079a99993f5884d486e6287c4c4a8"
+        },
+        {
+          "sequence": 23,
+          "operation": "step:18",
+          "previous": "a12767c13e6f37885a4200352e498d8add8823cc9c1e1b93581791e361d54b01",
+          "hash": "1d59b61753daad6500808cf04ccf6b2372bacce93023b636498f40b06c1170d3",
+          "snapshot_digest": "ba5a2dd198ee201fca313a7af97546b8eb10e23a942fd8a8f48bd740ec56978d"
+        },
+        {
+          "sequence": 24,
+          "operation": "step:19",
+          "previous": "1d59b61753daad6500808cf04ccf6b2372bacce93023b636498f40b06c1170d3",
+          "hash": "46d3094ed6dc0738a4323cc6f48cda44fbc972e31bdce1d3481ca3beb557230d",
+          "snapshot_digest": "262517c8a981930e853bd2d773182a0a1e5dbadaa1625cfaecb77093f341067c"
+        },
+        {
+          "sequence": 25,
+          "operation": "step:20",
+          "previous": "46d3094ed6dc0738a4323cc6f48cda44fbc972e31bdce1d3481ca3beb557230d",
+          "hash": "0426f45d03857a2068171877af7539ac9f164f4a3ebcc7372fae6a6e68dbe687",
+          "snapshot_digest": "f66fe5d66f9104370eed9bf238315817a8e043c5cd462ff0bd2686cf4e91dab4"
+        },
+        {
+          "sequence": 26,
+          "operation": "step:21",
+          "previous": "0426f45d03857a2068171877af7539ac9f164f4a3ebcc7372fae6a6e68dbe687",
+          "hash": "94447af44ded7c86fc659b7f02510e777b948f7da057f525573f6a24767a4a4b",
+          "snapshot_digest": "673e346941bc2577a11bf3dad3dc7e4e9980c8a2796c394e8e36003738ed2bd8"
+        },
+        {
+          "sequence": 27,
+          "operation": "step:22",
+          "previous": "94447af44ded7c86fc659b7f02510e777b948f7da057f525573f6a24767a4a4b",
+          "hash": "eaa9f659742be3c59d60f845f07b06085dc21220c67932f9fc047eb8fbe274f5",
+          "snapshot_digest": "f14d5a04f4f3146d47cc54f8b49c5b09d2af72f2d655e05f518d04d97b33a738"
+        },
+        {
+          "sequence": 28,
+          "operation": "step:23",
+          "previous": "eaa9f659742be3c59d60f845f07b06085dc21220c67932f9fc047eb8fbe274f5",
+          "hash": "ca9d878f8b7a8f34b0248edaf10e5fd2e24ba2999fb1212c59356e5589f5637a",
+          "snapshot_digest": "40ccb8e8b7beb53d10a085cb19d0169a17ab9eb7463342f287445d015380a891"
+        },
+        {
+          "sequence": 29,
+          "operation": "step:24",
+          "previous": "ca9d878f8b7a8f34b0248edaf10e5fd2e24ba2999fb1212c59356e5589f5637a",
+          "hash": "a64b58783a874b6b9d50481a31af6b3698a84a5aa9e5bdb9e5209becf219bf8e",
+          "snapshot_digest": "a239865b2324706651da71351c4f4b1a05c1064d899588fcb8bb6df5f7db4330"
+        },
+        {
+          "sequence": 30,
+          "operation": "step:25",
+          "previous": "a64b58783a874b6b9d50481a31af6b3698a84a5aa9e5bdb9e5209becf219bf8e",
+          "hash": "1cbbd2960b7c1dc13a3b91036e229fbd6e926906389fcf415cfc985ba543fa92",
+          "snapshot_digest": "538e6fa338594715654986cdf778fae45b75d55035eeb1804c316573346bd8fa"
+        },
+        {
+          "sequence": 31,
+          "operation": "step:26",
+          "previous": "1cbbd2960b7c1dc13a3b91036e229fbd6e926906389fcf415cfc985ba543fa92",
+          "hash": "bdd1c4ef64503172b2213af2e3585d42ebdee1958c505dd76f70709174676fc1",
+          "snapshot_digest": "ac98fc3200ed372b54d8b6432f9833a17398783fa147f21012108c0c5e9a5620"
+        },
+        {
+          "sequence": 32,
+          "operation": "step:27",
+          "previous": "bdd1c4ef64503172b2213af2e3585d42ebdee1958c505dd76f70709174676fc1",
+          "hash": "42f024601b1dde792ece315a8f6d3d5bb879fd4d8e96088c9125ec8f9f41a389",
+          "snapshot_digest": "a75b2a892e498da5a5b6ca9319ee924900c12b79962109ab759a1c8cc36c684e"
+        },
+        {
+          "sequence": 33,
+          "operation": "step:28",
+          "previous": "42f024601b1dde792ece315a8f6d3d5bb879fd4d8e96088c9125ec8f9f41a389",
+          "hash": "6e2fce5edd7f46700fca0c76c18cb7e3d26be02af4279dac91b442d588af3539",
+          "snapshot_digest": "e8d42cad54840c8d2e9dabd3e818be4e7eae99d2e9e20f718eb367c951299144"
+        },
+        {
+          "sequence": 34,
+          "operation": "step:29",
+          "previous": "6e2fce5edd7f46700fca0c76c18cb7e3d26be02af4279dac91b442d588af3539",
+          "hash": "e2f265e27ea3fdabdb794d2d3bc1cd50d6c68ccdd60c5caedb02a1388ab5ee2a",
+          "snapshot_digest": "b95474adcd86a1b0d9f68602baef660d9bc9d31e0958ccdf7eb65bf384c8fff8"
+        },
+        {
+          "sequence": 35,
+          "operation": "step:30",
+          "previous": "e2f265e27ea3fdabdb794d2d3bc1cd50d6c68ccdd60c5caedb02a1388ab5ee2a",
+          "hash": "4adc6a8e0e87755f38397b44df922bb329b0b1a1f3317da3c34c43746e7aba4d",
+          "snapshot_digest": "74538319dd9684504a80936667b80cfa88c161f131d6eebb65e4addddfb958d1"
+        },
+        {
+          "sequence": 36,
+          "operation": "step:31",
+          "previous": "4adc6a8e0e87755f38397b44df922bb329b0b1a1f3317da3c34c43746e7aba4d",
+          "hash": "1dbe0a451e99b27552e114c919cce113cbc3f35a29959721f6aa81f1c3e6f2ce",
+          "snapshot_digest": "32f4321b170a6cd275e8d46588d8178114219485e678527413532d5cfa19f6c2"
+        },
+        {
+          "sequence": 37,
+          "operation": "step:32",
+          "previous": "1dbe0a451e99b27552e114c919cce113cbc3f35a29959721f6aa81f1c3e6f2ce",
+          "hash": "085572cb843342ff654073256d1323ff4ffb66892ebde2d5af65f18ae8e2a283",
+          "snapshot_digest": "9dc0ed869517e6a9b10f5bbd4b119e78f7ea6f93afbea236187f8dcfb4de627d"
+        },
+        {
+          "sequence": 38,
+          "operation": "step:33",
+          "previous": "085572cb843342ff654073256d1323ff4ffb66892ebde2d5af65f18ae8e2a283",
+          "hash": "75b714b8e70f358c066415047265d67cbb13c02dff0a4a5a158cd337a5cfcb9c",
+          "snapshot_digest": "45f30f5e6aff04038460f8c5bb531144804322620c6a55b78ff0cda48df4fbf9"
+        },
+        {
+          "sequence": 39,
+          "operation": "step:34",
+          "previous": "75b714b8e70f358c066415047265d67cbb13c02dff0a4a5a158cd337a5cfcb9c",
+          "hash": "7ed1d4217b6405292def86f5a6adaa42d2f30b33774576115ecfe40a38d6cb83",
+          "snapshot_digest": "a715e39a3fd78c738c70f3f4a9cfe7402dfd319a107f0c5e2f50ff4e8713f6d2"
+        },
+        {
+          "sequence": 40,
+          "operation": "step:35",
+          "previous": "7ed1d4217b6405292def86f5a6adaa42d2f30b33774576115ecfe40a38d6cb83",
+          "hash": "4982bae3227cab62996869663298e107eb8bfe7c309245bc5620a38642f7e53b",
+          "snapshot_digest": "901cb6caba9c912b0b83be2d07ec152d9ca0182478685180df4d60fd2193e741"
+        },
+        {
+          "sequence": 41,
+          "operation": "recovery-paused",
+          "previous": "4982bae3227cab62996869663298e107eb8bfe7c309245bc5620a38642f7e53b",
+          "hash": "c4813901bee4b505fc0261196ea0b95aa3b528f239ab6b7ac4298ab7039228c8",
+          "snapshot_digest": "af3a37bc6289cb9567c7a0f835fed7613ba3e821905c951ac05e611650230e2e"
+        }
+      ],
+      "command_digests": [
+        "0c4351cc87a128e40b4ecbcaea98d80f8d53909c398cde86c3e38540f82ee7dd",
+        "832839b7e8b7ed268ba5bc22a4d06614f362468477ac5ee3c2f06296666206bf",
+        "832839b7e8b7ed268ba5bc22a4d06614f362468477ac5ee3c2f06296666206bf",
+        "45c5e1645148ca232f83c3257d89a86902f276f5379c8bfc6219812cfe21d6b6"
+      ],
+      "scope": "No raw idempotency keys in public audit summary; digests summarize actual command payloads."
+    }
+  },
+  "after": {
+    "desktop": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:20.989985+00:00",
+      "cursor": 11,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "604.0000",
+      "funding_entries": 1,
+      "high_water": "10000.55755960",
+      "last_closed_net": "0.00000000",
+      "last_virtual_time_ms": 1767226259999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9939.39845960",
+        "closed_net_pnl": "0.00000000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10000.15755960",
+        "fees": "0.24144040",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60400.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60360.1",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60400.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.36010000",
+            "side": "long",
+            "unrealized_pnl": "0.39900000"
+          }
+        ],
+        "realized_gross": "0.00000000",
+        "realized_wallet_delta": "-0.24144040",
+        "reserved_margin": "60.36010000",
+        "unrealized_pnl": "0.39900000",
+        "wallet_balance": "9999.75855960"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:53:45.634614+00:00",
+      "processed_closed_trades": 0,
+      "reason": "operator_pause",
+      "run_id": "auto-aedbb050-5479-4c4a-ba58-54c7bb2c60c8",
+      "status": "PAUSED",
+      "synthetic": true
+    },
+    "mobile": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:57.776809+00:00",
+      "cursor": 36,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "605.2000",
+      "funding_entries": 1,
+      "high_water": "10006.86916040",
+      "last_closed_net": "3.91336000",
+      "last_virtual_time_ms": 1767227759999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9942.87026040",
+        "closed_net_pnl": "3.91336000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10006.46916040",
+        "fees": "0.72783960",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 119,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000119-close",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "close",
+            "side": "SELL"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 120,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000120-enter",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "SELL"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60520.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000119-close",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": true,
+            "role": "close",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000120-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60799.9",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60520.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.79990000",
+            "side": "short",
+            "unrealized_pnl": "2.79900000"
+          }
+        ],
+        "realized_gross": "4.39800000",
+        "realized_wallet_delta": "3.67016040",
+        "reserved_margin": "60.79990000",
+        "unrealized_pnl": "2.79900000",
+        "wallet_balance": "10003.67016040"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "close",
+          "quantity": "0.010"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "short"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:56:21.904799+00:00",
+      "processed_closed_trades": 1,
+      "reason": "process_restart_requires_explicit_resume",
+      "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+      "status": "PAUSED_RECOVERY",
+      "synthetic": true
+    }
+  },
+  "after_wait": {
+    "desktop": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:20.989985+00:00",
+      "cursor": 11,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "604.0000",
+      "funding_entries": 1,
+      "high_water": "10000.55755960",
+      "last_closed_net": "0.00000000",
+      "last_virtual_time_ms": 1767226259999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9939.39845960",
+        "closed_net_pnl": "0.00000000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10000.15755960",
+        "fees": "0.24144040",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60400.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60360.1",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60400.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.36010000",
+            "side": "long",
+            "unrealized_pnl": "0.39900000"
+          }
+        ],
+        "realized_gross": "0.00000000",
+        "realized_wallet_delta": "-0.24144040",
+        "reserved_margin": "60.36010000",
+        "unrealized_pnl": "0.39900000",
+        "wallet_balance": "9999.75855960"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:53:45.634614+00:00",
+      "processed_closed_trades": 0,
+      "reason": "operator_pause",
+      "run_id": "auto-aedbb050-5479-4c4a-ba58-54c7bb2c60c8",
+      "status": "PAUSED",
+      "synthetic": true
+    },
+    "mobile": {
+      "account_scope": "independent_synthetic_account",
+      "config": {
+        "bar_limit": 80,
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "fast": 3,
+        "max_consecutive_losses": 3,
+        "max_drawdown": "0.05",
+        "max_exposure": "1000.00",
+        "max_loss": "0.05",
+        "quantity": "0.010",
+        "slow": 10
+      },
+      "created_at": "2026-10-31T01:53:57.776809+00:00",
+      "cursor": 36,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "exposure": "605.2000",
+      "funding_entries": 1,
+      "high_water": "10006.86916040",
+      "last_closed_net": "3.91336000",
+      "last_virtual_time_ms": 1767227759999,
+      "loss_streak": 0,
+      "mode": "PAPER_AUTO_SYNTHETIC",
+      "native": {
+        "assumptions": "PAPER-v1",
+        "available_balance": "9942.87026040",
+        "closed_net_pnl": "3.91336000",
+        "deficit": "0.00000000",
+        "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+        "equity": "10006.46916040",
+        "fees": "0.72783960",
+        "fills": [
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 42,
+            "fee": "0.24144040",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000042-enter",
+            "price": "60360.1",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "BUY"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 119,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000119-close",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "close",
+            "side": "SELL"
+          },
+          {
+            "clock": "PAPER_REPLAY_V1",
+            "event_seq": 120,
+            "fee": "0.24319960",
+            "instrument": "BTC-PAPER",
+            "order_id": "P000120-enter",
+            "price": "60799.9",
+            "quantity": "0.010",
+            "role": "enter",
+            "side": "SELL"
+          }
+        ],
+        "marks": {
+          "BTC-PAPER": "60520.0",
+          "ETH-PAPER": "3000.00"
+        },
+        "mode": "PAPER",
+        "native_rounding_adjustment": "0.00000000",
+        "orders": [
+          {
+            "id": "P000042-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000119-close",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": true,
+            "role": "close",
+            "status": "FILLED",
+            "trigger": null
+          },
+          {
+            "id": "P000120-enter",
+            "instrument": "BTC-PAPER",
+            "quantity": "0.010",
+            "reduce_only": false,
+            "role": "enter",
+            "status": "FILLED",
+            "trigger": null
+          }
+        ],
+        "positions": [
+          {
+            "entry_price": "60799.9",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60520.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.79990000",
+            "side": "short",
+            "unrealized_pnl": "2.79900000"
+          }
+        ],
+        "realized_gross": "4.39800000",
+        "realized_wallet_delta": "3.67016040",
+        "reserved_margin": "60.79990000",
+        "unrealized_pnl": "2.79900000",
+        "wallet_balance": "10003.67016040"
+      },
+      "native_events": [
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "59960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60040.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60080.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60120.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60160.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60200.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60240.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60280.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "long"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60320.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60360.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60400.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60440.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "61000.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60960.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60920.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60880.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "close",
+          "quantity": "0.010"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "enter",
+          "leverage": 10,
+          "quantity": "0.010",
+          "side": "short"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60840.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60800.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60760.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60720.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60680.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60640.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60560.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60480.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60600.0"
+        },
+        {
+          "instrument": "BTC-PAPER",
+          "kind": "tick",
+          "price": "60520.0"
+        }
+      ],
+      "next_due_at": "2026-10-31T01:56:21.904799+00:00",
+      "processed_closed_trades": 1,
+      "reason": "process_restart_requires_explicit_resume",
+      "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+      "status": "PAUSED_RECOVERY",
+      "synthetic": true
+    }
+  },
+  "status": "PASS",
+  "verified_at_utc": "2026-10-31T01:57:12.382027+00:00",
+  "outgoing_after_restart": {}
+}
