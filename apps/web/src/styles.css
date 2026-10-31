@@ -471,6 +471,17 @@ footer {
 .account-panel li {
   color: #d5dee8;
 }
+.account-past {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #ddaf55;
+  color: #ffe3a3;
+  font-size: 16px;
+}
+.account td,
+.account th {
+  font-variant-numeric: tabular-nums;
+}
 .account-blocked {
   margin: 12px 0;
   color: #ffb4a8;

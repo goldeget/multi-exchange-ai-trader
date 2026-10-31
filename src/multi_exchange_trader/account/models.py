@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from .config import EnvironmentName
+from .freshness import STALE_AFTER_SECONDS, UNUSABLE_AFTER_SECONDS
 
 Connection = Literal["ok", "BLOCKED", "error", "missing_credentials", "config"]
 
@@ -87,3 +88,20 @@ class AccountView(BaseModel):
     포지션: list[PositionItem] | None
     미체결주문: list[OrderItem] | None
     오류코드: str | None
+    계좌마진모드: str = "확인 불가"
+    계좌마진설명: str = "거래소 계정 정보입니다. 포지션의 예전 항목으로 짐작하지 않습니다."
+    레버리지안내: str = "종목 안내에 적힌 최대 배수입니다. 지금 포지션 크기에 실제로 허용되는 배수와 같지 않을 수 있습니다."
+    순차조회: bool = True
+    수집시작시각: str | None = None
+    수집완료시각: str | None = None
+    거래소응답시각: str | None = None
+    계정갱신시각: str | None = None
+    수신시각: str | None = None
+    캐시사용: bool = False
+    캐시나이초: int = 0
+    데이터나이초: int = 0
+    동시요청공유: bool = False
+    지연기준초: int = STALE_AFTER_SECONDS
+    확인불가기준초: int = UNUSABLE_AFTER_SECONDS
+    신선도표시: str = "현재 확인 불가"
+    주문판단에사용: bool = False

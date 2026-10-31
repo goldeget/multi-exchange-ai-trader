@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -13,6 +14,7 @@ from .config import (
     resolve_environment,
     text_contains_credential,
 )
+from .freshness import VIEW_DEADLINE_SECONDS, freshness_label
 from .models import (
     AccountView,
     CoinBalance,
@@ -59,8 +61,17 @@ _MESSAGES = {
     "ret_10004": "서명이 맞지 않습니다. 비밀키는 표시하지 않습니다.",
     "ret_10005": "이 키로는 계좌를 읽을 권한이 없습니다.",
     "ret_10006": "요청이 너무 많습니다. 잠시 뒤에 다시 조회하세요.",
-    "ret_10010": "요청 시각이 서버와 맞지 않습니다. 숫자를 숨겼습니다.",
+    "ret_10010": "접속 키에 등록된 주소와 이 컴퓨터가 다릅니다. 키 값은 표시하지 않습니다. 숫자를 숨겼습니다.",
     "credential_leak": "오류가 났습니다. 비밀키가 섞이지 않도록 자세한 내용과 숫자를 숨겼습니다.",
+    "timeout": "응답 시간을 넘겼습니다. 숫자를 숨겼습니다.",
+    "proxy": "중간에 있는 연결이 요청을 거부했습니다. 국가 제한으로 단정하지 않습니다. 연결 설정은 바꾸지 않습니다. 숫자를 숨겼습니다.",
+    "http_403": "Bybit가 요청을 거절했습니다. 국가 제한인지 다른 이유인지는 이 응답만으로 확인하지 못했습니다. 숫자를 숨겼습니다.",
+    "http_451": "거래소가 법적 제한 형식의 응답을 보냈습니다. 국가 제한 문구는 없어 단정하지 않습니다. 숫자를 숨겼습니다.",
+}
+_MARGIN_LABELS = {
+    "ISOLATED_MARGIN": "격리",
+    "REGULAR_MARGIN": "교차",
+    "PORTFOLIO_MARGIN": "포트폴리오",
 }
 
 
@@ -174,9 +185,31 @@ def _symbol(value: object) -> str:
     return "확인 필요"
 
 
+def _moment(server_ms: int) -> datetime:
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=server_ms)
+
+
 def _format_time(server_ms: int) -> str:
-    moment = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=server_ms)
-    return moment.strftime("%Y-%m-%d %H:%M:%S") + " 세계 표준시"
+    return _moment(server_ms).strftime("%Y-%m-%d %H:%M:%S") + " 세계 표준시"
+
+
+def _iso(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _account_fields(result: dict[str, object]) -> tuple[str, str | None]:
+    """Read margin mode from account info. Do not infer it from position tradeMode."""
+    raw = result.get("marginMode")
+    label = _MARGIN_LABELS.get(raw, "확인 불가") if isinstance(raw, str) else "확인 불가"
+    updated = result.get("updatedTime")
+    stamp: str | None = None
+    if isinstance(updated, str) and updated.isdigit():
+        millis = int(updated)
+        if millis > 0:
+            stamp = _iso(_moment(millis))
+    elif isinstance(updated, int) and not isinstance(updated, bool) and updated > 0:
+        stamp = _iso(_moment(updated))
+    return label, stamp
 
 
 def _rows(value: object) -> list[dict[str, object]]:
@@ -253,9 +286,11 @@ def _position(row: dict[str, object]) -> PositionItem | None:
         표시가=_decimal(row.get("markPrice")),
         청산가=_decimal(row.get("liqPrice")),
         미실현손익=_decimal(row.get("unrealisedPnl"), signed=True),
-        마진모드=_label(row.get("tradeMode"), {"0": "교차", "1": "격리"}),
+        # tradeMode is deprecated and always 0. It is not this position's margin mode.
+        마진모드="확인 불가",
         포지션모드=_label(
-            row.get("positionIdx"), {"0": "한 방향", "1": "양쪽 포지션 · 매수", "2": "양쪽 포지션 · 매도"}
+            row.get("positionIdx"),
+            {"0": "한 방향", "1": "양쪽 포지션 · 매수", "2": "양쪽 포지션 · 매도"},
         ),
     )
 
@@ -296,6 +331,7 @@ async def build_account_view(
     problem: str | None,
     *,
     live_trading: bool | None = None,
+    deadline_at: float | None = None,
 ) -> AccountView:
     trading = live_trading_enabled() if live_trading is None else live_trading
     if client is None:
@@ -303,28 +339,46 @@ async def build_account_view(
         if code not in {"missing_credentials", "config"}:
             code = "missing_credentials"
         return blank_view(code, _environment(), live_trading=trading)
+    started = datetime.now(UTC)
+    deadline = time.monotonic() + VIEW_DEADLINE_SECONDS if deadline_at is None else deadline_at
     try:
-        _time_result, server_ms = await client.read("/v5/market/time", [], signed=False)
+        _time_result, server_ms = await client.read(
+            "/v5/market/time", [], signed=False, deadline=deadline
+        )
         client.anchor_server_time(server_ms)
         instrument, _ignored = await client.read(
             "/v5/market/instruments-info",
             [("category", "linear"), ("symbol", "BTCUSDT")],
             signed=False,
+            deadline=deadline,
         )
         wallet, _ignored = await client.read(
-            "/v5/account/wallet-balance", [("accountType", "UNIFIED")], signed=True
+            "/v5/account/wallet-balance",
+            [("accountType", "UNIFIED")],
+            signed=True,
+            deadline=deadline,
+        )
+        account, _account_ms = await client.read(
+            "/v5/account/info", [], signed=True, deadline=deadline
         )
         positions = await client.read_pages(
-            "/v5/position/list", [("category", "linear"), ("settleCoin", "USDT")]
+            "/v5/position/list",
+            [("category", "linear"), ("settleCoin", "USDT")],
+            deadline=deadline,
         )
         orders = await client.read_pages(
-            "/v5/order/realtime", [("category", "linear"), ("settleCoin", "USDT")]
+            "/v5/order/realtime",
+            [("category", "linear"), ("settleCoin", "USDT")],
+            deadline=deadline,
         )
+        received = datetime.now(UTC)
+        margin, account_updated = _account_fields(account)
         parsed_positions: list[PositionItem] = []
         for row in positions:
             item = _position(row)
             if item is not None:
                 parsed_positions.append(item)
+        finished = datetime.now(UTC)
         return AccountView(
             연결상태=_CONNECTION_LABELS["ok"],
             상태코드="ok",
@@ -339,6 +393,14 @@ async def build_account_view(
             포지션=parsed_positions,
             미체결주문=[_order(row) for row in orders],
             오류코드=None,
+            계좌마진모드=margin,
+            수집시작시각=_iso(started),
+            수집완료시각=_iso(finished),
+            거래소응답시각=_iso(_moment(server_ms)),
+            계정갱신시각=account_updated,
+            수신시각=_iso(received),
+            신선도표시=freshness_label(0, "ok"),
+            주문판단에사용=False,
         )
     except BybitBlocked:
         return blank_view("BLOCKED", client.environment, live_trading=trading)

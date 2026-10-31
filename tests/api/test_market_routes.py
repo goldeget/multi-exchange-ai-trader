@@ -40,6 +40,7 @@ async def test_health_and_route_inventory_have_no_exchange_access():
         assert {(path, tuple(method.upper() for method in sorted(methods)))
                 for path, methods in app.openapi()["paths"].items()} == {
             ("/api/v1/health", ("GET",)),
+            ("/api/v1/ready", ("GET",)),
             ("/api/v1/market/ticker", ("GET",)),
             ("/api/v1/market/candles", ("GET",)),
             ("/api/v1/paper/scenarios", ("GET",)),

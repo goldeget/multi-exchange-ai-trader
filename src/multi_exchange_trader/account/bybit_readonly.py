@@ -12,12 +12,13 @@ A future order must go through one NautilusTrader execution path, which this
 milestone does not start.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeGuard, cast
 from urllib.parse import urlencode
 
@@ -36,10 +37,12 @@ READ_ONLY_PATHS = frozenset(
         "/v5/market/time",
         "/v5/market/instruments-info",
         "/v5/account/wallet-balance",
+        "/v5/account/info",
         "/v5/position/list",
         "/v5/order/realtime",
     }
 )
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 RECV_WINDOW = "10000"
 _MAX_BYTES = 1_000_000
 _PAGE_LIMIT = 5
@@ -160,6 +163,8 @@ class BybitReadOnlyClient:
         self._api_secret = secret
         self._server_ms: int | None = None
         self._mono: float | None = None
+        self.retry_waits = (0.4, 0.8)
+        self._sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep
         self._log_filter = _DropCredentialLogs((key, secret))
         self._loggers = [logging.getLogger(name) for name in _LOGGERS]
         for logger in self._loggers:
@@ -212,11 +217,13 @@ class BybitReadOnlyClient:
         elapsed = int((time.monotonic() - self._mono) * 1000)
         return str(self._server_ms + max(elapsed, 0))
 
-    async def read(
+    def _raise_if_deadline(self, deadline: float | None) -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise BybitReadError("timeout")
+
+    def _build_request(
         self, path: str, params: list[tuple[str, str]], *, signed: bool
-    ) -> tuple[dict[str, object], int]:
-        if path not in READ_ONLY_PATHS:
-            raise ReadOnlyViolation()
+    ) -> httpx.Request:
         query = _query(params)
         headers: dict[str, str] = {}
         if signed:
@@ -232,21 +239,63 @@ class BybitReadOnlyClient:
         target = f"{self.base_url}{path}"
         if query:
             target = f"{target}?{query}"
-        request = httpx.Request("GET", target, headers=headers)
-        try:
-            response = await self._client.send(request)
-        except httpx.HTTPError as exc:
-            # Classify from the exception type and a few fixed phrases.
-            # Do not copy the exception text forward; it can contain request details.
-            detail = str(exc).lower()
-            if "403" in detail or "451" in detail:
-                raise BybitBlocked() from None
-            if "name resolution" in detail or "getaddrinfo" in detail:
-                raise BybitReadError("dns") from None
-            raise BybitReadError("network") from None
-        return self._accepted(response)
+        return httpx.Request("GET", target, headers=headers)
 
-    async def read_pages(self, path: str, params: list[tuple[str, str]]) -> list[dict[str, object]]:
+    async def read(
+        self,
+        path: str,
+        params: list[tuple[str, str]],
+        *,
+        signed: bool,
+        deadline: float | None = None,
+    ) -> tuple[dict[str, object], int]:
+        if path not in READ_ONLY_PATHS:
+            raise ReadOnlyViolation()
+        attempt = 0
+        while True:
+            self._raise_if_deadline(deadline)
+            request = self._build_request(path, params, signed=signed)
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise BybitReadError("timeout")
+            try:
+                send = self._client.send(request)
+                if remaining is None:
+                    response = await send
+                else:
+                    response = await asyncio.wait_for(send, timeout=min(10.0, remaining))
+            except TimeoutError:
+                raise BybitReadError("timeout") from None
+            except httpx.TimeoutException:
+                raise BybitReadError("timeout") from None
+            except httpx.ProxyError:
+                raise BybitReadError("proxy") from None
+            except httpx.HTTPError as exc:
+                # Classify from the exception type and a few fixed phrases.
+                # Do not copy the exception text forward; it can contain request details.
+                detail = str(exc).lower()
+                if (
+                    "name resolution" in detail
+                    or "getaddrinfo" in detail
+                    or "nodename nor servname" in detail
+                ):
+                    raise BybitReadError("dns") from None
+                raise BybitReadError("network") from None
+            if response.status_code in _RETRY_STATUSES and attempt < len(self.retry_waits):
+                await response.aclose()
+                self._raise_if_deadline(deadline)
+                await self._sleeper(self.retry_waits[attempt])
+                attempt += 1
+                continue
+            return self._accepted(response)
+
+    async def read_pages(
+        self,
+        path: str,
+        params: list[tuple[str, str]],
+        *,
+        deadline: float | None = None,
+    ) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         cursor = ""
         for _ in range(_PAGE_LIMIT):
@@ -254,7 +303,7 @@ class BybitReadOnlyClient:
             page.append(("limit", "50"))
             if cursor:
                 page.append(("cursor", cursor))
-            result, _server_ms = await self.read(path, page, signed=True)
+            result, _server_ms = await self.read(path, page, signed=True, deadline=deadline)
             for item in _as_list(result.get("list")):
                 rows.append(_mapping(item))
             cursor = _next_cursor(result)
@@ -264,7 +313,13 @@ class BybitReadOnlyClient:
 
     def _accepted(self, response: httpx.Response) -> tuple[dict[str, object], int]:
         if response.status_code in {403, 451}:
-            raise BybitBlocked()
+            snippet = ""
+            if len(response.content) <= _MAX_BYTES:
+                snippet = response.content.decode("utf-8", errors="ignore")
+            if _region_message(snippet):
+                raise BybitBlocked()
+            code = "http_403" if response.status_code == 403 else "http_451"
+            raise BybitReadError(code)
         if response.status_code == 429:
             raise BybitReadError("ret_10006")
         if 300 <= response.status_code < 400:
