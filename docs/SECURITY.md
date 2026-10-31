@@ -2,11 +2,15 @@
 
 This document records the intended security boundaries and acceptance criteria for the public market-data dashboard and later phases. Requirements below are not evidence that controls have been implemented or tested. This file is project documentation; it is not a repository-wide scanner policy.
 
-## Current scope: public-data dashboard
+## Current scope: public data and a read-only Bybit account view
 
-The current slice displays public crypto market information. It must not access an exchange account, hold funds, or submit orders. The user's existing manual Bybit positions remain external and unmanaged: the dashboard must not discover them through authenticated access, change them, hedge them, close them, or imply that its risk controls protect them.
+The public market pages display public crypto market information. They do not submit orders.
 
-No exchange API-key entry, credential storage, authenticated exchange client, private endpoint, or live order transport is permitted. PAPER features described below are future requirements, not authorization to implement them in this slice. Labels and documentation must accurately distinguish public observations, simulations, and real account information.
+A separate read-only Bybit linear (USDT perpetual) view may read `BYBIT_API_KEY` and `BYBIT_API_SECRET` only from the process environment or the allowlisted keys in a `.env` file. It must not accept keys from the browser, a query string, a request body, logs, or git. It may call only an allowlist of GET endpoints: server time, instrument leverage, wallet balance, positions, and open orders. It must not place orders, set leverage, or change positions. `LIVE_TRADING_ENABLED` defaults to false. Order and leverage endpoints stay refused even if that flag is true, because this client is not an order sender. Future orders belong to one NautilusTrader execution path, which this view does not start. Nautilus Bybit execution can change leverage on connect and can submit orders, so this view does not open that client.
+
+Existing manual positions and open orders are labeled external and are not adopted or modified. If Bybit denies the network location, the view shows BLOCKED and no invented balances. `MARKET_DATA_BLOCKED_HOSTS` stays in place for the public market worker. The read-only account client is separate and does not change VPN or proxy settings.
+
+The user's existing manual Bybit positions remain external and unmanaged: the program must not hedge them, close them, or imply that its risk controls protect them. PAPER labels must stay distinct from this mainnet or demo read.
 
 ## Threat model and trust boundaries
 
@@ -15,7 +19,7 @@ No exchange API-key entry, credential storage, authenticated exchange client, pr
 - The browser is untrusted. Future server-side validation and execution restrictions must hold even when requests bypass the interface.
 - AI output and retrieved text are untrusted suggestions. They cannot authorize actions, override policy, or supply executable instructions.
 - Dependencies, build scripts, CI configuration, and deployment configuration can introduce execution or credential exposure. Review changes to these boundaries explicitly.
-- Protect application integrity, user privacy, the accuracy of displayed data, future simulated account records, and audit history. Real exchange accounts and funds must remain unreachable from this application.
+- Protect application integrity, user privacy, the accuracy of displayed data, future simulated account records, and audit history. The read-only Bybit view may display balances and positions on the local machine. It must not move funds, submit orders, or change leverage.
 
 ## Source and market-data validation
 
@@ -47,7 +51,7 @@ PAPER execution requires its own approved implementation phase. It must remain s
 
 ## Logs, secrets, and CI
 
-- Do not request, read, or accept exchange credentials, including credentials already present in a developer's environment. Commit only placeholder configuration. Future separately approved AI credentials must remain server-side and outside source control.
+- Read Bybit credentials only inside the read-only account client, from the environment or the allowlisted `.env` keys. Do not log them, return them, commit them, or put them in browser bundles, fixtures, screenshots, or documentation. Redact them from errors. Future separately approved AI credentials must remain server-side and outside source control.
 - Redact credentials and sensitive values from logs, errors, telemetry, and generated artifacts. Avoid logging complete prompts or responses that may contain private data. Set bounded retention and access appropriate to the actual deployment before enabling persistent logging.
 - Never place secrets in browser bundles, public environment variables, fixtures, screenshots, or documentation. If a secret is exposed, remove access to it and rotate it; deleting the visible copy alone is insufficient.
 - CI must use locked dependencies, build/type checks appropriate to the stack, dependency and secret checks, and public or synthetic fixtures. Production secrets and exchange credentials must not be available to CI or untrusted pull-request jobs.
@@ -55,9 +59,10 @@ PAPER execution requires its own approved implementation phase. It must remain s
 
 ## Disabled pending separate approval
 
-- Exchange authentication, exchange API-key entry or storage, private endpoints, and testnet account integration.
-- Live orders, autonomous trading, scheduled execution, or automatic management of the user's manual Bybit positions.
+- Browser entry or storage of exchange API keys, and any private endpoint that is not on the read-only GET allowlist.
+- Live orders, demo orders, autonomous trading, scheduled execution, or automatic management of the user's manual Bybit positions.
 - Transfers, deposits, withdrawals, custody, borrowing, leverage changes, or liquidation-management actions.
+- Starting the Nautilus Bybit execution client, or a second order sender.
 - PAPER order functionality, external AI calls, and model training beyond the approved current dashboard scope.
 - AI authority to execute orders, change execution policy or risk limits, access secrets, or run arbitrary commands.
 - Sending private positions, account data, credentials, or proprietary datasets to third parties.

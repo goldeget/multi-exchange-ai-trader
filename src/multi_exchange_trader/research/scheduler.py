@@ -11,7 +11,7 @@ async def scheduler(store: ResearchStore, stop: asyncio.Event, health: dict[str,
         try:
             states = await asyncio.to_thread(store.runs)
         except ValueError:
-            health.update(state="FAIL_CLOSED", message="저장 검증 실패 · 자동 실행 중단")
+            health.update(state="FAIL_CLOSED", message="저장 확인에 실패해서 자동 진행을 멈췄습니다.")
             return
         for state in states:
             if stop.is_set():
@@ -24,12 +24,12 @@ async def scheduler(store: ResearchStore, stop: asyncio.Event, health: dict[str,
                 )
             except ValueError:
                 health.update(
-                    state="PAUSED_ERROR", message="native/저장 오류 · 포지션을 보존하고 일시정지"
+                    state="PAUSED_ERROR", message="저장 오류가 나서 포지션은 그대로 두고 일시정지했습니다."
                 )
                 try:
                     await asyncio.to_thread(store.pause_after_failure, state["run_id"])
                 except ValueError:
-                    health.update(state="FAIL_CLOSED", message="상태 확인 실패 · 자동 실행 중단")
+                    health.update(state="FAIL_CLOSED", message="상태 확인에 실패해서 자동 진행을 멈췄습니다.")
                     return
         # Actual native work + SQL commit completes before this minimum idle wait.
         try:

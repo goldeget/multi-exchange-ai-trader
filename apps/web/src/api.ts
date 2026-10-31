@@ -21,9 +21,9 @@ export interface Candle {
 }
 export type TerminalReason = "operator_disabled" | "access_restricted" | "geographic_restriction";
 const terminalMessages: Record<TerminalReason, string> = {
-  operator_disabled: "운영 설정으로 비활성화 · 재시도 중단",
-  access_restricted: "상류 접근 제한 · 재시도 중단",
-  geographic_restriction: "지역 제한 확인 · 재시도 중단",
+  operator_disabled: "이 시세는 꺼져 있습니다. 다시 요청하지 않습니다.",
+  access_restricted: "거래소가 시세 조회를 막았습니다. 다시 요청하지 않습니다.",
+  geographic_restriction: "이 지역에서는 시세를 받을 수 없습니다. 다시 요청하지 않습니다.",
 };
 function terminalReason(value: unknown): value is TerminalReason {
   return value === "operator_disabled" || value === "access_restricted" || value === "geographic_restriction";
@@ -107,7 +107,7 @@ export function usePolling<T>(
             url,
             value: {
               ...(previous.url === url ? previous.value : {}),
-              error: "연결 오류 · 공개 시세를 가져올 수 없습니다",
+              error: "연결 안 됨. 시세를 가져오지 못했습니다.",
             },
           }));
       } finally {

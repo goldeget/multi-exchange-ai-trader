@@ -1,6 +1,6 @@
 # 로컬 시장 연구 · PAPER 플랫폼
 
-공개 시세 대시보드, **NautilusTrader 1.231.0 기반 수동 PAPER**, 과거 데이터 연구와 **synthetic 전용 PAPER 자동실행**을 제공합니다. 모두 로컬 연구·교육용입니다. 실제 계좌·인증키·거래소 주문·Demo·AI·배포 기능은 없습니다.
+공개 시세 대시보드, **NautilusTrader 1.231.0 기반 수동 PAPER**, 과거 데이터 연구, **synthetic 전용 PAPER 자동실행**, 그리고 **Bybit USDT 무기한 읽기 전용 계좌 조회**를 제공합니다. 모두 로컬에서 실행합니다. 주문·레버리지 변경·출금·AI·실거래 전송은 없습니다.
 
 **PHASE2A는 PARTIAL입니다.** Binance spot 두 시장의 기존 확인과 별개로 Binance 무기한/Bybit 여섯 시장은 지역 제한으로 BLOCKED입니다. 과거 spot 연구나 synthetic PAPER 성공으로 이 상태를 통과 처리하지 않습니다. OKX는 비활성·미검증이며 요청하지 않습니다.
 
@@ -12,6 +12,7 @@
 | PAPER 가상거래 | 별도 가상자금, long/short, 부분/전체 reduce-only 종료, SL/TP/OCO, 수수료·PnL·원장 | 직접 입력하는 **로컬 가상 가격**입니다. 실제 spot을 선물 mark로 대용하지 않습니다. |
 | 연구·가상 자동실행 | 불변 dataset/checksum, native spot/CASH 또는 synthetic perpetual 연구, 시간순 OOS·walk-forward, equity curve·거래·불확실성 | BTC/ETH는 **독립 계좌**이며 공유 portfolio replay는 UNRUN입니다. |
 | 같은 연구 화면의 자동실행 영역 | 별도 synthetic 계좌, 시작/pause/resume/stop, 손실·낙폭·노출·연속손실 제한 | 실제 시세를 연결하지 않습니다. 저장 원장 상태와 실제 scheduler health를 구분합니다. |
+| Bybit 계좌 조회 | USDT 무기한 서버 시각, BTCUSDT 최대 레버리지, 잔고, 포지션, 미체결 주문 | 읽기 전용입니다. 기존 포지션·주문은 모두 외부입니다. PAPER·데모·메인넷을 구분합니다. 접속이 막히면 BLOCKED이며 숫자를 만들지 않습니다. |
 
 실제 수집한 spot 30일/720봉은 **짧은 기능 검증 표본**입니다. 실제 수익성·실전 준비·선물 성능을 검증하지 않습니다. 마감봉 신호→다음 봉 시가 native 체결, 비용·가정한 O-L-H-C 경로와 종료 정리 비용을 반영합니다. 순수익률·낙폭·승률/표본 수·Wilson 구간·최대 연속 순손실을 보되 미래 수익으로 해석하지 마세요. 순손익 0은 연속손실을 끊습니다. 실제 선물 데이터 검증은 BLOCKED입니다.
 
@@ -67,7 +68,17 @@ uv run uvicorn multi_exchange_trader.main:app --host 127.0.0.1 --port 8000
 npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5173
 ```
 
-`http://127.0.0.1:5173/` 또는 `http://127.0.0.1:5173/?view=research`를 엽니다. 준비 상태는 `curl -fsS http://127.0.0.1:8000/api/v1/health`로 확인합니다.
+`http://127.0.0.1:5173/` , `http://127.0.0.1:5173/?view=research` , 또는 계좌 조회 `http://127.0.0.1:5173/?view=account` 를 엽니다. 준비 상태는 `curl -fsS http://127.0.0.1:8000/api/v1/health`로 확인합니다.
+
+## Bybit 계좌 조회 (읽기 전용)
+
+화면은 `http://127.0.0.1:5173/?view=account` 입니다. JSON은 `http://127.0.0.1:8000/api/v1/account/bybit/view` 입니다. 키는 환경 변수 또는 저장소 루트의 `.env`에 있는 `BYBIT_API_KEY`와 `BYBIT_API_SECRET`만 읽습니다. `.env`는 git에 넣지 않습니다. 화면·로그·응답에 키를 찍지 않습니다. 비밀키가 없으면 계좌 클라이언트는 시작하지 않고, 다른 화면은 그대로 켜집니다.
+
+`LIVE_TRADING_ENABLED`의 기본값은 false입니다. 주문과 레버리지 주소는 항상 거부합니다. 이 값을 켜도 이 클라이언트는 주문을 보내지 않습니다. 나중 주문은 NautilusTrader 한 경로만 사용하며, 그 경로는 아직 시작하지 않습니다. Nautilus Bybit 실행 클라이언트는 접속할 때 레버리지를 바꿀 수 있어 이 조회에서는 쓰지 않습니다.
+
+공개 시세의 `MARKET_DATA_BLOCKED_HOSTS`는 그대로입니다. 계좌 조회만 별도 읽기 클라이언트를 사용합니다. Bybit가 지역 제한으로 막으면 상태는 BLOCKED이고, 잔고 숫자를 만들어 보여 주지 않습니다. VPN이나 프록시는 바꾸지 않습니다.
+
+이미 있는 포지션과 미체결 주문은 모두 외부입니다. 프로그램이 가져가거나 수정하지 않습니다. PAPER 탭의 숫자는 가상 돈이라 이 잔고와 다릅니다. 자세한 설명은 [읽기 전용 계좌 문서](docs/account/BYBIT_READONLY.md)에 있습니다.
 
 위 DB 경로는 기본 경로입니다. 이미 다른 경로를 쓰고 있다면 **동일한 보존 경로**를 지정하세요. DB/WAL/SHM·기존 work/·백업을 삭제하거나 새로운 빈 DB로 바꿔 회복했다고 주장하지 않습니다. runtime state는 gitignore 대상이며 공개 커밋하지 않습니다. schema/checksum/native reconciliation 실패 시 원본을 보존하고 중단합니다.
 

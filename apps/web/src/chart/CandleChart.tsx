@@ -108,7 +108,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       {!candles.length && (
         <div className="chart-empty">
           <span aria-hidden="true">⌁</span>
-          <p>공개 캔들 데이터 대기 중</p>
+          <p>차트를 기다리는 중</p>
         </div>
       )}
     </div>

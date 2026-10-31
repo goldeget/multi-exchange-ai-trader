@@ -1,4 +1,4 @@
-"""Typed public market API; no account, credential, or execution routes."""
+"""Public market API plus a read-only Bybit account view. No order sender."""
 
 import os
 from collections.abc import AsyncIterator
@@ -8,6 +8,9 @@ from typing import Annotated, Literal, cast
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
+from .account.api import install as install_account
+from .account.bybit_readonly import BybitReadOnlyClient
+from .account.config import MissingBybitCredentials
 from .market_data.adapters.base import MarketDataUnavailable
 from .market_data.adapters.binance import BinanceAdapter
 from .market_data.adapters.bybit import BybitAdapter
@@ -37,20 +40,36 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.paper_store = PaperStore(
             os.environ.get("PAPER_DB_PATH", "work/phase3-data/paper.sqlite3")
         )
-        if service is not None:
-            yield
-            return
-        blocked = parse_blocked_hosts(os.environ.get("MARKET_DATA_BLOCKED_HOSTS", ""))
-        async with PublicMarketClient(blocked_hosts=blocked) as client:
-            application.state.public_market_client = client
-            application.state.market_data_service = MarketDataService(
-                {
-                    "binance": BinanceAdapter(client),
-                    "bybit": BybitAdapter(client),
-                    "okx": OKXAdapter(client),
-                }
-            )
-            yield
+        account: BybitReadOnlyClient | None = None
+        application.state.bybit_account = None
+        application.state.bybit_account_problem = "missing_credentials"
+        try:
+            account = BybitReadOnlyClient.from_environment()
+        except MissingBybitCredentials:
+            account = None
+        except ValueError:
+            application.state.bybit_account_problem = "config"
+        else:
+            application.state.bybit_account = account
+            application.state.bybit_account_problem = None
+        try:
+            if service is not None:
+                yield
+                return
+            blocked = parse_blocked_hosts(os.environ.get("MARKET_DATA_BLOCKED_HOSTS", ""))
+            async with PublicMarketClient(blocked_hosts=blocked) as client:
+                application.state.public_market_client = client
+                application.state.market_data_service = MarketDataService(
+                    {
+                        "binance": BinanceAdapter(client),
+                        "bybit": BybitAdapter(client),
+                        "okx": OKXAdapter(client),
+                    }
+                )
+                yield
+        finally:
+            if account is not None:
+                await account.aclose()
 
     application = FastAPI(
         title="Public market data",
@@ -92,6 +111,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
 
     install_paper(application)
     install_research(application)
+    install_account(application)
     return application
 
 

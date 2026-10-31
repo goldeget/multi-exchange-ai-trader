@@ -1,3 +1,4 @@
+import Account from "./account/Account";
 import Paper from "./paper/Paper";
 import Research from "./research/Research";
 import { useEffect, useState } from "react";
@@ -12,9 +13,10 @@ import {
   type Venue,
 } from "./api";
 import CandleChart from "./chart/CandleChart";
+import { intervalLabel, intervalOptions, quoteSource } from "./ko";
 const venues: Venue[] = ["binance", "bybit"];
 const symbols = ["BTCUSDT", "ETHUSDT"];
-const names = { binance: "Binance", bybit: "Bybit" };
+const names = { binance: "바이낸스", bybit: "바이비트" };
 const price = (value: string) =>
   Number(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
@@ -50,21 +52,21 @@ function MarketRow({
         last_price: symbol === "BTCUSDT" ? "64428.23" : "3221.41",
         observed_at: sampleTime,
         fetched_at: sampleTime,
-        source: "로컬 합성 샘플",
+        source: "예시 숫자",
       }
     : live.data;
   const stale = !preview && !!live.successAt && now - live.successAt >= 15000;
   const state = preview
-    ? "합성 샘플"
+    ? "예시 숫자"
     : live.blocked
-      ? `${live.error}${data ? " · 마지막 수신값" : ""}`
+      ? `${live.error}${data ? " · 마지막 가격" : ""}`
     : stale
-      ? "지연 · 마지막 수신값"
+      ? "늦음 · 마지막 가격"
       : live.error
         ? live.error
         : !data
           ? "불러오는 중"
-          : "수신 완료";
+          : "받음";
   const observed = data?.observed_at;
   return (
     <tr className={selected ? "selected" : ""}>
@@ -73,7 +75,7 @@ function MarketRow({
           {names[venue]}
           <span>
             {symbol.replace("USDT", " / USDT")} ·{" "}
-            {market === "spot" ? "현물" : "무기한"}
+            {market === "spot" ? "현물" : "선물"}
           </span>
         </button>
       </th>
@@ -95,17 +97,17 @@ function MarketRow({
                 .toISOString()
                 .replace("T", " ")
                 .slice(0, 19)}{" "}
-              UTC
+              세계 표준시
             </time>
             <small>
               {preview
-                ? "고정 샘플 시각"
+                ? "예시용 고정 시각"
                 : observed
-                  ? `관측 ${Math.max(0, Math.floor((now - Date.parse(observed)) / 1000))}초 전`
-                  : "관측 시각 미제공 · 수집 시각 표시"}
+                  ? `${Math.max(0, Math.floor((now - Date.parse(observed)) / 1000))}초 전 가격`
+                  : "가격 시각이 없어 받은 시각을 표시합니다"}
             </small>
-            <small>마지막 수신: {new Date(data.fetched_at).toISOString().replace("T", " ").slice(0, 19)} UTC</small>
-            <small>출처: {data.source}</small>
+            <small>마지막으로 받은 시각: {new Date(data.fetched_at).toISOString().replace("T", " ").slice(0, 19)} 세계 표준시</small>
+            <small>받은 곳: {quoteSource(data.source, names[venue])}</small>
           </>
         )}
       </td>
@@ -143,33 +145,32 @@ function MarketDashboard() {
             ◈
           </span>
           <div>
-            <p className="eyebrow">MARKET OBSERVATORY</p>
-            <h1>공개 시장 관측소</h1>
+            <p className="eyebrow">시세</p>
+            <h1>지금 시세</h1>
           </div>
         </div>
-        <span className="safety">공개 시세 전용 · PAPER는 별도 가상 화면</span>
+        <span className="safety">시세만 보여 줍니다. 가상 거래는 다른 화면입니다.</span>
       </header>
       {preview && (
         <div className="preview" role="note">
-          <strong>샘플 데이터 · 실제 시세 아님</strong>
+          <strong>예시 숫자 · 실제 시세 아님</strong>
           <span>
-            로컬 합성 데이터로 화면을 미리 보고 있습니다. 모든 API 요청이 꺼져
-            있습니다.
+            만든 예시 숫자로 화면만 보고 있습니다. 거래소에는 연결하지 않습니다.
           </span>
         </div>
       )}
       <main>
         <section className="intro">
           <div>
-            <p className="eyebrow">PUBLIC MARKET / 01</p>
-            <h2>시장의 흐름을 한눈에</h2>
+            <p className="eyebrow">시세</p>
+            <h2>가격 흐름을 한눈에</h2>
             <p>
-              BTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지
-              않습니다.
+              BTC와 ETH의 공개 시세를 봅니다. 이 화면은 주문과 잔고 조회를 하지
+              않습니다. 잔고는 위쪽 Bybit 잔고 화면에서 읽기만 합니다.
             </p>
           </div>
           <span className="mode">
-            {preview ? "◌ 합성 미리보기" : "◌ 공개 REST · 5초 주기"}
+            {preview ? "◌ 예시 화면" : "◌ 5초마다 시세 갱신"}
           </span>
         </section>
         <section className="controls" aria-label="시장 선택">
@@ -190,7 +191,7 @@ function MarketDashboard() {
               onChange={(event) => setMarket(event.target.value as Market)}
             >
               <option value="spot">현물</option>
-              <option value="perpetual">무기한</option>
+              <option value="perpetual">선물</option>
             </select>
           </label>
           <label>
@@ -199,22 +200,24 @@ function MarketDashboard() {
               value={interval}
               onChange={(event) => setIntervalValue(event.target.value)}
             >
-              {["1m", "5m", "15m", "1h", "4h", "1d"].map((value) => (
-                <option key={value}>{value}</option>
+              {intervalOptions.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
               ))}
             </select>
           </label>
           <p>
-            호가 통화 <strong>USDT</strong>
+            가격 단위 <strong>USDT</strong>
             <br />
-            캔들 갱신 30초
+            차트는 30초마다 갱신
           </p>
         </section>
         <div className="dashboard">
           <section className="panel markets" aria-labelledby="markets-title">
             <div className="panel-title">
               <h2 id="markets-title">거래소 시세</h2>
-              <span>02 활성 / 03 전체</span>
+              <span>2곳 표시 · 전체 3곳</span>
             </div>
             <table>
               <thead>
@@ -245,29 +248,26 @@ function MarketDashboard() {
               </tbody>
             </table>
             <div className="disabled-venue">
-              <button disabled>OKX · 검증 대기</button>
-              <p>
-                공식 공개 API 계약 검증 전으로 비활성화되어 있습니다. 시세
-                요청을 보내지 않습니다.
-              </p>
+              <button disabled>OKX · 아직 준비 안 됨</button>
+              <p>OKX는 아직 연결하지 않습니다. 시세를 요청하지 않습니다.</p>
             </div>
             <p className="market-note">
-              시세 수신이 15초 이상 멈추면 지연으로 표시합니다.
+              시세가 15초 넘게 안 오면 늦음으로 표시합니다.
               <br />
-              거래소별 데이터는 서로 대체하지 않습니다.
+              한 거래소 시세가 끊겨도 다른 거래소 숫자로 바꾸지 않습니다.
             </p>
           </section>
           <section className="panel chart-panel" aria-labelledby="chart-title">
             <div className="panel-title">
               <div>
                 <p className="eyebrow">
-                  {preview ? "SYNTHETIC PREVIEW" : "PUBLIC CANDLES"}
+                  {preview ? "예시 차트" : "시세 차트"}
                 </p>
                 <h2 id="chart-title">
                   {symbol.replace("USDT", " / USDT")}{" "}
                   <span>
-                    {names[venue]} · {market === "spot" ? "현물" : "무기한"} ·{" "}
-                    {interval}
+                    {names[venue]} · {market === "spot" ? "현물" : "선물"} ·{" "}
+                    {intervalLabel(interval)}
                   </span>
                 </h2>
               </div>
@@ -278,24 +278,24 @@ function MarketDashboard() {
               className={candles.error ? "error chart-status" : "chart-status"}
             >
               {preview
-                ? "로컬 합성 캔들"
+                ? "예시 차트"
                 : candles.blocked
-                  ? `${candles.error}${last ? " · 마지막 수신 캔들" : ""}`
+                  ? `${candles.error}${last ? " · 마지막 차트" : ""}`
                 : candleStale
-                  ? "지연 · 마지막 수신 캔들"
+                  ? "늦음 · 마지막 차트"
                   : (candles.error ??
-                    (!last ? "불러오는 중" : "캔들 수신 완료"))}
+                    (!last ? "불러오는 중" : "차트를 받았습니다"))}
             </div>
             {candles.successAt && !preview && (
               <p className="chart-status">
-                마지막 수신: {new Date(candles.successAt).toISOString().replace("T", " ").slice(0, 19)} UTC · 출처: {names[venue]} 공개 캔들
+                마지막으로 받은 시각: {new Date(candles.successAt).toISOString().replace("T", " ").slice(0, 19)} 세계 표준시 · 받은 곳: {names[venue]} 공개 시세
               </p>
             )}
             <CandleChart key={`${venue}/${symbol}/${market}/${interval}`} candles={data} />
             <p aria-label="캔들 요약" className="summary">
               {last
                 ? `마지막 봉: 시가 ${price(last.open)} · 고가 ${price(last.high)} · 저가 ${price(last.low)} · 종가 ${price(last.close)} USDT · 거래량 ${price(last.volume)} · ${last.is_closed ? "마감" : "형성 중"}`
-                : "표시할 캔들이 없습니다. 공개 시세 연결 상태를 확인하세요."}
+                : "표시할 차트가 없습니다. 시세 연결을 확인하세요."}
             </p>
             <a
               className="attribution"
@@ -303,16 +303,16 @@ function MarketDashboard() {
               target="_blank"
               rel="noreferrer"
             >
-              Charts powered by TradingView Lightweight Charts™
+              차트 그림: TradingView
             </a>
           </section>
         </div>
         <footer>
-          <span>READ ONLY · 계좌 연결 없음 · 주문 기능 없음</span>
+          <span>시세만 봅니다. 잔고는 다른 화면입니다. 주문은 없습니다.</span>
           <span>
             {preview
-              ? "샘플 시각 2026-01-01 UTC"
-              : "시각 기준 UTC · 공개 데이터 지연 가능"}
+              ? "예시 시각 2026-01-01 세계 표준시"
+              : "시각은 세계 표준시입니다. 시세가 조금 늦을 수 있습니다."}
           </span>
         </footer>
       </main>
@@ -320,8 +320,58 @@ function MarketDashboard() {
   );
 }
 
+type AppView = "market" | "paper" | "research" | "account";
+
+function currentView(): AppView {
+  const value = new URLSearchParams(window.location.search).get("view");
+  if (value === "paper" || value === "research" || value === "account") return value;
+  return "market";
+}
+
+const titles: Record<AppView, string> = {
+  market: "시세 보기",
+  paper: "가상 거래",
+  research: "연습 자동매매",
+  account: "Bybit 잔고",
+};
+
 export default function App() {
- const [view,setView]=useState(()=>["paper","research"].includes(new URLSearchParams(window.location.search).get("view")??"")?new URLSearchParams(window.location.search).get("view")??"market":"market");
- function select(value:string){setView(value);const url=new URL(window.location.href);if(value!=="market")url.searchParams.set("view",value);else url.searchParams.delete("view");window.history.replaceState({},"",url);}
- return <><nav className="app-mode-nav" aria-label="화면 선택"><button aria-pressed={view==="market"} onClick={()=>select("market")}>공개 시장 관측</button><button aria-pressed={view==="paper"} onClick={()=>select("paper")}>PAPER 가상거래</button><button aria-pressed={view==="research"} onClick={()=>select("research")}>연구·가상 자동실행</button></nav>{view==="research"?<Research/>:view==="paper"?<Paper/>:<MarketDashboard/>}</>;
+  const [view, setView] = useState<AppView>(currentView);
+  useEffect(() => {
+    document.title = titles[view];
+  }, [view]);
+  function select(value: AppView) {
+    setView(value);
+    const url = new URL(window.location.href);
+    if (value !== "market") url.searchParams.set("view", value);
+    else url.searchParams.delete("view");
+    window.history.replaceState({}, "", url);
+  }
+  return (
+    <>
+      <nav className="app-mode-nav" aria-label="화면 선택">
+        <button aria-pressed={view === "market"} onClick={() => select("market")}>
+          시세 보기
+        </button>
+        <button aria-pressed={view === "paper"} onClick={() => select("paper")}>
+          가상 거래
+        </button>
+        <button aria-pressed={view === "research"} onClick={() => select("research")}>
+          연습 자동매매
+        </button>
+        <button aria-pressed={view === "account"} onClick={() => select("account")}>
+          Bybit 잔고
+        </button>
+      </nav>
+      {view === "research" ? (
+        <Research />
+      ) : view === "paper" ? (
+        <Paper />
+      ) : view === "account" ? (
+        <Account />
+      ) : (
+        <MarketDashboard />
+      )}
+    </>
+  );
 }

@@ -20,39 +20,39 @@ def failure(error: Exception) -> JSONResponse:
         status, reason, message = (
             503,
             "paper_fail_closed",
-            "PAPER 저장/엔진 검증이 실패해 중단했습니다. 원장을 보존하고 운영 환경을 확인하세요.",
+            "가상 거래 저장 확인에 실패해서 멈췄습니다. 기록은 그대로 둡니다.",
         )
     elif "not found" in text:
-        status, reason, message = 404, "paper_not_found", "가상 시나리오를 찾을 수 없습니다."
+        status, reason, message = 404, "paper_not_found", "가상 장부를 찾을 수 없습니다."
     elif "idempotency" in text:
         status, reason, message = (
             409,
             "paper_idempotency_conflict",
-            "같은 명령 키에 다른 내용은 사용할 수 없습니다.",
+            "같은 요청에 다른 내용은 넣을 수 없습니다.",
         )
     elif "margin" in text or "notional" in text:
         status, reason, message = (
             409,
             "paper_margin",
-            "가상 가용증거금 또는 모의 명목금액 한도를 확인하세요.",
+            "가상 증거금이 부족하거나 주문 금액 한도를 넘었습니다.",
         )
     elif "stale" in text:
         status, reason, message = (
             409,
             "paper_stale_mark",
-            "가상 시세가 오래됐습니다. 새 로컬 가상 tick을 추가하세요.",
+            "가상 가격이 오래되었습니다. 새 가상 가격을 넣으세요.",
         )
     elif any(word in text for word in ("position", "reduce-only", "protective", "exists")):
         status, reason, message = (
             409,
             "paper_risk",
-            "가상 포지션·수량·보호조건 또는 기존 시나리오를 확인하세요.",
+            "가상 포지션, 수량, 손절·익절 또는 이미 있는 장부를 확인하세요.",
         )
     else:
         status, reason, message = (
             400,
             "paper_input",
-            "PAPER 입력·정밀도·시퀀스·시각 규칙을 확인하세요.",
+            "입력한 숫자, 순서, 시각을 확인하세요.",
         )
     return JSONResponse(
         status_code=status, content={"reason": reason, "message": message, "mode": "PAPER"}
