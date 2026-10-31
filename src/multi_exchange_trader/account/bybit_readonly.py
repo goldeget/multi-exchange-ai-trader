@@ -110,6 +110,13 @@ def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _positive_time(value: object) -> int | None:
+    """Return a Bybit envelope time, or None when that field cannot be used."""
+    if _is_int(value) and value > 0:
+        return value
+    return None
+
+
 def _parse_json(raw: bytes) -> object:
     if len(raw) > _MAX_BYTES:
         raise BybitReadError("response_too_large")
@@ -248,7 +255,7 @@ class BybitReadOnlyClient:
         *,
         signed: bool,
         deadline: float | None = None,
-    ) -> tuple[dict[str, object], int]:
+    ) -> tuple[dict[str, object], int | None]:
         if path not in READ_ONLY_PATHS:
             raise ReadOnlyViolation()
         attempt = 0
@@ -287,7 +294,9 @@ class BybitReadOnlyClient:
                 await self._sleeper(self.retry_waits[attempt])
                 attempt += 1
                 continue
-            return self._accepted(response)
+            # Account info can return retCode 0 with no envelope time.
+            # Wallet, positions, and orders still require a positive server time.
+            return self._accepted(response, require_time=path != "/v5/account/info")
 
     async def read_pages(
         self,
@@ -311,7 +320,9 @@ class BybitReadOnlyClient:
                 return rows
         raise BybitReadError("truncated")
 
-    def _accepted(self, response: httpx.Response) -> tuple[dict[str, object], int]:
+    def _accepted(
+        self, response: httpx.Response, *, require_time: bool
+    ) -> tuple[dict[str, object], int | None]:
         if response.status_code in {403, 451}:
             snippet = ""
             if len(response.content) <= _MAX_BYTES:
@@ -334,12 +345,13 @@ class BybitReadOnlyClient:
             raise BybitReadError("invalid_json")
         if ret != 0:
             raise BybitReadError(f"ret_{ret}")
-        server_ms = body.get("time")
-        if not _is_int(server_ms):
-            raise BybitReadError("invalid_json")
-        if server_ms <= 0:
-            raise BybitReadError("invalid_json")
-        return _mapping(body.get("result")), server_ms
+        result = _mapping(body.get("result"))
+        server_ms = _positive_time(body.get("time"))
+        if server_ms is None:
+            if require_time:
+                raise BybitReadError("invalid_json")
+            return result, None
+        return result, server_ms
 
 
 def _as_list(value: object) -> list[object]:

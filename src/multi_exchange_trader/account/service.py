@@ -319,6 +319,17 @@ def _order(row: dict[str, object]) -> OrderItem:
     )
 
 
+def _read_age_ms(wallet_ms: int | None, public_ms: int) -> int:
+    """Clock for this read's age.
+
+    Account info may omit its own server time. Use the wallet response time,
+    then the public market time. Do not invent a clock.
+    """
+    if wallet_ms is not None and wallet_ms > 0:
+        return wallet_ms
+    return public_ms
+
+
 def _success_message(live_trading: bool) -> str:
     message = "계좌를 읽었습니다. 주문·레버리지 변경·포지션 변경은 하지 않았습니다."
     if live_trading:
@@ -342,17 +353,19 @@ async def build_account_view(
     started = datetime.now(UTC)
     deadline = time.monotonic() + VIEW_DEADLINE_SECONDS if deadline_at is None else deadline_at
     try:
-        _time_result, server_ms = await client.read(
+        _time_result, public_ms = await client.read(
             "/v5/market/time", [], signed=False, deadline=deadline
         )
-        client.anchor_server_time(server_ms)
+        if public_ms is None:
+            raise BybitReadError("invalid_json")
+        client.anchor_server_time(public_ms)
         instrument, _ignored = await client.read(
             "/v5/market/instruments-info",
             [("category", "linear"), ("symbol", "BTCUSDT")],
             signed=False,
             deadline=deadline,
         )
-        wallet, _ignored = await client.read(
+        wallet, wallet_ms = await client.read(
             "/v5/account/wallet-balance",
             [("accountType", "UNIFIED")],
             signed=True,
@@ -361,6 +374,7 @@ async def build_account_view(
         account, _account_ms = await client.read(
             "/v5/account/info", [], signed=True, deadline=deadline
         )
+        observed_ms = _read_age_ms(wallet_ms, public_ms)
         positions = await client.read_pages(
             "/v5/position/list",
             [("category", "linear"), ("settleCoin", "USDT")],
@@ -387,7 +401,7 @@ async def build_account_view(
             구분=_distinctions(client.environment),
             실거래켜짐=trading,
             메시지=_success_message(trading),
-            서버시각=_format_time(server_ms),
+            서버시각=_format_time(public_ms),
             최대레버리지=_leverage(instrument),
             잔고=_wallet(wallet),
             포지션=parsed_positions,
@@ -396,7 +410,7 @@ async def build_account_view(
             계좌마진모드=margin,
             수집시작시각=_iso(started),
             수집완료시각=_iso(finished),
-            거래소응답시각=_iso(_moment(server_ms)),
+            거래소응답시각=_iso(_moment(observed_ms)),
             계정갱신시각=account_updated,
             수신시각=_iso(received),
             신선도표시=freshness_label(0, "ok"),

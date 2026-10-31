@@ -8,6 +8,7 @@ import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -353,6 +354,135 @@ async def test_success_tags_external_and_does_not_adopt(bybit_env: None) -> None
     assert any("가상 거래가 아닙니다" in item for item in view.구분)
     assert any("실계좌입니다" in item for item in view.구분)
     assert [request.url.path for request in seen] == [
+        "/v5/market/time",
+        "/v5/market/instruments-info",
+        "/v5/account/wallet-balance",
+        "/v5/account/info",
+        "/v5/position/list",
+        "/v5/order/realtime",
+    ]
+
+
+def _utc(ms: int) -> datetime:
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)
+
+
+async def test_account_info_without_time_keeps_balances(bybit_env: None) -> None:
+    """Wallet time stays usable when account info omits its envelope time."""
+    public_ms = 1_700_000_000_000
+    wallet_ms = 1_700_000_005_000
+    later_ms = 1_700_000_009_000
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append(path)
+        if path == "/v5/market/time":
+            return ok({"timeSecond": "1700000000"}, time_ms=public_ms)
+        if path == "/v5/market/instruments-info":
+            return ok(
+                {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "leverageFilter": {
+                                "minLeverage": "1",
+                                "maxLeverage": "100",
+                                "leverageStep": "1",
+                            },
+                        }
+                    ],
+                },
+                time_ms=public_ms,
+            )
+        if path == "/v5/account/wallet-balance":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "accountType": "UNIFIED",
+                            "totalEquity": "20.5",
+                            "totalWalletBalance": "20",
+                            "totalAvailableBalance": "18",
+                            "coin": [{"coin": "USDT", "walletBalance": "12.50", "equity": "12.50"}],
+                        }
+                    ]
+                },
+                time_ms=wallet_ms,
+            )
+        if path == "/v5/account/info":
+            assert_signed(request)
+            body = {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "marginMode": "REGULAR_MARGIN",
+                    "updatedTime": "1697078946000",
+                },
+            }
+            assert "time" not in body
+            return httpx.Response(200, json=body)
+        if path == "/v5/position/list":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "Buy",
+                            "size": "0.01",
+                            "positionIdx": 0,
+                        }
+                    ],
+                    "nextPageCursor": "",
+                },
+                time_ms=later_ms,
+            )
+        if path == "/v5/order/realtime":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "side": "Sell",
+                            "orderType": "Limit",
+                            "qty": "0.2",
+                            "price": "3000",
+                            "orderStatus": "New",
+                            "reduceOnly": False,
+                        }
+                    ],
+                    "nextPageCursor": "",
+                },
+                time_ms=later_ms,
+            )
+        raise AssertionError(path)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert view.상태코드 == "ok"
+    assert view.오류코드 is None
+    assert view.오류코드 != "invalid_json"
+    assert "숨겼습니다" not in view.메시지
+    assert view.잔고 is not None
+    assert view.잔고.총자산평가 == "20.5"
+    assert view.잔고.코인[0].지갑잔고 == "12.50"
+    assert view.포지션 is not None
+    assert len(view.포지션) == 1
+    assert view.미체결주문 is not None
+    assert len(view.미체결주문) == 1
+    assert view.계좌마진모드 == "교차"
+    assert view.거래소응답시각 == _utc(wallet_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.거래소응답시각 != _utc(public_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.거래소응답시각 != _utc(later_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.서버시각 == _utc(public_ms).strftime("%Y-%m-%d %H:%M:%S") + " 세계 표준시"
+    assert seen == [
         "/v5/market/time",
         "/v5/market/instruments-info",
         "/v5/account/wallet-balance",
