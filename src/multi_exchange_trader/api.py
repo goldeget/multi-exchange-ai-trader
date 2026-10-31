@@ -1,5 +1,6 @@
 """Public market API plus a read-only Bybit account view. No order sender."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -90,7 +91,41 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
 
     @application.get("/api/v1/health")
     async def health() -> dict[str, str]:
+        # Liveness only. A 200 here is not permission to trade.
         return {"status": "ok"}
+
+    @application.get("/api/v1/ready")
+    async def ready(request: Request) -> dict[str, object]:
+        research_state = "확인 안 됨"
+        differs = False
+        block = True
+        alive = False
+        health = getattr(request.app.state, "research_health", None)
+        task = getattr(request.app.state, "research_task", None)
+        if isinstance(health, dict):
+            research_state = str(health.get("state", "확인 안 됨"))
+            differs = bool(health.get("work_differs_from_store"))
+            block = bool(health.get("block_new_auto"))
+        alive = isinstance(task, asyncio.Task) and not task.done()
+        return {
+            "status": "ok",
+            "의미": "서버가 응답합니다. 실거래 준비가 아닙니다.",
+            "실거래준비": False,
+            "기능": {
+                "시세": {
+                    "상태": "이 응답만으로 거래소 연결을 보장하지 않습니다",
+                    "읽기화면차단": False,
+                },
+                "계좌조회": {"상태": "선택 기능", "읽기화면차단": False},
+                "가상자동실행": {
+                    "상태": research_state,
+                    "동작중": alive,
+                    "신규자동진행": alive and not block and research_state == "READY",
+                    "저장과다름": differs,
+                    "읽기화면차단": False,
+                },
+            },
+        }
 
     @application.get("/api/v1/market/ticker", response_model=Ticker)
     async def ticker(

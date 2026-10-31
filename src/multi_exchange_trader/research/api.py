@@ -10,7 +10,7 @@ from typing import Any, cast
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .scheduler import scheduler
+from .scheduler import TaskSlot, scheduler, watch_scheduler
 from .storage import ResearchStore
 
 
@@ -58,6 +58,33 @@ def service(request: Request) -> ResearchStore:
     return cast(ResearchStore, request.app.state.research_store)
 
 
+def public_scheduler(request: Request, runs: list[dict[str, Any]]) -> dict[str, object]:
+    """Describe the loop without treating a live process as permission to trade."""
+    raw = getattr(request.app.state, "research_health", {})
+    health: dict[str, object] = dict(raw) if isinstance(raw, dict) else {}
+    task = getattr(request.app.state, "research_task", None)
+    alive = isinstance(task, asyncio.Task) and not task.done()
+    stored = sum(1 for row in runs if row.get("status") == "RUNNING")
+    state = health.get("state")
+    differs = stored > 0 and (not alive or state in {"FAIL_CLOSED", "STALLED", "STOPPED"})
+    health["task_alive"] = alive
+    health["stored_running"] = stored
+    health["work_differs_from_store"] = differs
+    if differs and state == "READY":
+        message = "저장된 상태는 진행 중인데 자동 진행은 멈춰 있습니다. 다시 시작 전에는 이어가지 않습니다."
+        health["state"] = "FAIL_CLOSED"
+        health["block_new_auto"] = True
+        health["message"] = message
+        if isinstance(raw, dict):
+            raw.update(
+                state="FAIL_CLOSED",
+                block_new_auto=True,
+                message=message,
+                work_differs_from_store=True,
+            )
+    return {key: value for key, value in health.items() if not str(key).startswith("_")}
+
+
 def install(app: FastAPI) -> None:
     previous = app.router.lifespan_context
 
@@ -73,6 +100,15 @@ def install(app: FastAPI) -> None:
             application.state.research_health = {
                 "state": "READY",
                 "message": "가상 거래만 자동으로 진행합니다.",
+                "heartbeat_at": None,
+                "last_completed_at": None,
+                "task": "starting",
+                "stored_running": 0,
+                "stall": False,
+                "block_new_auto": False,
+                "work_differs_from_store": False,
+                "shutdown_checked": False,
+                "task_alive": True,
             }
             application.state.research_task = asyncio.create_task(
                 scheduler(
@@ -81,11 +117,25 @@ def install(app: FastAPI) -> None:
                     application.state.research_health,
                 )
             )
+            application.state.research_slot = TaskSlot(application.state.research_task)
+            application.state.research_watch = asyncio.create_task(
+                watch_scheduler(
+                    application.state.research_stop,
+                    application.state.research_health,
+                    application.state.research_slot,
+                )
+            )
             try:
                 yield
             finally:
                 application.state.research_stop.set()
-                await application.state.research_task
+                await application.state.research_slot.task
+                watch = application.state.research_watch
+                try:
+                    await asyncio.wait_for(watch, timeout=2)
+                except TimeoutError:
+                    watch.cancel()
+                    await asyncio.gather(watch, return_exceptions=True)
 
     app.router.lifespan_context = lifespan
     router = APIRouter(prefix="/api/v1/research")
@@ -136,10 +186,8 @@ def install(app: FastAPI) -> None:
     @router.get("/runs")
     async def runs(request: Request) -> Any:
         try:
-            return {
-                "runs": await asyncio.to_thread(service(request).runs),
-                "scheduler": request.app.state.research_health,
-            }
+            rows = await asyncio.to_thread(service(request).runs)
+            return {"runs": rows, "scheduler": public_scheduler(request, rows)}
         except (ValueError, TypeError) as e:
             return failure(e)
 
@@ -179,18 +227,23 @@ def install(app: FastAPI) -> None:
                     service(request).command, run, body["idempotency_key"], cmd
                 )
                 if cmd["action"] == "resume":
-                    request.app.state.research_health.update(state="READY", message="다시 시작했습니다.")
-                    if (
-                        request.app.state.research_task.done()
-                        and not request.app.state.research_stop.is_set()
-                    ):
-                        request.app.state.research_task = asyncio.create_task(
+                    request.app.state.research_health.update(
+                        state="READY",
+                        message="다시 시작했습니다.",
+                        block_new_auto=False,
+                        stall=False,
+                        work_differs_from_store=False,
+                    )
+                    slot = request.app.state.research_slot
+                    if slot.task.done() and not request.app.state.research_stop.is_set():
+                        slot.task = asyncio.create_task(
                             scheduler(
                                 service(request),
                                 request.app.state.research_stop,
                                 request.app.state.research_health,
                             )
                         )
+                        request.app.state.research_task = slot.task
             return result
         except (ValueError, TypeError) as e:
             return failure(e)

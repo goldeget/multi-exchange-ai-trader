@@ -1,16 +1,20 @@
 """Mocked Bybit reads: signing, external rows, and errors. No network."""
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
+from multi_exchange_trader.account.api import AccountReadGate
 from multi_exchange_trader.account.bybit_readonly import (
     READ_ONLY_PATHS,
     BybitReadOnlyClient,
@@ -18,6 +22,7 @@ from multi_exchange_trader.account.bybit_readonly import (
     sign_v5,
 )
 from multi_exchange_trader.account.config import MissingBybitCredentials, require_bybit_credentials
+from multi_exchange_trader.account.freshness import order_decision_allowed
 from multi_exchange_trader.account.service import blank_view, build_account_view, publish
 from multi_exchange_trader.api import create_app
 
@@ -59,7 +64,9 @@ def assert_signed(request: httpx.Request, secret: str = SECRET, key: str = KEY) 
     assert secret not in digest
 
 
-def envelope(result: object, *, ret: int = 0, msg: str = "OK", time_ms: int = 1700000000000) -> dict[str, object]:
+def envelope(
+    result: object, *, ret: int = 0, msg: str = "OK", time_ms: int = 1700000000000
+) -> dict[str, object]:
     return {"retCode": ret, "retMsg": msg, "result": result, "time": time_ms}
 
 
@@ -105,6 +112,15 @@ def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> h
                             "coin": [{"coin": "USDT", "walletBalance": "12.50", "equity": "12.50"}],
                         }
                     ]
+                }
+            )
+        if path == "/v5/account/info":
+            assert_signed(request)
+            return ok(
+                {
+                    "marginMode": "REGULAR_MARGIN",
+                    "updatedTime": "1697078946000",
+                    "unifiedMarginStatus": 4,
                 }
             )
         if path == "/v5/position/list":
@@ -180,6 +196,7 @@ def test_allowlist_has_no_order_paths() -> None:
             "/v5/market/time",
             "/v5/market/instruments-info",
             "/v5/account/wallet-balance",
+            "/v5/account/info",
             "/v5/position/list",
             "/v5/order/realtime",
         }
@@ -194,7 +211,9 @@ def test_gitignore_covers_env_file() -> None:
     assert any(line.strip() == ".env" for line in text.splitlines())
 
 
-def test_missing_secret_refuses_startup_without_echo(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_missing_secret_refuses_startup_without_echo(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setenv("BYBIT_ENV_FILE", "off")
     monkeypatch.setenv("BYBIT_API_KEY", KEY)
     monkeypatch.delenv("BYBIT_API_SECRET", raising=False)
@@ -207,7 +226,9 @@ def test_missing_secret_refuses_startup_without_echo(monkeypatch: pytest.MonkeyP
     assert captured.err == ""
 
 
-def test_env_file_loads_only_allowlisted_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_env_file_loads_only_allowlisted_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     env_file = tmp_path / "sample.env"
     env_file.write_text(
         f"BYBIT_API_KEY={KEY}\nBYBIT_API_SECRET={SECRET}\nUNRELATED_BYBIT_TEST_TOKEN=should-not-load\n",
@@ -226,7 +247,9 @@ def test_env_file_loads_only_allowlisted_keys(tmp_path: Path, monkeypatch: pytes
     assert SECRET not in captured.err
 
 
-def test_env_file_does_not_override_or_reject_bad_host(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_env_file_does_not_override_or_reject_bad_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     env_file = tmp_path / "sample.env"
     env_file.write_text(f"BYBIT_API_SECRET={FILE_SECRET}\n", encoding="utf-8")
     monkeypatch.setenv("BYBIT_ENV_FILE", str(env_file))
@@ -274,8 +297,12 @@ async def test_mutating_path_does_not_touch_the_network(bybit_env: None) -> None
         await client.aclose()
 
 
-async def test_log_filter_drops_key_and_secret(bybit_env: None, caplog: pytest.LogCaptureFixture) -> None:
-    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+async def test_log_filter_drops_key_and_secret(
+    bybit_env: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = BybitReadOnlyClient.from_environment(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200))
+    )
     logger = logging.getLogger("httpx")
     try:
         with caplog.at_level(logging.INFO, logger="httpx"):
@@ -315,6 +342,12 @@ async def test_success_tags_external_and_does_not_adopt(bybit_env: None) -> None
     assert view.포지션[0].출처 == "external"
     assert view.포지션[0].관리함 is False
     assert view.포지션[0].구분 == "외부에서 연 포지션"
+    assert view.포지션[0].마진모드 == "확인 불가"
+    assert view.계좌마진모드 == "교차"
+    assert view.주문판단에사용 is False
+    assert view.순차조회 is True
+    assert view.계정갱신시각 is not None and view.계정갱신시각.startswith("2023-10-12T")
+    assert view.수신시각 != view.계정갱신시각
     assert view.미체결주문 is not None
     assert view.미체결주문[0].출처 == "external"
     assert view.미체결주문[0].관리함 is False
@@ -324,6 +357,136 @@ async def test_success_tags_external_and_does_not_adopt(bybit_env: None) -> None
         "/v5/market/time",
         "/v5/market/instruments-info",
         "/v5/account/wallet-balance",
+        "/v5/account/info",
+        "/v5/position/list",
+        "/v5/order/realtime",
+    ]
+
+
+def _utc(ms: int) -> datetime:
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=ms)
+
+
+async def test_account_info_without_time_keeps_balances(bybit_env: None) -> None:
+    """Wallet time stays usable when account info omits its envelope time."""
+    public_ms = 1_700_000_000_000
+    wallet_ms = 1_700_000_005_000
+    later_ms = 1_700_000_009_000
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        seen.append(path)
+        if path == "/v5/market/time":
+            return ok({"timeSecond": "1700000000"}, time_ms=public_ms)
+        if path == "/v5/market/instruments-info":
+            return ok(
+                {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "leverageFilter": {
+                                "minLeverage": "1",
+                                "maxLeverage": "100",
+                                "leverageStep": "1",
+                            },
+                        }
+                    ],
+                },
+                time_ms=public_ms,
+            )
+        if path == "/v5/account/wallet-balance":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "accountType": "UNIFIED",
+                            "totalEquity": "20.5",
+                            "totalWalletBalance": "20",
+                            "totalAvailableBalance": "18",
+                            "coin": [{"coin": "USDT", "walletBalance": "12.50", "equity": "12.50"}],
+                        }
+                    ]
+                },
+                time_ms=wallet_ms,
+            )
+        if path == "/v5/account/info":
+            assert_signed(request)
+            body = {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "marginMode": "REGULAR_MARGIN",
+                    "updatedTime": "1697078946000",
+                },
+            }
+            assert "time" not in body
+            return httpx.Response(200, json=body)
+        if path == "/v5/position/list":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "Buy",
+                            "size": "0.01",
+                            "positionIdx": 0,
+                        }
+                    ],
+                    "nextPageCursor": "",
+                },
+                time_ms=later_ms,
+            )
+        if path == "/v5/order/realtime":
+            assert_signed(request)
+            return ok(
+                {
+                    "list": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "side": "Sell",
+                            "orderType": "Limit",
+                            "qty": "0.2",
+                            "price": "3000",
+                            "orderStatus": "New",
+                            "reduceOnly": False,
+                        }
+                    ],
+                    "nextPageCursor": "",
+                },
+                time_ms=later_ms,
+            )
+        raise AssertionError(path)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert view.상태코드 == "ok"
+    assert view.오류코드 is None
+    assert view.오류코드 != "invalid_json"
+    assert "숨겼습니다" not in view.메시지
+    assert view.잔고 is not None
+    assert view.잔고.총자산평가 == "20.5"
+    assert view.잔고.코인[0].지갑잔고 == "12.50"
+    assert view.포지션 is not None
+    assert len(view.포지션) == 1
+    assert view.미체결주문 is not None
+    assert len(view.미체결주문) == 1
+    assert view.계좌마진모드 == "교차"
+    assert view.거래소응답시각 == _utc(wallet_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.거래소응답시각 != _utc(public_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.거래소응답시각 != _utc(later_ms).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert view.서버시각 == _utc(public_ms).strftime("%Y-%m-%d %H:%M:%S") + " 세계 표준시"
+    assert seen == [
+        "/v5/market/time",
+        "/v5/market/instruments-info",
+        "/v5/account/wallet-balance",
+        "/v5/account/info",
         "/v5/position/list",
         "/v5/order/realtime",
     ]
@@ -364,6 +527,8 @@ async def test_missing_wallet_field_stays_null(bybit_env: None) -> None:
                     ]
                 }
             )
+        if path == "/v5/account/info":
+            return ok({"marginMode": "REGULAR_MARGIN", "updatedTime": "1697078946000"})
         if path in {"/v5/position/list", "/v5/order/realtime"}:
             return ok({"category": "linear", "list": [], "nextPageCursor": ""})
         raise AssertionError(path)
@@ -386,7 +551,9 @@ async def test_blocked_stops_and_hides_numbers(bybit_env: None) -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request.url.path)
-        return httpx.Response(403, text='restricted location "walletBalance":"12345.67" leverage 125.5')
+        return httpx.Response(
+            403, text='restricted location "walletBalance":"12345.67" leverage 125.5'
+        )
 
     client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
     try:
@@ -504,7 +671,7 @@ async def test_dns_failure_is_not_blocked_and_hides_numbers(bybit_env: None) -> 
     assert SECRET not in rendered
 
 
-async def test_proxy_403_without_a_response_is_blocked(bybit_env: None) -> None:
+async def test_proxy_403_without_a_response_is_not_called_a_country_block(bybit_env: None) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ProxyError("403 Forbidden")
 
@@ -514,9 +681,11 @@ async def test_proxy_403_without_a_response_is_blocked(bybit_env: None) -> None:
     finally:
         await client.aclose()
     rendered = view.model_dump_json()
-    assert view.상태코드 == "BLOCKED"
+    assert view.상태코드 == "error"
+    assert view.오류코드 == "proxy"
     assert view.잔고 is None
     assert "Forbidden" not in rendered
+    assert "단정하지 않습니다" in view.메시지
 
 
 async def test_unexpected_error_does_not_echo_the_secret(bybit_env: None) -> None:
@@ -541,7 +710,9 @@ async def test_demo_is_not_mainnet_or_paper(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("BYBIT_TESTNET", "false")
     monkeypatch.setenv("BYBIT_DEMO", "true")
     seen: list[httpx.Request] = []
-    client = BybitReadOnlyClient.from_environment(transport=success_handler(seen, "api-demo.bybit.com"))
+    client = BybitReadOnlyClient.from_environment(
+        transport=success_handler(seen, "api-demo.bybit.com")
+    )
     try:
         view = await build_account_view(client, None)
     finally:
@@ -553,7 +724,9 @@ async def test_demo_is_not_mainnet_or_paper(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen[0].url.host == "api-demo.bybit.com"
 
 
-async def test_file_secret_does_not_replace_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_file_secret_does_not_replace_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     env_file = tmp_path / "sample.env"
     env_file.write_text(f"BYBIT_API_SECRET={FILE_SECRET}\n", encoding="utf-8")
     monkeypatch.setenv("BYBIT_ENV_FILE", str(env_file))
@@ -585,21 +758,27 @@ async def test_file_secret_does_not_replace_environment(monkeypatch: pytest.Monk
 
 @asynccontextmanager
 async def api_client(
-    monkeypatch: pytest.MonkeyPatch, handler: httpx.MockTransport | None, base_url: str = "http://127.0.0.1"
+    monkeypatch: pytest.MonkeyPatch,
+    handler: httpx.MockTransport | None,
+    base_url: str = "http://127.0.0.1",
 ) -> AsyncIterator[httpx.AsyncClient]:
     if handler is not None:
+
         async def wire(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
             return await handler.handle_async_request(request)
 
         monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", wire)
     app = create_app()
-    async with app.router.lifespan_context(app), httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url=base_url
-    ) as client:
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base_url) as client,
+    ):
         yield client
 
 
-async def test_api_blocked_host_list_still_allows_authorized_read(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_api_blocked_host_list_still_allows_authorized_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("BYBIT_API_KEY", KEY)
     monkeypatch.setenv("BYBIT_API_SECRET", SECRET)
     monkeypatch.setenv("BYBIT_TESTNET", "false")
@@ -651,7 +830,9 @@ async def test_api_rejects_non_local_host(monkeypatch: pytest.MonkeyPatch) -> No
     assert seen == []
 
 
-async def test_order_endpoints_refuse_even_when_flag_is_true(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_order_endpoints_refuse_even_when_flag_is_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("BYBIT_API_KEY", KEY)
     monkeypatch.setenv("BYBIT_API_SECRET", SECRET)
     monkeypatch.setenv("BYBIT_TESTNET", "false")
@@ -688,3 +869,288 @@ async def test_both_environment_flags_do_not_call_bybit(monkeypatch: pytest.Monk
     assert body["잔고"] is None
     assert body["최대레버리지"] is None
     assert seen == []
+
+
+def _paths(handler_seen: list[httpx.Request], path: str) -> int:
+    return sum(1 for request in handler_seen if request.url.path == path)
+
+
+async def test_trade_mode_zero_is_not_cross_and_unknown_margin_stays_unknown(
+    bybit_env: None,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v5/market/time":
+            return ok({"timeSecond": "1700000000"})
+        if path == "/v5/market/instruments-info":
+            return ok(
+                {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "leverageFilter": {
+                                "minLeverage": "1",
+                                "maxLeverage": "100",
+                                "leverageStep": "1",
+                            },
+                        }
+                    ],
+                }
+            )
+        if path == "/v5/account/wallet-balance":
+            return ok({"list": [{"accountType": "UNIFIED", "totalEquity": "1", "coin": []}]})
+        if path == "/v5/account/info":
+            return ok({"marginMode": "SOMETHING_ELSE", "updatedTime": "1697078946000"})
+        if path in {"/v5/position/list", "/v5/order/realtime"}:
+            return ok(
+                {
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "side": "Buy",
+                            "size": "0.01",
+                            "tradeMode": 0,
+                            "positionIdx": 0,
+                        }
+                    ],
+                    "nextPageCursor": "",
+                }
+                if path.endswith("list")
+                else {"list": [], "nextPageCursor": ""}
+            )
+        raise AssertionError(path)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert view.상태코드 == "ok"
+    assert view.계좌마진모드 == "확인 불가"
+    assert view.포지션 is not None
+    assert view.포지션[0].마진모드 == "확인 불가"
+    assert "교차" not in view.포지션[0].마진모드
+
+
+async def test_broken_coin_list_is_not_ok_or_zero(bybit_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v5/market/time":
+            return ok({"timeSecond": "1700000000"})
+        if path == "/v5/market/instruments-info":
+            return ok(
+                {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "leverageFilter": {
+                                "minLeverage": "1",
+                                "maxLeverage": "100",
+                                "leverageStep": "1",
+                            },
+                        }
+                    ],
+                }
+            )
+        if path == "/v5/account/wallet-balance":
+            return ok({"list": [{"accountType": "UNIFIED", "totalEquity": "0", "coin": "USDT"}]})
+        raise AssertionError(path)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    rendered = view.model_dump_json()
+    assert view.상태코드 == "error"
+    assert view.잔고 is None
+    assert view.포지션 is None
+    assert '"0"' not in rendered
+
+
+async def test_ret_10010_is_registered_address_not_clock(bybit_env: None) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v5/market/time":
+            return ok({"timeSecond": "1700000000"})
+        return httpx.Response(200, json=envelope({}, ret=10010, msg="Unmatched IP secret-looking"))
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    rendered = view.model_dump_json()
+    assert view.오류코드 == "ret_10010"
+    assert "주소" in view.메시지
+    assert "시각" not in view.메시지
+    assert "Unmatched" not in rendered
+    assert "secret" not in rendered
+
+
+async def test_http_403_without_region_text_is_not_a_country_block(bybit_env: None) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(403, json={"retCode": 403, "retMsg": "no reason given"})
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    rendered = view.model_dump_json()
+    assert view.상태코드 == "error"
+    assert view.오류코드 == "http_403"
+    assert "확인하지 못했습니다" in view.메시지
+    assert "no reason given" not in rendered
+    assert seen == ["/v5/market/time"]
+
+
+async def test_429_retries_are_finite(bybit_env: None) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(429)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    client.retry_waits = (0.0, 0.0)
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert view.오류코드 == "ret_10006"
+    assert seen == ["/v5/market/time", "/v5/market/time", "/v5/market/time"]
+
+
+async def test_503_then_success_stays_inside_the_deadline(bybit_env: None) -> None:
+    calls = {"time": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v5/market/time":
+            calls["time"] += 1
+            if calls["time"] < 3:
+                return httpx.Response(503)
+            return ok({"timeSecond": "1700000000"})
+        if request.url.path == "/v5/market/instruments-info":
+            return ok(
+                {
+                    "category": "linear",
+                    "list": [
+                        {
+                            "symbol": "BTCUSDT",
+                            "leverageFilter": {
+                                "minLeverage": "1",
+                                "maxLeverage": "2",
+                                "leverageStep": "1",
+                            },
+                        }
+                    ],
+                }
+            )
+        if request.url.path == "/v5/account/wallet-balance":
+            return ok({"list": [{"accountType": "UNIFIED", "totalEquity": "1", "coin": []}]})
+        if request.url.path == "/v5/account/info":
+            return ok({"marginMode": "ISOLATED_MARGIN", "updatedTime": "1697078946000"})
+        if request.url.path in {"/v5/position/list", "/v5/order/realtime"}:
+            return ok({"list": [], "nextPageCursor": ""})
+        raise AssertionError(request.url.path)
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    client.retry_waits = (0.0, 0.0)
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert calls["time"] == 3
+    assert view.상태코드 == "ok"
+    assert view.계좌마진모드 == "격리"
+
+
+async def test_deadline_stops_before_a_request(bybit_env: None) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return ok({"timeSecond": "1700000000"})
+
+    client = BybitReadOnlyClient.from_environment(transport=httpx.MockTransport(handler))
+    try:
+        view = await build_account_view(client, None, deadline_at=time.monotonic() - 1)
+    finally:
+        await client.aclose()
+    assert seen == []
+    assert view.오류코드 == "timeout"
+    assert view.잔고 is None
+
+
+def test_order_decision_rejects_stale_sequential_and_failed_reads() -> None:
+    assert (
+        order_decision_allowed(status="ok", age_seconds=0, sequential=True, marked_usable=True)
+        is False
+    )
+    assert (
+        order_decision_allowed(status="ok", age_seconds=45, sequential=False, marked_usable=True)
+        is False
+    )
+    assert (
+        order_decision_allowed(status="error", age_seconds=0, sequential=False, marked_usable=True)
+        is False
+    )
+    assert (
+        order_decision_allowed(status="ok", age_seconds=0, sequential=False, marked_usable=False)
+        is False
+    )
+    assert (
+        order_decision_allowed(status="ok", age_seconds=44, sequential=False, marked_usable=True)
+        is True
+    )
+
+
+async def test_overlapping_account_reads_share_one_load() -> None:
+    gate = AccountReadGate(8)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def load():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return blank_view("missing_credentials", "mainnet", live_trading=False)
+
+    first = asyncio.create_task(gate.get(load))
+    await started.wait()
+    second = asyncio.create_task(gate.get(load))
+    await asyncio.sleep(0.02)
+    assert calls == 1
+    release.set()
+    left = await first
+    right = await second
+    assert calls == 1
+    assert right.캐시사용 is True
+    assert right.동시요청공유 is True
+    assert left.메시지 == right.메시지
+
+
+async def test_two_tabs_reuse_one_exchange_read_and_show_the_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BYBIT_API_KEY", KEY)
+    monkeypatch.setenv("BYBIT_API_SECRET", SECRET)
+    monkeypatch.setenv("BYBIT_TESTNET", "false")
+    monkeypatch.setenv("BYBIT_ENV_FILE", "off")
+    seen: list[httpx.Request] = []
+    async with api_client(monkeypatch, success_handler(seen)) as client:
+        first = await client.get("/api/v1/account/bybit/view")
+        second = await client.get("/api/v1/account/bybit/view")
+    assert first.status_code == 200
+    assert second.json()["캐시사용"] is True
+    assert second.json()["데이터나이초"] >= 0
+    assert _paths(seen, "/v5/account/wallet-balance") == 1
+    assert SECRET not in second.text
+    assert second.json()["주문판단에사용"] is False

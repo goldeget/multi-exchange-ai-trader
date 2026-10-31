@@ -72,6 +72,8 @@ export function schedulerLabel(state: string | undefined): string {
     UNAVAILABLE: "자동 진행을 확인하지 못함",
     UNKNOWN: "자동 진행 확인 중",
     PAUSED_ERROR: "오류로 자동 진행이 멈춤",
+    STALLED: "자동 진행이 멈춰 있습니다",
+    STOPPED: "자동 진행이 끝났습니다",
   };
   return table[state ?? ""] ?? "자동 진행 확인 중";
 }

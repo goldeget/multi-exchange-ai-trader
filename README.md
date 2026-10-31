@@ -68,7 +68,7 @@ uv run uvicorn multi_exchange_trader.main:app --host 127.0.0.1 --port 8000
 npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5173
 ```
 
-`http://127.0.0.1:5173/` , `http://127.0.0.1:5173/?view=research` , 또는 계좌 조회 `http://127.0.0.1:5173/?view=account` 를 엽니다. 준비 상태는 `curl -fsS http://127.0.0.1:8000/api/v1/health`로 확인합니다.
+`http://127.0.0.1:5173/` , `http://127.0.0.1:5173/?view=research` , 또는 계좌 조회 `http://127.0.0.1:5173/?view=account` 를 엽니다. 프로세스가 응답하는지는 `curl -fsS http://127.0.0.1:8000/api/v1/health`로 확인합니다. `http://127.0.0.1:8000/api/v1/ready`는 기능별 상태입니다. 둘 다 실거래 준비가 됐다는 뜻이 아닙니다.
 
 ## Bybit 계좌 조회 (읽기 전용)
 
@@ -76,7 +76,7 @@ npm run dev --prefix apps/web -- --host 127.0.0.1 --port 5173
 
 `LIVE_TRADING_ENABLED`의 기본값은 false입니다. 주문과 레버리지 주소는 항상 거부합니다. 이 값을 켜도 이 클라이언트는 주문을 보내지 않습니다. 나중 주문은 NautilusTrader 한 경로만 사용하며, 그 경로는 아직 시작하지 않습니다. Nautilus Bybit 실행 클라이언트는 접속할 때 레버리지를 바꿀 수 있어 이 조회에서는 쓰지 않습니다.
 
-공개 시세의 `MARKET_DATA_BLOCKED_HOSTS`는 그대로입니다. 계좌 조회만 별도 읽기 클라이언트를 사용합니다. Bybit가 지역 제한으로 막으면 상태는 BLOCKED이고, 잔고 숫자를 만들어 보여 주지 않습니다. VPN이나 프록시는 바꾸지 않습니다.
+공개 시세의 `MARKET_DATA_BLOCKED_HOSTS`는 그대로입니다. 계좌 조회만 별도 읽기 클라이언트를 사용합니다. 지역 제한 문구가 있을 때만 연결이 막힌 것으로 보여 주고, 403만으로 국가 제한이라고 하지 않습니다. 잔고 숫자를 만들어 보여 주지 않습니다. VPN이나 프록시는 바꾸지 않습니다. 조회 값의 나이와 마진 표시는 [읽기 전용 계좌 문서](docs/account/BYBIT_READONLY.md)와 [안정성 메모](docs/STABILITY.md)에 있습니다.
 
 이미 있는 포지션과 미체결 주문은 모두 외부입니다. 프로그램이 가져가거나 수정하지 않습니다. PAPER 탭의 숫자는 가상 돈이라 이 잔고와 다릅니다. 자세한 설명은 [읽기 전용 계좌 문서](docs/account/BYBIT_READONLY.md)에 있습니다.
 
