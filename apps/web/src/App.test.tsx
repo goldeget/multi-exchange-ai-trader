@@ -182,6 +182,13 @@ describe("공개 시세 대시보드", () => {
     view.unmount();
     expect(signals.every((s) => s.aborted)).toBe(true);
   });
+  it("offers the Bybit account screen without calling it from the market view", async () => {
+    fetchMock.mockImplementation(response);
+    render(<App />);
+    await settle();
+    expect(screen.getByRole("button", { name: "Bybit 계좌 조회" })).toBeVisible();
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("/account/"))).toBe(true);
+  });
   it("changes the selected instrument using keyboard accessible controls", async () => {
     fetchMock.mockImplementation(response);
     render(<App />);

@@ -1,3 +1,4 @@
+import Account from "./account/Account";
 import Paper from "./paper/Paper";
 import Research from "./research/Research";
 import { useEffect, useState } from "react";
@@ -164,8 +165,8 @@ function MarketDashboard() {
             <p className="eyebrow">PUBLIC MARKET / 01</p>
             <h2>시장의 흐름을 한눈에</h2>
             <p>
-              BTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지
-              않습니다.
+              BTC와 ETH의 공개 시세를 관측합니다. 이 화면은 주문과 계좌 조회를 하지
+              않습니다. 계좌는 위쪽 Bybit 계좌 조회 화면에서 읽기만 합니다.
             </p>
           </div>
           <span className="mode">
@@ -308,7 +309,7 @@ function MarketDashboard() {
           </section>
         </div>
         <footer>
-          <span>READ ONLY · 계좌 연결 없음 · 주문 기능 없음</span>
+          <span>공개 시세 전용 · 계좌 조회는 별도 화면 · 주문 기능 없음</span>
           <span>
             {preview
               ? "샘플 시각 2026-01-01 UTC"
@@ -320,8 +321,48 @@ function MarketDashboard() {
   );
 }
 
+type AppView = "market" | "paper" | "research" | "account";
+
+function currentView(): AppView {
+  const value = new URLSearchParams(window.location.search).get("view");
+  if (value === "paper" || value === "research" || value === "account") return value;
+  return "market";
+}
+
 export default function App() {
- const [view,setView]=useState(()=>["paper","research"].includes(new URLSearchParams(window.location.search).get("view")??"")?new URLSearchParams(window.location.search).get("view")??"market":"market");
- function select(value:string){setView(value);const url=new URL(window.location.href);if(value!=="market")url.searchParams.set("view",value);else url.searchParams.delete("view");window.history.replaceState({},"",url);}
- return <><nav className="app-mode-nav" aria-label="화면 선택"><button aria-pressed={view==="market"} onClick={()=>select("market")}>공개 시장 관측</button><button aria-pressed={view==="paper"} onClick={()=>select("paper")}>PAPER 가상거래</button><button aria-pressed={view==="research"} onClick={()=>select("research")}>연구·가상 자동실행</button></nav>{view==="research"?<Research/>:view==="paper"?<Paper/>:<MarketDashboard/>}</>;
+  const [view, setView] = useState<AppView>(currentView);
+  function select(value: AppView) {
+    setView(value);
+    const url = new URL(window.location.href);
+    if (value !== "market") url.searchParams.set("view", value);
+    else url.searchParams.delete("view");
+    window.history.replaceState({}, "", url);
+  }
+  return (
+    <>
+      <nav className="app-mode-nav" aria-label="화면 선택">
+        <button aria-pressed={view === "market"} onClick={() => select("market")}>
+          공개 시장 관측
+        </button>
+        <button aria-pressed={view === "paper"} onClick={() => select("paper")}>
+          PAPER 가상거래
+        </button>
+        <button aria-pressed={view === "research"} onClick={() => select("research")}>
+          연구·가상 자동실행
+        </button>
+        <button aria-pressed={view === "account"} onClick={() => select("account")}>
+          Bybit 계좌 조회
+        </button>
+      </nav>
+      {view === "research" ? (
+        <Research />
+      ) : view === "paper" ? (
+        <Paper />
+      ) : view === "account" ? (
+        <Account />
+      ) : (
+        <MarketDashboard />
+      )}
+    </>
+  );
 }

@@ -435,6 +435,63 @@ footer {
     max-width: 100%;
   }
 }
+.account {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 28px 4% 64px;
+}
+.account-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 0 18px;
+  background: transparent;
+  border: 0;
+}
+.account-warning {
+  padding: 14px 16px;
+  border: 1px solid #ddaf55;
+  border-radius: 8px;
+  background: #292719;
+  color: #ffe3a3;
+}
+.account-panel {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #2a3745;
+  border-radius: 10px;
+  background: #121a23;
+}
+.account-panel h2 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+.account-panel p,
+.account-panel li {
+  color: #d5dee8;
+}
+.account-blocked {
+  margin: 12px 0;
+  color: #ffb4a8;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.account-table-wrap {
+  overflow-x: auto;
+}
+.account table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.account th,
+.account td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #2a3745;
+  text-align: left;
+  white-space: nowrap;
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
