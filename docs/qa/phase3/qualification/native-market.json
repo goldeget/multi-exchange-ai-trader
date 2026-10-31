@@ -1,0 +1,37 @@
+{
+  "version": "1.231.0",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "fills": [
+    {
+      "order": "PAPER-1",
+      "price": "60000.1",
+      "qty": "0.100",
+      "fee": "2.40000400 USDT",
+      "side": "1"
+    },
+    {
+      "order": "PAPER-2",
+      "price": "60999.9",
+      "qty": "0.040",
+      "fee": "0.97599840 USDT",
+      "side": "2"
+    },
+    {
+      "order": "PAPER-3",
+      "price": "58999.9",
+      "qty": "0.060",
+      "fee": "1.41599760 USDT",
+      "side": "2"
+    }
+  ],
+  "balances": "{Currency(code='USDT', precision=8, iso4217=0, name='Tether', currency_type=CRYPTO): AccountBalance(total=9_975.18800000 USDT, locked=0.00000000 USDT, free=9_975.18800000 USDT)}",
+  "positions": [
+    "Position(FLAT BTC-USDT-PERP.PAPER, id=BTC-USDT-PERP.PAPER-PAPER-000)"
+  ],
+  "orders": [
+    "MarketOrder(BUY 0.100 BTC-USDT-PERP.PAPER MARKET GTC, status=FILLED, client_order_id=PAPER-1, venue_order_id=PAPER-1-001, position_id=BTC-USDT-PERP.PAPER-PAPER-000, tags=None)",
+    "MarketOrder(SELL 0.040 BTC-USDT-PERP.PAPER MARKET GTC, status=FILLED, client_order_id=PAPER-2, venue_order_id=PAPER-1-002, position_id=BTC-USDT-PERP.PAPER-PAPER-000, tags=None)",
+    "MarketOrder(SELL 0.060 BTC-USDT-PERP.PAPER MARKET GTC, status=FILLED, client_order_id=PAPER-3, venue_order_id=PAPER-1-003, position_id=BTC-USDT-PERP.PAPER-PAPER-000, tags=None)"
+  ]
+}

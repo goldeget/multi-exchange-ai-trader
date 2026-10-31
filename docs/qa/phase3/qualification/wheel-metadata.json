@@ -1,0 +1,9 @@
+{
+  "package": "nautilus_trader",
+  "version": "1.231.0",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "wheel": "Wheel-Version: 1.0\nGenerator: poetry-core 2.3.1\nRoot-Is-Purelib: false\nTag: cp312-cp312-manylinux_2_35_x86_64\n",
+  "license": "LGPL-3.0-or-later",
+  "requires_python": ">=3.12,<3.15"
+}
