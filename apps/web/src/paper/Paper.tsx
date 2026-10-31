@@ -36,24 +36,24 @@ export default function Paper(){
   if(reset){setMark(value.marks[selected]);setQuantity(selected==="BTC-PAPER"?"0.100":"0.10");setCloseQty(selected==="BTC-PAPER"?"0.040":"0.04");}
  },[]);
  async function load(id:string){
-  setLoading(true);
-  try{const value=await read<State>(`${root}/${id}`);if(value.mode!=="PAPER"||!value.synthetic)throw new Error("PAPER 응답을 확인할 수 없습니다.");setState(value);syncControls(value,symbol,true);setAudit(await read(`${root}/${id}/audit`));setError("");}
+  setLoading(true);setState(null);setAudit(null);
+  try{const value=await read<State>(`${root}/${id}`);if(value.scenario_id!==id||value.mode!=="PAPER"||!value.synthetic)throw new Error("PAPER 응답을 확인할 수 없습니다.");setState(value);syncControls(value,symbol,true);setAudit(await read(`${root}/${id}/audit`));setError("");}
   catch(e){setError(e instanceof Error?e.message:"PAPER 상태 조회 실패");}finally{setLoading(false);}
  }
- useEffect(()=>{let active=true;void read<{scenarios:string[]}>(root).then(async value=>{if(!active)return;setIds(value.scenarios);if(value.scenarios[0]){setScenario(value.scenarios[0]);const initial=await read<State>(`${root}/${value.scenarios[0]}`);if(!active)return;if(initial.mode!=="PAPER"||!initial.synthetic)throw new Error("PAPER 응답 불일치");setState(initial);syncControls(initial,"BTC-PAPER",true);setAudit(await read(`${root}/${value.scenarios[0]}/audit`));setLoading(false);}else setLoading(false);}).catch(()=>{if(active){setError("로컬 PAPER 서버에 연결할 수 없습니다.");setLoading(false);}});return()=>{active=false;};},[syncControls]);
+ useEffect(()=>{let active=true;void read<{scenarios:string[]}>(root).then(async value=>{if(!active)return;setIds(value.scenarios);const target=restored.intent?.scenario??value.scenarios[0];if(target&&value.scenarios.includes(target)){setScenario(target);const initial=await read<State>(`${root}/${target}`);if(!active)return;if(initial.scenario_id!==target||initial.mode!=="PAPER"||!initial.synthetic)throw new Error("PAPER 응답 불일치");setState(initial);syncControls(initial,"BTC-PAPER",true);setAudit(await read(`${root}/${target}/audit`));setLoading(false);}else setLoading(false);}).catch(()=>{if(active){setError("로컬 PAPER 서버에 연결할 수 없습니다.");setLoading(false);}});return()=>{active=false;};},[syncControls,restored.intent]);
  const position=state?.positions.find(p=>p.instrument===symbol);
  async function perform(action:Intent){
   if(inFlight.current||restored.broken)return;
   try{const pending=restore();if(pending.broken||pending.intent&&pending.intent.key!==action.key)throw new Error("다른 미확정 PAPER 명령이 있습니다. 새로고침 후 같은 키로 확인하세요.");localStorage.setItem(pendingKey,JSON.stringify({version:1,intent:action}));}catch(e){setError(e instanceof Error?e.message:"미확정 명령 저장 실패");return;}
   inFlight.current=true;setBusy(true);setError("");
   let committed=false;
-  try{const value=await read<State>(`${root}/${action.scenario}/commands`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({idempotency_key:action.key,command:action.command})});if(value.mode!=="PAPER"||!value.synthetic)throw new Error("PAPER 응답 불일치");setState(value);syncControls(value,symbol,value.scenario_id!==scenario);setScenario(value.scenario_id);setIds(old=>[...new Set([...old,value.scenario_id])]);localStorage.removeItem(pendingKey);setIntent(null);setRetry(false);committed=true;}
+  try{const value=await read<State>(`${root}/${action.scenario}/commands`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({idempotency_key:action.key,command:action.command})});if(value.scenario_id!==action.scenario||value.mode!=="PAPER"||!value.synthetic)throw new Error("PAPER 응답 불일치");setState(value);syncControls(value,symbol,value.scenario_id!==scenario);setScenario(value.scenario_id);setIds(old=>[...new Set([...old,value.scenario_id])]);localStorage.removeItem(pendingKey);setIntent(null);setRetry(false);committed=true;}
   catch(e){if(e instanceof Rejected){localStorage.removeItem(pendingKey);setIntent(null);setRetry(false);setError(e.message);}else{setError("응답을 받지 못했습니다. 저장된 같은 명령 키로 재시도하세요.");setIntent(action);setRetry(true);}}
 
   finally{inFlight.current=false;setBusy(false);}
   if(committed){try{setAudit(await read(`${root}/${action.scenario}/audit`));}catch{setError("가상 실행은 저장됐으나 원장 조회에 실패했습니다. 상태를 새로고침하세요.");}}
  }
- function prepare(command:Record<string,unknown>,title:string){setError("");setRetry(false);setIntent({scenario,key:crypto.randomUUID(),command,title});}
+ function prepare(command:Record<string,unknown>,title:string){if(!state||state.scenario_id!==scenario||loading)return;setError("");setRetry(false);setIntent({scenario,key:crypto.randomUUID(),command,title});}
  function enter(side:string){const leverage=Number(lev);if(!numeric(quantity)||!Number.isInteger(leverage)||leverage<1||leverage>20){setError("수량은 양수 소수 문자열, 레버리지는 정수 1~20이어야 합니다.");return;}prepare({kind:"enter",instrument:symbol,side,quantity,leverage},`${symbol} · 가상 ${side.toUpperCase()} · 수량 ${quantity} · ${lev}x`);}
  const disabled=busy||loading||!!intent||restored.broken;
  return <main className="paper">
@@ -77,6 +77,6 @@ export default function Paper(){
    <details className="paper-panel"><summary>모의 가정 PAPER-v1 · 지원 범위</summary><p>NautilusTrader 1.231.0 simulated exchange · 1~20x는 설계자가 선택한 교육용 한도입니다. isolated 배분, MMR 0.5%, 체결마다 0.04% fee와 불리한 1 tick slippage. BTC: tick0.1/lot0.001, ETH: tick0.01/lot0.01. 소수 문자열, 명목한도100,000 USDT.</p><p>청산은 mark/격리배분/유지증거금의 근사 교육모델이며 거래소와 정확 일치하지 않습니다. Gap 초과 손실과 음수 잔고를 지우지 않습니다. 미지원: 전략 백테스트, AI, 실거래/Demo, limit 진입, 재량 pending 교체/만료, 거래량 기반 부분체결, funding.</p></details>
    <details className="paper-panel"><summary>가상 감사 원장 · 이벤트/주문/체결/정산</summary><pre>{JSON.stringify(audit,null,2)}</pre></details>
   </>}
-  {intent&&<section className="paper-confirm" role="dialog" aria-modal="true" aria-label="가상 실행 확인"><h2>가상 실행 확인</h2><p>{intent.title}</p><p>실거래소로 전송하지 않습니다. 결과 확인 전에는 같은 명령 키로만 재시도합니다. 새로고침·탭 복구 후에도 브라우저 저장소의 미확정 명령을 복원합니다.</p><button disabled={busy} onClick={()=>void perform(intent)}>{retry?"같은 키로 재시도":"확인 · 가상 실행"}</button><button disabled={busy||retry} onClick={()=>{setIntent(null);setRetry(false);setError("");}}>돌아가기</button></section>}
+  {intent&&<section className="paper-confirm" role="dialog" aria-modal="true" aria-label="가상 실행 확인"><h2>가상 실행 확인</h2><p>{intent.title}</p><p>실거래소로 전송하지 않습니다. 결과 확인 전에는 같은 명령 키로만 재시도합니다. 새로고침·탭 복구 후에도 브라우저 저장소의 미확정 명령을 복원합니다.</p><button disabled={busy||loading} onClick={()=>void perform(intent)}>{retry?"같은 키로 재시도":"확인 · 가상 실행"}</button><button disabled={busy||retry} onClick={()=>{setIntent(null);setRetry(false);setError("");}}>돌아가기</button></section>}
  </main>;
 }
