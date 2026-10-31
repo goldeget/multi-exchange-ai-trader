@@ -71,3 +71,9 @@ Latest implementation source: `edf89138ee2c58446db5d922726f368f6137aa2b`. Docume
 | Dependency review | SUCCESS |No changed dependency with severityModerate or higher detected; policy unchanged. Independent whole-tree npm audit also0. |
 
 Four source CIs total: initial dependency failure was repaired, checkpoint2 PASS, real selection-review fix checkpoint3 PASS, explicitly user-authorized security remediation checkpoint4 PASS. Documentation/evidence gets `[skip ci]`; no unchanged successful CI is rerun. No main change, merge, force push or deployment occurred.
+
+### Additional final-document scan distinction
+
+**UNRUN**: additional local Gitleaks scan of the final documentation. Limited searches of preserved `work/` and `/tmp` found no retained Gitleaks binary. The attempted new checksum-pinned binary download was rejected by automatic approval review; no download, alternate route, retry or new permission request followed. A limited common-credential-pattern check found0matches but is not a Gitleaks substitute. **PASS** remains the independently observed final-source CI Secret scan job124391476537 (Gitleaks `no leaks found`). These are separate scopes. Documentation contains only synthetic PAPER state/evidence; original raw sensitive exchange responses/runtime databases are not added.
+
+PR1 title/body update completed through the official GitHub connector after the old CLI's unrelated Projects-classic GraphQL metadata error; Draft/open/main/unmerged boundaries were preserved.
