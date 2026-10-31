@@ -27,7 +27,7 @@ Baseline docs56a212c5/sourceedf89138, branch codex/initial-platform, main7ddcded
 - [ ] Commit/push GREEN source immediately, report SHA; CI1 observed once. Choose fixed30day1h closed period; run approved guarded collector, save raw/normalized provenance/checksum. No denied-host retries. Evidence docs skipCI.
 
 ### Task2 — single-engine native replay and temporal evaluation
-**Files:** research/native.py, strategy.py, evaluation.py, worker.py, sandbox.py; tests/research/test_native.py, test_evaluation.py.
+**Files:** research/native.py, strategy.py, evaluation.py, worker.py, sandbox.py; tests/research/test_research_native.py, test_evaluation.py.
 **Interfaces:** signal(closedbars,fast,slow,market)->target; run_segment(dataset,config,start,end)->native result/curve/fills; evaluate(dataset)->report; sandbox_evaluate(dataset)->report.
 - [ ] Inspect/qualify exact native CurrencyPair/CASH API with throwaway actual fills before assuming balances. Save proof; no product code before tests.
 - [ ] RED hand long/spot cash+inventory/fees/adverse fills, synthetic perpetual consistency, next-open/warmup/prefix invariance, future mutation, OOS train-only selection/non-overlap, deterministic report hashes, metrics zero-trade/bounds.
@@ -35,9 +35,9 @@ Baseline docs56a212c5/sourceedf89138, branch codex/initial-platform, main7ddcded
 
 ### Task3 — durable risk-controlled synthetic automation (integrated source checkpoint2)
 **Files:** research/automation.py, storage.py (or focused store modules), scheduler.py; tests/research/test_automation.py, test_storage.py.
-**Interfaces:** create_run(id,key,config), command_run(id,key,action), step_run(id,cursor), state_run(id), store report/dataset catalog. New PHASE4_DB_PATH single atomic native-replay/session journal; no writes to original PaperStore, whose16/500limits remain unchanged. Phase4 independently enforces16/500 plus10exit reserve/96bar source. No second DB effect, no unnecessary saga.
+**Interfaces:** create_run(id,key,config), command_run(id,key,action), step_run(id,cursor), state_run(id), store report/dataset catalog. New PHASE4_DB_PATH single atomic native-replay/session journal; no writes to original PaperStore, whose16/500limits remain unchanged. Phase4 independently enforces16/500 plus10exit reserve/80bar source. No second DB effect, no unnecessary saga.
 - [ ] RED native step/paused/terminal stop, total loss/drawdown/exposure/streak, idempotency/payload conflict, concurrent duplicate cursor, transaction fault rollback/corrupt schema/hash, restart/replay/fundingonce, actual-spot refusal.
-- [ ] Implement bounded event stream over existing sandbox_replay; committed cursor decides next step. Native flatten after risk with10events reserved and96bar bounded source; keep losses/deficit. Recovery defaults PAUSED_RECOVERY, explicitresume only. Background loop reads durable running states/due times, expectedcursor and lock avoid duplicate loops; zero transport code. Add native-replay-beforeSQLcommit and response-aftercommit fault tests and pause/stop/inflight races.
+- [ ] Implement bounded event stream over existing sandbox_replay; committed cursor decides next step. Native flatten after risk with10events reserved and80bar bounded source; keep losses/deficit. Recovery defaults PAUSED_RECOVERY, explicitresume only. Background loop reads durable running states/due times, expectedcursor and lock avoid duplicate loops; zero transport code. Add native-replay-beforeSQLcommit and response-aftercommit fault tests and pause/stop/inflight races.
 - [ ] Run integrated GREEN, wholePython/static; commit/push core before UI, report SHA. CI2 observed once. No claim of UI/real restart until executed.
 
 ### Task4 — API, Korean UI and real process/browser acceptance (source checkpoint3)

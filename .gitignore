@@ -233,3 +233,6 @@ work/phase3-data/
 *.sqlite-shm
 *.sqlite3-wal
 *.sqlite3-shm
+
+# Local Phase4 datasets/reports/session DB are not source artifacts.
+work/phase4-data/

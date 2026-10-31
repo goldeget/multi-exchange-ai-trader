@@ -55,3 +55,13 @@ def test_native_worker_has_no_outbound_and_produces_actual_report():
     assert result["engine_version"] == "1.231.0"
     assert result["test"]["native_fill_count"] == len(result["test"]["fills"])
     assert result["network_sandbox"] == "Linux_x86_64_socket_denied"
+
+
+def test_net_return_and_maximum_net_loss_streak_hand_examples():
+    trades = [{"net_pnl": x} for x in ["-1", "-2", "0", "-3", "-4", "1", "-5"]]
+    m = api().metrics(["10000", "11000", "9900", "10500"], trades)
+    assert m["net_return"] == "0.05"
+    assert m["max_consecutive_losses"] == 2
+    assert m["breakeven_policy"] == "zero_net_resets_streak"
+    negative = api().metrics(["10000", "9500"], [])
+    assert negative["net_return"] == "-0.05" and negative["max_consecutive_losses"] == 0

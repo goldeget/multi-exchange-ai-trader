@@ -14,6 +14,13 @@ def metrics(equities: list[str], trades: list[dict[str, Any]]) -> dict[str, Any]
         equity = Decimal(value)
         peak = max(peak, equity)
         drawdown = max(drawdown, (peak - equity) / peak if peak > 0 else Decimal(0))
+    initial, final = Decimal(equities[0]), Decimal(equities[-1])
+    if initial <= 0:
+        raise ValueError("positive initial equity required")
+    streak = max_streak = 0
+    for trade in trades:
+        streak = streak + 1 if Decimal(trade["net_pnl"]) < 0 else 0
+        max_streak = max(max_streak, streak)
     n = len(trades)
     wins = sum(Decimal(t["net_pnl"]) > 0 for t in trades)
     low = high = rate = None
@@ -28,6 +35,9 @@ def metrics(equities: list[str], trades: list[dict[str, Any]]) -> dict[str, Any]
         low = str(max(Decimal(0), center - radius))
         high = str(min(Decimal(1), center + radius))
     return {
+        "net_return": str((final - initial) / initial),
+        "max_consecutive_losses": max_streak,
+        "breakeven_policy": "zero_net_resets_streak",
         "max_drawdown": str(drawdown),
         "trade_count": n,
         "wins": wins,
