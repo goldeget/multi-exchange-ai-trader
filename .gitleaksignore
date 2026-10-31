@@ -1,0 +1,6 @@
+# Exact historical false positives only: local synthetic PAPER UUIDv4 idempotency IDs.
+# No authentication capability; rationale/metadata in docs/qa/phase4/security-findings.json.
+3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:7
+3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:13
+3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:19
+3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/process-restart.json:generic-api-key:2717
