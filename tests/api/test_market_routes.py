@@ -37,10 +37,15 @@ async def test_health_and_route_inventory_have_no_exchange_access():
         response = await client.get("/api/v1/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
-        assert {(route.path, tuple(sorted(route.methods))) for route in app.routes} == {
+        assert {(path, tuple(method.upper() for method in sorted(methods)))
+                for path, methods in app.openapi()["paths"].items()} == {
             ("/api/v1/health", ("GET",)),
             ("/api/v1/market/ticker", ("GET",)),
             ("/api/v1/market/candles", ("GET",)),
+            ("/api/v1/paper/scenarios", ("GET",)),
+            ("/api/v1/paper/scenarios/{scenario}", ("GET",)),
+            ("/api/v1/paper/scenarios/{scenario}/audit", ("GET",)),
+            ("/api/v1/paper/scenarios/{scenario}/commands", ("POST",)),
         }
 
 

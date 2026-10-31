@@ -119,7 +119,7 @@ describe("공개 시세 대시보드", () => {
     render(<App />);
     await settle();
     expect(
-      screen.getByText("공개 시세 전용 · PAPER 엔진 미구현"),
+      screen.getByText("공개 시세 전용 · PAPER는 별도 가상 화면"),
     ).toBeVisible();
     expect(screen.getAllByText("105.00").length).toBeGreaterThan(0);
     expect(screen.getByRole("table")).toBeVisible();

@@ -13,3 +13,11 @@ Inspected exact v1 sources: backtest/engine.pyx add_venue/use_reduce_only/use_me
 The throwaway latest dependency resolution selected pandas3.1.0, which emits an upstream Pandas4Warning about Timestamp.utcnow. It did not prevent native fills; record it rather than claim warning-free upstream. Production will lock exact transitive artifacts and retain this compatibility observation. No library patch is made.
 
 All prices/outcomes are synthetic local qualification scenarios, not exchange data or real earnings. Existing fapi/Bybit blocks and PHASE2A incomplete status are unchanged.
+
+## Security-qualified dependency resolution (2026-10-31 KST)
+
+The first source CI, [41150363112](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41150363112), passed Python, frontend and secret scan but failed dependency review job `124385186090`. This was a real **High** finding, `GHSA-27vj-qcqg-25rc`: fsspec SSTI can permit arbitrary code execution. Affected versions are `>=0.9.0,<2026.6.0`; the fixed version is `2026.6.0`. It was neither a license failure nor a transient API error.
+
+NautilusTrader 1.231.0 wheel metadata pins `fsspec==2026.2.0`. The project therefore explicitly pins and applies a uv transitive override to **fsspec==2026.6.0**, while keeping the original Nautilus 1.231.0 wheel and library sources unmodified. This is a documented departure from its strict upstream dependency metadata, not an advisory exception. Dependency review severity policy and all CI security gates remain unchanged. Qualification is for this application's local simulated-exchange/replay paths; compatibility of every upstream adapter or fsspec integration is not claimed.
+
+`uv lock` and `uv sync --locked` accepted this resolution. Repeating the actual native probe under the patched dependency produced the same three fills, `4.79200000` fees and `9975.18800000` native cash. Integrated tests and the next source CI must also pass before final acceptance. Official advisory: https://github.com/advisories/GHSA-27vj-qcqg-25rc .
