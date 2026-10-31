@@ -1,0 +1,69 @@
+{
+  "scope": "Four exact historical local synthetic PAPER idempotency identifiers; not a rule/path/value-pattern ignore. Values intentionally omitted.",
+  "ci1": "41154244112",
+  "ci2_diagnostic": "41154605265",
+  "scanner": "Gitleaks8.30.1, entire git history, original exit code retained",
+  "classification": "Verified synthetic noncredential UUIDv4 identifiers; precise historical fingerprint exclusions only. No credential exposure found in these four findings; no history rewrite. Future commit/path/line matches remain scanned.",
+  "findings": [
+    {
+      "RuleID": "generic-api-key",
+      "File": "docs/qa/phase3/browser-20261031/reload-idempotency.json",
+      "StartLine": 7,
+      "EndLine": 7,
+      "Commit": "3421527acb0a16405b6d5a4731b497659eb77fc0",
+      "Fingerprint": "3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:7",
+      "verified_value_shape": "UUIDv4 (value omitted)",
+      "json_field": "idempotency_key",
+      "generator": "crypto.randomUUID in local Paper.tsx",
+      "capability": "Anonymous local synthetic PAPER command deduplication only; never an API credential or authentication header"
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "docs/qa/phase3/browser-20261031/reload-idempotency.json",
+      "StartLine": 13,
+      "EndLine": 13,
+      "Commit": "3421527acb0a16405b6d5a4731b497659eb77fc0",
+      "Fingerprint": "3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:13",
+      "verified_value_shape": "UUIDv4 (value omitted)",
+      "json_field": "idempotency_key",
+      "generator": "crypto.randomUUID in local Paper.tsx",
+      "capability": "Anonymous local synthetic PAPER command deduplication only; never an API credential or authentication header"
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "docs/qa/phase3/browser-20261031/reload-idempotency.json",
+      "StartLine": 19,
+      "EndLine": 19,
+      "Commit": "3421527acb0a16405b6d5a4731b497659eb77fc0",
+      "Fingerprint": "3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:19",
+      "verified_value_shape": "UUIDv4 (value omitted)",
+      "json_field": "idempotency_key",
+      "generator": "crypto.randomUUID in local Paper.tsx",
+      "capability": "Anonymous local synthetic PAPER command deduplication only; never an API credential or authentication header"
+    },
+    {
+      "RuleID": "generic-api-key",
+      "File": "docs/qa/phase3/browser-20261031/process-restart.json",
+      "StartLine": 2717,
+      "EndLine": 2717,
+      "Commit": "3421527acb0a16405b6d5a4731b497659eb77fc0",
+      "Fingerprint": "3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/process-restart.json:generic-api-key:2717",
+      "verified_value_shape": "UUIDv4 (value omitted)",
+      "json_field": "idempotency_key",
+      "generator": "uuid.uuid4 in preserved local process-restart QA",
+      "capability": "Anonymous local synthetic PAPER command deduplication only; never an API credential or authentication header"
+    }
+  ],
+  "browser_storage_namespace": {
+    "ci": "41157653747",
+    "job": 124407896429,
+    "RuleID": "generic-api-key",
+    "File": "apps/web/src/research/Research.tsx",
+    "StartLine": 17,
+    "Commit": "13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6",
+    "Fingerprint": "13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6:apps/web/src/research/Research.tsx:generic-api-key:17",
+    "classification": "Public localStorage namespace constant, not stored intent contents or any credential; independently reviewed by Work.",
+    "remediation": "Rename variable to pendingStorageName; keep exact namespace value unchanged. One exact historical fingerprint only; separate from four UUID findings.",
+    "public_namespace": "phase4-uncertain-intent-v1"
+  }
+}

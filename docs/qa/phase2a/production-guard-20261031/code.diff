@@ -1,0 +1,560 @@
+diff --git a/apps/web/src/App.test.tsx b/apps/web/src/App.test.tsx
+index 708eb85..2acfcf3 100644
+--- a/apps/web/src/App.test.tsx
++++ b/apps/web/src/App.test.tsx
+@@ -201,0 +202,10 @@ describe("공개 시세 대시보드", () => {
++
++it("keeps terminal restriction visible instead of replacing it with generic stale state", async()=>{
++  fetchMock.mockImplementation(response);render(<App/>);await settle();
++  fetchMock.mockResolvedValue({ok:false,json:async()=>({reason:"operator_disabled"})});
++  await act(async()=>{await vi.advanceTimersByTimeAsync(65000);});
++  expect(screen.getAllByText(/운영 설정으로 비활성화/).length).toBe(5);
++  expect(screen.queryByText("지연 · 마지막 수신 캔들")).not.toBeInTheDocument();
++  expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
++  expect(screen.getAllByText(/fixture/).length).toBeGreaterThan(0);
++});
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index 874ff8a..7a92978 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -56,0 +57,2 @@ function MarketRow({
++    : live.blocked
++      ? `${live.error}${data ? " · 마지막 수신값" : ""}`
+@@ -83 +85 @@ function MarketRow({
+-          className={stale ? "stale" : live.error ? "error" : "muted"}
++          className={live.blocked ? "error" : stale ? "stale" : live.error ? "error" : "muted"}
+@@ -102,0 +105 @@ function MarketRow({
++            <small>마지막 수신: {new Date(data.fetched_at).toISOString().replace("T", " ").slice(0, 19)} UTC</small>
+@@ -276,0 +280,2 @@ export default function App() {
++                : candles.blocked
++                  ? `${candles.error}${last ? " · 마지막 수신 캔들" : ""}`
+@@ -282 +287,6 @@ export default function App() {
+-            <CandleChart candles={data} />
++            {candles.successAt && !preview && (
++              <p className="chart-status">
++                마지막 수신: {new Date(candles.successAt).toISOString().replace("T", " ").slice(0, 19)} UTC · 출처: {names[venue]} 공개 캔들
++              </p>
++            )}
++            <CandleChart key={`${venue}/${symbol}/${market}/${interval}`} candles={data} />
+diff --git a/apps/web/src/api.test.tsx b/apps/web/src/api.test.tsx
+new file mode 100644
+index 0000000..25bf588
+--- /dev/null
++++ b/apps/web/src/api.test.tsx
+@@ -0,0 +1,44 @@
++// Offline UI fixtures: never evidence of live provider success.
++import { act, cleanup, render, screen } from "@testing-library/react";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
++import { usePolling, type Ticker } from "./api";
++
++const fetchMock = vi.fn();
++const last = { last_price: "105", fetched_at: "2026-10-31T00:00:00Z", source: "offline fixture" };
++const ok = () => ({ ok: true, json: async () => last });
++const denied = (reason: string) => ({ ok: false, json: async () => ({reason, message:"PRIVATE"}) });
++function View({url = "/first"}: {url?: string}) {
++  const result = usePolling<Ticker>(url, 5000, true);
++  return <div><span>{result.error ?? "normal"}</span><span>{result.data?.last_price}</span><time>{result.data?.fetched_at}</time><span>{result.data?.source}</span></div>;
++}
++beforeEach(() => {vi.useFakeTimers();fetchMock.mockReset();vi.stubGlobal("fetch", fetchMock);});
++afterEach(() => {cleanup();vi.useRealTimers();vi.unstubAllGlobals();});
++async function tick(ms=0) {await act(async()=>{await vi.advanceTimersByTimeAsync(ms);});}
++
++it.each([
++  ["operator_disabled", "운영 설정으로 비활성화"],
++  ["access_restricted", "상류 접근 제한"],
++  ["geographic_restriction", "지역 제한 확인"],
++])("stops polling terminal %s and never prints raw diagnostics", async(reason,label)=>{
++  fetchMock.mockResolvedValue(denied(reason));render(<View/>);await tick();
++  expect(screen.getByText(new RegExp(label))).toBeVisible();
++  await tick(90000);expect(fetchMock).toHaveBeenCalledTimes(1);
++  expect(screen.queryByText(/PRIVATE/)).not.toBeInTheDocument();
++});
++
++it("retains last receipt/source under terminal error and restarts for a different resource",async()=>{
++  fetchMock.mockResolvedValueOnce(ok()).mockResolvedValue(denied("access_restricted"));
++  const view=render(<View/>);await tick();await tick(5000);
++  expect(screen.getByText(/상류 접근 제한/)).toBeVisible();
++  expect(screen.getByText("105")).toBeVisible();expect(screen.getByText(last.fetched_at)).toBeVisible();
++  expect(screen.getByText(last.source)).toBeVisible();expect(screen.queryByText("normal")).not.toBeInTheDocument();
++  await tick(30000);expect(fetchMock).toHaveBeenCalledTimes(2);
++  fetchMock.mockResolvedValue(ok());view.rerender(<View url="/other"/>);await tick();
++  expect(fetchMock).toHaveBeenCalledTimes(3);expect(screen.getByText("normal")).toBeVisible();
++});
++
++it.each(["timeout", "unrecognized_future_reason"])("continues recovery polling for %s",async(reason)=>{
++  fetchMock.mockResolvedValueOnce(denied(reason)).mockResolvedValue(ok());
++  render(<View/>);await tick();expect(screen.getByText(/연결 오류/)).toBeVisible();
++  await tick(5000);expect(fetchMock).toHaveBeenCalledTimes(2);expect(screen.getByText("105")).toBeVisible();
++});
+diff --git a/apps/web/src/api.ts b/apps/web/src/api.ts
+index dc6c06c..4819731 100644
+--- a/apps/web/src/api.ts
++++ b/apps/web/src/api.ts
+@@ -21,0 +22,9 @@ export interface Candle {
++export type TerminalReason = "operator_disabled" | "access_restricted" | "geographic_restriction";
++const terminalMessages: Record<TerminalReason, string> = {
++  operator_disabled: "운영 설정으로 비활성화 · 재시도 중단",
++  access_restricted: "상류 접근 제한 · 재시도 중단",
++  geographic_restriction: "지역 제한 확인 · 재시도 중단",
++};
++function terminalReason(value: unknown): value is TerminalReason {
++  return value === "operator_disabled" || value === "access_restricted" || value === "geographic_restriction";
++}
+@@ -22,0 +32 @@ export interface Resource<T> {
++  blocked?: TerminalReason;
+@@ -66,0 +77 @@ export function usePolling<T>(
++    let stopped = false;
+@@ -69 +80 @@ export function usePolling<T>(
+-      if (pending) return;
++      if (pending || stopped) return;
+@@ -76 +87,14 @@ export function usePolling<T>(
+-        if (!response.ok) throw new Error("unavailable");
++        if (!response.ok) {
++          const body: {reason?: unknown} = await response.json().catch(() => ({}));
++          if (terminalReason(body.reason)) {
++            const reason = body.reason;
++            stopped = true;
++            window.clearInterval(timer);
++            if (!disposed) setResult(previous => ({url, value: {
++              ...(previous.url === url ? previous.value : {}),
++              blocked: reason, error: terminalMessages[reason],
++            }}));
++            return;
++          }
++          throw new Error("unavailable");
++        }
+@@ -95 +118,0 @@ export function usePolling<T>(
+-    void load();
+@@ -98,0 +122 @@ export function usePolling<T>(
++    void load();
+diff --git a/apps/web/src/chart/CandleChart.test.tsx b/apps/web/src/chart/CandleChart.test.tsx
+new file mode 100644
+index 0000000..6cc80d5
+--- /dev/null
++++ b/apps/web/src/chart/CandleChart.test.tsx
+@@ -0,0 +1,33 @@
++// Offline lifecycle contract tests; live range behavior is verified separately in Chromium.
++import { cleanup, render } from "@testing-library/react";
++import { afterEach, expect, it, vi } from "vitest";
++import type { Candle } from "../api";
++const mocks=vi.hoisted(()=>{
++  const charts: Array<{addSeries: ReturnType<typeof vi.fn>,timeScale: ReturnType<typeof vi.fn>,remove: ReturnType<typeof vi.fn>,setRange: ReturnType<typeof vi.fn>,fit: ReturnType<typeof vi.fn>,setData: ReturnType<typeof vi.fn>}> = [];
++  const createChart=vi.fn(()=>{
++    const fit=vi.fn(),setData=vi.fn(),setRange=vi.fn();
++    const chart={fit,setData,setRange,addSeries:vi.fn(()=>({setData,priceScale:()=>({applyOptions:vi.fn()})})),timeScale:vi.fn(()=>({fitContent:fit,getVisibleLogicalRange:()=>({from:25,to:75}),setVisibleLogicalRange:setRange})),remove:vi.fn()};charts.push(chart);return chart;
++  });return {createChart,charts};
++});
++vi.mock("lightweight-charts",()=>({createChart:mocks.createChart,CandlestickSeries:{},HistogramSeries:{},ColorType:{Solid:"solid"}}));
++import CandleChart from "./CandleChart";
++const candle: Candle={timestamp:"2026-10-31T00:00:00Z",open:"10",high:"12",low:"9",close:"11",volume:"2",is_closed:false};
++afterEach(()=>{cleanup();mocks.createChart.mockClear();mocks.charts.length=0;});
++it("updates live series in place without recreating or fitting the user's periodic viewport",()=>{
++ const view=render(<CandleChart candles={[candle]}/>);const first=mocks.charts[0];
++ view.rerender(<CandleChart candles={[{...candle,close:"11.5"}]}/>);
++ expect(mocks.createChart).toHaveBeenCalledTimes(1);expect(first.remove).not.toHaveBeenCalled();expect(first.fit).toHaveBeenCalledTimes(1);
++ expect(first.setData.mock.calls.at(-2)?.[0][0].close).toBe(11.5);
++ expect(first.setRange).toHaveBeenLastCalledWith({from:25,to:75});
++ view.unmount();expect(first.remove).toHaveBeenCalledTimes(1);
++});
++it("initializes empty-to-live, clears empty data, and fits a new selection lifecycle",()=>{
++ const view=render(<CandleChart key="BTC" candles={[]}/>);expect(mocks.createChart).not.toHaveBeenCalled();
++ view.rerender(<CandleChart key="BTC" candles={[candle]}/>);const first=mocks.charts[0];
++ view.rerender(<CandleChart key="ETH" candles={[]}/>);expect(first.remove).toHaveBeenCalledTimes(1);
++ view.rerender(<CandleChart key="ETH" candles={[{...candle,open:"20",high:"22",low:"19",close:"21"}]}/>);
++ expect(mocks.createChart).toHaveBeenCalledTimes(2);const second=mocks.charts[1];expect(second.fit).toHaveBeenCalledTimes(1);
++ expect(second.setData.mock.calls[0][0][0].open).toBe(20);
++ view.rerender(<CandleChart key="ETH" candles={[]}/>);expect(second.setData).toHaveBeenLastCalledWith([]);
++ view.unmount();expect(second.remove).toHaveBeenCalledTimes(1);
++});
+diff --git a/apps/web/src/chart/CandleChart.tsx b/apps/web/src/chart/CandleChart.tsx
+index 11f6931..aad8ff7 100644
+--- a/apps/web/src/chart/CandleChart.tsx
++++ b/apps/web/src/chart/CandleChart.tsx
+@@ -7,0 +8 @@ import {
++  type ISeriesApi,
+@@ -11,0 +13,10 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
++  const instance = useRef<{
++    chart: ReturnType<typeof createChart>;
++    series: ISeriesApi<"Candlestick">;
++    volume: ISeriesApi<"Histogram">;
++    fitted: boolean;
++  } | null>(null);
++  useEffect(() => () => {
++    instance.current?.chart.remove();
++    instance.current = null;
++  }, []);
+@@ -13,34 +24,41 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
+-    if (!container.current || !candles.length) return;
+-    const chart = createChart(container.current, {
+-      height: 380,
+-      autoSize: true,
+-      layout: {
+-        background: { type: ColorType.Solid, color: "#121A23" },
+-        textColor: "#A8B5C4",
+-        attributionLogo: true,
+-      },
+-      grid: {
+-        vertLines: { color: "#18232E" },
+-        horzLines: { color: "#18232E" },
+-      },
+-      rightPriceScale: {
+-        borderColor: "#2A3745",
+-        scaleMargins: { top: 0.08, bottom: 0.25 },
+-      },
+-      timeScale: { borderColor: "#2A3745", timeVisible: true },
+-      handleScroll: { vertTouchDrag: false },
+-    });
+-    const series = chart.addSeries(CandlestickSeries, {
+-      upColor: "#36C99A",
+-      downColor: "#FF737D",
+-      borderVisible: false,
+-      wickUpColor: "#36C99A",
+-      wickDownColor: "#FF737D",
+-    });
+-    const volume = chart.addSeries(HistogramSeries, {
+-      priceFormat: { type: "volume" },
+-      priceScaleId: "volume",
+-    });
+-    volume
+-      .priceScale()
+-      .applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
++    if (!container.current) return;
++    if (!instance.current && candles.length) {
++      const chart = createChart(container.current, {
++        height: 380,
++        autoSize: true,
++        layout: {
++          background: { type: ColorType.Solid, color: "#121A23" },
++          textColor: "#A8B5C4",
++          attributionLogo: true,
++        },
++        grid: {
++          vertLines: { color: "#18232E" },
++          horzLines: { color: "#18232E" },
++        },
++        rightPriceScale: {
++          borderColor: "#2A3745",
++          scaleMargins: { top: 0.08, bottom: 0.25 },
++        },
++        timeScale: { borderColor: "#2A3745", timeVisible: true },
++        handleScroll: { vertTouchDrag: false },
++      });
++      const series = chart.addSeries(CandlestickSeries, {
++        upColor: "#36C99A",
++        downColor: "#FF737D",
++        borderVisible: false,
++        wickUpColor: "#36C99A",
++        wickDownColor: "#FF737D",
++      });
++      const volume = chart.addSeries(HistogramSeries, {
++        priceFormat: { type: "volume" },
++        priceScaleId: "volume",
++      });
++      volume
++        .priceScale()
++        .applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
++      instance.current = {chart, series, volume, fitted: false};
++    }
++    const current = instance.current;
++    if (!current) return;
++    const {chart, series, volume} = current;
++    const range = chart.timeScale().getVisibleLogicalRange();
+@@ -63,2 +81,5 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
+-    chart.timeScale().fitContent();
+-    return () => chart.remove();
++    if (!candles.length) current.fitted = false;
++    else if (!current.fitted) {
++      chart.timeScale().fitContent();
++      current.fitted = true;
++    } else if (range) chart.timeScale().setVisibleLogicalRange(range);
+diff --git a/scripts/verify_phase2a_live.py b/scripts/verify_phase2a_live.py
+index ea93acf..e3d6283 100644
+--- a/scripts/verify_phase2a_live.py
++++ b/scripts/verify_phase2a_live.py
+@@ -17,0 +18 @@ from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailabl
++from multi_exchange_trader.market_data.denials import safe_denial_evidence
+@@ -33,14 +33,0 @@ def utc_now() -> datetime:
+-def safe_denial_evidence(response: httpx.Response) -> dict[str, str]:
+-    """Recognize bounded phrases; never copy arbitrary provider diagnostics."""
+-    text = response.content[:8192].decode("utf-8", errors="replace").lower()
+-    for phrase, category in (
+-        ("restricted location", "geographic_restriction"),
+-        ("block access from your country", "geographic_restriction"),
+-        ("too many requests", "rate_limit"),
+-        ("web application firewall", "waf"),
+-    ):
+-        if phrase in text:
+-            return {"denial_category": category, "safe_evidence": phrase}
+-    return {"denial_category": "unknown", "safe_evidence": "unclassified denial"}
+-
+-
+diff --git a/src/multi_exchange_trader/api.py b/src/multi_exchange_trader/api.py
+index f5bb295..e302faf 100644
+--- a/src/multi_exchange_trader/api.py
++++ b/src/multi_exchange_trader/api.py
+@@ -2,0 +3 @@
++import os
+@@ -7 +7,0 @@ from typing import Annotated, Literal, cast
+-import httpx
+@@ -15,0 +16 @@ from .market_data.models import Candle, MarketType, Ticker
++from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
+@@ -36 +37,3 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
+-        async with httpx.AsyncClient() as client:
++        blocked = parse_blocked_hosts(os.environ.get("MARKET_DATA_BLOCKED_HOSTS", ""))
++        async with PublicMarketClient(blocked_hosts=blocked) as client:
++            application.state.public_market_client = client
+diff --git a/src/multi_exchange_trader/market_data/adapters/base.py b/src/multi_exchange_trader/market_data/adapters/base.py
+index bf12356..2e856a6 100644
+--- a/src/multi_exchange_trader/market_data/adapters/base.py
++++ b/src/multi_exchange_trader/market_data/adapters/base.py
+@@ -9,0 +10 @@ import httpx
++from multi_exchange_trader.market_data.denials import safe_denial_evidence
+@@ -57,0 +59,7 @@ async def request_json(
++        if response.status_code in (403, 451):
++            reason = (
++                "geographic_restriction"
++                if safe_denial_evidence(response)["denial_category"] == "geographic_restriction"
++                else "access_restricted"
++            )
++            raise MarketDataUnavailable(reason, "Public market access is restricted")
+diff --git a/src/multi_exchange_trader/market_data/denials.py b/src/multi_exchange_trader/market_data/denials.py
+new file mode 100644
+index 0000000..5d49ea2
+--- /dev/null
++++ b/src/multi_exchange_trader/market_data/denials.py
+@@ -0,0 +1,17 @@
++"""Bounded fixed-phrase diagnostics shared by production and verification."""
++
++import httpx
++
++
++def safe_denial_evidence(response: httpx.Response) -> dict[str, str]:
++    """Recognize bounded phrases; never copy arbitrary provider diagnostics."""
++    text = response.content[:8192].decode("utf-8", errors="replace").lower()
++    for phrase, category in (
++        ("restricted location", "geographic_restriction"),
++        ("block access from your country", "geographic_restriction"),
++        ("too many requests", "rate_limit"),
++        ("web application firewall", "waf"),
++    ):
++        if phrase in text:
++            return {"denial_category": category, "safe_evidence": phrase}
++    return {"denial_category": "unknown", "safe_evidence": "unclassified denial"}
+diff --git a/src/multi_exchange_trader/market_data/public_client.py b/src/multi_exchange_trader/market_data/public_client.py
+new file mode 100644
+index 0000000..5dc6d1d
+--- /dev/null
++++ b/src/multi_exchange_trader/market_data/public_client.py
+@@ -0,0 +1,62 @@
++"""Per-process, app-lifespan denial guard for fixed public market endpoints."""
++
++import asyncio
++from typing import Any
++
++import httpx
++
++from .adapters.base import MarketDataUnavailable
++from .adapters.binance import CANDLE_URLS, TICKER_URLS
++from .adapters.bybit import CANDLE_URL, TICKER_URL
++from .denials import safe_denial_evidence
++
++PUBLIC_URLS = frozenset([*CANDLE_URLS.values(), *TICKER_URLS.values(), CANDLE_URL, TICKER_URL])
++PUBLIC_HOSTS = frozenset(httpx.URL(url).host for url in PUBLIC_URLS)
++
++
++def parse_blocked_hosts(value: str) -> frozenset[str]:
++    if not value.strip():
++        return frozenset()
++    hosts = frozenset(part.strip() for part in value.split(","))
++    if not hosts <= PUBLIC_HOSTS:
++        # Never echo arbitrary configuration (which could accidentally contain a secret).
++        raise ValueError("Invalid MARKET_DATA_BLOCKED_HOSTS: use supported public host names only")
++    return hosts
++
++
++class PublicMarketClient(httpx.AsyncClient):
++    """Serialize each host through response classification; never auto-clear denial."""
++
++    def __init__(self, *, blocked_hosts: frozenset[str] = frozenset(), **kwargs: Any) -> None:
++        if not blocked_hosts <= PUBLIC_HOSTS:
++            raise ValueError("Invalid MARKET_DATA_BLOCKED_HOSTS: unsupported public host")
++        super().__init__(**kwargs)
++        self._blocked = dict.fromkeys(blocked_hosts, "operator_disabled")
++        self._locks = {host: asyncio.Lock() for host in PUBLIC_HOSTS}
++
++    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
++        target = request.url.copy_with(query=None)
++        if str(target) not in PUBLIC_URLS or request.method != "GET" or request.content:
++            raise MarketDataUnavailable("unsupported", "Unsupported public market request")
++        host = request.url.host
++        async with self._locks[host]:
++            if host in self._blocked:
++                raise MarketDataUnavailable(self._blocked[host], "Public market host is disabled")
++            kwargs["follow_redirects"] = False
++            try:
++                response = await super().send(request, **kwargs)
++            except httpx.ProxyError as exc:
++                if "403" not in str(exc) and "451" not in str(exc):
++                    raise
++                self._blocked[host] = "access_restricted"
++                raise MarketDataUnavailable("access_restricted", "Public proxy denied access") from None
++            if response.status_code in (403, 451):
++                reason = (
++                    "geographic_restriction"
++                    if safe_denial_evidence(response)["denial_category"] == "geographic_restriction"
++                    else "access_restricted"
++                )
++                self._blocked[host] = reason
++                await response.aclose()
++                raise MarketDataUnavailable(reason, "Public market access is restricted")
++            return response
+diff --git a/tests/api/test_market_routes.py b/tests/api/test_market_routes.py
+index 3d784f2..2c9a3e0 100644
+--- a/tests/api/test_market_routes.py
++++ b/tests/api/test_market_routes.py
+@@ -192 +192 @@ async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
+-    provider_client = httpx.AsyncClient(
++    provider_client = api.PublicMarketClient(
+@@ -197 +197 @@ async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
+-    def make_provider_client():
++    def make_provider_client(**kwargs):
+@@ -202 +202 @@ async def test_default_lifespan_shares_and_closes_provider_client(monkeypatch):
+-    monkeypatch.setattr(api.httpx, "AsyncClient", make_provider_client)
++    monkeypatch.setattr(api, "PublicMarketClient", make_provider_client)
+diff --git a/tests/api/test_production_guard.py b/tests/api/test_production_guard.py
+new file mode 100644
+index 0000000..9b89c55
+--- /dev/null
++++ b/tests/api/test_production_guard.py
+@@ -0,0 +1,131 @@
++"""Offline production lifespan/API wire tests; no real exchange traffic."""
++
++import asyncio
++from contextlib import asynccontextmanager
++
++import httpx
++import pytest
++
++from multi_exchange_trader.api import create_app
++
++
++@asynccontextmanager
++async def production(monkeypatch, handler, blocked=""):
++    monkeypatch.setenv("MARKET_DATA_BLOCKED_HOSTS", blocked)
++    mock = httpx.MockTransport(handler)
++
++    async def wire(self, request):
++        return await mock.handle_async_request(request)
++
++    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", wire)
++    app = create_app()
++    async with app.router.lifespan_context(app), httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=app), base_url="http://local.test"
++    ) as client:
++        yield client, app
++
++
++def selection(exchange="binance", market="perpetual", symbol="BTCUSDT"):
++    return {"exchange": exchange, "market_type": market, "symbol": symbol, "interval": "1m"}
++
++
++@pytest.mark.parametrize("status", [403, 451])
++async def test_production_concurrent_denial_serializes_host_and_keeps_other_host(monkeypatch, status):
++    attempts = []
++    entered = asyncio.Event()
++    release = asyncio.Event()
++
++    async def wire(request):
++        attempts.append(request.url.host)
++        assert request.method == "GET" and request.content == b""
++        if request.url.host == "fapi.binance.com":
++            entered.set()
++            await release.wait()
++            return httpx.Response(status, text="identifier=PRIVATE unclassified denial")
++        return httpx.Response(200, json={"symbol": "BTCUSDT", "price": "10"})
++
++    async with production(monkeypatch, wire) as (client, _):
++        first = asyncio.create_task(client.get("/api/v1/market/ticker", params=selection()))
++        await entered.wait()
++        queued = [asyncio.create_task(client.get(
++            f"/api/v1/market/{kind}", params=selection(symbol=symbol)
++        )) for kind in ["ticker", "candles"] for symbol in ["BTCUSDT", "ETHUSDT"]]
++        # Other host must progress while this host remains held in its network response.
++        other = await asyncio.wait_for(client.get(
++            "/api/v1/market/ticker", params=selection(market="spot")
++        ), 2)
++        assert other.status_code == 200
++        release.set()
++        replies = await asyncio.gather(first, *queued)
++    assert attempts.count("fapi.binance.com") == 1
++    assert attempts.count("data-api.binance.vision") == 1
++    assert all(r.status_code == 503 and r.json()["reason"] == "access_restricted" for r in replies)
++    assert all("PRIVATE" not in r.text for r in replies)
++
++
++async def test_production_preblocked_first_send_zero_across_selections_and_workers(monkeypatch):
++    attempts = []
++
++    def wire(request):
++        attempts.append(request.url.host)
++        return httpx.Response(200, json={"symbol": "BTCUSDT", "price": "10"})
++
++    for _ in range(2):  # Independent app lifespans emulate workers/restart; no shared memory.
++        async with production(monkeypatch, wire, "fapi.binance.com,api.bybit.com") as (client, _):
++            for exchange, market in [("binance", "perpetual"), ("bybit", "spot"),
++                                     ("bybit", "perpetual")]:
++                for symbol in ["BTCUSDT", "ETHUSDT"]:
++                    for kind in ["ticker", "candles"]:
++                        reply = await client.get(f"/api/v1/market/{kind}",
++                                                 params=selection(exchange, market, symbol))
++                        assert reply.json()["reason"] == "operator_disabled"
++            assert (await client.get("/api/v1/market/ticker",
++                                     params=selection(market="spot"))).status_code == 200
++    assert attempts == ["data-api.binance.vision", "data-api.binance.vision"]
++
++
++@pytest.mark.parametrize("bad", ["https://api.bybit.com", "api.bybit.com:443", "evil.test",
++                                  "api.bybit.com,", "API.BYBIT.COM", "api.bybit.com/path"])
++async def test_production_invalid_block_setting_fails_startup_without_echo(monkeypatch, bad):
++    monkeypatch.setenv("MARKET_DATA_BLOCKED_HOSTS", bad)
++    app = create_app()
++    with pytest.raises(ValueError, match="MARKET_DATA_BLOCKED_HOSTS") as exc:
++        async with app.router.lifespan_context(app):
++            pytest.fail("Invalid setting did not fail startup")
++    assert bad not in str(exc.value)
++
++
++@pytest.mark.parametrize("body,reason", [
++    ("restricted location; secret=PRIVATE 192.0.2.1", "geographic_restriction"),
++    ("block access from your country; Request ID=PRIVATE", "geographic_restriction"),
++    ("403 Forbidden US IP? secret=PRIVATE", "access_restricted"),
++])
++async def test_production_safe_classification_and_no_raw_payload(monkeypatch, body, reason):
++    attempts = []
++
++    def wire(request):
++        attempts.append(request.url.host)
++        return httpx.Response(403, text=body)
++
++    async with production(monkeypatch, wire) as (client, _):
++        for market in ["spot", "perpetual"]:
++            reply = await client.get("/api/v1/market/ticker", params=selection("bybit", market))
++            assert reply.json() == {"reason": reason, "message": "Market data is unavailable."}
++            assert "PRIVATE" not in reply.text and "192.0.2.1" not in reply.text
++    assert attempts == ["api.bybit.com"]
++
++
++async def test_production_transient_timeout_keeps_recovery_possible(monkeypatch):
++    attempts = []
++
++    def wire(request):
++        attempts.append(request)
++        if len(attempts) == 1:
++            raise httpx.ReadTimeout("PRIVATE")
++        return httpx.Response(200, json={"symbol": "BTCUSDT", "price": "10"})
++
++    async with production(monkeypatch, wire) as (client, _):
++        assert (await client.get("/api/v1/market/ticker", params=selection(market="spot"))).json()[
++            "reason"] == "timeout"
++        assert (await client.get("/api/v1/market/ticker", params=selection(market="spot"))).status_code == 200
++    assert len(attempts) == 2

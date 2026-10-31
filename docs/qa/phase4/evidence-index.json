@@ -1,0 +1,323 @@
+{
+  "scope": "PHASE4 local functional/native synthetic and captured spot research only",
+  "source_sha": "db6447e520c03e6b2efcc0ef46d2035730e00403",
+  "timezone": "Asia/Seoul",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "06ff06bea9752aeadb39925f5a4c11cdf52ca516ecbd2b4a8b1611935076dddc",
+      "bytes": 11936
+    },
+    {
+      "path": "browser-20261031/README.md",
+      "sha256": "8fb91b90af4dcce4056f4095ced805730a61d69c6636600a547aabea24a6b5d1",
+      "bytes": 1530
+    },
+    {
+      "path": "browser-20261031/desktop-after-process-restart.png",
+      "sha256": "fe7ff51d4c22bce95212ff0929c1d5399bef9f58314bf4f4bc2cb5dbc5b10b2d",
+      "bytes": 258759
+    },
+    {
+      "path": "browser-20261031/desktop-created-paused.png",
+      "sha256": "75c7675f02927d946b1fcbb70a4c1da66e1504a0e927c09f21974504c0d60ce7",
+      "bytes": 321807
+    },
+    {
+      "path": "browser-20261031/desktop-final-ui-contract.png",
+      "sha256": "128a0c21c4baa2d7af50bea28a08300405a95acab7a92e3b9b1c376059a437a9",
+      "bytes": 414464
+    },
+    {
+      "path": "browser-20261031/desktop-fresh-fault-fixture-paused.png",
+      "sha256": "baba4d342cc10ffd1e8e81bbc78b673412a135959b59c8e57168a1cfe1aef002",
+      "bytes": 284821
+    },
+    {
+      "path": "browser-20261031/desktop-paused-position.png",
+      "sha256": "9bc85c13d24b15b0b11e9c72ab46749a565c03c48e8a255cf8984a706e6c807d",
+      "bytes": 334322
+    },
+    {
+      "path": "browser-20261031/desktop-post-restart-failure.png",
+      "sha256": "ce9452cba4faeba9683615db92ba7b496b19d37b2626a41685a226b6269e8423",
+      "bytes": 234433
+    },
+    {
+      "path": "browser-20261031/desktop-post-restart.json",
+      "sha256": "0b853f6f8ddc67004b3e7f2cfb4f7d5e5c6fe555031bd449cda787db3ab7185e",
+      "bytes": 34847,
+      "status": "PASS",
+      "started_at_utc_kst": "2026-10-31T11:02:31.043000+09:00"
+    },
+    {
+      "path": "browser-20261031/desktop-research-BTC-PAPER.png",
+      "sha256": "63bdd1e2377700df2012b1b5ec633898f82c769ee3e3f4d9f98d7f27eb127959",
+      "bytes": 254898
+    },
+    {
+      "path": "browser-20261031/desktop-research-BTCUSDT.png",
+      "sha256": "6e8488d6e9243c644fcdc0111e651526245d26f25df8e59c4ac855b60201203e",
+      "bytes": 265737
+    },
+    {
+      "path": "browser-20261031/desktop-research-ETHUSDT.png",
+      "sha256": "749afa2e244ddc0bbebeb9081d9955ec91796e4fbd730ee7cfdded6ee69e5b87",
+      "bytes": 264009
+    },
+    {
+      "path": "browser-20261031/desktop-restart-ready.png",
+      "sha256": "a13a402e2db5d67a26d1c0e58ebd0b132b75d5d6953b5ff8a17591da16e76739",
+      "bytes": 335216
+    },
+    {
+      "path": "browser-20261031/desktop-same-key-stop-confirmed.png",
+      "sha256": "c5e0e21db5a94d4d15f886b458b240a23592a451c84dcf3ccc8f6e352d5365da",
+      "bytes": 288906
+    },
+    {
+      "path": "browser-20261031/desktop-ui-contract.json",
+      "sha256": "02d0105f2b46585060a554970068f29d881639b12926c0da42356f842a466e98",
+      "bytes": 1950,
+      "status": "PASS",
+      "at_utc_kst": "2026-10-31T11:07:01.294000+09:00"
+    },
+    {
+      "path": "browser-20261031/desktop-uncertain-stop.png",
+      "sha256": "7b7bacaf9658fd468ad7517df8c436a7c606ee6b8cdb569ed72f91655a020710",
+      "bytes": 281981
+    },
+    {
+      "path": "browser-20261031/desktop.json",
+      "sha256": "c84281e47d7c9431c027e1655ba2c954f0d0f4cb6aad518c1e9dd1be242e512d",
+      "bytes": 17985,
+      "status": "PASS",
+      "started_at_utc_kst": "2026-10-31T10:53:11.346000+09:00"
+    },
+    {
+      "path": "browser-20261031/mobile-after-process-restart.png",
+      "sha256": "6f4a74bb258168f8fd3a724f3f3add298cd85aa64e367cc283cea0a6a27e61d1",
+      "bytes": 247734
+    },
+    {
+      "path": "browser-20261031/mobile-created-paused.png",
+      "sha256": "77df5109c95575a8c99d852f61d7c773b5d35f5010cca4625afd5bb81ff93e1e",
+      "bytes": 296679
+    },
+    {
+      "path": "browser-20261031/mobile-final-ui-contract.png",
+      "sha256": "12a6e916a82949831e251996de9f4c04e7b1ecbde576ad4b5139005b02ac00d0",
+      "bytes": 366797
+    },
+    {
+      "path": "browser-20261031/mobile-fresh-fault-fixture-paused.png",
+      "sha256": "b2a82b9b46baff555a81852c4dcd9ca54511f63cb8efee68d0e4abcf29cb44df",
+      "bytes": 267935
+    },
+    {
+      "path": "browser-20261031/mobile-native-loss-limit-halt.png",
+      "sha256": "55b7e7a568c33d290a2e05dc5d043593a30318bbeb04232dc4444e62f7d62649",
+      "bytes": 266129
+    },
+    {
+      "path": "browser-20261031/mobile-paused-position.png",
+      "sha256": "e333551a81363552def6c83bcd638a5a6d09ba96a6e39f1efa157fc475e33210",
+      "bytes": 305599
+    },
+    {
+      "path": "browser-20261031/mobile-post-restart-failure.png",
+      "sha256": "af7412541c0d195a388adf3f5b0153817a405c6c07c8e7a8d0f5f0f2f083cd3b",
+      "bytes": 238108
+    },
+    {
+      "path": "browser-20261031/mobile-post-restart.json",
+      "sha256": "503c783b8f6d42081b42bde68e7acb890d726ec9a9784ed88e9c4fa441e1415a",
+      "bytes": 64052,
+      "status": "PASS",
+      "started_at_utc_kst": "2026-10-31T11:02:58.508000+09:00"
+    },
+    {
+      "path": "browser-20261031/mobile-research-BTC-PAPER.png",
+      "sha256": "23a887ec4ff686b2115680498352898a700fa006192d12a6f5fb2dd067eb2e5c",
+      "bytes": 305081
+    },
+    {
+      "path": "browser-20261031/mobile-research-BTCUSDT.png",
+      "sha256": "adf6789bcdddad29b63c080c9526b4af8d0515714d0cc8bcb31c69ba323d6810",
+      "bytes": 312715
+    },
+    {
+      "path": "browser-20261031/mobile-research-ETHUSDT.png",
+      "sha256": "9a23d931791e4bdd81fe6e0f31a8d4ad60562db038e79b8e4b73bf94b3feeef4",
+      "bytes": 311438
+    },
+    {
+      "path": "browser-20261031/mobile-restart-ready.png",
+      "sha256": "4404b5b7be07248ad552aa894343213a2b7ed7b97e1b9ee39ca883d5a8cfb583",
+      "bytes": 305876
+    },
+    {
+      "path": "browser-20261031/mobile-same-key-stop-confirmed.png",
+      "sha256": "ea4a1d03c98377973f279ca2477677d8d75a903a9ae85922a18f1dc1ff0b07ab",
+      "bytes": 266519
+    },
+    {
+      "path": "browser-20261031/mobile-ui-contract.json",
+      "sha256": "b3f5ac09030bb437accfec05d29b699790feebed8b4aafc4e55707cb5955c780",
+      "bytes": 1945,
+      "status": "PASS",
+      "at_utc_kst": "2026-10-31T11:07:03.585000+09:00"
+    },
+    {
+      "path": "browser-20261031/mobile-uncertain-create.png",
+      "sha256": "123b64c29c32410733e9bb7eacc2f5a4cbe0a3c8af546f2f4499017761db736d",
+      "bytes": 256966
+    },
+    {
+      "path": "browser-20261031/mobile-uncertain-stop.png",
+      "sha256": "d113f57367aa7a759e377c1cdca9d1c888ab31b666d2ac0c03599198fe1a19ae",
+      "bytes": 266796
+    },
+    {
+      "path": "browser-20261031/mobile.json",
+      "sha256": "6a3cefd0688c8787afc765b9390f3988ae417a9dda6a34ac2aa626aaa9ce786e",
+      "bytes": 19091,
+      "status": "PASS",
+      "started_at_utc_kst": "2026-10-31T10:53:48.155000+09:00"
+    },
+    {
+      "path": "browser-20261031/process-restart.json",
+      "sha256": "c8224c54e3d5b7b4460a818ff34bbbd1c13412bc22361458cc3e908c4dfbb623",
+      "bytes": 109135,
+      "status": "PASS",
+      "at_utc_kst": "2026-10-31T10:56:22.003025+09:00",
+      "verified_at_utc_kst": "2026-10-31T10:57:12.382027+09:00"
+    },
+    {
+      "path": "data/1162539322edfac678c2bb5a2e9efe619b861aabfd109f72e091eebd1ef9682d.json",
+      "sha256": "21684a2ae1b2ad35eae08f9350af28b37138f6c515dcfdf33663de6f6b26995e",
+      "bytes": 247236,
+      "status": "scope_specific",
+      "collected_at_kst": "2026-10-31T10:13:20.641337+09:00"
+    },
+    {
+      "path": "data/3df4c61979b74f1585bf37710f7267b15ba208e8b529b0886fc8079ef843b476.json",
+      "sha256": "6a7ac709427780af99a9ea332575fcdea093b278817d39c6cec17d0fa9ab4de6",
+      "bytes": 243511,
+      "status": "scope_specific",
+      "collected_at_kst": "2026-10-31T10:13:21.990923+09:00"
+    },
+    {
+      "path": "data/README.md",
+      "sha256": "6770401c47a16b2aec1906eaa6241f7c8228350884cd83f5e0f433e42c875053",
+      "bytes": 2316
+    },
+    {
+      "path": "data/collection-intent.json",
+      "sha256": "eb938adb238909c0d74fdb28e30f98705a10737231d0b207c04293456cc466f7",
+      "bytes": 430,
+      "status": "scope_specific"
+    },
+    {
+      "path": "data/collection-result.json",
+      "sha256": "fde917c8778941faaca0701fd28e9993d862bb858bdd12d52aee38702b82f744",
+      "bytes": 289,
+      "status": "scope_specific"
+    },
+    {
+      "path": "info-ci-log-excerpts.json",
+      "sha256": "7f9d1e249096e410e263a6ef361ee762136b9b9db1605cc9c37bc15c811aa9d5",
+      "bytes": 972,
+      "status": "scope_specific"
+    },
+    {
+      "path": "qualification/native-spot-cash-probe.json",
+      "sha256": "606b00b8a4577dc37792ed666fc5916f1ab071636d28ac5dc3a04d1dbf1bf0b5",
+      "bytes": 554,
+      "status": "scope_specific"
+    },
+    {
+      "path": "research/BTCUSDT-spot-report.json",
+      "sha256": "4a964ab1406536362aaee86ccc9878ad7935ed29f2f949404b1b589d95cc6f2c",
+      "bytes": 566287,
+      "status": "scope_specific"
+    },
+    {
+      "path": "research/ETHUSDT-spot-report.json",
+      "sha256": "079140cdaa96f05c3fc9ddb8f9d17464a57f7ed4f29b317ac72b682d791835ee",
+      "bytes": 568043,
+      "status": "scope_specific"
+    },
+    {
+      "path": "security-findings.json",
+      "sha256": "2d9bfd3798a27bef1d20fedeea63993e5612d8cffc92492a692520db8fcd9de1",
+      "bytes": 3902,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/ci2-jobs-raw.json",
+      "sha256": "d9299e379caa48ea0e1b68bb0d19004630d9d44fedb31fdb758ce1d08fce2a9f",
+      "bytes": 9566,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/core-ci-jobs-raw.json",
+      "sha256": "d7e1c7d95242255be75acb90ffcd78379957615d3016dcec4ed75fbff025b702",
+      "bytes": 9891,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/final-readback.json",
+      "sha256": "be375a68b493e9befca63d6ffa12eb712b5b9d59eb286ee8f1e352c0813c2dce",
+      "bytes": 364,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/info-ci-jobs-raw.json",
+      "sha256": "28ca9442296374eff17650ba0f36e02c6c6fd20537b3e2cc0a4e4baa0e232252",
+      "bytes": 9891,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/info-python-log-excerpts.json",
+      "sha256": "24ae7e29558096461ef11d7511a64e1486f22956798e0a8ebc3c2ddc28b73ceb",
+      "bytes": 374,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/local-test-log-index.json",
+      "sha256": "3d3be9e1d4c054672e497f5f14a794596ea5d1ec444b9aa6a2b4b0b33daaae4f",
+      "bytes": 7658
+    },
+    {
+      "path": "verification/native-ci-jobs-raw.json",
+      "sha256": "855b9bd32651b5eceeb1c22eff1304d3329a55d46dfddced78d19b62663d5004",
+      "bytes": 9891,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/npm-audit.json",
+      "sha256": "f5421714f20127976862f9d1369f7aa74a67d609bedd87283be38c2bbe995881",
+      "bytes": 363,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/outgoing-observation.json",
+      "sha256": "29b7e81b3acc9305a04272d6a31a1683c05df31e5b16eb61b6843ee941c69bc8",
+      "bytes": 368,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/self-review.json",
+      "sha256": "b0193da41e8a2ee28c1bd090c1a0ef18ed996f88fcd2dc0210694f9221a1b8e6",
+      "bytes": 1148,
+      "status": "scope_specific"
+    },
+    {
+      "path": "verification/ui-ci-jobs-raw.json",
+      "sha256": "67d466725837f938df1b295397431101643ab3547f8a097f5240eed9250739f5",
+      "bytes": 9891,
+      "status": "scope_specific"
+    }
+  ]
+}

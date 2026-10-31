@@ -1,0 +1,80 @@
+{
+  "version": "0.1.0",
+  "name": "market-dashboard",
+  "dependencies": {
+    "@vitejs/plugin-react": {
+      "version": "5.1.1",
+      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-5.1.1.tgz",
+      "overridden": false,
+      "dependencies": {
+        "vite": {
+          "version": "7.3.7"
+        }
+      }
+    },
+    "eslint": {
+      "version": "10.14.0",
+      "resolved": "https://registry.npmjs.org/eslint/-/eslint-10.14.0.tgz",
+      "overridden": false,
+      "dependencies": {
+        "@eslint/config-array": {
+          "version": "0.23.5",
+          "resolved": "https://registry.npmjs.org/@eslint/config-array/-/config-array-0.23.5.tgz",
+          "overridden": false,
+          "dependencies": {
+            "minimatch": {
+              "version": "11.0.1"
+            }
+          }
+        },
+        "minimatch": {
+          "version": "11.0.1",
+          "resolved": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.1.tgz",
+          "overridden": true
+        }
+      }
+    },
+    "typescript-eslint": {
+      "version": "8.72.1",
+      "resolved": "https://registry.npmjs.org/typescript-eslint/-/typescript-eslint-8.72.1.tgz",
+      "overridden": false,
+      "dependencies": {
+        "@typescript-eslint/typescript-estree": {
+          "version": "8.72.1",
+          "resolved": "https://registry.npmjs.org/@typescript-eslint/typescript-estree/-/typescript-estree-8.72.1.tgz",
+          "overridden": false,
+          "dependencies": {
+            "minimatch": {
+              "version": "11.0.1"
+            }
+          }
+        }
+      }
+    },
+    "vite": {
+      "version": "7.3.7",
+      "resolved": "https://registry.npmjs.org/vite/-/vite-7.3.7.tgz",
+      "overridden": false
+    },
+    "vitest": {
+      "version": "4.1.12",
+      "resolved": "https://registry.npmjs.org/vitest/-/vitest-4.1.12.tgz",
+      "overridden": false,
+      "dependencies": {
+        "@vitest/mocker": {
+          "version": "4.1.12",
+          "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.12.tgz",
+          "overridden": false,
+          "dependencies": {
+            "vite": {
+              "version": "7.3.7"
+            }
+          }
+        },
+        "vite": {
+          "version": "7.3.7"
+        }
+      }
+    }
+  }
+}

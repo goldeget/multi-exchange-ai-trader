@@ -1,0 +1,34 @@
+{
+  "fills": [
+    {
+      "order": "ENTRY",
+      "price": "60000.1",
+      "qty": "0.100",
+      "fee": "2.40000400 USDT"
+    },
+    {
+      "order": "TAKE",
+      "price": "61499.9",
+      "qty": "0.100",
+      "fee": "2.45999600 USDT"
+    }
+  ],
+  "orders": [
+    {
+      "id": "ENTRY",
+      "status": "14",
+      "type": "1"
+    },
+    {
+      "id": "STOP",
+      "status": "8",
+      "type": "3"
+    },
+    {
+      "id": "TAKE",
+      "status": "14",
+      "type": "6"
+    }
+  ],
+  "cash": "10145.12000000 USDT"
+}

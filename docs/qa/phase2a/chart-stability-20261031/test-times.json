@@ -1,0 +1,18 @@
+[
+  {
+    "file": "chart-frontend-tests.txt",
+    "completed_at_kst": "2026-10-31T08:11:39.765905+09:00"
+  },
+  {
+    "file": "chart-frontend-lint.txt",
+    "completed_at_kst": "2026-10-31T08:11:39.913898+09:00"
+  },
+  {
+    "file": "chart-frontend-types.txt",
+    "completed_at_kst": "2026-10-31T08:11:41.545810+09:00"
+  },
+  {
+    "file": "chart-frontend-build.txt",
+    "completed_at_kst": "2026-10-31T08:11:46.545543+09:00"
+  }
+]

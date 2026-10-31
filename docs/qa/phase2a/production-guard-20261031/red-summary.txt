@@ -1,0 +1,5 @@
+Offline backend RED:12 failed,1 passed. Concurrent403/451 fapi sends5 vs expected1;preblocked requests were sent;invalid config did not fail;reasons remained upstream.
+Offline frontend RED:5 failed,10 passed. Terminal reason not shown/polling not stopped;retained-value status generic.
+Offline chart lifecycle RED:2 failed. Periodic update createChart2 vs expected1;empty data did not clear series.
+Actual chart RED:PC/mobile34-second observation each recreated chart1→2,removed0→1,and reset user visible logical range to0..199.
+GREEN:backend13;fullPython277;frontend17 including6 hook/9 App/2 chart tests;Ruff,mypy14files,ESLint,TypeScript,buildPASS.

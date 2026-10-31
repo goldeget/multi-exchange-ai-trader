@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/setup-python v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+
+      # astral-sh/setup-uv v10.3.3
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "0.12.23"
+          enable-cache: false
+
+      - name: Install locked Python dependencies
+        run: uv sync --locked
+
+      - name: Run Python tests
+        run: uv run pytest -q
+
+      - name: Run Ruff
+        run: uv run ruff check src tests scripts
+
+      - name: Run mypy
+        run: uv run mypy src scripts
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+
+      - name: Install locked npm dependencies
+        run: npm ci --prefix apps/web
+
+      - name: Run frontend tests
+        run: npm test --prefix apps/web -- --run
+
+      - name: Run ESLint
+        run: npm run lint --prefix apps/web
+
+      - name: Run TypeScript check
+        run: npm run typecheck --prefix apps/web
+
+      - name: Build frontend
+        run: npm run build --prefix apps/web
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download Gitleaks v8.30.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          curl --fail --location --silent --show-error \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz"
+          printf '%s  %s\n' \
+            '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks/gitleaks.tar.gz" -C "$RUNNER_TEMP/gitleaks" gitleaks
+
+      - name: Scan repository history for secrets
+        run: |
+          set +e
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact=100 --no-banner \
+            --report-format=json --report-path="$RUNNER_TEMP/gitleaks-report.json" .
+          scan_status=$?
+          set -e
+          python - "$RUNNER_TEMP/gitleaks-report.json" <<'PY_REPORT'
+          import json
+          import pathlib
+          import sys
+          report = pathlib.Path(sys.argv[1])
+          if report.exists():
+              for finding in json.loads(report.read_text()):
+                  # Never print Finding/Secret/context; metadata only.
+                  print(json.dumps({key: finding.get(key) for key in (
+                      "RuleID", "File", "StartLine", "EndLine", "Commit", "Fingerprint"
+                  )}))
+          PY_REPORT
+          exit "$scan_status"
+
+      - name: Package verified Phase 2-A recovery snapshot
+        if: github.event_name == 'pull_request' && github.head_ref == 'codex/initial-platform'
+        env:
+          RECOVERY_SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/phase2a-recovery"
+          git update-ref refs/heads/recovery-source "$RECOVERY_SOURCE_SHA"
+          git bundle create "$RUNNER_TEMP/phase2a-recovery/phase2a-recovery.bundle" refs/heads/recovery-source
+          git bundle verify "$RUNNER_TEMP/phase2a-recovery/phase2a-recovery.bundle"
+          git clone --quiet --bare --branch recovery-source "$RUNNER_TEMP/phase2a-recovery/phase2a-recovery.bundle" "$RUNNER_TEMP/recovery-verify.git"
+          test "$(git -C "$RUNNER_TEMP/recovery-verify.git" rev-parse refs/heads/recovery-source)" = "$RECOVERY_SOURCE_SHA"
+          git -C "$RUNNER_TEMP/recovery-verify.git" fsck --full --no-reflogs
+          git archive --format=zip --prefix=multi-exchange-ai-trader/ --output="$RUNNER_TEMP/phase2a-recovery/phase2a-source.zip" "$RECOVERY_SOURCE_SHA"
+          printf '%s\n' "$RECOVERY_SOURCE_SHA" > "$RUNNER_TEMP/phase2a-recovery/SNAPSHOT_SHA.txt"
+          cd "$RUNNER_TEMP/phase2a-recovery"
+          sha256sum phase2a-recovery.bundle phase2a-source.zip SNAPSHOT_SHA.txt > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      # actions/upload-artifact v7.0.2 (Node 24)
+      - name: Preserve Phase 2-A recovery artifact
+        if: github.event_name == 'pull_request' && github.head_ref == 'codex/initial-platform'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: phase2a-recovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/phase2a-recovery/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # actions/dependency-review-action v5.0.0
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        with:
+          fail-on-severity: moderate

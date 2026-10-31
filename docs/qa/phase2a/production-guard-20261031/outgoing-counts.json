@@ -1,0 +1,16 @@
+{
+  "recorded_at_kst": "2026-10-31T08:36:25.752148+09:00",
+  "worker_processes_observed": 1,
+  "configuration": "MARKET_DATA_BLOCKED_HOSTS=fapi.binance.com,api.bybit.com",
+  "observer": "external QA-only HTTPX request event hook after guard; before network dispatch; assertion would stop and record any forbidden-host attempt",
+  "outgoing_attempts": {
+    "data-api.binance.vision": 186,
+    "fapi.binance.com": 0,
+    "api.bybit.com": 0
+  },
+  "configured_blocked_hosts": [
+    "fapi.binance.com",
+    "api.bybit.com"
+  ],
+  "scope": "since QA server restart; includes real chart RED and GREEN; no browser abort used to fake server protection; separate offline independent-lifespan tests cover per-worker seeding; includes final real 1m rolling verification"
+}

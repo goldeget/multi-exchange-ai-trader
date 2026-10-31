@@ -1,0 +1,113 @@
+{
+  "scope": "Offline synthetic TDD observations; actual native integration is separately in GREEN logs. Missing initial modules are not runtime engine failures.",
+  "observations": [
+    {
+      "log": "native-red.txt",
+      "observed_tail": [
+        "FAILED tests/paper/test_native.py::test_invalid_quantities_rejected_before_native_order[0]",
+        "FAILED tests/paper/test_native.py::test_invalid_quantities_rejected_before_native_order[0.0001]",
+        "FAILED tests/paper/test_native.py::test_invalid_quantities_rejected_before_native_order[0.1]",
+        "FAILED tests/paper/test_native.py::test_invalid_quantities_rejected_before_native_order[True]",
+        "FAILED tests/paper/test_native.py::test_invalid_quantities_rejected_before_native_order[1e-3]",
+        "FAILED tests/paper/test_native.py::test_isolated_reservation_partial_and_account_invariants",
+        "14 failed in 0.08s"
+      ]
+    },
+    {
+      "log": "store-red.txt",
+      "observed_tail": [
+        "FAILED tests/paper/test_store.py::test_invalid_tick_does_not_change_ledger[change6]",
+        "FAILED tests/paper/test_store.py::test_invalid_tick_does_not_change_ledger[change7]",
+        "FAILED tests/paper/test_store.py::test_invalid_tick_does_not_change_ledger[change8]",
+        "FAILED tests/paper/test_store.py::test_duplicate_reverse_tick_protection_and_replay_after_restart",
+        "FAILED tests/paper/test_store.py::test_audit_append_only_unknown_schema_and_corruption_fail_closed",
+        "FAILED tests/paper/test_store.py::test_snapshot_mismatch_fails_closed - Modul...",
+        "15 failed in 0.09s"
+      ]
+    },
+    {
+      "log": "order-audit-red.txt",
+      "observed_tail": [
+        "                                                                     ^^^^^^^^^^^^^^^",
+        "E       KeyError: 'orders'",
+        "",
+        "tests/paper/test_store.py:211: KeyError",
+        "=========================== short test summary info ============================",
+        "FAILED tests/paper/test_store.py::test_native_order_state_audit_is_append_only_and_reconciled",
+        "1 failed in 7.45s"
+      ]
+    },
+    {
+      "log": "sandbox-red.txt",
+      "observed_tail": [
+        ">       from multi_exchange_trader.paper.sandbox import sandbox_replay",
+        "E       ModuleNotFoundError: No module named 'multi_exchange_trader.paper.sandbox'",
+        "",
+        "tests/paper/test_store.py:177: ModuleNotFoundError",
+        "=========================== short test summary info ============================",
+        "FAILED tests/paper/test_store.py::test_native_worker_os_network_denial_and_real_engine_result",
+        "1 failed in 0.04s"
+      ]
+    },
+    {
+      "log": "unknown-intent-red.txt",
+      "observed_tail": [
+        "",
+        "",
+        " Test Files  1 failed (1)",
+        "      Tests  1 failed | 3 passed (4)",
+        "   Start at  00:38:17",
+        "   Duration  1.43s (transform 144ms, setup 79ms, import 91ms, tests 672ms, environment 446ms)",
+        ""
+      ]
+    },
+    {
+      "log": "reload-intent-red.txt",
+      "observed_tail": [
+        "",
+        "",
+        " Test Files  1 failed (1)",
+        "      Tests  2 failed | 3 passed (5)",
+        "   Start at  00:38:41",
+        "   Duration  2.43s (transform 119ms, setup 73ms, import 88ms, tests 1.64s, environment 490ms)",
+        ""
+      ]
+    },
+    {
+      "log": "committed-5xx-red.txt",
+      "observed_tail": [
+        "",
+        "",
+        " Test Files  1 failed (1)",
+        "      Tests  1 failed | 5 passed (6)",
+        "   Start at  00:39:37",
+        "   Duration  2.75s (transform 198ms, setup 128ms, import 109ms, tests 1.83s, environment 500ms)",
+        ""
+      ]
+    },
+    {
+      "log": "restore-selection-red.txt",
+      "observed_tail": [
+        "",
+        "",
+        " Test Files  1 failed (1)",
+        "      Tests  3 failed | 4 passed (7)",
+        "   Start at  00:40:48",
+        "   Duration  4.71s (transform 167ms, setup 78ms, import 106ms, tests 3.98s, environment 401ms)",
+        ""
+      ]
+    },
+    {
+      "log": "selection-failure-red.txt",
+      "observed_tail": [
+        "",
+        "",
+        " Test Files  1 failed (1)",
+        "      Tests  2 failed | 7 passed (9)",
+        "   Start at  00:41:26",
+        "   Duration  3.14s (transform 126ms, setup 74ms, import 92ms, tests 2.36s, environment 461ms)",
+        ""
+      ]
+    }
+  ]
+}

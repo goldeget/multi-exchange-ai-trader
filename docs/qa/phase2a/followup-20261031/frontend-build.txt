@@ -1,0 +1,13 @@
+
+> market-dashboard@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v7.2.2 building client environment for production...
+transforming...
+✓ 37 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.46 kB │ gzip:   0.32 kB
+dist/assets/index-q4PW4hIO.css    5.34 kB │ gzip:   1.76 kB
+dist/assets/index-D7CbXmx_.js   369.97 kB │ gzip: 118.58 kB
+✓ built in 1.27s

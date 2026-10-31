@@ -1,0 +1,72 @@
+[
+  {
+    "viewport": "desktop",
+    "started_at_kst": "2026-10-31T08:06:54.560000+09:00",
+    "ended_at_kst": "2026-10-31T08:08:31.930000+09:00",
+    "chart_box_before": {
+      "x": 520.71875,
+      "y": 288.734375,
+      "width": 860.6875,
+      "height": 434
+    },
+    "chart_box_after": {
+      "x": 520.71875,
+      "y": 288.734375,
+      "width": 860.6875,
+      "height": 566
+    },
+    "screenshots": {
+      "desktop-normal.png": [
+        1440,
+        1270
+      ],
+      "desktop-interaction.png": [
+        1440,
+        1281
+      ],
+      "desktop-recovered.png": [
+        1440,
+        1709
+      ],
+      "desktop-70s-stale.png": [
+        1440,
+        5869
+      ]
+    }
+  },
+  {
+    "viewport": "mobile",
+    "started_at_kst": "2026-10-31T08:06:54.560000+09:00",
+    "ended_at_kst": "2026-10-31T08:08:31.453000+09:00",
+    "chart_box_before": {
+      "x": 17,
+      "y": 222.765625,
+      "width": 356,
+      "height": 416
+    },
+    "chart_box_after": {
+      "x": 17,
+      "y": 222.96875,
+      "width": 356,
+      "height": 522
+    },
+    "screenshots": {
+      "mobile-recovered.png": [
+        390,
+        2777
+      ],
+      "mobile-normal.png": [
+        390,
+        2045
+      ],
+      "mobile-70s-stale.png": [
+        390,
+        8633
+      ],
+      "mobile-interaction.png": [
+        390,
+        2263
+      ]
+    }
+  }
+]

@@ -1,0 +1,84 @@
+
+> market-dashboard@0.1.0 test
+> vitest --run src/chart/CandleChart.test.tsx
+
+
+ RUN  v4.0.14 /workspace/multi-exchange-ai-trader/apps/web
+
+ ❯ src/chart/CandleChart.test.tsx (6 tests | 3 failed) 53ms
+   ✓ updates live series in place without recreating or fitting the user's periodic viewport 23ms
+   ✓ initializes empty-to-live, clears empty data, and fits a new selection lifecycle 9ms
+   × preserves historical timestamp position and zoom width on rolling drop 11ms
+   ✓ preserves historical timestamp position and zoom width on append only 2ms
+   × preserves historical timestamp position and zoom width on prepend 4ms
+   × fits a disjoint replacement batch instead of preserving an empty old time window 3ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/chart/CandleChart.test.tsx > preserves historical timestamp position and zoom width on rolling drop
+AssertionError: expected last "vi.fn()" call to have been called with [ { from: -0.5, to: 0.5 } ]
+
+- Expected
++ Received
+
+  [
+    {
+-     "from": -0.5,
+-     "to": 0.5,
++     "from": 0.5,
++     "to": 1.5,
+    },
+  ]
+
+ ❯ src/chart/CandleChart.test.tsx:45:26
+     43|   first.timeScale.mockReturnValue({fitContent:first.fit,getVisibleLogi…
+     44|   view.rerender(<CandleChart candles={next.map(timestamp=>({...candle,…
+     45|   expect(first.setRange).toHaveBeenLastCalledWith(want);
+       |                          ^
+     46|   expect(first.fit).toHaveBeenCalledTimes(1);expect(mocks.createChart)…
+     47| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  src/chart/CandleChart.test.tsx > preserves historical timestamp position and zoom width on prepend
+AssertionError: expected last "vi.fn()" call to have been called with [ { from: 1.5, to: 2.5 } ]
+
+- Expected
++ Received
+
+  [
+    {
+-     "from": 1.5,
+-     "to": 2.5,
++     "from": 0.5,
++     "to": 1.5,
+    },
+  ]
+
+ ❯ src/chart/CandleChart.test.tsx:45:26
+     43|   first.timeScale.mockReturnValue({fitContent:first.fit,getVisibleLogi…
+     44|   view.rerender(<CandleChart candles={next.map(timestamp=>({...candle,…
+     45|   expect(first.setRange).toHaveBeenLastCalledWith(want);
+       |                          ^
+     46|   expect(first.fit).toHaveBeenCalledTimes(1);expect(mocks.createChart)…
+     47| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  src/chart/CandleChart.test.tsx > fits a disjoint replacement batch instead of preserving an empty old time window
+AssertionError: expected "vi.fn()" to be called 2 times, but got 1 times
+ ❯ src/chart/CandleChart.test.tsx:52:21
+     50|   const first=mocks.charts[0];
+     51|   view.rerender(<CandleChart candles={[{...candle,timestamp:"2026-11-0…
+     52|   expect(first.fit).toHaveBeenCalledTimes(2);expect(first.setRange).no…
+       |                     ^
+     53|   expect(mocks.createChart).toHaveBeenCalledTimes(1);
+     54| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 3 passed (6)
+   Start at  23:32:51
+   Duration  821ms (transform 97ms, setup 68ms, import 141ms, tests 53ms, environment 430ms)

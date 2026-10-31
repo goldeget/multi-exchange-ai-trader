@@ -1,0 +1,17 @@
+Final source CI41151674087; observed job log excerpts (UTC)
+
+job 124389381160
+2026-10-31T00:43:15.3475470Z 12:43AM INF no leaks found
+
+job 124389381297
+2026-10-31T00:44:38.3598884Z 319 passed, 29 warnings in 77.59s (0:01:17)
+2026-10-31T00:44:38.3915913Z All checks passed!
+2026-10-31T00:44:44.7382704Z Success: no issues found in 21 source files
+
+job 124389381350
+2026-10-31T00:43:53.2262944Z 14 vulnerabilities (12 moderate, 1 high, 1 critical)
+2026-10-31T00:43:55.7977468Z       Tests  30 passed (30)
+2026-10-31T00:44:02.4745547Z ✓ built in 1.17s
+
+job 124389381386
+2026-10-31T00:43:17.8348425Z Dependency review did not detect any vulnerable packages with severity level "moderate" or higher.

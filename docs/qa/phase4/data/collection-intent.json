@@ -1,0 +1,17 @@
+{
+  "start": "2026-09-30T00:00:00+00:00",
+  "end": "2026-10-30T00:00:00+00:00",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "market": "spot",
+  "interval": "1h",
+  "bars_per_symbol": 720,
+  "approved_host": "data-api.binance.vision",
+  "requests_max": 2,
+  "redirects": false,
+  "retries": 0,
+  "restricted_hosts_requests": 0,
+  "purpose": "short functional research sample, not profitability/perpetual/live performance"
+}

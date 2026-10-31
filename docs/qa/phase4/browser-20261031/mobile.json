@@ -1,0 +1,671 @@
+{
+  "name": "mobile",
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "started_at_utc": "2026-10-31T01:53:48.155Z",
+  "evidence_scope": "Real local API/native execution; actual captured spot research separate from synthetic PAPER; readonly chart reference instrumentation, no price/engine response injection",
+  "pageerrors": [],
+  "market_requests": [],
+  "restricted_browser_attempts": [],
+  "requests": [
+    {
+      "path": "/api/v1/research/evaluations",
+      "at_utc": "2026-10-31T01:53:49.271Z",
+      "request_digest": "01de4b406fcac053c9421d73c5e25c7b0ad0938d4bbd839c14f6b1f730651897",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/evaluations",
+      "at_utc": "2026-10-31T01:53:51.476Z",
+      "request_digest": "52f51483738a55823ad7ff24eabba8988d50f3b57c2c7d82bed4d27a70bef62b",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/evaluations",
+      "at_utc": "2026-10-31T01:53:54.174Z",
+      "request_digest": "8bc6d5fcbef51aa9bfbb5371f749c9cf6ff5670d9da443acddf010fe2fe63951",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "at_utc": "2026-10-31T01:53:56.879Z",
+      "request_digest": "3062e63d4663eaf7a459f55bab43379ca2268da3de22c75baf4fc5535f64daac",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "at_utc": "2026-10-31T01:53:58.497Z",
+      "request_digest": "0f69ec830b57b2373b921362c16490969f8d2290c029eb50f0e32518ce80a87b",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "at_utc": "2026-10-31T01:54:23.155Z",
+      "request_digest": "44a1009b7ceb5614620cf7d5580edae4015a1b52b1f2ba2581920c536a43d44b",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "at_utc": "2026-10-31T01:54:26.196Z",
+      "request_digest": "2d7756b9fd45776e03b6f1969b814d1f21d56744928a952941f357f1499edc96",
+      "scope": "SHA256 of complete actual request; raw idempotency keys omitted"
+    }
+  ],
+  "responses": [
+    {
+      "path": "/api/v1/research/evaluations",
+      "http": 200,
+      "body_digest": "8d44499f0abae89e798215bc2a003bdac8c9df6eca35b719e4053848749c5cb7",
+      "summary": {
+        "dataset_id": "1162539322edfac678c2bb5a2e9efe619b861aabfd109f72e091eebd1ef9682d",
+        "report_hash": "9bea8185bc9d2215eaf2b71b91bddb601207de866d1deacf85ac785f8035df6c",
+        "market": "spot",
+        "synthetic": false,
+        "test_net_pnl": "-58.38587964",
+        "test_net_return": "-0.005838587964",
+        "max_consecutive_losses": 3,
+        "trade_count": 6
+      }
+    },
+    {
+      "path": "/api/v1/research/evaluations",
+      "http": 200,
+      "body_digest": "512421bd3d979bed2d2e684489467001190311f286a568ed4008fb4971140203",
+      "summary": {
+        "dataset_id": "3df4c61979b74f1585bf37710f7267b15ba208e8b529b0886fc8079ef843b476",
+        "report_hash": "237794a4203ef712e0b676ce82c06c9d599c88d18b416ed92e71d5207bd290c0",
+        "market": "spot",
+        "synthetic": false,
+        "test_net_pnl": "-24.52092640",
+        "test_net_return": "-0.00245209264",
+        "max_consecutive_losses": 6,
+        "trade_count": 6
+      }
+    },
+    {
+      "path": "/api/v1/research/evaluations",
+      "http": 200,
+      "body_digest": "8b87c24f3c1b3af72e97dbbb83f3f4089ad5e5a31532bdaa34f27bfffb29c5ba",
+      "summary": {
+        "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+        "report_hash": "91fb3ef8b277944f88e8c3cc5f6d4ed6e4a805c74272132c583152ca837da2c9",
+        "market": "synthetic_perpetual",
+        "synthetic": true,
+        "test_net_pnl": "11.34600000",
+        "test_net_return": "0.0011346",
+        "max_consecutive_losses": 1,
+        "trade_count": 3
+      }
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "http": 200,
+      "body_digest": "e1af3dee7d98b5a10364616944e5600e50ebce314baf8f67fa7579442880c830",
+      "summary": {
+        "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+        "status": "PAUSED",
+        "cursor": 0,
+        "equity": "10000.00000000",
+        "fees": "0.00000000",
+        "positions": [],
+        "native_fill_count": 0
+      }
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "http": 200,
+      "body_digest": "8131a4f1667ce8eb13de86f4d7550dfb1bf6f033c00f1937857d1025a21b7f0c",
+      "summary": {
+        "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+        "status": "RUNNING",
+        "cursor": 0,
+        "equity": "10000.00000000",
+        "fees": "0.00000000",
+        "positions": [],
+        "native_fill_count": 0
+      }
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "http": 200,
+      "body_digest": "a6a040c7d49bb21bad4d7c88bfec51fd0495e609d3310c4877f302576baac911",
+      "summary": {
+        "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+        "status": "PAUSED",
+        "cursor": 11,
+        "equity": "10000.15755960",
+        "fees": "0.24144040",
+        "positions": [
+          {
+            "entry_price": "60360.1",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60400.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.36010000",
+            "side": "long",
+            "unrealized_pnl": "0.39900000"
+          }
+        ],
+        "native_fill_count": 1
+      }
+    },
+    {
+      "path": "/api/v1/research/runs/auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967/commands",
+      "http": 200,
+      "body_digest": "ea47c8d6654a1f7620b435fa5d4ee304060a1bdb1de501576dc9b6040d500ed4",
+      "summary": {
+        "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+        "status": "RUNNING",
+        "cursor": 11,
+        "equity": "10000.15755960",
+        "fees": "0.24144040",
+        "positions": [
+          {
+            "entry_price": "60360.1",
+            "instrument": "BTC-PAPER",
+            "leverage": 10,
+            "mark": "60400.0",
+            "quantity": "0.010",
+            "reserved_margin": "60.36010000",
+            "side": "long",
+            "unrealized_pnl": "0.39900000"
+          }
+        ],
+        "native_fill_count": 1
+      }
+    }
+  ],
+  "checks": [
+    {
+      "check": "captured actual spot or explicit synthetic native research, per-instrument account",
+      "symbol": "BTCUSDT",
+      "dataset_id": "1162539322edfac678c2bb5a2e9efe619b861aabfd109f72e091eebd1ef9682d",
+      "synthetic": false,
+      "chart": {
+        "height": 380,
+        "range": {
+          "from": 216,
+          "to": 719
+        },
+        "width": 390,
+        "scrollWidth": 390,
+        "tables": 1,
+        "tdPadding": "0px"
+      }
+    },
+    {
+      "check": "captured actual spot or explicit synthetic native research, per-instrument account",
+      "symbol": "ETHUSDT",
+      "dataset_id": "3df4c61979b74f1585bf37710f7267b15ba208e8b529b0886fc8079ef843b476",
+      "synthetic": false,
+      "chart": {
+        "height": 380,
+        "range": {
+          "from": 204,
+          "to": 719
+        },
+        "width": 390,
+        "scrollWidth": 390,
+        "tables": 1,
+        "tdPadding": "0px"
+      }
+    },
+    {
+      "check": "captured actual spot or explicit synthetic native research, per-instrument account",
+      "symbol": "BTC-PAPER",
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "synthetic": true,
+      "chart": {
+        "height": 380,
+        "range": {
+          "from": 0,
+          "to": 239
+        },
+        "width": 390,
+        "scrollWidth": 390,
+        "tables": 1,
+        "tdPadding": "0px"
+      }
+    },
+    {
+      "check": "background native start/entry/pause freezes cursor/positions; explicit source/time/risk controls",
+      "cursor": 11,
+      "position": [
+        {
+          "entry_price": "60360.1",
+          "instrument": "BTC-PAPER",
+          "leverage": 10,
+          "mark": "60400.0",
+          "quantity": "0.010",
+          "reserved_margin": "60.36010000",
+          "side": "long",
+          "unrealized_pnl": "0.39900000"
+        }
+      ]
+    }
+  ],
+  "screens": [
+    "docs/qa/phase4/browser-20261031/mobile-research-BTCUSDT.png",
+    "docs/qa/phase4/browser-20261031/mobile-research-ETHUSDT.png",
+    "docs/qa/phase4/browser-20261031/mobile-research-BTC-PAPER.png",
+    "docs/qa/phase4/browser-20261031/mobile-created-paused.png",
+    "docs/qa/phase4/browser-20261031/mobile-paused-position.png",
+    "docs/qa/phase4/browser-20261031/mobile-restart-ready.png"
+  ],
+  "chart_interaction": {
+    "before": {
+      "height": 380,
+      "range": {
+        "from": 0,
+        "to": 239
+      },
+      "width": 390,
+      "scrollWidth": 390,
+      "tables": 1,
+      "tdPadding": "0px"
+    },
+    "after": {
+      "height": 380,
+      "range": {
+        "from": -11.861472155844183,
+        "to": 205.320346025974
+      },
+      "width": 390,
+      "scrollWidth": 390,
+      "tables": 1,
+      "tdPadding": "0px"
+    }
+  },
+  "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+  "created": {
+    "account_scope": "independent_synthetic_account",
+    "config": {
+      "bar_limit": 80,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "fast": 3,
+      "max_consecutive_losses": 3,
+      "max_drawdown": "0.05",
+      "max_exposure": "1000.00",
+      "max_loss": "0.05",
+      "quantity": "0.010",
+      "slow": 10
+    },
+    "created_at": "2026-10-31T01:53:57.776809+00:00",
+    "cursor": 0,
+    "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+    "exposure": "0",
+    "funding_entries": 1,
+    "high_water": "10000.00000000",
+    "last_closed_net": "0.00000000",
+    "last_virtual_time_ms": null,
+    "loss_streak": 0,
+    "mode": "PAPER_AUTO_SYNTHETIC",
+    "native": {
+      "assumptions": "PAPER-v1",
+      "available_balance": "10000.00000000",
+      "closed_net_pnl": "0.00000000",
+      "deficit": "0.00000000",
+      "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+      "equity": "10000.00000000",
+      "fees": "0.00000000",
+      "fills": [],
+      "marks": {
+        "BTC-PAPER": "60000.0",
+        "ETH-PAPER": "3000.00"
+      },
+      "mode": "PAPER",
+      "native_rounding_adjustment": "0.00000000",
+      "orders": [],
+      "positions": [],
+      "realized_gross": "0.00000000",
+      "realized_wallet_delta": "0.00000000",
+      "reserved_margin": "0.00000000",
+      "unrealized_pnl": "0.00000000",
+      "wallet_balance": "10000.00000000"
+    },
+    "native_events": [],
+    "next_due_at": "2026-10-31T01:53:57.776795+00:00",
+    "processed_closed_trades": 0,
+    "reason": "created_requires_explicit_start",
+    "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+    "status": "PAUSED",
+    "synthetic": true
+  },
+  "paused": {
+    "account_scope": "independent_synthetic_account",
+    "config": {
+      "bar_limit": 80,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "fast": 3,
+      "max_consecutive_losses": 3,
+      "max_drawdown": "0.05",
+      "max_exposure": "1000.00",
+      "max_loss": "0.05",
+      "quantity": "0.010",
+      "slow": 10
+    },
+    "created_at": "2026-10-31T01:53:57.776809+00:00",
+    "cursor": 11,
+    "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+    "exposure": "604.0000",
+    "funding_entries": 1,
+    "high_water": "10000.55755960",
+    "last_closed_net": "0.00000000",
+    "last_virtual_time_ms": 1767226259999,
+    "loss_streak": 0,
+    "mode": "PAPER_AUTO_SYNTHETIC",
+    "native": {
+      "assumptions": "PAPER-v1",
+      "available_balance": "9939.39845960",
+      "closed_net_pnl": "0.00000000",
+      "deficit": "0.00000000",
+      "engine": "NautilusTrader 1.231.0 SimulatedExchange",
+      "equity": "10000.15755960",
+      "fees": "0.24144040",
+      "fills": [
+        {
+          "clock": "PAPER_REPLAY_V1",
+          "event_seq": 42,
+          "fee": "0.24144040",
+          "instrument": "BTC-PAPER",
+          "order_id": "P000042-enter",
+          "price": "60360.1",
+          "quantity": "0.010",
+          "role": "enter",
+          "side": "BUY"
+        }
+      ],
+      "marks": {
+        "BTC-PAPER": "60400.0",
+        "ETH-PAPER": "3000.00"
+      },
+      "mode": "PAPER",
+      "native_rounding_adjustment": "0.00000000",
+      "orders": [
+        {
+          "id": "P000042-enter",
+          "instrument": "BTC-PAPER",
+          "quantity": "0.010",
+          "reduce_only": false,
+          "role": "enter",
+          "status": "FILLED",
+          "trigger": null
+        }
+      ],
+      "positions": [
+        {
+          "entry_price": "60360.1",
+          "instrument": "BTC-PAPER",
+          "leverage": 10,
+          "mark": "60400.0",
+          "quantity": "0.010",
+          "reserved_margin": "60.36010000",
+          "side": "long",
+          "unrealized_pnl": "0.39900000"
+        }
+      ],
+      "realized_gross": "0.00000000",
+      "realized_wallet_delta": "-0.24144040",
+      "reserved_margin": "60.36010000",
+      "unrealized_pnl": "0.39900000",
+      "wallet_balance": "9999.75855960"
+    },
+    "native_events": [
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60000.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "59960.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60040.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60000.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60000.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "59960.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60080.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60040.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60040.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60000.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60120.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60080.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60080.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60040.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60160.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60120.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60120.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60080.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60200.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60160.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60160.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60120.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60240.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60200.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60200.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60160.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60280.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60240.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60240.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60200.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60320.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60280.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60280.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60240.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60360.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60320.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60320.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60280.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60400.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60360.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60360.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "enter",
+        "leverage": 10,
+        "quantity": "0.010",
+        "side": "long"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60320.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60440.0"
+      },
+      {
+        "instrument": "BTC-PAPER",
+        "kind": "tick",
+        "price": "60400.0"
+      }
+    ],
+    "next_due_at": "2026-10-31T01:54:23.766881+00:00",
+    "processed_closed_trades": 0,
+    "reason": "operator_pause",
+    "run_id": "auto-6ff4512d-3c4d-4a22-bf48-e2ba110ca967",
+    "status": "PAUSED",
+    "synthetic": true
+  },
+  "restart_expected": "RUNNING -> PAUSED_RECOVERY",
+  "keyboard": {
+    "tag": "INPUT",
+    "label": "소스 봉 수 (1~80)",
+    "focusVisible": true,
+    "statuses": 1
+  },
+  "final_chart": {
+    "height": 380,
+    "range": {
+      "from": -11.861472155844183,
+      "to": 205.320346025974
+    },
+    "width": 390,
+    "scrollWidth": 390,
+    "tables": 1,
+    "tdPadding": "0px"
+  },
+  "status": "PASS"
+}

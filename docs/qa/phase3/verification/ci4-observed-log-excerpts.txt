@@ -1,0 +1,17 @@
+Final security source CI41152341568; actual job-log excerpts (UTC)
+
+job 124391476460
+2026-10-31T00:50:48.0027490Z Dependency review did not detect any vulnerable packages with severity level "moderate" or higher.
+
+job 124391476537
+2026-10-31T00:50:41.0344542Z 12:50AM INF no leaks found
+
+job 124391476569
+2026-10-31T00:52:04.2491304Z 319 passed, 29 warnings in 76.47s (0:01:16)
+2026-10-31T00:52:04.5408364Z All checks passed!
+2026-10-31T00:52:10.8399480Z Success: no issues found in 21 source files
+
+job 124391476952
+2026-10-31T00:50:46.7505593Z found 0 vulnerabilities
+2026-10-31T00:50:50.4965235Z       Tests  30 passed (30)
+2026-10-31T00:51:00.0218757Z ✓ built in 1.54s

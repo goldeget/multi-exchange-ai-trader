@@ -1,0 +1,18 @@
+{
+  "spec_revision": "1",
+  "observed_spec_revision": "1",
+  "observations_current": true,
+  "observed_phase": "running",
+  "connectivity": "connected",
+  "policy_mode": "restricted",
+  "policy_state": "enforced",
+  "allowed_hosts": [
+    "api.bybit.com",
+    "api.github.com",
+    "data-api.binance.vision",
+    "fapi.binance.com"
+  ],
+  "presets": [
+    "package_managers"
+  ]
+}

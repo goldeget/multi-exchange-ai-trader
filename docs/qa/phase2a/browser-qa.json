@@ -1,0 +1,256 @@
+{
+  "scope": "Error-path browser QA only. App real mode; every market request aborted before network. No real exchange prices or charts validated.",
+  "viewports": [
+    {
+      "width": 1440,
+      "initial": {
+        "title": "공개 시장 관측소",
+        "text": "◈\n\nMARKET OBSERVATORY\n\n공개 시장 관측소\n공개 시세 전용 · PAPER 엔진 미구현\n\nPUBLIC MARKET / 01\n\n시장의 흐름을 한눈에\n\nBTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지 않습니다.\n\n◌ 공개 REST · 5초 주기\n종목\nBTC / USDT\nETH / USDT\n시장\n현물\n무기한\n봉 간격\n1m\n5m\n15m\n1h\n4h\n1d\n\n호가 통화 USDT\n캔들 갱신 30초\n\n거래소 시세\n02 활성 / 03 전체\n거래소 / 종목\t가격\t데이터 상태\nBinance\nBTC / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBinance\nETH / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nBTC / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nETH / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nOKX · 검증 대기\n\n공식 공개 API 계약 검증 전으로 비활성화되어 있습니다. 시세 요청을 보내지 않습니다.\n\n시세 수신이 15초 이상 멈추면 지연으로 표시합니다.\n거래소별 데이터는 서로 대체하지 않습니다.\n\nPUBLIC CANDLES\n\nBTC / USDT Binance · 현물 · 15m\nUSDT\n연결 오류 · 공개 시세를 가져올 수 없습니다\n가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.\n⌁\n\n공개 캔들 데이터 대기 중\n\n표시할 캔들이 없습니다. 공개 시세 연결 상태를 확인하세요.\n\nCharts powered by TradingView Lightweight Charts™\nREAD ONLY · 계좌 연결 없음 · 주문 기능 없음\n시각 기준 UTC · 공개 데이터 지연 가능",
+        "innerWidth": 1440,
+        "scrollWidth": 1440,
+        "bodyWidth": 1440,
+        "canvasCount": 0,
+        "overflow": []
+      },
+      "selected": {
+        "title": "공개 시장 관측소",
+        "text": "◈\n\nMARKET OBSERVATORY\n\n공개 시장 관측소\n공개 시세 전용 · PAPER 엔진 미구현\n\nPUBLIC MARKET / 01\n\n시장의 흐름을 한눈에\n\nBTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지 않습니다.\n\n◌ 공개 REST · 5초 주기\n종목\nBTC / USDT\nETH / USDT\n시장\n현물\n무기한\n봉 간격\n1m\n5m\n15m\n1h\n4h\n1d\n\n호가 통화 USDT\n캔들 갱신 30초\n\n거래소 시세\n02 활성 / 03 전체\n거래소 / 종목\t가격\t데이터 상태\nBinance\nBTC / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBinance\nETH / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nBTC / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nETH / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nOKX · 검증 대기\n\n공식 공개 API 계약 검증 전으로 비활성화되어 있습니다. 시세 요청을 보내지 않습니다.\n\n시세 수신이 15초 이상 멈추면 지연으로 표시합니다.\n거래소별 데이터는 서로 대체하지 않습니다.\n\nPUBLIC CANDLES\n\nETH / USDT Bybit · 무기한 · 1h\nUSDT\n연결 오류 · 공개 시세를 가져올 수 없습니다\n가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.\n⌁\n\n공개 캔들 데이터 대기 중\n\n표시할 캔들이 없습니다. 공개 시세 연결 상태를 확인하세요.\n\nCharts powered by TradingView Lightweight Charts™\nREAD ONLY · 계좌 연결 없음 · 주문 기능 없음\n시각 기준 UTC · 공개 데이터 지연 가능",
+        "innerWidth": 1440,
+        "scrollWidth": 1440,
+        "bodyWidth": 1440,
+        "canvasCount": 0,
+        "overflow": []
+      },
+      "okxDisabled": true,
+      "selectedRow": "Bybit\nETH / USDT · 무기한",
+      "heading": "ETH / USDT Bybit · 무기한 · 1h"
+    },
+    {
+      "width": 390,
+      "initial": {
+        "title": "공개 시장 관측소",
+        "text": "◈\n\nMARKET OBSERVATORY\n\n공개 시장 관측소\n공개 시세 전용 · PAPER 엔진 미구현\n\nPUBLIC MARKET / 01\n\n시장의 흐름을 한눈에\n\nBTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지 않습니다.\n\n◌ 공개 REST · 5초 주기\n종목\nBTC / USDT\nETH / USDT\n시장\n현물\n무기한\n봉 간격\n1m\n5m\n15m\n1h\n4h\n1d\n\n호가 통화 USDT\n캔들 갱신 30초\n\n거래소 시세\n02 활성 / 03 전체\n거래소 / 종목\t가격\t데이터 상태\nBinance\nBTC / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBinance\nETH / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nBTC / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nETH / USDT · 현물\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nOKX · 검증 대기\n\n공식 공개 API 계약 검증 전으로 비활성화되어 있습니다. 시세 요청을 보내지 않습니다.\n\n시세 수신이 15초 이상 멈추면 지연으로 표시합니다.\n거래소별 데이터는 서로 대체하지 않습니다.\n\nPUBLIC CANDLES\n\nBTC / USDT\nBinance · 현물 · 15m\nUSDT\n연결 오류 · 공개 시세를 가져올 수 없습니다\n가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.\n⌁\n\n공개 캔들 데이터 대기 중\n\n표시할 캔들이 없습니다. 공개 시세 연결 상태를 확인하세요.\n\nCharts powered by TradingView Lightweight Charts™\nREAD ONLY · 계좌 연결 없음 · 주문 기능 없음\n시각 기준 UTC · 공개 데이터 지연 가능",
+        "innerWidth": 390,
+        "scrollWidth": 390,
+        "bodyWidth": 390,
+        "canvasCount": 0,
+        "overflow": []
+      },
+      "selected": {
+        "title": "공개 시장 관측소",
+        "text": "◈\n\nMARKET OBSERVATORY\n\n공개 시장 관측소\n공개 시세 전용 · PAPER 엔진 미구현\n\nPUBLIC MARKET / 01\n\n시장의 흐름을 한눈에\n\nBTC와 ETH의 공개 시세를 관측합니다. 주문 및 계좌 기능은 제공하지 않습니다.\n\n◌ 공개 REST · 5초 주기\n종목\nBTC / USDT\nETH / USDT\n시장\n현물\n무기한\n봉 간격\n1m\n5m\n15m\n1h\n4h\n1d\n\n호가 통화 USDT\n캔들 갱신 30초\n\n거래소 시세\n02 활성 / 03 전체\n거래소 / 종목\t가격\t데이터 상태\nBinance\nBTC / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBinance\nETH / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nBTC / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nBybit\nETH / USDT · 무기한\n\t—\nUSDT\n\t연결 오류 · 공개 시세를 가져올 수 없습니다\nOKX · 검증 대기\n\n공식 공개 API 계약 검증 전으로 비활성화되어 있습니다. 시세 요청을 보내지 않습니다.\n\n시세 수신이 15초 이상 멈추면 지연으로 표시합니다.\n거래소별 데이터는 서로 대체하지 않습니다.\n\nPUBLIC CANDLES\n\nETH / USDT\nBybit · 무기한 · 1h\nUSDT\n연결 오류 · 공개 시세를 가져올 수 없습니다\n가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.\n⌁\n\n공개 캔들 데이터 대기 중\n\n표시할 캔들이 없습니다. 공개 시세 연결 상태를 확인하세요.\n\nCharts powered by TradingView Lightweight Charts™\nREAD ONLY · 계좌 연결 없음 · 주문 기능 없음\n시각 기준 UTC · 공개 데이터 지연 가능",
+        "innerWidth": 390,
+        "scrollWidth": 390,
+        "bodyWidth": 390,
+        "canvasCount": 0,
+        "overflow": []
+      },
+      "okxDisabled": true,
+      "selectedRow": "Bybit\nETH / USDT · 무기한",
+      "heading": "ETH / USDT\nBybit · 무기한 · 1h"
+    }
+  ],
+  "network": [
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=BTCUSDT&market_type=spot&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=BTCUSDT&market_type=perpetual&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=ETHUSDT&market_type=perpetual&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=ETHUSDT&market_type=perpetual&interval=1h&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 1440,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=bybit&symbol=ETHUSDT&market_type=perpetual&interval=1h&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=BTCUSDT&market_type=spot&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=spot",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=BTCUSDT&market_type=spot&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=BTCUSDT&market_type=perpetual&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=binance&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=BTCUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/ticker?exchange=bybit&symbol=ETHUSDT&market_type=perpetual",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=ETHUSDT&market_type=perpetual&interval=15m&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=binance&symbol=ETHUSDT&market_type=perpetual&interval=1h&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    },
+    {
+      "width": 390,
+      "url": "http://127.0.0.1:5173/api/v1/market/candles?exchange=bybit&symbol=ETHUSDT&market_type=perpetual&interval=1h&limit=200",
+      "action": "aborted locally: network policy not enforced"
+    }
+  ],
+  "console": []
+}

@@ -1,0 +1,30 @@
+{
+  "synthetic": true,
+  "engine": "NautilusTrader1.231.0 CurrencyPair/CASH",
+  "fills": [
+    {
+      "price": "60000.01",
+      "quantity": "0.100",
+      "fee": "2.40000040 USDT",
+      "side": "BUY"
+    },
+    {
+      "price": "60999.99",
+      "quantity": "0.100",
+      "fee": "2.43999960 USDT",
+      "side": "SELL"
+    }
+  ],
+  "balances": [
+    {
+      "USDT": "3997.59899960 USDT",
+      "BTC": "0.10000000 BTC"
+    },
+    {
+      "USDT": "10095.15800000 USDT",
+      "BTC": "0.00000000 BTC"
+    }
+  ],
+  "positions_open": 0,
+  "error": null
+}

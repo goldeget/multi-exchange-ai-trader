@@ -1,0 +1,63 @@
+{
+  "name": "mobile",
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "at_utc": "2026-10-31T02:07:03.585Z",
+  "scope": "Actual healthy scheduler + captured BTC spot native OOS curve + immutable selected config. FAIL_CLOSED retained-RUNNING rendering is a separate offline regression, not induced here.",
+  "pageerrors": [],
+  "market_requests": [],
+  "posts": [],
+  "report": {
+    "dataset_id": "1162539322edfac678c2bb5a2e9efe619b861aabfd109f72e091eebd1ef9682d",
+    "report_id": "9bea8185bc9d2215eaf2b71b91bddb601207de866d1deacf85ac785f8035df6c",
+    "native_point_count": 576,
+    "rendered_point_count": 576,
+    "initial_equity": "10000.00000000",
+    "final_equity": "9941.61412036",
+    "net_return": "-0.005838587964"
+  },
+  "immutable_run": {
+    "run_id": "auto-53e0926e-7e67-491f-8af5-b7686787074f",
+    "config": {
+      "bar_limit": 80,
+      "dataset_id": "24c2138954a4864e1a37647f4dd811f2d8f3f9342c8dad9e1ee5ca08081d248d",
+      "fast": 3,
+      "max_consecutive_losses": 3,
+      "max_drawdown": "0.05",
+      "max_exposure": "1000.00",
+      "max_loss": "0.000001",
+      "quantity": "0.010",
+      "slow": 10
+    },
+    "new_form_quantity": "0.200",
+    "new_form_loss": "0.1",
+    "display_and_stored_config_unchanged": true
+  },
+  "scheduler": {
+    "actual_health": {
+      "state": "READY",
+      "message": "명시적 재개"
+    },
+    "stored_status": "HALTED",
+    "separate_labels": true
+  },
+  "layout": {
+    "width": 390,
+    "scrollWidth": 390,
+    "chartHeight": 380,
+    "chartTdPadding": "0px",
+    "equityHeight": 160
+  },
+  "keyboard": {
+    "tag": "INPUT",
+    "label": "소스 봉 수 (1~80)",
+    "focusVisible": true
+  },
+  "tested_files_sha256": {
+    "apps/web/src/research/Research.tsx": "e1f48b89fdf9e3f1b8a0b6b58dedbab4b4d8e4d075e952d8404425e73ad49590",
+    "apps/web/src/research/research.css": "ff1dc347958e8d905e91df0a50508fa4c6a8e977ffeff5803b43a89bbaa77715"
+  },
+  "status": "PASS"
+}

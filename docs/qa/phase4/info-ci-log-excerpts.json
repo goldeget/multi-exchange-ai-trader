@@ -1,0 +1,29 @@
+{
+  "run_id": 41158669936,
+  "source_sha": "db6447e520c03e6b2efcc0ef46d2035730e00403",
+  "scope": "Official GitHub connector decoded logs; selected safe lines only. Shell log redirect host was denied; no retry or policy change.",
+  "jobs": [
+    {
+      "id": 124411053709,
+      "lines": [
+        "2026-10-31T02:09:20.3558917Z 2:09AM INF 59 commits scanned.",
+        "2026-10-31T02:09:20.3560062Z 2:09AM INF no leaks found"
+      ]
+    },
+    {
+      "id": 124411053905,
+      "lines": [
+        "2026-10-31T02:09:24.1975396Z found 0 vulnerabilities",
+        "2026-10-31T02:09:29.3678756Z  Test Files  5 passed (5)",
+        "2026-10-31T02:09:29.3680302Z       Tests  45 passed (45)",
+        "2026-10-31T02:09:29.3683207Z    Duration  4.68s (transform 505ms, setup 395ms, import 901ms, tests 7.57s, environment 3.56s)"
+      ]
+    },
+    {
+      "id": 124411053942,
+      "lines": [
+        "2026-10-31T02:09:32.9810877Z ##[group]Vulnerabilities"
+      ]
+    }
+  ]
+}
