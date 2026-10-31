@@ -129,3 +129,126 @@ async def test_production_transient_timeout_keeps_recovery_possible(monkeypatch)
             "reason"] == "timeout"
         assert (await client.get("/api/v1/market/ticker", params=selection(market="spot"))).status_code == 200
     assert len(attempts) == 2
+
+
+def _bybit_ticker(symbol: str, category: str, price: str) -> dict[str, object]:
+    return {
+        "retCode": 0,
+        "retMsg": "OK",
+        "time": 1704067260000,
+        "result": {"category": category, "list": [{"symbol": symbol, "lastPrice": price}]},
+    }
+
+
+def _bybit_kline(symbol: str, category: str) -> dict[str, object]:
+    start = 1704067200000
+    return {
+        "retCode": 0,
+        "retMsg": "OK",
+        "time": start + 60_000,
+        "result": {
+            "category": category,
+            "symbol": symbol,
+            "list": [[str(start), "10", "12", "9", "11", "2.5", "26"]],
+        },
+    }
+
+
+_BYBIT_PRICES = {
+    ("spot", "BTCUSDT"): "77519.3",
+    ("spot", "ETHUSDT"): "2253.59",
+    ("perpetual", "BTCUSDT"): "77497.10",
+    ("perpetual", "ETHUSDT"): "2252.60",
+}
+
+
+async def test_open_bybit_spot_and_linear_prices_with_fake_http(monkeypatch):
+    hosts = []
+
+    def wire(request):
+        hosts.append(request.url.host)
+        symbol = request.url.params["symbol"]
+        if request.url.host == "api.bybit.com" and request.url.path == "/v5/market/tickers":
+            category = request.url.params["category"]
+            market = "spot" if category == "spot" else "perpetual"
+            price = _BYBIT_PRICES[(market, symbol)]
+            return httpx.Response(200, json=_bybit_ticker(symbol, category, price))
+        if request.url.host == "api.bybit.com" and request.url.path == "/v5/market/kline":
+            return httpx.Response(200, json=_bybit_kline(symbol, request.url.params["category"]))
+        if request.url.host == "fapi.binance.com":
+            return httpx.Response(451, text="restricted location")
+        if request.url.host == "data-api.binance.vision":
+            return httpx.Response(200, json={"symbol": symbol, "price": "77568.01"})
+        raise AssertionError(request.url.host)
+
+    async with production(monkeypatch, wire, "") as (client, _):
+        for market in ("spot", "perpetual"):
+            for symbol in ("BTCUSDT", "ETHUSDT"):
+                reply = await client.get(
+                    "/api/v1/market/ticker",
+                    params={"exchange": "bybit", "market_type": market, "symbol": symbol},
+                )
+                assert reply.status_code == 200
+                body = reply.json()
+                assert body["last_price"] == _BYBIT_PRICES[(market, symbol)]
+                assert body["exchange"] == "bybit" and body["market_type"] == market
+                assert "BLOCKED" not in reply.text
+        candles = await client.get(
+            "/api/v1/market/candles",
+            params={
+                "exchange": "bybit",
+                "market_type": "perpetual",
+                "symbol": "BTCUSDT",
+                "interval": "1m",
+                "limit": 1,
+            },
+        )
+        assert candles.status_code == 200 and candles.json()[0]["close"] == "11"
+        denied = await client.get(
+            "/api/v1/market/ticker",
+            params={"exchange": "binance", "market_type": "perpetual", "symbol": "BTCUSDT"},
+        )
+        assert denied.status_code == 503
+        assert denied.json()["reason"] == "geographic_restriction"
+        assert "last_price" not in denied.json()
+        spot = await client.get(
+            "/api/v1/market/ticker",
+            params={"exchange": "binance", "market_type": "spot", "symbol": "BTCUSDT"},
+        )
+        assert spot.status_code == 200 and spot.json()["last_price"] == "77568.01"
+    assert hosts.count("api.bybit.com") == 5
+    assert hosts.count("fapi.binance.com") == 1
+
+
+async def test_bybit_rejection_has_safe_reason_and_no_invented_price(monkeypatch):
+    def wire(request):
+        assert request.url.host == "api.bybit.com"
+        assert request.url.params["category"] == "linear"
+        return httpx.Response(403, text="restricted location; secret=PRIVATE")
+
+    async with production(monkeypatch, wire, "") as (client, _):
+        reply = await client.get(
+            "/api/v1/market/ticker",
+            params={"exchange": "bybit", "market_type": "perpetual", "symbol": "ETHUSDT"},
+        )
+    assert reply.status_code == 503
+    assert reply.json()["reason"] == "geographic_restriction"
+    assert "last_price" not in reply.json()
+    assert "PRIVATE" not in reply.text
+
+
+async def test_binance_futures_price_when_public_ticker_answers(monkeypatch):
+    def wire(request):
+        assert request.url.host == "fapi.binance.com"
+        symbol = request.url.params["symbol"]
+        return httpx.Response(
+            200, json={"symbol": symbol, "price": "77521.30", "time": 1704067260000}
+        )
+
+    async with production(monkeypatch, wire, "") as (client, _):
+        reply = await client.get(
+            "/api/v1/market/ticker", params=selection("binance", "perpetual", "BTCUSDT")
+        )
+    assert reply.status_code == 200
+    assert reply.json()["last_price"] == "77521.30"
+    assert reply.json()["market_type"] == "perpetual"

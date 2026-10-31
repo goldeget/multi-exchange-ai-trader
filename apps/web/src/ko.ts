@@ -157,8 +157,8 @@ export function connectionLabel(code: string): string {
 
 export function quoteSource(source: string, venue: string): string {
   const lower = source.toLowerCase();
-  if (lower.includes("bybit")) return "Bybit 공개 시세";
-  if (lower.includes("binance")) return "Binance 공개 시세";
+  if (lower.includes("bybit")) return "바이비트 공개 시세";
+  if (lower.includes("binance")) return "바이낸스 공개 시세";
   if (
     lower.includes("합성") ||
     lower.includes("sample") ||

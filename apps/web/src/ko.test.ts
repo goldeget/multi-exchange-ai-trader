@@ -3,6 +3,7 @@ import {
   connectionLabel,
   environmentSentences,
   instrumentLabel,
+  quoteSource,
   runStatusLabel,
   schedulerLabel,
   screenText,
@@ -34,5 +35,11 @@ describe("쉬운 한국어", () => {
     expect(environmentSentences("mainnet")[0]).toBe("실계좌입니다. 연습 계좌가 아닙니다.");
     expect(environmentSentences("demo")[0]).toBe("연습 계좌입니다. 실계좌가 아닙니다.");
     expect(environmentSentences("testnet")[0]).toContain("시험용 거래소");
+    expect(quoteSource("https://api.bybit.com/v5/market/tickers", "바이비트")).toBe(
+      "바이비트 공개 시세",
+    );
+    expect(quoteSource("https://fapi.binance.com/fapi/v2/ticker/price", "바이낸스")).toBe(
+      "바이낸스 공개 시세",
+    );
   });
 });

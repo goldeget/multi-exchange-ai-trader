@@ -116,8 +116,8 @@ export default function Account() {
       </header>
       <p className="account-warning">
         이 화면은 USDT 선물만 봅니다. 주문, 레버리지 변경, 포지션 변경을 하지 않습니다. 이미
-        있는 포지션과 주문은 외부에서 연 것이며 이 프로그램이 관리하지 않습니다. 시세 화면의
-        Bybit 막힘 설정은 그대로입니다.
+        있는 포지션과 주문은 외부에서 연 것이며 이 프로그램이 관리하지 않습니다. 시세
+        화면에서는 바이비트 가격을 볼 수 있습니다.
       </p>
       {loading && !view && !problem && (
         <p role="status">불러오는 중. 아직 잔고를 표시하지 않습니다.</p>

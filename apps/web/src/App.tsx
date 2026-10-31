@@ -16,7 +16,7 @@ import CandleChart from "./chart/CandleChart";
 import { intervalLabel, intervalOptions, quoteSource } from "./ko";
 const venues: Venue[] = ["binance", "bybit"];
 const symbols = ["BTCUSDT", "ETHUSDT"];
-const names = { binance: "Binance", bybit: "Bybit" };
+const names = { binance: "바이낸스", bybit: "바이비트" };
 const price = (value: string) =>
   Number(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
