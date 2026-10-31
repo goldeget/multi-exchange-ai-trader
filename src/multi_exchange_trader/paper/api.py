@@ -68,7 +68,7 @@ def install(application: FastAPI) -> None:
 
     @application.middleware("http")
     async def local_paper_boundary(request: Request, call_next: Any) -> Any:
-        if request.url.path.startswith("/api/v1/paper"):
+        if request.url.path.startswith(("/api/v1/paper", "/api/v1/research")):
             try:
                 host = urlsplit("http://" + request.headers.get("host", ""))
                 if (

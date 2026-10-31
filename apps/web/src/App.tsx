@@ -1,4 +1,5 @@
 import Paper from "./paper/Paper";
+import Research from "./research/Research";
 import { useEffect, useState } from "react";
 import {
   marketUrl,
@@ -320,7 +321,7 @@ function MarketDashboard() {
 }
 
 export default function App() {
- const [view,setView]=useState(()=>new URLSearchParams(window.location.search).get("view")==="paper"?"paper":"market");
- function select(value:string){setView(value);const url=new URL(window.location.href);if(value==="paper")url.searchParams.set("view","paper");else url.searchParams.delete("view");window.history.replaceState({},"",url);}
- return <><nav className="app-mode-nav" aria-label="화면 선택"><button aria-pressed={view==="market"} onClick={()=>select("market")}>공개 시장 관측</button><button aria-pressed={view==="paper"} onClick={()=>select("paper")}>PAPER 가상거래</button></nav>{view==="paper"?<Paper/>:<MarketDashboard/>}</>;
+ const [view,setView]=useState(()=>["paper","research"].includes(new URLSearchParams(window.location.search).get("view")??"")?new URLSearchParams(window.location.search).get("view")??"market":"market");
+ function select(value:string){setView(value);const url=new URL(window.location.href);if(value!=="market")url.searchParams.set("view",value);else url.searchParams.delete("view");window.history.replaceState({},"",url);}
+ return <><nav className="app-mode-nav" aria-label="화면 선택"><button aria-pressed={view==="market"} onClick={()=>select("market")}>공개 시장 관측</button><button aria-pressed={view==="paper"} onClick={()=>select("paper")}>PAPER 가상거래</button><button aria-pressed={view==="research"} onClick={()=>select("research")}>연구·가상 자동실행</button></nav>{view==="research"?<Research/>:view==="paper"?<Paper/>:<MarketDashboard/>}</>;
 }

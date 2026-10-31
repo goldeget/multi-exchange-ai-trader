@@ -17,6 +17,7 @@ from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 from .paper.api import install as install_paper
 from .paper.store import PaperStore
+from .research.api import install as install_research
 
 Exchange = Literal["binance", "bybit", "okx"]
 Symbol = Literal["BTCUSDT", "ETHUSDT"]
@@ -90,6 +91,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         return await service.get_candles(exchange, symbol, market_type, interval, limit)
 
     install_paper(application)
+    install_research(application)
     return application
 
 

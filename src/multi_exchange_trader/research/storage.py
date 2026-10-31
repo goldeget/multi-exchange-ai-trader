@@ -311,6 +311,22 @@ class ResearchStore:
                 db.rollback()
                 raise ValueError("Phase4 storage transaction failed") from None
 
+    def pause_after_failure(self, run: str) -> None:
+        """No retry/order: preserve committed native state and distinguish system failure."""
+        identifier(run)
+        with LOCK, self.db() as db:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                state = self.verify(db, run)
+                if state["status"] in TERMINAL:
+                    return
+                state.update(status="PAUSED_ERROR", reason="native_or_storage_failure")
+                self.record(db, state, "native-failure-paused")
+                db.commit()
+            except sqlite3.Error:
+                db.rollback()
+                raise ValueError("Phase4 storage transaction failed") from None
+
     def audit(self, run: str) -> dict[str, Any]:
         identifier(run)
         with LOCK, self.db() as db:
@@ -376,3 +392,32 @@ class ResearchStore:
             except sqlite3.Error:
                 db.rollback()
                 raise ValueError("Phase4 storage transaction failed") from None
+
+    def reports(self) -> list[dict[str, Any]]:
+        with LOCK, self.db() as db:
+            results = []
+            for row in db.execute("SELECT * FROM reports ORDER BY rowid DESC"):
+                report = json.loads(row["payload"])
+                self.check_report(report, row["id"])
+                results.append(
+                    {
+                        "report_id": row["id"],
+                        "dataset_id": report["dataset_id"],
+                        "symbol": report["symbol"],
+                        "market": report["market"],
+                        "synthetic": report["synthetic"],
+                        "performance_status": report["performance_status"],
+                    }
+                )
+            return results
+
+    def report(self, key: str) -> dict[str, Any]:
+        if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{64}", key):
+            raise ValueError("Phase4 report ID")
+        with LOCK, self.db() as db:
+            row = db.execute("SELECT payload FROM reports WHERE id=?", (key,)).fetchone()
+            if row is None:
+                raise ValueError("Phase4 report not found")
+            result: dict[str, Any] = json.loads(row["payload"])
+            self.check_report(result, key)
+            return result

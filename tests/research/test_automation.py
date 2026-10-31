@@ -328,10 +328,13 @@ def test_native_loss_zero_partial_loss_exit_count_and_duplicate_detection(tmp_pa
 
 
 def test_redundant_resume_cannot_reset_a_running_completion_cooldown(tmp_path):
-    store,config=make(tmp_path);store.create('running','create',config);store.command('running','start',{'action':'resume'})
-    started=datetime(2026,11,1,tzinfo=UTC);finished=started+timedelta(seconds=5)
-    store.clock=lambda:finished
-    state=store.step('running',0,now=started)
-    again=store.command('running','redundant',{'action':'resume'})
-    assert again['next_due_at']==state['next_due_at']
-    assert store.step('running',1,now=finished)['cursor']==1
+    store, config = make(tmp_path)
+    store.create("running", "create", config)
+    store.command("running", "start", {"action": "resume"})
+    started = datetime(2026, 11, 1, tzinfo=UTC)
+    finished = started + timedelta(seconds=5)
+    store.clock = lambda: finished
+    state = store.step("running", 0, now=started)
+    again = store.command("running", "redundant", {"action": "resume"})
+    assert again["next_due_at"] == state["next_due_at"]
+    assert store.step("running", 1, now=finished)["cursor"] == 1
