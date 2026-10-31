@@ -23,31 +23,31 @@ def failure(error: Exception) -> JSONResponse:
         status, reason, message = (
             503,
             "research_fail_closed",
-            "native/자료/원장 검증 실패 · 상태를 보존하고 중단했습니다.",
+            "자료나 기록 확인에 실패해서 멈췄습니다. 상태는 그대로 둡니다.",
         )
     elif "idempotency" in text:
         status, reason, message = (
             409,
             "research_idempotency",
-            "같은 명령 키에 다른 내용을 사용할 수 없습니다.",
+            "같은 요청에 다른 내용은 넣을 수 없습니다.",
         )
     elif "not found" in text or "dataset unavailable" in text:
         status, reason, message = (
             404,
             "research_not_found",
-            "연구 자료 또는 가상 세션을 찾을 수 없습니다.",
+            "자료 또는 연습 자동매매를 찾을 수 없습니다.",
         )
     elif "limit" in text or "terminal" in text or "exists" in text:
         status, reason, message = (
             409,
             "research_state",
-            "한도·종료 상태·기존 ID를 확인하세요. 초기화/실전 전환은 지원하지 않습니다.",
+            "한도, 이미 끝난 상태, 같은 이름을 확인하세요. 기록을 지우거나 실거래로 바꾸지는 않습니다.",
         )
     else:
         status, reason, message = (
             400,
             "research_input",
-            "자료 ID·모의 설정·소수 정밀도·고정 명령을 확인하세요.",
+            "자료, 연습 설정, 숫자 자릿수, 고정된 명령을 확인하세요.",
         )
     return JSONResponse(
         status_code=status, content={"scope": "PHASE4_LOCAL", "reason": reason, "message": message}
@@ -72,7 +72,7 @@ def install(app: FastAPI) -> None:
             application.state.research_stop = asyncio.Event()
             application.state.research_health = {
                 "state": "READY",
-                "message": "로컬 synthetic PAPER 전용",
+                "message": "가상 거래만 자동으로 진행합니다.",
             }
             application.state.research_task = asyncio.create_task(
                 scheduler(
@@ -179,7 +179,7 @@ def install(app: FastAPI) -> None:
                     service(request).command, run, body["idempotency_key"], cmd
                 )
                 if cmd["action"] == "resume":
-                    request.app.state.research_health.update(state="READY", message="명시적 재개")
+                    request.app.state.research_health.update(state="READY", message="다시 시작했습니다.")
                     if (
                         request.app.state.research_task.done()
                         and not request.app.state.research_stop.is_set()

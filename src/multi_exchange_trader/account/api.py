@@ -54,12 +54,12 @@ def refuse_mutation(_request: Request) -> JSONResponse:
     if enabled:
         reason = "read_only_client"
         message = (
-            "실거래 설정이 켜져 있어도 이 클라이언트는 읽기 전용입니다. "
-            "주문을 보내지 않았습니다. 나중 주문은 Nautilus 한 경로만 사용합니다."
+            "실거래가 켜져 있어도 이 화면은 읽기만 합니다. "
+            "주문을 보내지 않았습니다."
         )
     else:
         reason = "live_trading_disabled"
-        message = "실거래가 꺼져 있어 주문을 거부했습니다. 주문을 보내지 않았습니다."
+        message = "실거래 꺼짐. 주문을 보내지 않았습니다."
     return JSONResponse(
         status_code=403,
         content={

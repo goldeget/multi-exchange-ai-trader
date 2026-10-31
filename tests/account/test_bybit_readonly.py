@@ -314,12 +314,12 @@ async def test_success_tags_external_and_does_not_adopt(bybit_env: None) -> None
     assert len(view.포지션) == 1
     assert view.포지션[0].출처 == "external"
     assert view.포지션[0].관리함 is False
-    assert view.포지션[0].구분 == "외부 · 관리 안 함"
+    assert view.포지션[0].구분 == "외부에서 연 포지션"
     assert view.미체결주문 is not None
     assert view.미체결주문[0].출처 == "external"
     assert view.미체결주문[0].관리함 is False
-    assert any("페이퍼: 아니오" in item for item in view.구분)
-    assert any("메인넷" in item for item in view.구분)
+    assert any("가상 거래가 아닙니다" in item for item in view.구분)
+    assert any("실계좌입니다" in item for item in view.구분)
     assert [request.url.path for request in seen] == [
         "/v5/market/time",
         "/v5/market/instruments-info",
@@ -402,7 +402,8 @@ async def test_blocked_stops_and_hides_numbers(bybit_env: None) -> None:
     assert view.서버시각 is None
     assert "12345.67" not in rendered
     assert "125.5" not in rendered
-    assert "BLOCKED" in view.메시지
+    assert "연결이 막혔습니다" in view.메시지
+    assert "BLOCKED" not in view.메시지
     assert seen == ["/v5/market/time"]
 
 
@@ -546,9 +547,9 @@ async def test_demo_is_not_mainnet_or_paper(monkeypatch: pytest.MonkeyPatch) -> 
     finally:
         await client.aclose()
     assert view.환경코드 == "demo"
-    assert view.환경 == "데모"
+    assert view.환경 == "연습 계좌"
     assert view.페이퍼 is False
-    assert any("데모" in item and "메인넷 실계좌가 아닙니다" in item for item in view.구분)
+    assert any("연습 계좌입니다" in item and "실계좌가 아닙니다" in item for item in view.구분)
     assert seen[0].url.host == "api-demo.bybit.com"
 
 

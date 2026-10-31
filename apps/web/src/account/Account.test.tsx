@@ -70,8 +70,9 @@ describe("Bybit 계좌 조회", () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => blocked });
     vi.stubGlobal("fetch", fetchMock);
     render(<Account />);
-    expect(await screen.findByText("BLOCKED", { selector: ".account-blocked" })).toBeVisible();
-    expect(screen.getAllByText("숫자를 가져오지 못했습니다.").length).toBeGreaterThan(0);
+    expect(await screen.findByText("연결이 막혔습니다. 잔고 숫자를 만들지 않았습니다.")).toBeVisible();
+    expect(screen.getByText("잔고를 가져오지 못했습니다.")).toBeVisible();
+    expect(screen.queryByText(/BLOCKED|PAPER|메인넷|데모/)).not.toBeInTheDocument();
     expect(screen.queryByText("12.50")).not.toBeInTheDocument();
     expect(screen.queryByText("125.5")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "주문" })).not.toBeInTheDocument();
@@ -82,10 +83,10 @@ describe("Bybit 계좌 조회", () => {
     vi.stubGlobal("fetch", fetchMock);
     render(<Account />);
     expect((await screen.findAllByText("12.50")).length).toBeGreaterThan(0);
-    expect(screen.getByText("외부 · 관리 안 함")).toBeVisible();
-    expect(screen.getByText("메인넷: 예")).toBeVisible();
-    expect(screen.getByText("데모: 아니오")).toBeVisible();
-    expect(screen.getByText("페이퍼: 아니오. PAPER 탭만 가상 거래입니다.")).toBeVisible();
+    expect(screen.getByText("외부에서 연 포지션")).toBeVisible();
+    expect(screen.getByText("실계좌입니다. 연습 계좌가 아닙니다.")).toBeVisible();
+    expect(screen.getByText("가상 거래가 아닙니다. 가상 거래 화면의 돈과 다릅니다.")).toBeVisible();
+    expect(screen.getByText("실거래 꺼짐")).toBeVisible();
     expect(screen.getByText("미체결 주문이 없습니다.")).toBeVisible();
     expect(screen.queryByRole("button", { name: "주문" })).not.toBeInTheDocument();
   });
@@ -102,9 +103,9 @@ describe("Bybit 계좌 조회", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<Account />);
-    expect(await screen.findByText("메인넷: 아니오")).toBeVisible();
-    expect(screen.getByText("데모: 예")).toBeVisible();
-    expect(screen.getByText("페이퍼: 아니오. PAPER 탭만 가상 거래입니다.")).toBeVisible();
+    expect(await screen.findByText("연습 계좌입니다. 실계좌가 아닙니다.")).toBeVisible();
+    expect(screen.getByText("가상 거래가 아닙니다. 가상 거래 화면의 돈과 다릅니다.")).toBeVisible();
+    expect(screen.queryByText(/데모|메인넷|PAPER/)).not.toBeInTheDocument();
   });
 
   it("does not invent numbers when the server cannot be reached", async () => {
@@ -120,11 +121,12 @@ describe("Bybit 계좌 조회", () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => blocked });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Bybit 계좌 조회" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Bybit 계좌 조회" })).toHaveAttribute(
+    expect(await screen.findByRole("heading", { name: "Bybit 잔고" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Bybit 잔고" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByText("BLOCKED", { selector: ".account-blocked" })).toBeVisible();
+    expect(screen.getByText("연결이 막혔습니다. 잔고 숫자를 만들지 않았습니다.")).toBeVisible();
+    expect(document.body.textContent ?? "").not.toMatch(/\b(BLOCKED|PAPER|DEMO|API)\b/);
   });
 });

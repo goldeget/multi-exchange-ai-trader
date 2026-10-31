@@ -29,21 +29,21 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}$")
 _COIN = re.compile(r"^[A-Z0-9]{1,10}$")
 _CONNECTION_LABELS = {
     "ok": "연결됨",
-    "BLOCKED": "차단됨",
-    "error": "오류",
-    "missing_credentials": "키 없음",
-    "config": "설정 오류",
+    "BLOCKED": "연결이 막혔습니다",
+    "error": "연결 안 됨",
+    "missing_credentials": "비밀키가 없습니다",
+    "config": "설정이 잘못되었습니다",
 }
-_ENVIRONMENT_LABELS = {"mainnet": "메인넷", "demo": "데모", "testnet": "테스트넷"}
+_ENVIRONMENT_LABELS = {"mainnet": "실계좌", "demo": "연습 계좌", "testnet": "시험용 거래소"}
 _MESSAGES = {
     "missing_credentials": (
-        "Bybit 비밀키가 없습니다. .env의 BYBIT_API_SECRET을 확인하세요. "
+        "비밀키가 없습니다. 설정 파일의 비밀키를 확인하세요. "
         "키 값은 보여 주지 않습니다. 조회 요청을 보내지 않았습니다."
     ),
-    "config": "BYBIT_TESTNET과 BYBIT_DEMO를 함께 켤 수 없습니다. 조회를 시작하지 않았습니다.",
+    "config": "시험용 거래소와 연습 계좌를 함께 켤 수 없습니다. 조회를 시작하지 않았습니다.",
     "BLOCKED": (
-        "BLOCKED. Bybit가 이 접속을 막았습니다. 잔고·포지션·주문 숫자를 만들지 않았습니다. "
-        "VPN이나 프록시는 바꾸지 않습니다."
+        "연결이 막혔습니다. Bybit가 이 접속을 막았습니다. 잔고, 포지션, 주문 숫자를 만들지 않았습니다. "
+        "우회 설정은 바꾸지 않습니다."
     ),
     "network": "Bybit에 연결하지 못했습니다. 숫자를 만들지 않았습니다.",
     "dns": "Bybit 주소를 찾지 못했습니다. 잔고 숫자는 만들지 않았습니다. DNS나 VPN은 바꾸지 않습니다.",
@@ -55,7 +55,7 @@ _MESSAGES = {
     "http_status": "Bybit가 정상 응답을 주지 않아 숫자를 숨겼습니다.",
     "unexpected": "조회 중 오류가 나서 숫자를 숨겼습니다. 자세한 내용은 비밀키가 섞이지 않도록 표시하지 않습니다.",
     "ret_10002": "요청 시각이 서버와 맞지 않습니다. 숫자를 숨겼습니다.",
-    "ret_10003": "API 키가 맞지 않습니다. 키 값은 표시하지 않습니다.",
+    "ret_10003": "접속 키가 맞지 않습니다. 키 값은 표시하지 않습니다.",
     "ret_10004": "서명이 맞지 않습니다. 비밀키는 표시하지 않습니다.",
     "ret_10005": "이 키로는 계좌를 읽을 권한이 없습니다.",
     "ret_10006": "요청이 너무 많습니다. 잠시 뒤에 다시 조회하세요.",
@@ -75,17 +75,17 @@ def _message(code: str) -> str:
 
 def _distinctions(environment: EnvironmentName | None) -> list[str]:
     if environment == "mainnet":
-        current = "이 조회: 메인넷 (실계좌 읽기). 데모가 아닙니다."
+        current = "이 조회는 실계좌입니다. 연습 계좌가 아닙니다."
     elif environment == "demo":
-        current = "이 조회: 데모. 메인넷 실계좌가 아닙니다."
+        current = "이 조회는 연습 계좌입니다. 실계좌가 아닙니다."
     elif environment == "testnet":
-        current = "이 조회: 테스트넷. 메인넷도 데모도 아닙니다."
+        current = "이 조회는 시험용 거래소입니다. 실계좌가 아닙니다."
     else:
-        current = "이 조회: 환경을 아직 확인하지 못했습니다."
+        current = "어떤 계좌인지 아직 확인하지 못했습니다."
     return [
         current,
-        "페이퍼: 아니오. PAPER 탭의 잔고는 가상 돈이며 이 화면과 다릅니다.",
-        "주문: 보내지 않습니다. 보이는 포지션과 주문은 모두 외부입니다.",
+        "가상 거래가 아닙니다. 가상 거래 화면의 돈과 다릅니다.",
+        "주문은 보내지 않습니다. 보이는 포지션과 주문은 모두 외부에서 연 것입니다.",
     ]
 
 
@@ -176,7 +176,7 @@ def _symbol(value: object) -> str:
 
 def _format_time(server_ms: int) -> str:
     moment = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=server_ms)
-    return moment.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return moment.strftime("%Y-%m-%d %H:%M:%S") + " 세계 표준시"
 
 
 def _rows(value: object) -> list[dict[str, object]]:
@@ -255,7 +255,7 @@ def _position(row: dict[str, object]) -> PositionItem | None:
         미실현손익=_decimal(row.get("unrealisedPnl"), signed=True),
         마진모드=_label(row.get("tradeMode"), {"0": "교차", "1": "격리"}),
         포지션모드=_label(
-            row.get("positionIdx"), {"0": "단방향", "1": "헤지 매수", "2": "헤지 매도"}
+            row.get("positionIdx"), {"0": "한 방향", "1": "양쪽 포지션 · 매수", "2": "양쪽 포지션 · 매도"}
         ),
     )
 

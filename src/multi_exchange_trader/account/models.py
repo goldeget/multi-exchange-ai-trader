@@ -29,7 +29,7 @@ class CoinBalance(BaseModel):
 class WalletView(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    계정유형: Literal["통합(UNIFIED)"] = "통합(UNIFIED)"
+    계정유형: Literal["통합 계좌"] = "통합 계좌"
     총자산평가: str | None
     총지갑잔고: str | None
     총사용가능: str | None
@@ -41,7 +41,7 @@ class PositionItem(BaseModel):
 
     출처: Literal["external"] = "external"
     관리함: Literal[False] = False
-    구분: Literal["외부 · 관리 안 함"] = "외부 · 관리 안 함"
+    구분: Literal["외부에서 연 포지션"] = "외부에서 연 포지션"
     종목: str
     방향: str
     수량: str
@@ -59,7 +59,7 @@ class OrderItem(BaseModel):
 
     출처: Literal["external"] = "external"
     관리함: Literal[False] = False
-    구분: Literal["외부 · 관리 안 함"] = "외부 · 관리 안 함"
+    구분: Literal["외부에서 연 주문"] = "외부에서 연 주문"
     종목: str
     방향: str
     유형: str

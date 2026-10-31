@@ -63,7 +63,7 @@ describe("공개 시세 대시보드", () => {
   it("preview is explicit and makes zero API requests", () => {
     window.history.replaceState({}, "", "/?preview=1");
     render(<App />);
-    expect(screen.getByText("샘플 데이터 · 실제 시세 아님")).toBeVisible();
+    expect(screen.getByText("예시 숫자 · 실제 시세 아님")).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.getByText(/형성 중/)).toBeVisible();
   });
@@ -100,7 +100,7 @@ describe("공개 시세 대시보드", () => {
       "ETHUSDT",
     );
     expect(
-      screen.getByRole("heading", { name: "ETH / USDT Bybit · 현물 · 15m" }),
+      screen.getByRole("heading", { name: "ETH / USDT Bybit · 현물 · 15분" }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", { name: "BybitETH / USDT · 현물" }),
@@ -119,7 +119,7 @@ describe("공개 시세 대시보드", () => {
     render(<App />);
     await settle();
     expect(
-      screen.getByText("공개 시세 전용 · PAPER는 별도 가상 화면"),
+      screen.getByText("시세만 보여 줍니다. 가상 거래는 다른 화면입니다."),
     ).toBeVisible();
     expect(screen.getAllByText("105.00").length).toBeGreaterThan(0);
     expect(screen.getByRole("table")).toBeVisible();
@@ -136,7 +136,7 @@ describe("공개 시세 대시보드", () => {
     render(<App />);
     await settle();
     expect(
-      screen.getByRole("button", { name: "OKX · 검증 대기" }),
+      screen.getByRole("button", { name: "OKX · 아직 준비 안 됨" }),
     ).toBeDisabled();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30000);
@@ -150,9 +150,9 @@ describe("공개 시세 대시보드", () => {
     render(<App />);
     expect(screen.getAllByText("불러오는 중").length).toBeGreaterThan(0);
     await settle();
-    expect(screen.getAllByText(/연결 오류/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/연결 안 됨/).length).toBeGreaterThan(0);
     expect(
-      screen.queryByText("샘플 데이터 · 실제 시세 아님"),
+      screen.queryByText("예시 숫자 · 실제 시세 아님"),
     ).not.toBeInTheDocument();
   });
   it("marks retained data stale after 15 seconds and preserves observation time", async () => {
@@ -163,7 +163,7 @@ describe("공개 시세 대시보드", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(16000);
     });
-    expect(screen.getAllByText(/지연 ·/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/늦음 ·/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
   });
   it("prevents overlapping requests and aborts on unmount", async () => {
@@ -186,7 +186,7 @@ describe("공개 시세 대시보드", () => {
     fetchMock.mockImplementation(response);
     render(<App />);
     await settle();
-    expect(screen.getByRole("button", { name: "Bybit 계좌 조회" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Bybit 잔고" })).toBeVisible();
     expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("/account/"))).toBe(true);
   });
   it("changes the selected instrument using keyboard accessible controls", async () => {
@@ -211,8 +211,8 @@ it("keeps terminal restriction visible instead of replacing it with generic stal
   fetchMock.mockImplementation(response);render(<App/>);await settle();
   fetchMock.mockResolvedValue({ok:false,json:async()=>({reason:"operator_disabled"})});
   await act(async()=>{await vi.advanceTimersByTimeAsync(65000);});
-  expect(screen.getAllByText(/운영 설정으로 비활성화/).length).toBe(5);
-  expect(screen.queryByText("지연 · 마지막 수신 캔들")).not.toBeInTheDocument();
+  expect(screen.getAllByText(/이 시세는 꺼져 있습니다/).length).toBe(5);
+  expect(screen.queryByText("늦음 · 마지막 차트")).not.toBeInTheDocument();
   expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
-  expect(screen.getAllByText(/fixture/).length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/공개 시세/).length).toBeGreaterThan(0);
 });
