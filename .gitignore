@@ -224,3 +224,12 @@ apps/web/node_modules/
 apps/web/dist/
 apps/web/coverage/
 *.tsbuildinfo
+
+# Local PAPER state is never a source artifact.
+work/phase3-data/
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
