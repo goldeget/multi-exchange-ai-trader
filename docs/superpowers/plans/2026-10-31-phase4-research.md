@@ -35,9 +35,9 @@ Baseline docs56a212c5/sourceedf89138, branch codex/initial-platform, main7ddcded
 
 ### Task3 — durable risk-controlled synthetic automation (integrated source checkpoint2)
 **Files:** research/automation.py, storage.py (or focused store modules), scheduler.py; tests/research/test_automation.py, test_storage.py.
-**Interfaces:** create_run(id,key,config), command_run(id,key,action), step_run(id,cursor), state_run(id), store report/dataset catalog. New PHASE4_DB_PATH, no Phase3 schema change.
+**Interfaces:** create_run(id,key,config), command_run(id,key,action), step_run(id,cursor), state_run(id), store report/dataset catalog. New PHASE4_DB_PATH plus dedicated AUTOPAPER_DB_PATH, existing PaperStore16scenario/500event limits unchanged; durable intent saga, no two-DB atomicity claim.
 - [ ] RED native step/paused/terminal stop, total loss/drawdown/exposure/streak, idempotency/payload conflict, concurrent duplicate cursor, transaction fault rollback/corrupt schema/hash, restart/replay/fundingonce, actual-spot refusal.
-- [ ] Implement bounded event stream over existing sandbox_replay; committed cursor decides next step. Native flatten after risk, keep losses/deficit. Background loop reads durable running states only; zero transport code.
+- [ ] Implement bounded event stream over existing sandbox_replay; committed cursor decides next step. Native flatten after risk with10events reserved and96bar bounded source; keep losses/deficit. Recovery defaults PAUSED_RECOVERY, explicitresume only. Background loop reads durable running states/due times, expectedcursor and lock avoid duplicate loops; zero transport code. Add before/afterPapercommit journal-fault tests and pause/stop/inflight races.
 - [ ] Run integrated GREEN, wholePython/static; commit/push core before UI, report SHA. CI2 observed once. No claim of UI/real restart until executed.
 
 ### Task4 — API, Korean UI and real process/browser acceptance (source checkpoint3)
