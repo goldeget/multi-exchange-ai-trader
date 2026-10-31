@@ -53,5 +53,17 @@
       "generator": "uuid.uuid4 in preserved local process-restart QA",
       "capability": "Anonymous local synthetic PAPER command deduplication only; never an API credential or authentication header"
     }
-  ]
+  ],
+  "browser_storage_namespace": {
+    "ci": "41157653747",
+    "job": 124407896429,
+    "RuleID": "generic-api-key",
+    "File": "apps/web/src/research/Research.tsx",
+    "StartLine": 17,
+    "Commit": "13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6",
+    "Fingerprint": "13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6:apps/web/src/research/Research.tsx:generic-api-key:17",
+    "classification": "Public localStorage namespace constant, not stored intent contents or any credential; independently reviewed by Work.",
+    "remediation": "Rename variable to pendingStorageName; keep exact namespace value unchanged. One exact historical fingerprint only; separate from four UUID findings.",
+    "public_namespace": "phase4-uncertain-intent-v1"
+  }
 }

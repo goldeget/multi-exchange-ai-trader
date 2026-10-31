@@ -4,3 +4,7 @@
 3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:13
 3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/reload-idempotency.json:generic-api-key:19
 3421527acb0a16405b6d5a4731b497659eb77fc0:docs/qa/phase3/browser-20261031/process-restart.json:generic-api-key:2717
+
+# Exact historical public browser storage namespace (not its contents or a credential).
+# Variable renamed; stored namespace preserved for uncertain-intent recovery.
+13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6:apps/web/src/research/Research.tsx:generic-api-key:17
