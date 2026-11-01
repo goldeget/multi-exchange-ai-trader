@@ -86,6 +86,20 @@ export async function capturePair(page: Page, testInfo: TestInfo, stem: string) 
       comparisonStrategy: captureOnly ? "review-candidate-only" : "stable-png-buffer-pixels-and-sha256",
       candidateSha256, baselineSha256: baselineSha256 ?? null,
       candidateStability: { consecutiveExactImages: 2, attempts: stable.attempts, maxAttempts: 8 },
+      geometry: await page.evaluate(() => ({
+        devicePixelRatio: window.devicePixelRatio,
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        elements: Array.from(document.querySelectorAll('.chart,.chart canvas,.dialog,.dialog h2,.dialog button')).slice(0, 50).map(element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return {
+            tag: element.tagName, className: element.className,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            css: { width: style.width, height: style.height, lineHeight: style.lineHeight, transform: style.transform, translate: style.translate },
+            bitmap: element instanceof HTMLCanvasElement ? { width: element.width, height: element.height } : null,
+          };
+        }),
+      })),
     }, null, 2)), contentType: "application/json" });
     if (!captureOnly) {
       // Compare the exact saved stable PNG; extra page captures would change the

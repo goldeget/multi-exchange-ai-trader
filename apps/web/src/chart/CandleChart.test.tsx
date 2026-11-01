@@ -2,11 +2,14 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Candle } from "../api";
+import { CanvasRenderingTarget2D, size } from 'fancy-canvas';
+import type CrispPriceLine from './CrispPriceLine';
 const mocks=vi.hoisted(()=>{
-  const charts: Array<{addSeries: ReturnType<typeof vi.fn>,timeScale: ReturnType<typeof vi.fn>,remove: ReturnType<typeof vi.fn>,setRange: ReturnType<typeof vi.fn>,fit: ReturnType<typeof vi.fn>,setData: ReturnType<typeof vi.fn>}> = [];
+  const charts: Array<{series:{attachPrimitive: ReturnType<typeof vi.fn>,detachPrimitive: ReturnType<typeof vi.fn>,priceToCoordinate: ReturnType<typeof vi.fn>},addSeries: ReturnType<typeof vi.fn>,timeScale: ReturnType<typeof vi.fn>,remove: ReturnType<typeof vi.fn>,setRange: ReturnType<typeof vi.fn>,fit: ReturnType<typeof vi.fn>,setData: ReturnType<typeof vi.fn>}> = [];
   const createChart=vi.fn(()=>{
     const fit=vi.fn(),setData=vi.fn(),setRange=vi.fn();
-    const chart={fit,setData,setRange,addSeries:vi.fn(()=>({setData,priceScale:()=>({applyOptions:vi.fn()})})),timeScale:vi.fn(()=>({fitContent:fit,getVisibleLogicalRange:()=>({from:25,to:75}),setVisibleLogicalRange:setRange})),remove:vi.fn()};charts.push(chart);return chart;
+    const series={setData,priceScale:()=>({applyOptions:vi.fn()}),priceToCoordinate:vi.fn((price:number)=>price),attachPrimitive:vi.fn((primitive:CrispPriceLine):void=>primitive.attached({series,requestUpdate:vi.fn()})),detachPrimitive:vi.fn((primitive:CrispPriceLine):void=>primitive.detached())};
+    const chart={series,fit,setData,setRange,addSeries:vi.fn(()=>series),timeScale:vi.fn(()=>({fitContent:fit,getVisibleLogicalRange:()=>({from:25,to:75}),setVisibleLogicalRange:setRange})),remove:vi.fn()};charts.push(chart);return chart;
   });return {createChart,charts};
 });
 vi.mock("lightweight-charts",()=>({createChart:mocks.createChart,CandlestickSeries:{},HistogramSeries:{},ColorType:{Solid:"solid"}}));
@@ -72,4 +75,23 @@ it("fits a disjoint replacement batch instead of preserving an empty old time wi
   view.rerender(<CandleChart candles={[{...candle,timestamp:"2026-11-01T00:00:00Z"}]}/>);
   expect(first.fit).toHaveBeenCalledTimes(2);expect(first.setRange).not.toHaveBeenCalled();
   expect(mocks.createChart).toHaveBeenCalledTimes(1);
+});
+
+it('replaces only the native stroke with a visible latest-close primitive while retaining the price label',()=>{
+ const view=render(<CandleChart candles={[candle]}/>);const chart=mocks.charts[0];
+ expect(chart.addSeries.mock.calls[0][1]).toMatchObject({priceLineVisible:false,lastValueVisible:true});
+ expect(chart.series.attachPrimitive).toHaveBeenCalledTimes(1);
+ const line=chart.series.attachPrimitive.mock.calls[0][0] as CrispPriceLine;
+ const painted:Array<{color:string;row:number}>=[];
+ const ctx={fillStyle:'',globalAlpha:0,globalCompositeOperation:'source-over',save(){},restore(){},setTransform(){},fillRect(_x:number,y:number){painted.push({color:this.fillStyle,row:y})}};
+ const target=new CanvasRenderingTarget2D(ctx as unknown as CanvasRenderingContext2D,size({width:8,height:30}),size({width:8,height:30}));
+ line.draw(target);expect(chart.series.priceToCoordinate).toHaveBeenLastCalledWith(11);
+ expect(painted[0]).toEqual({color:'#FF6B7A',row:11});
+ view.rerender(<CandleChart candles={[{...candle,close:'9.5'}]}/>);
+ painted.length=0;line.draw(target);
+ expect(chart.series.priceToCoordinate).toHaveBeenLastCalledWith(9.5);
+ expect(painted[0]).toEqual({color:'#76A1FF',row:10});
+ view.rerender(<CandleChart candles={[]}/>);painted.length=0;line.draw(target);expect(painted).toEqual([]);
+ view.unmount();expect(chart.series.detachPrimitive).toHaveBeenCalledWith(line);
+ chart.series.priceToCoordinate.mockClear();line.draw(target);expect(chart.series.priceToCoordinate).not.toHaveBeenCalled();
 });
