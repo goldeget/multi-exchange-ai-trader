@@ -7,3 +7,5 @@
 
 @media(max-width:768px){.account-position-values>div:nth-child(2n){padding-left:6px}.account-position-values dd{font-size:16px;white-space:nowrap;overflow-wrap:normal;max-width:100%;overflow-x:auto}.account-screen .account-coins-panel{overflow-x:auto}.account-screen .account-coin-table td{white-space:nowrap;overflow-wrap:normal}}
 @media(max-width:359px){.account-position-values{grid-template-columns:minmax(0,1fr)}.account-position-values>div,.account-position-values>div:nth-child(2n){padding-left:0;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px}.account-position-values dd{margin-left:auto}}
+
+@media(max-width:768px){.account-screen .account-refresh-line{flex-wrap:wrap}.account-screen .account-refresh-line button{white-space:nowrap;flex-shrink:0;margin-left:auto;font-size:16px}}

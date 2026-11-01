@@ -24,12 +24,23 @@ async function assertReferenceContent(page: Page, screenId: string, mobile: bool
   }
   if (screenId === "12-diagnostics" && mobile) {
     const banner=(await page.locator(".diagnostic-banner").boundingBox())!;
+    const icon=(await page.locator(".diagnostic-banner > .notice-circle").boundingBox())!;
+    const message=(await page.locator(".diagnostic-message").boundingBox())!;
+    expect(message.x).toBeGreaterThan(icon.x+icon.width);
+    expect(Math.abs(message.y-icon.y)).toBeLessThanOrEqual(2);
+    await expect(page.locator(".diagnostic-banner > .notice-circle")).toHaveCSS("color","rgb(16, 23, 33)");
     const badge=(await page.locator(".diagnostic-banner > .badge").boundingBox())!;
     expect(badge.x).toBeGreaterThanOrEqual(banner.x);
     expect(badge.x+badge.width).toBeLessThanOrEqual(banner.x+banner.width);
   }
   if (screenId === "04-recommend") await expect(page.locator(".chart:visible")).toHaveCount(1);
+  if (screenId === "05-paper" && mobile) {
+    const quote=page.locator(".mobile-spot-quote strong");
+    await expect(quote).toHaveCSS("white-space","nowrap");
+    expect(await quote.evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
+  }
   if (screenId === "03-account" && mobile) {
+    await expect(page.locator(".account-refresh-line button")).toHaveCSS("white-space","nowrap");
     for (const value of await page.locator(".account-summary-values strong,.account-position-values dd").all()) await expect(value).toHaveCSS("white-space", "nowrap");
   }
 }
