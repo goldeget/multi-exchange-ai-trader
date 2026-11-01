@@ -22,6 +22,7 @@ def _service(request: Request) -> RecommendationService:
         market=request.app.state.market_data_service,
         lock=request.app.state.recommendation_lock,
         clock=getattr(request.app.state, "recommendation_clock", None),
+        practice=getattr(request.app.state, "bybit_practice", None),
     )
 
 

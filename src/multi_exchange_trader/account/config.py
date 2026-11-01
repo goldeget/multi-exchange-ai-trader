@@ -6,7 +6,16 @@ from typing import Literal
 
 EnvironmentName = Literal["mainnet", "demo", "testnet"]
 
-_ALLOWED_ENV_KEYS = frozenset({"BYBIT_API_KEY", "BYBIT_API_SECRET", "BYBIT_TESTNET", "BYBIT_DEMO"})
+_ALLOWED_ENV_KEYS = frozenset(
+    {
+        "BYBIT_API_KEY",
+        "BYBIT_API_SECRET",
+        "BYBIT_TESTNET",
+        "BYBIT_DEMO",
+        "BYBIT_DEMO_API_KEY",
+        "BYBIT_DEMO_API_SECRET",
+    }
+)
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 _HOSTS: dict[EnvironmentName, str] = {
@@ -67,16 +76,34 @@ def _flag(name: str, default: bool) -> bool:
 
 
 def resolve_environment() -> tuple[EnvironmentName, str]:
-    """Return the selected Bybit environment and its fixed read-only host."""
+    """Return the live-account host.
+
+    ``BYBIT_DEMO`` marks that a separate practice key exists. It does not move
+    this live client onto the demo host, and it never replaces the live key.
+    """
     demo = _flag("BYBIT_DEMO", False)
     testnet = _flag("BYBIT_TESTNET", False)
     if demo and testnet:
         raise ValueError("BYBIT_DEMO and BYBIT_TESTNET cannot both be enabled")
-    if demo:
-        return "demo", _HOSTS["demo"]
     if testnet:
         return "testnet", _HOSTS["testnet"]
     return "mainnet", _HOSTS["mainnet"]
+
+
+def require_demo_credentials() -> tuple[str, str]:
+    """Return the practice-account key pair. The live key is not accepted here."""
+    load_bybit_env_file()
+    if not _flag("BYBIT_DEMO", False):
+        raise MissingBybitCredentials("BYBIT_DEMO is not enabled")
+    key = os.environ.get("BYBIT_DEMO_API_KEY", "").strip()
+    secret = os.environ.get("BYBIT_DEMO_API_SECRET", "").strip()
+    live_key = os.environ.get("BYBIT_API_KEY", "").strip()
+    live_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
+    if not key or not secret:
+        raise MissingBybitCredentials("BYBIT_DEMO_API_KEY is not set")
+    if key == live_key or secret == live_secret:
+        raise MissingBybitCredentials("demo credentials must stay separate from the live key")
+    return key, secret
 
 
 def allowed_host(environment: EnvironmentName) -> str:
@@ -110,7 +137,13 @@ def live_trading_enabled() -> bool:
 
 def text_contains_credential(text: str) -> bool:
     """True when the text includes a configured Bybit key or secret."""
-    for name in ("BYBIT_API_KEY", "BYBIT_API_SECRET"):
+    names = (
+        "BYBIT_API_KEY",
+        "BYBIT_API_SECRET",
+        "BYBIT_DEMO_API_KEY",
+        "BYBIT_DEMO_API_SECRET",
+    )
+    for name in names:
         value = os.environ.get(name, "").strip()
         if len(value) >= 8 and value in text:
             return True

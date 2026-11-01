@@ -219,3 +219,28 @@ async def test_remote_host_cannot_preview(tmp_path: Path, monkeypatch: pytest.Mo
         assert response.status_code == 403
         assert app.state.paper_store.scenarios() == []
         assert script.calls == []
+
+
+class RecordingPractice:
+    def __init__(self) -> None:
+        self.orders = 0
+
+    async def confirm(self) -> str:
+        return "연습 계좌 잔고를 확인했습니다. 연습 주문은 자동으로 넣지 않았습니다."
+
+
+@pytest.mark.asyncio
+async def test_bybit_approval_checks_practice_account_without_an_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session(tmp_path, monkeypatch) as (client, _script, app, _clock):
+        app.state.bybit_practice = RecordingPractice()
+        card = await preview(client)
+        approved = await client.post(f"/api/v1/recommendations/{card['번호']}/approve", json={})
+        body = approved.json()
+        assert approved.status_code == 200
+        assert body["실계좌주문"] is False
+        assert "연습 계좌" in body["메시지"]
+        assert "실계좌 주문은 없습니다" in body["메시지"]
+        assert "자동으로 넣지 않았습니다" in body["메시지"]
+        assert app.state.bybit_practice.orders == 0
