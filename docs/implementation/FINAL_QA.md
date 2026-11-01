@@ -4,7 +4,7 @@
 
 ## 같은 소스에서 확인한 결과
 
-캡처 소스 `472738d00a7843e9c67aa8e1825d7edc8e2f5741`의 [CI 41283412520](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41283412520)은 다섯 작업을 모두 통과했습니다.
+캡처 소스 `822da2315610906ea09aeca8bb0372a4c61add7a`의 [CI 41285407544](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41285407544)은 다섯 작업을 모두 통과했습니다.
 
 | 검사 | 결과 |
 |---|---|

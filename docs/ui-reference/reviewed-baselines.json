@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "purpose": "Reviewed implementation regression baselines; not original-image pixel-identity proof.",
-  "captureSource": "472738d00a7843e9c67aa8e1825d7edc8e2f5741",
-  "captureTree": "184495cd74104780b4cdc6c847c0894a25bb4fbd",
-  "workflowRun": 41283412520,
-  "artifactId": 13073967469,
-  "artifactSha256": "148994138b46503150e1f686daf528d3595f81118c81e08f405eb682ef2fcd3c",
+  "captureSource": "822da2315610906ea09aeca8bb0372a4c61add7a",
+  "captureTree": "b9f54a0fa08736a46430c36b43be69b9a287395c",
+  "workflowRun": 41285407544,
+  "artifactId": 13075031905,
+  "artifactSha256": "b1c67796790bf72257e0726a4294af358853fa19f0890b4d113907918b947df7",
   "clock": "2026-11-01T00:10:03Z",
   "locale": "ko-KR",
   "timezone": "Asia/Seoul",
@@ -27,7 +27,7 @@
       "gitBlobSha": "fc9aaa105f7775ba6cb5f82fa38a2f3fa12758e9",
       "path": "apps/web/tests/ui-browser/baselines/mobile/interaction-spot-review-dialog-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -39,7 +39,7 @@
       "gitBlobSha": "0b3c9011ea6c8e347b0eb4cfdb33b317eeefa065",
       "path": "apps/web/tests/ui-browser/baselines/mobile/interaction-spot-review-dialog-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -51,7 +51,7 @@
       "gitBlobSha": "13d5c7ced4b1ad87a6f61b91ef129bca890d407b",
       "path": "apps/web/tests/ui-browser/baselines/pc/interaction-spot-review-dialog-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "Direct visual inspection of changed CI14 PNG; read-only RGB comparison verified1 pixel/max channel delta1, no material visual issue."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -63,7 +63,7 @@
       "gitBlobSha": "2da2a281b040f68195543a91fcf41ff89d1a663a",
       "path": "apps/web/tests/ui-browser/baselines/pc/interaction-spot-review-dialog-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "Direct visual inspection of changed CI14 PNG; read-only RGB comparison verified1 pixel/max channel delta1, no material visual issue."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -74,8 +74,8 @@
       "sha256": "222558c51312120878e935fa24fdaf678e75aa220d62017210a288fb9e3c83cd",
       "gitBlobSha": "144f608df6b39f802f3a356755c4fb8d472038af",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-01-overview-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -86,8 +86,8 @@
       "sha256": "52ce55d4f81977b2a78c3b87d77cf188515e91d0df1a43aa4ae5ded8f4173d38",
       "gitBlobSha": "49168785684946034fa9c05d4f423d8d7a0128ce",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-01-overview-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -98,8 +98,8 @@
       "sha256": "47ff7e3a5f106f15973ea9cc73091da5d826d98aabf4fed9bdcaa7137c9e45cf",
       "gitBlobSha": "9c4b98edc3a6bb0c741fd96c85d4620c3ba12f8e",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-01-overview-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -110,8 +110,8 @@
       "sha256": "33d93f2718b90a80c70c54a51e02bdc9ff763dfcef3b03dd0551ad7ab1cb9cb4",
       "gitBlobSha": "239ec824d542e44cbe32f200a43273038c157620",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-01-overview-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -122,8 +122,8 @@
       "sha256": "69ca894ecbc546852ed3278f0e765ebc538685d1f09741da93f6e1d5a6c2563f",
       "gitBlobSha": "cb5b3e48f7cc08a4b97d75745e25b7f7392f7225",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-02-market-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -134,8 +134,8 @@
       "sha256": "938e0f0b604fc1ec0ee6e8fd43ce4fe4789fe540ad808f3662f8ac4762301c94",
       "gitBlobSha": "80e63a28966d5c860adb72413c80c18f6fd14646",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-02-market-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -146,8 +146,8 @@
       "sha256": "e9144fd96d955c273f7331e3215ff0ab7220523c686424f1992d23c72e2e88bd",
       "gitBlobSha": "9c86db3ffacc1bf860bbb3825e5bf5ab76ba4fc2",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-02-market-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -158,8 +158,8 @@
       "sha256": "ab97d349692ffbe0f44f86202c8f46f23d709d1bae644a61e1b93b20d613e0c1",
       "gitBlobSha": "f90d1a25d3116c2236b62c8e0f8a6f89addac826",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-02-market-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -170,8 +170,8 @@
       "sha256": "7475c1e881575e6130cc856271b30dd4d7508d00612d36c09d3f9af454b76389",
       "gitBlobSha": "b10f083c59c3edd19b9e789dff035dab93eb7f9d",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-03-account-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -182,8 +182,8 @@
       "sha256": "c4eafb7b0c905fedb88b5f3ad4ec27c6bae58ac0390364faf61858edb1f740db",
       "gitBlobSha": "5c55a27bc1685e4381faef3ac2e6d28ca276c137",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-03-account-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -194,8 +194,8 @@
       "sha256": "5bba38b646b2bc17526c624511ca1ed95a220bbf540f6d84b75e32c321dc39b0",
       "gitBlobSha": "d09f67e68785cc60c263bd86f42dc940e78e677d",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-03-account-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -206,8 +206,8 @@
       "sha256": "015e5efdaf348f68cc1eeabf537d1940ec4ff1c2ffc8c7dc8135764e02d5dd61",
       "gitBlobSha": "286ab86c60374e10b23b17f7a82daa75614ce883",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-03-account-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -218,8 +218,8 @@
       "sha256": "1423201be5d6d577eb0192c6a91bc49fda0dc280e2080c11c6d8a2fc7a38a398",
       "gitBlobSha": "1e3971892a6f81d292965f2f083e9464d8a6acf3",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-04-recommend-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -230,8 +230,8 @@
       "sha256": "3525791ec1c5af58d6e5bf0db282fa94a0211371d499d7d35fca82ff613dc529",
       "gitBlobSha": "02eb0b7ccf790a63cfdff6fba4dff7faf972fc21",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-04-recommend-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -242,8 +242,8 @@
       "sha256": "26f60d867d58fb4acdecc1cabbbbe7bf2bdbfaf18a4937fe848f375fadde6edd",
       "gitBlobSha": "392ec169fba119589ceb9ca56784aaa3448cd36a",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-04-recommend-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -254,8 +254,8 @@
       "sha256": "26f60d867d58fb4acdecc1cabbbbe7bf2bdbfaf18a4937fe848f375fadde6edd",
       "gitBlobSha": "392ec169fba119589ceb9ca56784aaa3448cd36a",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-04-recommend-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -266,8 +266,8 @@
       "sha256": "d97f716ead332b44d2620025bfb1ecf984692c7d6f694b686c7df011c2d4796f",
       "gitBlobSha": "9f704868a5b05c3f4b9d8441bffd094f987fc227",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-05-paper-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -278,8 +278,8 @@
       "sha256": "70cdd5496a3720703d4dce6249a4ac19e00a176226cf06e383973fa008339e71",
       "gitBlobSha": "0e054670cc4375f247454d5e64647192efcc1441",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-05-paper-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -290,8 +290,8 @@
       "sha256": "7cbb178b6c3fcef82b3fc0e9b0e8539ae323cd6680bdfd6896a5208e9a5acacc",
       "gitBlobSha": "0c7304b1699fb2967a0994795f7c226e994b931f",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-05-paper-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -302,8 +302,8 @@
       "sha256": "4ce31409855510888e998aa0440a7803be77f237cd2c9451f3d67859dc234d11",
       "gitBlobSha": "6a5b80b6821ec9abf2e1c57c1c5e0d2385f80a3d",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-05-paper-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -314,8 +314,8 @@
       "sha256": "112690eaf6a650797c8a078069a100c0c7aa68ce372887aa152dc83df350d310",
       "gitBlobSha": "1c9c421ba452c24c7e84744a695aef30120d96e5",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-06-run-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -326,8 +326,8 @@
       "sha256": "112690eaf6a650797c8a078069a100c0c7aa68ce372887aa152dc83df350d310",
       "gitBlobSha": "1c9c421ba452c24c7e84744a695aef30120d96e5",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-06-run-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -338,8 +338,8 @@
       "sha256": "c93520c4ab78c0c8b709774ebd9efadc6acfdd07ffb122d628fbc47a8c100bdd",
       "gitBlobSha": "aaa254fd0d59c87231c4326316c19bf9c0d7b1d8",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-06-run-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -350,8 +350,8 @@
       "sha256": "c93520c4ab78c0c8b709774ebd9efadc6acfdd07ffb122d628fbc47a8c100bdd",
       "gitBlobSha": "aaa254fd0d59c87231c4326316c19bf9c0d7b1d8",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-06-run-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -362,8 +362,8 @@
       "sha256": "ba899d4428a2e50a4b9461ced867b9e290e58e7cf9e61ef655dce8e8ba1d315c",
       "gitBlobSha": "21d3eb83781b077aebad44c215de6f49279ceeea",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-07-create-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -374,8 +374,8 @@
       "sha256": "c06947e8fc6296322caa74eaed99e07e354dec826b76c87b05eee5dab1c7a066",
       "gitBlobSha": "1bcb035c42a04d3e3bae39240a39383378b992d7",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-07-create-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -386,8 +386,8 @@
       "sha256": "b2b33995258896fab058de89e75f33723f56a7fabf902f55da270663a7be4570",
       "gitBlobSha": "f0fafc2489c873caad561cbd19ee1216392ad543",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-07-create-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -398,8 +398,8 @@
       "sha256": "5e85ee0c625bfdfa327dea20da012099ae0b839dd3101e2a319d7ae6a2b33146",
       "gitBlobSha": "4f63e867c3e89ce6aad01a4159e75070fb2449e9",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-07-create-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -410,8 +410,8 @@
       "sha256": "5db794e15354aeb3c5f0e769854d64d880473fcfb55e0d039074429b557c2f4d",
       "gitBlobSha": "3a1261152cac488b0b4994cb56b484f4b00e5546",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-08-history-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -422,8 +422,8 @@
       "sha256": "5db794e15354aeb3c5f0e769854d64d880473fcfb55e0d039074429b557c2f4d",
       "gitBlobSha": "3a1261152cac488b0b4994cb56b484f4b00e5546",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-08-history-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -434,8 +434,8 @@
       "sha256": "5647b582b8d1f00dd8a188b09cfef34eea5648d1387970ce53de1e5e042c46d8",
       "gitBlobSha": "aa763b5f1b3cf537aeb887d44702d5ee14486b84",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-08-history-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -446,8 +446,8 @@
       "sha256": "bd75f0d11202a9a90d82c550746d9171f345e62f38e69eb84cfacd0bb42c79b9",
       "gitBlobSha": "d28cba9636214616dc0d2349b966d8bc1a56714b",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-08-history-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -458,8 +458,8 @@
       "sha256": "48e83fe7c69490071bffe1bd11c524bfcbae7d4962a759ffd837ca6d7e13bb85",
       "gitBlobSha": "905ca51b503f190f790b668515a51e14b022983e",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-09-backtest-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -470,8 +470,8 @@
       "sha256": "2fadab02a94e955ea62537c8024fbba073b80632907935326dac4b19a03af30f",
       "gitBlobSha": "072869ee0808af7f8d6d428dc64cc396659237b4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-09-backtest-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -482,8 +482,8 @@
       "sha256": "3e269216257a15f68f7259f6a7faeac126e14d9ea777b620101c8e4e2936192e",
       "gitBlobSha": "2c2873b1664d04556bbf305fd3c7bd599dc889e8",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-09-backtest-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -494,8 +494,8 @@
       "sha256": "a4a20b2938badc8707f2080d52875ffcffe2a8f71e8e69a366d7a62f811146de",
       "gitBlobSha": "8427748499acffbd78afb8a082001a2ec4ca75a0",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-09-backtest-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -506,8 +506,8 @@
       "sha256": "51c415f78f0098632526c5af6d4ec5eebe34c91e39463c23afff1997a5d39ff4",
       "gitBlobSha": "2d2cc2272da2fabbe5b762b2290453f8340e50a8",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-10-report-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -518,8 +518,8 @@
       "sha256": "51c415f78f0098632526c5af6d4ec5eebe34c91e39463c23afff1997a5d39ff4",
       "gitBlobSha": "2d2cc2272da2fabbe5b762b2290453f8340e50a8",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-10-report-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -530,8 +530,8 @@
       "sha256": "1dca5feeb86d585c93d2fe634542714446273fd14d98a121b0d49cd1277cdfe9",
       "gitBlobSha": "2fb2d45cea08857fa0fdfc9ac3d86ce4ab9a5ac0",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-10-report-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -542,8 +542,8 @@
       "sha256": "1dca5feeb86d585c93d2fe634542714446273fd14d98a121b0d49cd1277cdfe9",
       "gitBlobSha": "2fb2d45cea08857fa0fdfc9ac3d86ce4ab9a5ac0",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-10-report-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -554,8 +554,8 @@
       "sha256": "ee9053b8c4ac7d69fa9091db1359280d467c7052274fccc8a84fa41edb5ef5e3",
       "gitBlobSha": "e922b30828e12a4d709a68dcd25e80523cbb3565",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-11-connections-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -566,8 +566,8 @@
       "sha256": "3d4f4c066c2ed0576eb3c71acaed94812363a9ea0bc5faebf2c560442502ea19",
       "gitBlobSha": "846300c6b472ca7822eabe8c7d39bb70f0cc018c",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-11-connections-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -578,8 +578,8 @@
       "sha256": "d1d61d4fcaf18ab15b36ab4ec2e0bb673816aa4d26eff4dc79479802d7e7ca24",
       "gitBlobSha": "af8d3513e502dfa9de944ece7894b7908012f2e9",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-11-connections-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -590,8 +590,8 @@
       "sha256": "d1d61d4fcaf18ab15b36ab4ec2e0bb673816aa4d26eff4dc79479802d7e7ca24",
       "gitBlobSha": "af8d3513e502dfa9de944ece7894b7908012f2e9",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-11-connections-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -602,8 +602,8 @@
       "sha256": "defa661383a3cec200f720f90b9af2ec362b1f691cc5557093e0e2a926b50c19",
       "gitBlobSha": "b6644cca7f9170c83d1fafacf0c49fec176215d4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-12-diagnostics-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -614,8 +614,8 @@
       "sha256": "defa661383a3cec200f720f90b9af2ec362b1f691cc5557093e0e2a926b50c19",
       "gitBlobSha": "b6644cca7f9170c83d1fafacf0c49fec176215d4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/offline-12-diagnostics-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Exact target and SHA-256 reuse of CI11 OFFLINE_QA approval."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -626,8 +626,8 @@
       "sha256": "67599dd4af637dd97fc3b4b3dcc56031594017c481aeebadf8a5b20c86ed45af",
       "gitBlobSha": "bb68bc3dcc35963ec54c2be4a4661f265e0d7321",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-12-diagnostics-full.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -638,8 +638,8 @@
       "sha256": "67599dd4af637dd97fc3b4b3dcc56031594017c481aeebadf8a5b20c86ed45af",
       "gitBlobSha": "bb68bc3dcc35963ec54c2be4a4661f265e0d7321",
       "path": "apps/web/tests/ui-browser/baselines/pc/offline-12-diagnostics-viewport.png",
-      "reviewer": "frontend_impl",
-      "approval": "Changed CI14 whole offline PNG directly opened and visually inspected."
+      "reviewer": "/root/backend_impl",
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -651,7 +651,7 @@
       "gitBlobSha": "f00fe2099d211c9c36b63822d5fca86367a26ffd",
       "path": "apps/web/tests/ui-browser/baselines/mobile/01-overview-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -663,7 +663,7 @@
       "gitBlobSha": "672be7d4b80fcd79745cc52b8ac77aac002f2aa8",
       "path": "apps/web/tests/ui-browser/baselines/mobile/01-overview-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -675,7 +675,7 @@
       "gitBlobSha": "a17e78a5b99606ba4510de249a98049f43965c2b",
       "path": "apps/web/tests/ui-browser/baselines/pc/01-overview-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -687,7 +687,7 @@
       "gitBlobSha": "6bedbb89020d00ba24e45ad28e643be052e9b813",
       "path": "apps/web/tests/ui-browser/baselines/pc/01-overview-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -699,7 +699,7 @@
       "gitBlobSha": "4b2260eb61ec02daa82ebb905abe1af1de67d669",
       "path": "apps/web/tests/ui-browser/baselines/mobile/02-market-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -711,7 +711,7 @@
       "gitBlobSha": "83b20c886b82e5ef2c920c87264e6c6ffbbe2b0e",
       "path": "apps/web/tests/ui-browser/baselines/mobile/02-market-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -723,7 +723,7 @@
       "gitBlobSha": "83eee63709c4df7e1171b0f359ef530e68c58a63",
       "path": "apps/web/tests/ui-browser/baselines/pc/02-market-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -735,7 +735,7 @@
       "gitBlobSha": "0542a1beb180332af703f6e09d2e1b910da588ea",
       "path": "apps/web/tests/ui-browser/baselines/pc/02-market-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -747,7 +747,7 @@
       "gitBlobSha": "8502d4479043759b687ad12a75ce6a1828c190eb",
       "path": "apps/web/tests/ui-browser/baselines/mobile/03-account-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -759,7 +759,7 @@
       "gitBlobSha": "2a5ee15afd812a792c7441d27800feb058cb0284",
       "path": "apps/web/tests/ui-browser/baselines/mobile/03-account-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -771,7 +771,7 @@
       "gitBlobSha": "89c2fbe5edb65732c4698270f95a1b4a638a3ccc",
       "path": "apps/web/tests/ui-browser/baselines/pc/03-account-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -783,7 +783,7 @@
       "gitBlobSha": "ca87577b2a1c5afde3f62a82186e36a5a0c1cdcb",
       "path": "apps/web/tests/ui-browser/baselines/pc/03-account-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -795,7 +795,7 @@
       "gitBlobSha": "f536ca5f0867c5e01b7cc0317e8a9be9fedbee5f",
       "path": "apps/web/tests/ui-browser/baselines/mobile/04-recommend-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "Direct visual inspection of changed CI14 PNG; read-only RGB comparison verified1 pixel/max channel delta1, no material visual issue."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -807,7 +807,7 @@
       "gitBlobSha": "f9d04596114352db9ce30f1980949eda89c24643",
       "path": "apps/web/tests/ui-browser/baselines/mobile/04-recommend-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -819,7 +819,7 @@
       "gitBlobSha": "1d38dca20b548c42ac6306a67be6163d17d2cc6c",
       "path": "apps/web/tests/ui-browser/baselines/pc/04-recommend-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "Direct visual inspection of changed CI14 PNG; read-only RGB comparison verified1 pixel/max channel delta1, no material visual issue."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -831,7 +831,7 @@
       "gitBlobSha": "2c9054e2926e80da36e0adc9909cc678460da359",
       "path": "apps/web/tests/ui-browser/baselines/pc/04-recommend-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "Direct visual inspection of changed CI14 PNG; read-only RGB comparison verified1 pixel/max channel delta1, no material visual issue."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -843,7 +843,7 @@
       "gitBlobSha": "1734ff1bfd1edf822a2d0e469cc5a3658b94ce80",
       "path": "apps/web/tests/ui-browser/baselines/mobile/05-paper-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -855,7 +855,7 @@
       "gitBlobSha": "107a440e0b1b4887a20b81648cd29de96a106398",
       "path": "apps/web/tests/ui-browser/baselines/mobile/05-paper-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -867,7 +867,7 @@
       "gitBlobSha": "cfb6c45d9658826c42aaa08f6745dc1e25e37679",
       "path": "apps/web/tests/ui-browser/baselines/pc/05-paper-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -879,7 +879,7 @@
       "gitBlobSha": "32ba4293b6ce5aeddea5388153ac8ff8bf981cf6",
       "path": "apps/web/tests/ui-browser/baselines/pc/05-paper-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -891,7 +891,7 @@
       "gitBlobSha": "6cf92f48ad68de155a4ddd7d46749e2c9e023efc",
       "path": "apps/web/tests/ui-browser/baselines/mobile/06-run-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -903,7 +903,7 @@
       "gitBlobSha": "b0281e3262db5daa86f8c0210b2f0f56a5639cef",
       "path": "apps/web/tests/ui-browser/baselines/mobile/06-run-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -915,7 +915,7 @@
       "gitBlobSha": "e50a09d35d40257cdede7ff42300610d7649dd90",
       "path": "apps/web/tests/ui-browser/baselines/pc/06-run-full.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "pc",
@@ -927,7 +927,7 @@
       "gitBlobSha": "7794e5a844116f74e6e0552d89d3a8c7770b35eb",
       "path": "apps/web/tests/ui-browser/baselines/pc/06-run-viewport.png",
       "reviewer": "/root/backend_impl",
-      "approval": "CI11 approval reused after exact target+SHA256 match and current bytes rehashed."
+      "approval": "Exact CI14 visual approval reused after target/SHA256/Git blob SHA/bytes/dimensions match; current bytes independently rehashed."
     },
     {
       "project": "mobile",
@@ -939,7 +939,7 @@
       "gitBlobSha": "18da45028c719af260c62a54a5de2e22fbcb335e",
       "path": "apps/web/tests/ui-browser/baselines/mobile/07-create-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -951,7 +951,7 @@
       "gitBlobSha": "af75e8450cbe25a22f3b2bdfbe3060c182b4d3da",
       "path": "apps/web/tests/ui-browser/baselines/mobile/07-create-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -963,7 +963,7 @@
       "gitBlobSha": "80c80bea3226c123da3538d4414d7ec72dea0134",
       "path": "apps/web/tests/ui-browser/baselines/pc/07-create-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -975,7 +975,7 @@
       "gitBlobSha": "df7310bb88641c2c5100b7493b9c4072066c63a4",
       "path": "apps/web/tests/ui-browser/baselines/pc/07-create-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -987,7 +987,7 @@
       "gitBlobSha": "a41d63d99af0ab45182b6de722ddda833306deb7",
       "path": "apps/web/tests/ui-browser/baselines/mobile/08-history-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -999,7 +999,7 @@
       "gitBlobSha": "64b02e0223c4d22a6e2abcfba0ae29a803cf150b",
       "path": "apps/web/tests/ui-browser/baselines/mobile/08-history-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1011,7 +1011,7 @@
       "gitBlobSha": "09d5d479e03777cd37b437b6f1a652251077c253",
       "path": "apps/web/tests/ui-browser/baselines/pc/08-history-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1023,7 +1023,7 @@
       "gitBlobSha": "c457509777abd25c21e09bdc0e7875baf8239f3d",
       "path": "apps/web/tests/ui-browser/baselines/pc/08-history-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1035,7 +1035,7 @@
       "gitBlobSha": "a00253fb9bcd9584a3ca53dd9a07a00c1d35435a",
       "path": "apps/web/tests/ui-browser/baselines/mobile/09-backtest-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1047,7 +1047,7 @@
       "gitBlobSha": "e85e14cb18980a89450c6e800c62a778289aef94",
       "path": "apps/web/tests/ui-browser/baselines/mobile/09-backtest-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1059,7 +1059,7 @@
       "gitBlobSha": "ed2c711fcc17e3e4d16f58fce1520668735eb53d",
       "path": "apps/web/tests/ui-browser/baselines/pc/09-backtest-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1071,7 +1071,7 @@
       "gitBlobSha": "d03995e15c0cf07d1636b5d5d9d245218e8f1fa8",
       "path": "apps/web/tests/ui-browser/baselines/pc/09-backtest-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1083,7 +1083,7 @@
       "gitBlobSha": "08500ee69249c3a5bc85e2ced36fc5a55a95555d",
       "path": "apps/web/tests/ui-browser/baselines/mobile/10-report-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1095,7 +1095,7 @@
       "gitBlobSha": "f33ddf01de093294ebe7b356e84614ac6b7b4a13",
       "path": "apps/web/tests/ui-browser/baselines/mobile/10-report-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1107,7 +1107,7 @@
       "gitBlobSha": "fc75b679fdafb7a0216f6d2247f6e90ac81fdb32",
       "path": "apps/web/tests/ui-browser/baselines/pc/10-report-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1119,7 +1119,7 @@
       "gitBlobSha": "ba67cfb78dc9f4830f157da997c56b97da990d59",
       "path": "apps/web/tests/ui-browser/baselines/pc/10-report-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1131,7 +1131,7 @@
       "gitBlobSha": "dd430145dcd241f8633d5f3ebc2ee1498b144a38",
       "path": "apps/web/tests/ui-browser/baselines/mobile/11-connections-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1143,7 +1143,7 @@
       "gitBlobSha": "b20a8467687c85cf811ea7a08d4e010192382870",
       "path": "apps/web/tests/ui-browser/baselines/mobile/11-connections-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1155,7 +1155,7 @@
       "gitBlobSha": "2db4224690b5017cdff8007303e9e01bfb9f71fb",
       "path": "apps/web/tests/ui-browser/baselines/pc/11-connections-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1167,7 +1167,7 @@
       "gitBlobSha": "5d4e73083bd8828f2386acc90836cc88d2a2699a",
       "path": "apps/web/tests/ui-browser/baselines/pc/11-connections-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1179,7 +1179,7 @@
       "gitBlobSha": "6e4530f2d804b321a823882ace94f59fc9c4a20d",
       "path": "apps/web/tests/ui-browser/baselines/mobile/12-diagnostics-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1191,7 +1191,7 @@
       "gitBlobSha": "c9c7add177c0c983bdb467dc44a7b6a0907b50d6",
       "path": "apps/web/tests/ui-browser/baselines/mobile/12-diagnostics-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1203,7 +1203,7 @@
       "gitBlobSha": "ac07f7e1d0d6fba5b787effeb223fcb70d655af2",
       "path": "apps/web/tests/ui-browser/baselines/pc/12-diagnostics-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "pc",
@@ -1215,7 +1215,7 @@
       "gitBlobSha": "ac07f7e1d0d6fba5b787effeb223fcb70d655af2",
       "path": "apps/web/tests/ui-browser/baselines/pc/12-diagnostics-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1227,7 +1227,7 @@
       "gitBlobSha": "efdb2497f772ea5132e4f89207df1b2a9041fcac",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-01-overview-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1239,31 +1239,31 @@
       "gitBlobSha": "5e2853336b99c445d2ed267807ee184264fbfef5",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-01-overview-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
       "category": "narrow",
       "width": 320,
       "height": 1501,
-      "bytes": 149026,
-      "sha256": "0715b62c985ac7905d38bd085e2793c00d31895fbb66061b77fb252c9f8110cb",
-      "gitBlobSha": "22903a87216402411890353aa4cf96e60b0311e4",
+      "bytes": 149005,
+      "sha256": "75fbe47fa664925eca22dbfe8a2c4f1a816470075f32244c3cf9384cb5a8fa99",
+      "gitBlobSha": "dda148049d64787825d5ef6e5f80fc4056c4c2b3",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-02-market-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Changed CI16 full/viewport market PNG directly opened and reviewed as a whole; readable candles/price labels, Korean labels, money units and navigation; no material visual defect."
     },
     {
       "project": "mobile",
       "category": "narrow",
       "width": 320,
       "height": 844,
-      "bytes": 89747,
-      "sha256": "1243dc43bd7a0a124bf99c1648f9ea1b78516464a07b344b1c3c86cc276552b3",
-      "gitBlobSha": "0a192462b0f51555982b6befbab91bf35074445a",
+      "bytes": 89726,
+      "sha256": "88347ab36b991f2c1cc1768f26c7dbd845de6783a96ce9afe9eb28fa0c47b078",
+      "gitBlobSha": "52b1a8c2ad1a64f1091603a59faa5998685c5946",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-02-market-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Changed CI16 full/viewport market PNG directly opened and reviewed as a whole; readable candles/price labels, Korean labels, money units and navigation; no material visual defect."
     },
     {
       "project": "mobile",
@@ -1275,7 +1275,7 @@
       "gitBlobSha": "0ffdf50f370e47c892045c57c44ab2563fb3dba1",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-03-account-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1287,7 +1287,7 @@
       "gitBlobSha": "58054e0f63cdda878df02ff3e2feb51798dd1027",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-03-account-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1299,7 +1299,7 @@
       "gitBlobSha": "98941e65fa1a7abdcad78fd97512eb6ecb6131fb",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-04-recommend-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1311,7 +1311,7 @@
       "gitBlobSha": "d42dfc4eb4861d684d82e953b1e9a2326f66dbc9",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-04-recommend-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1323,7 +1323,7 @@
       "gitBlobSha": "143a3d59dd9bc07ee77bd98416b7611483acf334",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-05-paper-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1335,7 +1335,7 @@
       "gitBlobSha": "f4ffc39bb5cbd6e6ede325cfa777d00ed63288bb",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-05-paper-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1347,7 +1347,7 @@
       "gitBlobSha": "5f804a348de7f2720ccdbc94299108ca01000802",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-06-run-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1359,7 +1359,7 @@
       "gitBlobSha": "6609d5c09ae016ab15e5506167108c36027ff003",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-06-run-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1371,7 +1371,7 @@
       "gitBlobSha": "07965a74bb5c60d6a3e1ee96e6d45c9cdc71ce22",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-07-create-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1383,7 +1383,7 @@
       "gitBlobSha": "8c5a50725cb8b947fdfdae1e96007dd8f164b1c6",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-07-create-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1395,7 +1395,7 @@
       "gitBlobSha": "216d0a7100e4e3ca5fdab70520d77402072181b5",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-08-history-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1407,7 +1407,7 @@
       "gitBlobSha": "9a06d1b4569d29044ec36c6370d53cefe9975ff2",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-08-history-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1419,7 +1419,7 @@
       "gitBlobSha": "88082803dc667a26be296419c861a19efb24250f",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-09-backtest-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1431,7 +1431,7 @@
       "gitBlobSha": "1e6cd6270296523d8058b41b531ef9e869553fca",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-09-backtest-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1443,7 +1443,7 @@
       "gitBlobSha": "cca00aa6e03f2e3a25c81c572619bf500e946ce3",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-10-report-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1455,7 +1455,7 @@
       "gitBlobSha": "4dba0db4aa48a992ed48a7f8bbafab7444865b2e",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-10-report-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1467,7 +1467,7 @@
       "gitBlobSha": "9aaf4f9a68776886fb890358f4e6385bc08e4972",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-11-connections-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1479,7 +1479,7 @@
       "gitBlobSha": "7b8d250bc9607e88a97ee97084b092583de5c73b",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-11-connections-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1491,7 +1491,7 @@
       "gitBlobSha": "75be7a842f2666a2e14485b0e8901f0a2a9bd576",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-12-diagnostics-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1503,7 +1503,7 @@
       "gitBlobSha": "fd9364c90ddd52ee3dc04f8bdfa3a34052ac5b10",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-320-12-diagnostics-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1515,7 +1515,7 @@
       "gitBlobSha": "fcebb2b92aede1471e9db766a5113f86bd4fb92e",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-01-overview-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1527,7 +1527,7 @@
       "gitBlobSha": "34e866c6c93fb10de9336edd374e093e4bc06523",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-01-overview-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1539,7 +1539,7 @@
       "gitBlobSha": "0c4ebcc71b538e78e986cb1f3b5106b777fd9c4f",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-02-market-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1551,7 +1551,7 @@
       "gitBlobSha": "87979b545fd4d3ed59e3e8235d6ad7a985023e09",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-02-market-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1563,7 +1563,7 @@
       "gitBlobSha": "a669d94f13f5610c9d103f416defeb687f077e0f",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-03-account-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1575,7 +1575,7 @@
       "gitBlobSha": "50db9dedc8b3cf2411e934f0a8e9f8c64f6e6ba5",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-03-account-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1587,7 +1587,7 @@
       "gitBlobSha": "3d9751e9f315be378f475c5d5562c78f69f622f6",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-04-recommend-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1599,7 +1599,7 @@
       "gitBlobSha": "b58ad40aa97c5bb07a7946fb550865208cc0ac3b",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-04-recommend-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1611,7 +1611,7 @@
       "gitBlobSha": "14c9ccfc7314681f755fa804e9b5843a14739c81",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-05-paper-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1623,7 +1623,7 @@
       "gitBlobSha": "0d9fd9f8ffa83affb9fc72cc2723a1bce1de2531",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-05-paper-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1635,7 +1635,7 @@
       "gitBlobSha": "88b87743f56feb2cfebca007362ed788d5f6bde2",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-06-run-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1647,7 +1647,7 @@
       "gitBlobSha": "0415ec960c094a7db60f74a4c3bddb021882db65",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-06-run-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1659,7 +1659,7 @@
       "gitBlobSha": "16f64877200efbb6e18a3b2e2bad254a66ef68c4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-07-create-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1671,7 +1671,7 @@
       "gitBlobSha": "86abf2b52f2b680f1828c8289a1946576e6638c7",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-07-create-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1683,7 +1683,7 @@
       "gitBlobSha": "1b5147b78e7c998e9dd300582e1535c66280dfe1",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-08-history-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1695,7 +1695,7 @@
       "gitBlobSha": "50bb2827ce59c6571c9ac5171f82cd963cf9a481",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-08-history-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1707,7 +1707,7 @@
       "gitBlobSha": "e434a780463caf995fb243ab77800510cf5f29b4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-09-backtest-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1719,7 +1719,7 @@
       "gitBlobSha": "4f6e94143c1759b37c96d2a5d98dcf46c9bfaad4",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-09-backtest-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1731,7 +1731,7 @@
       "gitBlobSha": "37659c2fd415cd8581925c0eb7310636320fac8a",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-10-report-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1743,7 +1743,7 @@
       "gitBlobSha": "8be8f4e731ca7d818f6c5c5c66a94b47dd90ac35",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-10-report-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1755,7 +1755,7 @@
       "gitBlobSha": "9c7326f7dfa61f1f729886f41729858fb00a4dfe",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-11-connections-full.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1767,7 +1767,7 @@
       "gitBlobSha": "5a886f0fc4fc6fd009ced30d4ce6d10ba9644d20",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-11-connections-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "CI11 approved PNG reused after exact target and SHA-256 match."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1779,7 +1779,7 @@
       "gitBlobSha": "88b984aa3d03f7886703eae60339894be42056ce",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-12-diagnostics-full.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     },
     {
       "project": "mobile",
@@ -1791,10 +1791,11 @@
       "gitBlobSha": "ac8068e042ebd79ef77492fa31993a699e931220",
       "path": "apps/web/tests/ui-browser/baselines/mobile/narrow-360-12-diagnostics-viewport.png",
       "reviewer": "frontend_impl",
-      "approval": "Changed CI14 PNG directly opened and visually reviewed as a whole, including minor raster changes."
+      "approval": "Exact target and SHA-256 reuse of approved CI14 PNG."
     }
   ],
   "rendererFlags": [
-    "--disable-skia-runtime-opts"
+    "--disable-skia-runtime-opts",
+    "--disable-accelerated-2d-canvas"
   ]
 }
