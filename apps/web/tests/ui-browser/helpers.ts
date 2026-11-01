@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { FIXED_TIME, demoUrl } from "./routes";
 
@@ -69,16 +70,28 @@ export async function capturePair(page: Page, testInfo: TestInfo, stem: string) 
     await writeFile(candidatePath, stable.image);
     await testInfo.attach(name, { path: candidatePath, contentType: "image/png" });
     const captureOnly = process.env.UI_CAPTURE_BASELINE === "1";
+    const baselinePath = testInfo.snapshotPath(name);
+    const candidateSha256 = createHash("sha256").update(stable.image).digest("hex");
+    let baselineSha256: string | undefined;
+    if (!captureOnly) {
+      expect(testInfo.config.updateSnapshots, "Baseline updates must remain disabled.").toBe("none");
+      expect(testInfo.project.ignoreSnapshots, "Snapshot comparisons must not be skipped.").toBe(false);
+      if (!existsSync(baselinePath)) throw new Error(`Reviewed screenshot baseline is missing: ${baselinePath}. Capture candidates with UI_CAPTURE_BASELINE=1; review and commit them explicitly.`);
+      baselineSha256 = createHash("sha256").update(await readFile(baselinePath)).digest("hex");
+    }
     await testInfo.attach(`${name}-manifest`, { body: Buffer.from(JSON.stringify({
       project: testInfo.project.name, name, candidate: candidatePath,
-      baseline: testInfo.snapshotPath(name), viewport: page.viewportSize(), fullPage,
+      baseline: baselinePath, viewport: page.viewportSize(), fullPage,
       mode: captureOnly ? "capture-only-needs-review" : "strict-comparison",
+      comparisonStrategy: captureOnly ? "review-candidate-only" : "stable-png-buffer-pixels-and-sha256",
+      candidateSha256, baselineSha256: baselineSha256 ?? null,
       candidateStability: { consecutiveExactImages: 2, attempts: stable.attempts, maxAttempts: 8 },
     }, null, 2)), contentType: "application/json" });
     if (!captureOnly) {
-      expect(testInfo.config.updateSnapshots, "Baseline updates must remain disabled.").toBe("none");
-      if (!existsSync(testInfo.snapshotPath(name))) throw new Error(`Reviewed screenshot baseline is missing: ${testInfo.snapshotPath(name)}. Capture candidates with UI_CAPTURE_BASELINE=1; review and commit them explicitly.`);
-      await expect(page).toHaveScreenshot(name, { ...options, maxDiffPixels: 0, threshold: 0 });
+      // Compare the exact saved stable PNG; extra page captures would change the
+      // viewport/full-page paint sequence between capture and strict modes.
+      expect(stable.image).toMatchSnapshot(name, { maxDiffPixels: 0, threshold: 0 });
+      expect(candidateSha256, "The saved PNG bytes must exactly match the reviewed baseline.").toBe(baselineSha256);
     }
   }
 }
