@@ -8,8 +8,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-import httpx
-
 from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
 from multi_exchange_trader.market_data.models import MarketType
 from multi_exchange_trader.market_data.service import MarketDataService
@@ -24,7 +22,6 @@ from .practice import (
     UNCERTAIN_WARNING,
     PracticeCheck,
     PracticeCloseFailed,
-    PracticeUnavailable,
     PracticeUncertain,
 )
 from .rules import (
@@ -359,7 +356,10 @@ class RecommendationService:
             raise PracticeCloseFailed(CLOSE_WARNING)
         if payload.get("demo_round_trip") is True:
             return OPEN_AND_CLOSE
-        claimed, current = self.book.claim_practice(card_id)
+        try:
+            claimed, current = self.book.claim_practice(card_id, now=self.now())
+        except ValueError:
+            raise Refusal("추천 상태나 유효시간이 바뀌었습니다. 연습 요청은 보내지 않았습니다.") from None
         if not claimed:
             state = demo_state(current["payload"])
             if state == "DEMO_SUBMISSION_ACKNOWLEDGED":
@@ -375,9 +375,11 @@ class RecommendationService:
         except asyncio.CancelledError:
             self.book.remember_flag(card_id, "demo_uncertain")
             raise
-        except (PracticeUnavailable, httpx.HTTPError, TimeoutError, OSError, ValueError, TypeError, RuntimeError, ArithmeticError):
+        except Exception as exc:
+            # After the durable external-attempt claim, every unclassified failure
+            # is uncertain. The domain does not depend on a transport library.
             self.book.remember_flag(card_id, "demo_uncertain")
-            raise PracticeUncertain(UNCERTAIN_WARNING) from None
+            raise PracticeUncertain(UNCERTAIN_WARNING) from exc
         if not note:
             self.book.remember_flag(card_id, "demo_uncertain")
             raise PracticeUncertain(UNCERTAIN_WARNING)

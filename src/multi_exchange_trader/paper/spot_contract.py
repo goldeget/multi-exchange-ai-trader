@@ -7,7 +7,9 @@ from .contract import instrument, price, quantity
 
 VERSION = "SPOT-PAPER-v2"
 TICK_SOURCE = "LOCAL_SPOT_SCENARIO_V2"
-QUALIFIED = False  # Flip only after the full Linux native qualification suite passes.
+# Native market/limit/inventory/restart/review tests passed in Linux CI49, acb22f4.
+# Runtime availability remains an independent gate (see capabilities.py).
+QUALIFIED = True
 
 
 def validate_spot_event(event: dict[str, Any]) -> None:

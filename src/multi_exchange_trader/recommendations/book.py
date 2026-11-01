@@ -184,7 +184,7 @@ class RecommendationBook:
             raise ValueError("추천을 찾지 못했습니다")
         return stored
 
-    def claim_practice(self, card_id: str) -> tuple[bool, dict[str, Any]]:
+    def claim_practice(self, card_id: str, *, now: datetime | None = None) -> tuple[bool, dict[str, Any]]:
         """Commit a no-repeat marker before any optional external DEMO attempt."""
         from .execution import demo_state
 
@@ -198,6 +198,10 @@ class RecommendationBook:
                 "demo_attempt_started", "demo_round_trip", "demo_close_failed", "demo_uncertain"
             )):
                 return False, current
+            instant = now if now is not None else datetime.now(UTC)
+            if (current["status"] != "pending"
+                    or instant >= datetime.fromisoformat(str(payload["expires_at"]))):
+                raise ValueError("practice card status or expiry changed before claim")
             for row in db.execute("SELECT payload FROM cards WHERE id<>?", (card_id,)):
                 if demo_state(_object(row[0])) in {"DEMO_UNCERTAIN", "DEMO_CLOSE_FAILED"}:
                     return False, current

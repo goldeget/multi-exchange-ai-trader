@@ -91,6 +91,11 @@ class ControlContracts(unittest.TestCase):
         self.assertTrue(result["manual_paper"]["synthetic_perpetual"]["enter"])
         self.assertFalse(result["manual_paper"]["available"])
         self.assertEqual(result["manual_paper"]["unavailable_reason"], "native_sandbox_unavailable")
+        qualified = capabilities(native_runtime_available=False, research_v2=True, spot_qualified=True)
+        self.assertTrue(qualified["automation"]["editable_leverage"])
+        self.assertTrue(qualified["evaluation"]["editable_config"])
+        self.assertFalse(qualified["automation"]["available"])
+        self.assertFalse(qualified["evaluation"]["available"])
 
     def test_budget_reservation_survives_restart(self):
         from multi_exchange_trader.ai.budget import BudgetBook

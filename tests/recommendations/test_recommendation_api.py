@@ -346,7 +346,7 @@ async def test_practice_claim_is_atomic_across_independent_book_connections(tmp_
         path = tmp_path / "reco.sqlite3"
         books = [RecommendationBook(path) for _ in range(4)]
         with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda book: book.claim_practice(card["번호"])[0], books))
+            results = list(pool.map(lambda book: book.claim_practice(card["번호"], now=NOW)[0], books))
         assert sum(results) == 1
         assert app.state.recommendation_book.get(card["번호"])["payload"]["demo_attempt_started"] is True
 
@@ -435,14 +435,14 @@ async def test_uncertain_demo_cannot_be_retried_through_a_different_card(tmp_pat
     async with session(tmp_path, monkeypatch) as (client, script, app, _clock):
         app.state.bybit_practice = RecordingPractice()
         first = await preview(client)
-        app.state.recommendation_book.claim_practice(first["번호"])
+        app.state.recommendation_book.claim_practice(first["번호"], now=NOW)
         app.state.recommendation_book.remember_flag(first["번호"], "demo_uncertain")
         script.rows = FALLING
         second = await preview(client)
         assert second["번호"] != first["번호"]
         assert second["승인가능"] is False
         app.state.recommendation_book = RecommendationBook(tmp_path / "reco.sqlite3")
-        assert app.state.recommendation_book.claim_practice(second["번호"])[0] is False
+        assert app.state.recommendation_book.claim_practice(second["번호"], now=NOW)[0] is False
         blocked = await client.post(f"/api/v1/recommendations/{second['번호']}/approve", json={})
         assert blocked.status_code == 409
         assert app.state.bybit_practice.calls == 0
@@ -463,5 +463,39 @@ async def test_different_demo_cards_cannot_claim_concurrently_in_two_books(tmp_p
         second = await preview(client)
         inputs = [(RecommendationBook(tmp_path / "reco.sqlite3"), card["번호"]) for card in (first, second)]
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda pair: pair[0].claim_practice(pair[1])[0], inputs))
+            results = list(pool.map(lambda pair: pair[0].claim_practice(pair[1], now=NOW)[0], inputs))
         assert sum(results) == 1
+
+
+async def test_demo_claim_rechecks_persisted_status_before_external_attempt(tmp_path, monkeypatch):
+    from multi_exchange_trader.recommendations.service import RecommendationService, Refusal
+
+    async with session(tmp_path, monkeypatch) as (client, _script, app, clock):
+        card = await preview(client)
+        book = app.state.recommendation_book
+        stale_payload = book.get(card["번호"])["payload"]
+        book.mark(card["번호"], "rejected")
+        practice = RecordingPractice()
+        service = RecommendationService(book, app.state.paper_store, app.state.market_data_service,
+            app.state.recommendation_lock, clock=clock, practice=practice)
+        with pytest.raises(Refusal):
+            await service._practice_note(card["번호"], stale_payload)
+        assert practice.calls == 0
+        assert book.practice_summary()["uncertain_count"] == 0
+
+
+async def test_demo_claim_rechecks_expiry_after_an_await(tmp_path, monkeypatch):
+    from multi_exchange_trader.recommendations.service import RecommendationService, Refusal
+
+    async with session(tmp_path, monkeypatch) as (client, _script, app, clock):
+        card = await preview(client)
+        book = app.state.recommendation_book
+        stale_payload = book.get(card["번호"])["payload"]
+        clock.at += timedelta(minutes=16)
+        practice = RecordingPractice()
+        service = RecommendationService(book, app.state.paper_store, app.state.market_data_service,
+            app.state.recommendation_lock, clock=clock, practice=practice)
+        with pytest.raises(Refusal):
+            await service._practice_note(card["번호"], stale_payload)
+        assert practice.calls == 0
+        assert book.practice_summary()["uncertain_count"] == 0

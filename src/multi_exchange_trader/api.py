@@ -50,6 +50,9 @@ Service = Annotated[MarketDataService, Depends(get_market_data_service)]
 def create_app(service: MarketDataService | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        # V2 native leverage/pause/replay and evaluation capital/splits passed CI49.
+        # This declares the contract; capabilities separately reports native availability.
+        application.state.research_v2_supported = True
         application.state.paper_store = PaperStore(
             os.environ.get("PAPER_DB_PATH", "work/phase3-data/paper.sqlite3")
         )
