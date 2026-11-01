@@ -66,7 +66,7 @@ describe("추천", () => {
     }
     expect(screen.getByText("2배")).toBeVisible();
     expect(screen.getByText(/실계좌로 주문을 보내지 않습니다/)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "연습 계좌로 승인" }));
+    fireEvent.click(screen.getByRole("button", { name: "연습 계좌에 넣고 바로 닫기" }));
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/approve"))).toBe(true);
     });
@@ -87,7 +87,7 @@ describe("추천", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     render(<Recommend />);
-    const button = await screen.findByRole("button", { name: "연습 계좌로 승인" });
+    const button = await screen.findByRole("button", { name: "연습 계좌에 넣고 바로 닫기" });
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/approve"))).toBe(false);

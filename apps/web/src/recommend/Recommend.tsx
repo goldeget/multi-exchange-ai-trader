@@ -182,7 +182,7 @@ export default function Recommend() {
         </div>
       </header>
       <p className="recommend-warning">
-        승인은 바이비트 연습 계좌로만 갑니다. 실계좌로 주문을 보내지 않습니다. 실거래는 꺼져 있습니다.
+        승인은 바이비트 연습 계좌의 가장 작은 비트코인 선물 주문을 넣었다가 바로 닫습니다. 실계좌로 주문을 보내지 않습니다. 실거래는 꺼져 있습니다.
       </p>
       <section className="recommend-panel">
         <div className="recommend-choices">
@@ -236,7 +236,7 @@ export default function Recommend() {
                 disabled={!card.승인가능 || busy}
                 onClick={() => void decide("approve")}
               >
-                {card.상태 === "처리 중" ? "연습 계좌로 다시 시도" : "연습 계좌로 승인"}
+                {card.상태 === "처리 중" ? "연습 계좌로 다시 시도" : "연습 계좌에 넣고 바로 닫기"}
               </button>
               <button type="button" disabled={card.상태 !== "대기" || busy} onClick={() => void decide("reject")}>
                 거절

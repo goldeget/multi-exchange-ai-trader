@@ -1,4 +1,4 @@
-"""Public market API plus a read-only Bybit account view. No order sender."""
+"""Public market API, a read-only live Bybit view, and one practice-account order path."""
 
 import asyncio
 import os
@@ -10,6 +10,7 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from .account.api import install as install_account
+from .account.bybit_demo_order import BybitDemoOrderClient
 from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
 from .market_data.adapters.base import MarketDataUnavailable
@@ -23,7 +24,7 @@ from .paper.api import install as install_paper
 from .paper.store import PaperStore
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
-from .recommendations.practice import BybitPracticeGate
+from .recommendations.practice import BybitPracticeGate, PracticeUnavailable
 from .research.api import install as install_research
 
 Exchange = Literal["binance", "bybit", "okx"]
@@ -50,6 +51,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.recommendation_lock = asyncio.Lock()
         account: BybitReadOnlyClient | None = None
         practice: BybitReadOnlyClient | None = None
+        practice_orders: BybitDemoOrderClient | None = None
         application.state.bybit_account = None
         application.state.bybit_practice = None
         application.state.bybit_account_problem = "missing_credentials"
@@ -64,11 +66,15 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
             application.state.bybit_account_problem = None
         try:
             practice = BybitReadOnlyClient.for_demo()
-            application.state.bybit_practice = BybitPracticeGate(practice)
-        except (MissingBybitCredentials, ValueError):
+            practice_orders = BybitDemoOrderClient.from_environment()
+            application.state.bybit_practice = BybitPracticeGate(practice, practice_orders)
+        except (MissingBybitCredentials, ValueError, PracticeUnavailable):
             if practice is not None:
                 await practice.aclose()
+            if practice_orders is not None:
+                await practice_orders.aclose()
             practice = None
+            practice_orders = None
             application.state.bybit_practice = None
         try:
             if service is not None:
@@ -90,6 +96,8 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
                 await account.aclose()
             if practice is not None:
                 await practice.aclose()
+            if practice_orders is not None:
+                await practice_orders.aclose()
 
     application = FastAPI(
         title="Public market data",

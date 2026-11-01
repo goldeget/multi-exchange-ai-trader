@@ -1,15 +1,25 @@
-"""Confirm the Bybit practice account with a read. This does not place an order."""
+"""Read the Bybit practice account, then place one smallest order and close it."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
+from multi_exchange_trader.account.bybit_demo_order import (
+    BybitDemoOrderClient,
+    DemoCloseFailed,
+    DemoOrderRefused,
+)
 from multi_exchange_trader.account.bybit_readonly import (
     BybitBlocked,
     BybitReadError,
     BybitReadOnlyClient,
 )
 from multi_exchange_trader.account.config import allowed_host
+
+OPEN_AND_CLOSE = "연습 계좌에 가장 작은 비트코인 선물 주문을 넣었고, 바로 줄여서 닫았습니다."
+CLOSE_WARNING = (
+    "연습 주문을 넣었지만 바로 닫지 못했습니다. 다시 넣지 않았습니다. 실계좌 주문은 없습니다."
+)
 
 
 class PracticeUnavailable(Exception):
@@ -18,19 +28,37 @@ class PracticeUnavailable(Exception):
         self.message = message
 
 
+class PracticeCloseFailed(PracticeUnavailable):
+    """One practice order is open because the single close did not succeed."""
+
+
 class PracticeCheck(Protocol):
-    async def confirm(self) -> str: ...
+    async def round_trip(self) -> str: ...
 
 
 class BybitPracticeGate:
-    """Read the demo wallet. The order helper stays unused here."""
+    """Read the demo wallet, then open and close the smallest demo order once."""
 
-    def __init__(self, reader: BybitReadOnlyClient) -> None:
-        if reader.environment != "demo" or reader.base_url != allowed_host("demo"):
+    def __init__(self, reader: BybitReadOnlyClient, orders: BybitDemoOrderClient) -> None:
+        demo = allowed_host("demo")
+        if reader.environment != "demo" or reader.base_url != demo or orders.base_url != demo:
             raise PracticeUnavailable("연습 계좌 주소가 아니라서 멈췄습니다. 실계좌 주문은 없습니다.")
         self.reader = reader
+        self.orders = orders
 
-    async def confirm(self) -> str:
+    async def round_trip(self) -> str:
+        await self._wallet()
+        try:
+            await self.orders.round_trip()
+        except DemoCloseFailed:
+            raise PracticeCloseFailed(CLOSE_WARNING) from None
+        except DemoOrderRefused:
+            raise PracticeUnavailable(
+                "연습 주문을 넣지 못했습니다. 실계좌 주문은 없습니다."
+            ) from None
+        return OPEN_AND_CLOSE
+
+    async def _wallet(self) -> None:
         try:
             _time_result, server_ms = await self.reader.read("/v5/market/time", [], signed=False)
             if server_ms is None:
@@ -50,4 +78,3 @@ class BybitPracticeGate:
             raise PracticeUnavailable(
                 "연습 계좌 잔고를 확인하지 못했습니다. 실계좌 주문은 없습니다. 연습 주문도 넣지 않았습니다."
             )
-        return "연습 계좌 잔고를 확인했습니다. 연습 주문은 자동으로 넣지 않았습니다."
