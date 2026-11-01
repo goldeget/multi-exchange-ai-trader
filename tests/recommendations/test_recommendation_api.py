@@ -12,6 +12,7 @@ import pytest
 from multi_exchange_trader.api import create_app
 from multi_exchange_trader.market_data.models import Candle, MarketType
 from multi_exchange_trader.market_data.service import MarketDataService
+from multi_exchange_trader.recommendations.practice import PracticeCloseFailed
 from multi_exchange_trader.recommendations.rules import INTERVAL_DELTA
 
 NOW = datetime(2026, 11, 1, 12, tzinfo=UTC)
@@ -222,25 +223,55 @@ async def test_remote_host_cannot_preview(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 class RecordingPractice:
-    def __init__(self) -> None:
-        self.orders = 0
+    def __init__(self, *, fail_close: bool = False) -> None:
+        self.calls = 0
+        self.fail_close = fail_close
 
-    async def confirm(self) -> str:
-        return "연습 계좌 잔고를 확인했습니다. 연습 주문은 자동으로 넣지 않았습니다."
+    async def round_trip(self) -> str:
+        self.calls += 1
+        if self.fail_close:
+            raise PracticeCloseFailed(
+                "연습 주문을 넣었지만 바로 닫지 못했습니다. 다시 넣지 않았습니다. 실계좌 주문은 없습니다."
+            )
+        return "연습 계좌에 가장 작은 비트코인 선물 주문을 넣었고, 바로 줄여서 닫았습니다."
 
 
 @pytest.mark.asyncio
-async def test_bybit_approval_checks_practice_account_without_an_order(
+async def test_bybit_approval_places_one_practice_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with session(tmp_path, monkeypatch) as (client, _script, app, _clock):
-        app.state.bybit_practice = RecordingPractice()
+        practice = RecordingPractice()
+        app.state.bybit_practice = practice
         card = await preview(client)
         approved = await client.post(f"/api/v1/recommendations/{card['번호']}/approve", json={})
         body = approved.json()
-        assert approved.status_code == 200
+        assert approved.status_code == 200, approved.text
         assert body["실계좌주문"] is False
-        assert "연습 계좌" in body["메시지"]
+        assert "바로 줄여서 닫았습니다" in body["메시지"]
         assert "실계좌 주문은 없습니다" in body["메시지"]
-        assert "자동으로 넣지 않았습니다" in body["메시지"]
-        assert app.state.bybit_practice.orders == 0
+        assert practice.calls == 1
+        repeat = await client.post(f"/api/v1/recommendations/{card['번호']}/approve", json={})
+        assert repeat.status_code == 200
+        assert practice.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_practice_close_failure_is_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session(tmp_path, monkeypatch) as (client, _script, app, _clock):
+        practice = RecordingPractice(fail_close=True)
+        app.state.bybit_practice = practice
+        card = await preview(client)
+        failed = await client.post(f"/api/v1/recommendations/{card['번호']}/approve", json={})
+        body = failed.json()
+        assert failed.status_code == 409
+        assert "바로 닫지 못했습니다" in body["메시지"]
+        assert "다시 넣지 않았습니다" in body["메시지"]
+        assert body["가상반영"] is False
+        assert body["카드"]["승인가능"] is False
+        assert app.state.paper_store.scenarios() == []
+        again = await client.post(f"/api/v1/recommendations/{card['번호']}/approve", json={})
+        assert again.status_code == 409
+        assert practice.calls == 1

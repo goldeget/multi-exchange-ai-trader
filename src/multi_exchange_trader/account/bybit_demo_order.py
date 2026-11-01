@@ -1,8 +1,8 @@
-"""Smallest Bybit demo order, then a reduce-only close.
+"""Smallest Bybit demo order, then one reduce-only close.
 
-This module is not started by the recommendation screen. Callers that want a
-proof must invoke ``round_trip`` themselves. It never calls a leverage
-endpoint and it refuses every host except the demo trading API.
+Recommendation approval is the only caller. The close is attempted once.
+This module never calls a leverage endpoint and refuses every host except
+the demo trading API.
 """
 
 from __future__ import annotations
@@ -27,8 +27,19 @@ _RECV_WINDOW = "10000"
 
 
 class DemoOrderRefused(RuntimeError):
+    def __init__(self, code: int | None = None) -> None:
+        super().__init__("Bybit demo order was refused")
+        self.code = code
+
     def __str__(self) -> str:
         return "Bybit demo order was refused"
+
+
+class DemoCloseFailed(DemoOrderRefused):
+    """The open was accepted and the single reduce-only close was not."""
+
+    def __str__(self) -> str:
+        return "Bybit demo close was refused"
 
 
 class BybitDemoOrderClient:
@@ -99,13 +110,18 @@ class BybitDemoOrderClient:
             parsed = cast(object, json.loads(response.content))
         except json.JSONDecodeError as exc:
             raise DemoOrderRefused() from exc
-        if not isinstance(parsed, dict) or parsed.get("retCode") != 0:
-            raise DemoOrderRefused()
+        ret = parsed.get("retCode") if isinstance(parsed, dict) else None
+        if not isinstance(parsed, dict) or ret != 0:
+            code = ret if isinstance(ret, int) and not isinstance(ret, bool) else None
+            raise DemoOrderRefused(code)
 
     async def round_trip(self) -> None:
-        """Open the smallest demo order and close it reduce-only. Not called by the app."""
+        """Open the smallest demo order, then close it reduce-only once."""
         await self.submit(self.open_body())
-        await self.submit(self.close_body())
+        try:
+            await self.submit(self.close_body())
+        except DemoOrderRefused as exc:
+            raise DemoCloseFailed(exc.code) from exc
 
     async def _sync_time(self) -> None:
         if self._server_ms is not None:
@@ -141,7 +157,7 @@ def _order(side: str, *, reduce_only: bool) -> dict[str, object]:
         "orderType": "Market",
         "qty": "0.001",
         "reduceOnly": reduce_only,
-        "positionIdx": "0",
+        "positionIdx": 0,
     }
 
 
@@ -158,7 +174,7 @@ def _checked_body(body: Mapping[str, object]) -> dict[str, object]:
         or body.get("symbol") != "BTCUSDT"
         or body.get("orderType") != "Market"
         or body.get("qty") != "0.001"
-        or body.get("positionIdx") != "0"
+        or body.get("positionIdx") != 0
     ):
         raise DemoOrderRefused()
     return _order(str(side), reduce_only=bool(reduce_only))

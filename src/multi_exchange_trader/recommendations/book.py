@@ -152,3 +152,23 @@ class RecommendationBook:
         if current is None:
             raise ValueError("추천을 찾지 못했습니다")
         return current
+
+    def remember_flag(self, card_id: str, name: str) -> dict[str, Any]:
+        if name not in ("demo_round_trip", "demo_close_failed"):
+            raise ValueError("추천 상태를 확인하지 못했습니다")
+        with self._lock, self._connect() as db:
+            current = self._row(db, card_id)
+            if current is None:
+                raise ValueError("추천을 찾지 못했습니다")
+            payload = dict(current["payload"])
+            payload[name] = True
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            db.execute(
+                "UPDATE cards SET payload=?, updated_at=? WHERE id=?",
+                (raw, datetime.now(UTC).isoformat(), card_id),
+            )
+            db.commit()
+            stored = self._row(db, card_id)
+        if stored is None:
+            raise ValueError("추천을 찾지 못했습니다")
+        return stored
