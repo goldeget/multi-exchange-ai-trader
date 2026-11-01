@@ -167,10 +167,10 @@ describe("Bybit 계좌 조회", () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => blocked });
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Bybit 잔고" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Bybit 잔고" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
+    expect(await screen.findByRole("button", { name: "계좌 · 포지션" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "계좌 · 포지션" })).toHaveAttribute(
+      "aria-current",
+      "page",
     );
     expect(screen.getByText("연결이 막혔습니다. 잔고 숫자를 만들지 않았습니다.")).toBeVisible();
     expect(document.body.textContent ?? "").not.toMatch(/\b(BLOCKED|PAPER|DEMO|API)\b/);

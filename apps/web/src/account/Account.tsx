@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { connectionLabel, environmentSentences, screenText } from "../ko";
+import { AccountScreen } from "./AccountScreen";
+import { ACCOUNT_FIXTURE, ACCOUNT_FIXTURE_NOW } from "./fixture";
 
 type Money = string | null;
-type Coin = { 코인: string; 지갑잔고: Money; 자산평가: Money };
+type Coin = { 코인: string; 지갑잔고: Money; 자산평가: Money; 예시USD평가?: Money };
 type Position = {
   구분: string;
   관리함: false;
@@ -210,21 +212,32 @@ function formatKst(value: string | null): string {
   return `${formatted} 한국시간`;
 }
 
-type AccountProps = { pollIntervalMs?: number; deadlineMs?: number };
+type AccountProps = { pollIntervalMs?: number; deadlineMs?: number; demo?: boolean; polished?: boolean; fixture?: AccountView };
 
-export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: AccountProps) {
-  const [view, setView] = useState<AccountView | null>(null);
+export default function Account(props: AccountProps) {
+  const fixture = props.fixture ?? (props.demo ? ACCOUNT_FIXTURE : undefined);
+  return <AccountController key={fixture ? "fixture" : "live"} {...props} fixture={fixture} />;
+}
+
+function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture }: AccountProps) {
+  const [storedView, setView] = useState<AccountView | null>(null);
+  const view = fixture ?? storedView;
   const [problem, setProblem] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!fixture);
+  const [refreshing, setRefreshing] = useState(false);
+  const [fixtureRefreshes, setFixtureRefreshes] = useState(0);
   const [latestFailed, setLatestFailed] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(() => fixture ? ACCOUNT_FIXTURE_NOW : Date.now());
+  const refresh = useRef<() => void>(() => undefined);
 
   useEffect(() => {
+    if (fixture) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [fixture]);
 
   useEffect(() => {
+    if (fixture) return;
     let disposed = false;
     let generation = 0;
     let timer = 0;
@@ -240,6 +253,7 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
       const myGeneration = ++generation;
       const controller = new AbortController();
       active = controller;
+      setRefreshing(true);
       const deadline = window.setTimeout(() => controller.abort(), deadlineMs);
       try {
         const response = await fetch("/api/v1/account/bybit/view", { signal: controller.signal });
@@ -269,6 +283,7 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
         window.clearTimeout(deadline);
         if (active === controller) active = null;
         if (!disposed && myGeneration === generation) {
+          setRefreshing(false);
           setLoading(false);
           arm(pollIntervalMs);
         }
@@ -281,6 +296,7 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
         void run();
       }
     };
+    refresh.current = onVisible;
     document.addEventListener("visibilitychange", onVisible);
     void run();
     return () => {
@@ -288,9 +304,10 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
       generation += 1;
       window.clearTimeout(timer);
       active?.abort();
+      refresh.current = () => undefined;
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [deadlineMs, pollIntervalMs]);
+  }, [deadlineMs, pollIntervalMs, fixture]);
 
   const age = view ? dataAgeSeconds(view.수집완료시각, nowMs) : null;
   const shownFreshness = view
@@ -302,6 +319,11 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
     (view.잔고 !== null || (view.포지션?.length ?? 0) > 0);
   const blocked = view?.상태코드 === "BLOCKED";
   const ready = view?.상태코드 === "ok" && !latestFailed;
+
+  if (polished) return <AccountScreen view={view} loading={loading} problem={problem}
+    freshness={shownFreshness} age={age} past={past} failed={latestFailed} refreshing={refreshing}
+    fixture={!!fixture} notice={fixtureRefreshes ? "고정 예시를 다시 표시했습니다. 실제 계좌를 조회하지 않았습니다." : ""}
+    onRefresh={() => fixture ? setFixtureRefreshes(value => value + 1) : refresh.current()} />;
 
   return (
     <main className="account">

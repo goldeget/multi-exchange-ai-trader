@@ -26,11 +26,13 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     if (!container.current) return;
     if (!instance.current && candles.length) {
       const chart = createChart(container.current, {
-        height: 380,
+        height: container.current.clientHeight || 380,
         autoSize: true,
         layout: {
-          background: { type: ColorType.Solid, color: "#121A23" },
+          background: { type: ColorType.Solid, color: "#141E2A" },
           textColor: "#A8B5C4",
+          fontSize: 14,
+          fontFamily: "Pretendard, sans-serif",
           attributionLogo: true,
         },
         grid: {
@@ -45,11 +47,11 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
         handleScroll: { vertTouchDrag: false },
       });
       const series = chart.addSeries(CandlestickSeries, {
-        upColor: "#36C99A",
-        downColor: "#FF737D",
+        upColor: "#FF6B7A",
+        downColor: "#76A1FF",
         borderVisible: false,
-        wickUpColor: "#36C99A",
-        wickDownColor: "#FF737D",
+        wickUpColor: "#FF6B7A",
+        wickDownColor: "#76A1FF",
       });
       const volume = chart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
@@ -83,7 +85,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       candles.map((c) => ({
         time: Math.floor(Date.parse(c.timestamp) / 1000) as UTCTimestamp,
         value: Number(c.volume),
-        color: Number(c.close) >= Number(c.open) ? "#267E67" : "#A34F59",
+        color: Number(c.close) >= Number(c.open) ? "#AD4758" : "#456FB5",
       })),
     );
     if (!candles.length) current.fitted = false;

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "common-navigation",
+    "area": "sidebar / bottom navigation",
+    "reason": "Originals vary between 5, 6 and 7 desktop menu items and vary trading icons. Use 7 desktop sections and 5 mobile tabs from plan 5.2 on every route."
+  },
+  {
+    "id": "readable-controls",
+    "area": "all text / controls",
+    "reason": "16px body, 14px secondary, 48px major control, 44px minimum target. Preserve content by vertical scrolling rather than shrinking to fit the generated image."
+  },
+  {
+    "id": "responsive-composition",
+    "area": "mobile overview / paper / monitor",
+    "reason": "Mobile 01 replaces the large chart with a compact market summary. Mobile 05 omits the chart and prioritizes order form. Mobile 06 omits chart and shows status, limits and recent events. These are deliberate responsive compositions."
+  },
+  {
+    "id": "shared-market-values",
+    "area": "01 overview / 05 paper market summary",
+    "reason": "PC and Mobile mockups disagree on daily changes and OHLC volume. Both surfaces must use the same API/fixture state. Use 65210.40 price, +286.30 (+0.44%) canonical BTC market values; retain literal originals only as reference."
+  },
+  {
+    "id": "source-truth",
+    "area": "recommendation model / connection / budget / operation state",
+    "reason": "Real mode uses actual RULE/LLM source and registered/verified statuses; unconfigured AI is off and unknown data remains unknown. DeepSeek/provider registration/budget mockup examples are allowed only in explicitly labelled dev/test fixtures."
+  },
+  {
+    "id": "unsupported-contracts",
+    "area": "spot limit orders / entry-only pause / leverage / evaluation inputs",
+    "reason": "Never relabel existing unsupported behavior. Disable with reason until server capability and engine contract are qualified. Keep real trading off."
+  },
+  {
+    "id": "account-context",
+    "area": "03 environment badge",
+    "reason": "Account page is live-account read-only scope, not a PAPER ledger. Keep balances and external positions separate from independent simulation ledgers."
+  },
+  {
+    "id": "report-cost-label",
+    "area": "10 included fees",
+    "reason": "8.30 USDT fixture is included fees; slippage is separately already reflected. Use precise backend cost fields rather than implying fees equal fees plus slippage."
+  },
+  {
+    "id": "diagnostics-count",
+    "area": "12 items to inspect",
+    "reason": "Mobile shows badge 2 for a 1 pending request plus reconciliation instruction; desktop shows 1 pending request. Keep request count=1 and separate actionable issue count when available."
+  }
+]
