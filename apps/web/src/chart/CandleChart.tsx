@@ -8,6 +8,7 @@ import {
   type ISeriesApi,
 } from "lightweight-charts";
 import type { Candle } from "../api";
+import CrispPriceLine from './CrispPriceLine';
 export default function CandleChart({ candles }: { candles: Candle[] }) {
   const [fontStatus, setFontStatus] = useState<"loading" | "ready" | "failed">(
     () => typeof document.fonts?.load === "function" ? "loading" : "ready",
@@ -17,6 +18,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     chart: ReturnType<typeof createChart>;
     series: ISeriesApi<"Candlestick">;
     volume: ISeriesApi<"Histogram">;
+    priceLine: CrispPriceLine;
     fitted: boolean;
   } | null>(null);
   const previousTimes = useRef<string[]>([]);
@@ -37,7 +39,11 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     return () => { active = false; };
   }, []);
   useEffect(() => () => {
-    instance.current?.chart.remove();
+    const current = instance.current;
+    if (current) {
+      current.series.detachPrimitive(current.priceLine);
+      current.chart.remove();
+    }
     instance.current = null;
     previousTimes.current = [];
   }, []);
@@ -71,7 +77,12 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
         borderVisible: false,
         wickUpColor: "#FF6B7A",
         wickDownColor: "#76A1FF",
+        priceLineVisible: false,
+        lastValueVisible: true,
       });
+      // The visible replacement is attached before the first chart paint.
+      const priceLine = new CrispPriceLine();
+      series.attachPrimitive(priceLine);
       const volume = chart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
         priceScaleId: "volume",
@@ -81,7 +92,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       volume
         .priceScale()
         .applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
-      instance.current = {chart, series, volume, fitted: false};
+      instance.current = {chart, series, volume, priceLine, fitted: false};
     }
     const current = instance.current;
     if (!current) return;
@@ -109,6 +120,9 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
         color: Number(c.close) >= Number(c.open) ? "#AD4758" : "#456FB5",
       })),
     );
+    const last = candles.at(-1);
+    current.priceLine.setPrice(last ? Number(last.close) : null,
+      last && Number(last.close) < Number(last.open) ? '#76A1FF' : '#FF6B7A');
     if (!candles.length) current.fitted = false;
     else if (!current.fitted || offset === null) {
       chart.timeScale().fitContent();
