@@ -17,6 +17,10 @@ async function assertReferenceContent(page: Page, screenId: string, mobile: bool
   if (screenId === "10-report") {
     await expect(page.getByRole("button", {name: "조건 다시 설정", exact: true})).toBeVisible();
     await expect(page.getByRole("button", {name: "검증 상세 보기", exact: true})).toBeVisible();
+    if (mobile) {
+      for (const value of await page.locator(".report-heading + .metric-strip strong").all()) expect(await value.evaluate(e=>e.scrollWidth<=e.clientWidth)).toBe(true);
+      if (page.viewportSize()!.width >= 390) expect((await page.locator(".evaluation-curve").boundingBox())!.y).toBeLessThan(page.viewportSize()!.height-100);
+    }
   }
   if (screenId === "12-diagnostics" && mobile) {
     const banner=(await page.locator(".diagnostic-banner").boundingBox())!;

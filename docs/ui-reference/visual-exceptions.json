@@ -63,5 +63,10 @@
     "id": "consistent-evaluation-segments",
     "area": "09/10 periods and cost assumptions",
     "reason": "A 60/20/20 split over the fixed 720 hourly-bar dataset places the untouched segment at indices576–720. Use those actual KST bounds consistently in chart and conditions rather than the incompatible generated October22 start. Display native slippage ticks, never relabel ticks as the mockup percentage. Stored UTC remains unchanged."
+  },
+  {
+    "id": "saved-result-selection",
+    "area": "10 result selector and mobile metrics",
+    "reason": "Saved results require an explicit selector in the same live controller. Keep its accessible label and 48px input, omit the redundant card heading on mobile, and place PnL beside drawdown/trade count so the chart begins in the first viewport. The extra selector and genuine report cost fields remain a documented difference from the static reference."
   }
 ]

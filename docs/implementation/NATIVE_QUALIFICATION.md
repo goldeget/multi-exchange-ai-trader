@@ -15,3 +15,7 @@ No real account, DEMO account, paid AI, or external order service was called by 
 ## Combined-source repeat qualification
 
 [CI run 41272013569](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41272013569), source `feda6c25ab6ec52f6a56715a585359d06b4ed14a`, passed all five jobs. Python: 492 tests and 28 subtests in 307.76s; Ruff passed; mypy passed for 63 files. Frontend: 120 unit tests, ESLint, typecheck and build passed. Browser: 90 passed, 24 intentional desktop duplicates skipped; capture-only review evidence, not yet strict screenshot acceptance. Secret scan and dependency review passed. Subsequent offline wording corrections and reviewed baseline installation require the final source CI.
+
+## Final capture-source qualification
+
+[CI run 41275471851](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41275471851), source `2ab1439a90225aad03c85cff9daa4e0dfa48a79c`, passed all five jobs. Python492 tests and28 subtests in298.22s; Ruff and mypy63 passed. Frontend158 unit tests, lint, typecheck and build passed. Browser94 passed,24 intentional desktop duplicate skips. Capture-only148PNG artifact13070907150, SHA256 `ed80297392997254be9c9db46ae1154df5407a92353aa336d4dbbd30ecbe6068`. This evidence is not the later strict screenshot gate; final PR and merge CI must qualify the exact final source. No external orders or paid AI calls were made.

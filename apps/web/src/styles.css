@@ -46,3 +46,8 @@ body{min-width:0}.financial-value{font-variant-numeric:tabular-nums;white-space:
 @media(max-width:768px){.evaluation-dates{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.evaluation-dates .field:nth-child(-n+2){grid-column:1/-1}.evaluation-dates .field input{font-size:16px;min-width:0;width:100%}.report-warning>button{flex:1 1 100%}}
 
 .definitions dd.financial-value{min-width:0;overflow-x:auto;white-space:nowrap}
+
+.report-heading h2{word-break:keep-all;overflow-wrap:normal}
+@media(max-width:768px){.report-selector>.panel-heading{display:none}.report-heading+.metric-strip{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px}.report-heading+.metric-strip>div:first-child{grid-column:1;grid-row:1/span 2;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;border:0;border-right:1px solid var(--line);padding:0 12px 0 0;min-width:0}.report-heading+.metric-strip>div:first-child strong{font-size:24px;max-width:100%;overflow-x:auto}.report-heading+.metric-strip>div:nth-child(2),.report-heading+.metric-strip>div:nth-child(3){display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:0;border:0}.report-heading+.metric-strip>div:not(:first-child) strong{font-size:22px}.report-heading+.metric-strip span{font-size:14px;margin:0}}
+
+@media(max-width:389px){.report-heading+.metric-strip{grid-template-columns:minmax(0,1fr)}.report-heading+.metric-strip>div:first-child{grid-column:auto;grid-row:auto;border-right:0;border-bottom:1px solid var(--line);padding:0 0 12px}.report-heading+.metric-strip>div:nth-child(2),.report-heading+.metric-strip>div:nth-child(3){flex-direction:row;justify-content:space-between;align-items:center}}
