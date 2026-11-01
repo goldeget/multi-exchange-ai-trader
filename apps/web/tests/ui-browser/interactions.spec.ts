@@ -10,7 +10,7 @@ test("spot review traps focus, Escape dismisses, and focus returns to its trigge
   await expect(dialog).toBeVisible();
   const confirm = dialog.getByRole("button", { name: "예시 검토 확인", exact: true });
   const close = dialog.getByRole("button", { name: "닫기", exact: true });
-  await expect(confirm).toBeFocused();
+  await expect(dialog.getByRole("heading", { name: "현물 가상 주문 검토", exact: true })).toBeFocused();
   await page.keyboard.press("Shift+Tab"); await expect(close).toBeFocused();
   await page.keyboard.press("Tab"); await expect(confirm).toBeFocused();
   await page.keyboard.press("Tab"); await expect(close).toBeFocused();
