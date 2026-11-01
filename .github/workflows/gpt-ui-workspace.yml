@@ -1,0 +1,232 @@
+name: GPT UI reusable workspace
+
+on:
+  push:
+    branches: [gpt/ui-rebuild-20261101]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace:
+    name: Package clean source and locked frontend dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Match ci.yml; the existing CI remains responsible for application checks.
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+
+      - name: Verify pristine source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          # No checkout authentication, credential helpers, or authenticated URLs.
+          if git config --local --name-only --get-regexp '^(http\..*\.extraheader|credential\..*|url\..*|remote\..*\.url)$' | grep -v '^remote\.origin\.url$'; then
+            echo 'Unexpected authentication-related local Git configuration.' >&2
+            exit 1
+          fi
+          test "$(git config --local --get remote.origin.url)" = "https://github.com/$GITHUB_REPOSITORY"
+
+      - name: Install locked npm dependencies
+        shell: bash
+        # No user/global npm configuration or injected registry credentials.
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/gpt-ui-user.npmrc
+          NPM_CONFIG_GLOBALCONFIG: ${{ runner.temp }}/gpt-ui-global.npmrc
+        run: |
+          set -euo pipefail
+          : > "$NPM_CONFIG_USERCONFIG"
+          : > "$NPM_CONFIG_GLOBALCONFIG"
+          npm ci --prefix apps/web --no-audit --no-fund
+
+      - name: Package and verify reusable workspace
+        shell: bash
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import gzip
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import platform
+          import re
+          import shutil
+          import stat
+          import subprocess
+          import tarfile
+          import tempfile
+
+          source = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          runner_temp = pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          output = runner_temp / 'gpt-ui-workspace-output'
+          output.mkdir()
+
+          def run(*args, cwd=source):
+              return subprocess.check_output(args, cwd=cwd, text=True).strip()
+
+          assert not run('git', 'status', '--porcelain', '--untracked-files=all'), 'Source changed during npm ci'
+          sha = run('git', 'rev-parse', 'HEAD')
+          assert sha == os.environ['GITHUB_SHA'], 'Unexpected source commit'
+          epoch = int(run('git', 'show', '-s', '--format=%ct', 'HEAD'))
+          secret_names = {
+              '.envrc', '.npmrc', '.netrc', '_netrc', '.pypirc', '.git-credentials',
+              '.aws', '.azure', '.ssh', '.gnupg', '.kube', '.docker',
+              'credentials', 'credentials.json', 'service-account.json',
+              'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+          }
+          sensitive_suffix = re.compile(r'\.(?:db|db3|sqlite|sqlite3)(?:[-.](?:wal|shm|journal))?$|\.(?:pem|key|p12|pfx|jks|keystore)$', re.I)
+          secret_bytes = re.compile(
+              rb'-----BEGIN (?:(?:RSA |DSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----'
+              rb'|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{70,}'
+              rb'|AKIA[A-Z0-9]{16}|npm_[A-Za-z0-9]{36,}'
+          )
+
+          def safe_path(relative):
+              parts = relative.parts
+              assert not relative.is_absolute() and '..' not in parts, 'Unsafe archive path'
+              assert not any(p.lower().startswith('.env') or p.lower() in secret_names for p in parts), f'Sensitive path: {relative}'
+              assert not sensitive_suffix.search(relative.name), f'Sensitive file type: {relative}'
+              assert not (len(parts) > 1 and parts[0] == 'work' and parts[1] in {'phase3-data', 'phase4-data'}), 'Local user state is forbidden'
+
+          # HEAD metadata is packed inside .git, so inspect it uncompressed too.
+          commit = subprocess.check_output(['git', 'cat-file', 'commit', 'HEAD'], cwd=source)
+          assert not secret_bytes.search(commit), 'Credential material in HEAD metadata'
+
+          # Check tracked paths before creating any artifact, including Git objects.
+          for name in subprocess.check_output(['git', 'ls-tree', '-r', '-z', '--name-only', 'HEAD'], cwd=source).decode().split('\0'):
+              if name:
+                  safe_path(pathlib.PurePosixPath(name))
+
+          with tempfile.TemporaryDirectory(prefix='gpt-ui-workspace-', dir=runner_temp) as temporary:
+              temporary = pathlib.Path(temporary)
+              stage = temporary / 'multi-exchange-ai-trader'
+              template = temporary / 'empty-git-template'
+              template.mkdir()
+              # A local transport shallow clone copies reachable HEAD objects only;
+              # it never copies checkout config, hooks, logs, or credential files.
+              run('git', '-c', 'protocol.file.allow=always', '-c', f'init.templateDir={template}',
+                  'clone', '--quiet', '--no-local', '--depth=1', '--single-branch', '--no-tags', source.as_uri(), str(stage))
+              run('git', 'checkout', '--quiet', '-B', 'gpt-ui-workspace', sha, cwd=stage)
+              for relative in ('hooks', 'logs', 'refs/remotes'):
+                  shutil.rmtree(stage / '.git' / relative, ignore_errors=True)
+              for name in ('FETCH_HEAD', 'ORIG_HEAD', 'description', 'COMMIT_EDITMSG'):
+                  (stage / '.git' / name).unlink(missing_ok=True)
+              (stage / '.git' / 'config').write_text(
+                  '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = false\n[gc]\n\tauto = 0\n'
+              )
+              assert not (stage / '.git' / 'objects' / 'info' / 'alternates').exists(), 'Git object store is not self-contained'
+              assert run('git', 'rev-list', '--count', 'HEAD', cwd=stage) == '1', 'Checkout is not shallow'
+              shutil.copytree(source / 'apps/web/node_modules', stage / 'apps/web/node_modules', symlinks=True)
+
+              # Only the checkout and node_modules enter the archive; never HOME,
+              # runner context, npm caches, environment dumps, or workflow tokens.
+              for current, directories, files in os.walk(stage, followlinks=False):
+                  for name in directories + files:
+                      path = pathlib.Path(current) / name
+                      relative = path.relative_to(stage)
+                      safe_path(relative)
+                      mode = path.lstat().st_mode
+                      assert stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode), f'Special file: {relative}'
+                      if path.is_symlink():
+                          assert not os.path.isabs(os.readlink(path)), f'Absolute symlink: {relative}'
+                          assert path.resolve(strict=True).is_relative_to(stage), f'Escaping symlink: {relative}'
+                      elif path.is_file():
+                          with path.open('rb') as handle:
+                              # Carry an overlap so markers split across blocks are detected.
+                              tail = b''
+                              while block := handle.read(1024 * 1024):
+                                  assert not secret_bytes.search(tail + block), f'Credential material: {relative}'
+                                  tail = block[-256:]
+
+              archive = output / 'gpt-ui-workspace.tar.gz'
+              def normalize(info):
+                  info.uid = info.gid = 0
+                  info.uname = info.gname = ''
+                  info.mtime = epoch
+                  info.pax_headers = {}
+                  return info
+
+              with archive.open('wb') as raw, gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0) as compressed:
+                  with tarfile.open(fileobj=compressed, mode='w', format=tarfile.PAX_FORMAT) as bundle:
+                      bundle.add(stage, arcname=stage.name, recursive=True, filter=normalize)
+
+              # Reading through EOF validates gzip CRC and complete tar contents.
+              with gzip.open(archive, 'rb') as compressed:
+                  while compressed.read(1024 * 1024):
+                      pass
+              with tarfile.open(archive, 'r:gz') as bundle:
+                  members = bundle.getmembers()
+                  assert 0 < len(members) < 100000, 'Unexpected archive member count'
+                  total = sum(member.size for member in members)
+                  assert total < 2 * 1024**3 and archive.stat().st_size < 1024**3, 'Unexpected archive size'
+                  for member in members:
+                      path = pathlib.PurePosixPath(member.name)
+                      assert path.parts[0] == stage.name, 'Unexpected archive root'
+                      safe_path(pathlib.PurePosixPath(*path.parts[1:]))
+                      assert member.isfile() or member.isdir() or member.issym(), 'Unsupported tar member'
+                  (output / 'FILES.txt').write_text(''.join(f'{member.size:12d} {member.name}\n' for member in members))
+                  restored_parent = temporary / 'restored'
+                  # Python's data filter also rejects unsafe paths/link targets.
+                  bundle.extractall(restored_parent, filter='data')
+
+              restored = restored_parent / stage.name
+              assert run('git', 'rev-parse', 'HEAD', cwd=restored) == sha, 'Restored commit differs'
+              assert not run('git', 'status', '--porcelain', '--untracked-files=all', cwd=restored), 'Restored source differs'
+              run('git', 'fsck', '--full', '--strict', '--no-reflogs', cwd=restored)
+              assert (restored / 'apps/web/node_modules/.bin/vite').is_file(), 'Vite executable missing'
+              assert os.access(restored / 'apps/web/node_modules/.bin/vite', os.X_OK), 'Executable permissions lost'
+
+          (output / 'METADATA.json').write_text(json.dumps({
+              'source_commit': sha,
+              'node': run('node', '--version'),
+              'npm': run('npm', '--version'),
+              'platform': platform.system(),
+              'architecture': platform.machine(),
+              'lockfile_sha256': hashlib.file_digest((source / 'apps/web/package-lock.json').open('rb'), 'sha256').hexdigest(),
+              'archive_members': len(members),
+              'uncompressed_bytes': total,
+              'archive_bytes': archive.stat().st_size,
+          }, indent=2) + '\n')
+          files = sorted(output.iterdir())
+          with (output / 'SHA256SUMS.txt').open('w') as checksums:
+              for path in files:
+                  with path.open('rb') as handle:
+                      checksums.write(f'{hashlib.file_digest(handle, "sha256").hexdigest()}  {path.name}\n')
+          print(f'Verified {len(members)} archive entries, {total} unpacked bytes, {archive.stat().st_size} compressed bytes; source {sha}')
+          PY
+          cd "$RUNNER_TEMP/gpt-ui-workspace-output"
+          sha256sum --check SHA256SUMS.txt
+
+      # actions/upload-artifact v7.0.2 (Node 24), matching ci.yml.
+      - name: Upload verified workspace
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: gpt-ui-workspace-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/gpt-ui-workspace-output/gpt-ui-workspace.tar.gz
+            ${{ runner.temp }}/gpt-ui-workspace-output/FILES.txt
+            ${{ runner.temp }}/gpt-ui-workspace-output/METADATA.json
+            ${{ runner.temp }}/gpt-ui-workspace-output/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
