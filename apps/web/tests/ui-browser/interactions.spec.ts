@@ -30,8 +30,8 @@ test("spot fixture confirmation preserves stored pending records and balances", 
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("status")).toContainText("실제 장부와 외부 서비스는 변경하지 않습니다");
   expect(await storageSnapshot(page)).toEqual(before);
-  expect(balance).toContain("10000.00");
-  await expect(page.locator(".order-input")).toContainText("사용 가능 10000.00 USDT");
+  expect(balance).toContain("10,000.00");
+  await expect(page.locator(".order-input")).toContainText("사용 가능 10,000.00 USDT");
 });
 
 test("recommendation fixture confirmation never creates an exchange or ledger intent", async ({ page }) => {
@@ -86,6 +86,30 @@ test("known run and report IDs survive direct URL loads", async ({ page }) => {
   await assertPageStructure(page, "검증 결과");
   await expect(page.locator(".report-heading")).toBeVisible();
   expect(new URL(page.url()).searchParams.get("report_id")).toBe(FIXTURE_REPORT_ID);
+});
+
+test("history selection shows its fixed snapshot before opening that exact run", async ({ page }) => {
+  await openDemo(page, "view=research&tab=history");
+  await page.getByRole("button", {name: /저장된 실행 2/}).click();
+  await expect(page.getByRole("heading", {name: "선택한 실행 상세", exact: true})).toBeVisible();
+  await expect(page.locator(".definitions > div").filter({has: page.getByText("정리한 가상손익", {exact:true})}).locator("dd")).toHaveText("-12.50 USDT");
+  expect(new URL(page.url()).searchParams.get("tab")).toBe("history");
+  await page.getByRole("button", {name: "실행 상세 보기", exact: true}).click();
+  await expect(page.locator(".run-banner")).toContainText("종료");
+  expect(new URL(page.url()).searchParams.get("run_id")).toBe("reference-stopped");
+});
+
+test("report details explain stored segments and allow returning to configuration", async ({ page }) => {
+  await openDemo(page, `view=research&tab=report&report_id=${FIXTURE_REPORT_ID}`);
+  await page.getByRole("button", {name: "검증 상세 보기", exact: true}).click();
+  const dialog=page.getByRole("dialog", {name: "검증 상세", exact: true});
+  await expect(dialog).toContainText("마지막 미사용 구간");
+  await expect(dialog).toContainText("KST");
+  await expect(dialog).toContainText("적용 수수료율");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole("button", {name: "조건 다시 설정", exact: true}).click();
+  await assertPageStructure(page, "백테스트 설정");
 });
 
 test("unknown saved IDs never display another run or report as the requested result", async ({ page }) => {

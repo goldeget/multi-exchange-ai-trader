@@ -4,6 +4,26 @@ import { assertPageStructure, capturePair, openDemo } from "./helpers";
 import { demoRoutes } from "./routes";
 
 async function assertReferenceContent(page: Page, screenId: string, mobile: boolean) {
+  if (screenId === "06-run") await expect(page.getByRole("list", {name: "최근 처리 기록 목록"}).getByRole("listitem")).toHaveCount(3);
+  if (screenId === "08-history") {
+    await expect(page.getByRole("heading", {name: "선택한 실행 상세", exact: true})).toBeVisible();
+    await expect(page.locator(".unavailable-history-row")).toContainText("손익 미확인");
+  }
+  if (screenId === "09-backtest" && mobile) {
+    for (const input of await page.locator('input[type="datetime-local"]').all()) {
+      expect((await input.boundingBox())!.width).toBeGreaterThan(220);
+    }
+  }
+  if (screenId === "10-report") {
+    await expect(page.getByRole("button", {name: "조건 다시 설정", exact: true})).toBeVisible();
+    await expect(page.getByRole("button", {name: "검증 상세 보기", exact: true})).toBeVisible();
+  }
+  if (screenId === "12-diagnostics" && mobile) {
+    const banner=(await page.locator(".diagnostic-banner").boundingBox())!;
+    const badge=(await page.locator(".diagnostic-banner > .badge").boundingBox())!;
+    expect(badge.x).toBeGreaterThanOrEqual(banner.x);
+    expect(badge.x+badge.width).toBeLessThanOrEqual(banner.x+banner.width);
+  }
   if (screenId === "04-recommend") await expect(page.locator(".chart:visible")).toHaveCount(1);
   if (screenId === "03-account" && mobile) {
     for (const value of await page.locator(".account-summary-values strong,.account-position-values dd").all()) await expect(value).toHaveCSS("white-space", "nowrap");

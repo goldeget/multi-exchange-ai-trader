@@ -39,3 +39,10 @@ body{min-width:0}.financial-value{font-variant-numeric:tabular-nums;white-space:
 
 .mobile-recommend-chart{display:none}
 @media(max-width:768px){.mobile-recommend-chart{display:block;margin:16px 0;border:1px solid var(--line);border-radius:6px;padding:8px}.mobile-recommend-chart .chart{height:230px}.mobile-recommend-chart .helper{margin-top:6px}}
+
+@media(max-width:768px){.run-banner{align-items:stretch;flex-direction:column;gap:10px;min-height:0}.run-banner h2{word-break:keep-all;text-wrap:balance}.run-banner>.badge{align-self:flex-start;margin-left:28px}}
+
+.report-identifiers{margin:12px 0}.report-identifiers summary{cursor:pointer;min-height:48px;display:flex;align-items:center;color:var(--muted)}.history-row.selected{background:#243452;outline:1px solid #8095ff}.unavailable-history-row{color:var(--muted)}.evaluation-dates input{color-scheme:dark}.report-warning>button{min-height:48px}
+@media(max-width:768px){.evaluation-dates{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.evaluation-dates .field:nth-child(-n+2){grid-column:1/-1}.evaluation-dates .field input{font-size:16px;min-width:0;width:100%}.report-warning>button{flex:1 1 100%}}
+
+.definitions dd.financial-value{min-width:0;overflow-x:auto;white-space:nowrap}

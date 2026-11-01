@@ -58,5 +58,10 @@
     "id": "compact-mobile-header",
     "area": "mobile shared shell",
     "reason": "Use title plus KST time/example label, then one row of environment badges. Omit the desktop description on small screens; preserve 14px helper text and 44/48px targets. Full fixed date remains in the desktop header and screenshot clock manifest."
+  },
+  {
+    "id": "consistent-evaluation-segments",
+    "area": "09/10 periods and cost assumptions",
+    "reason": "A 60/20/20 split over the fixed 720 hourly-bar dataset places the untouched segment at indices576–720. Use those actual KST bounds consistently in chart and conditions rather than the incompatible generated October22 start. Display native slippage ticks, never relabel ticks as the mockup percentage. Stored UTC remains unchanged."
   }
 ]

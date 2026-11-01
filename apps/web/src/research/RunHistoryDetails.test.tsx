@@ -1,0 +1,13 @@
+import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
+import {afterEach,expect,it,vi} from 'vitest';
+import type {Run} from './Research';
+import {RESEARCH_RUN} from './fixture';
+import RunHistoryDetails from './RunHistoryDetails';
+vi.mock('./RunEvents',()=>({default:({runId,demo}:{runId:string;demo?:boolean})=><div data-testid="events">{runId} · {demo?'고정 예시':'저장 기록'}</div>}));
+afterEach(cleanup);
+function value(label:string){return within(screen.getByText(label).parentElement!).getByRole('definition')}
+it('renders the selected saved snapshot and opens only through the callback',()=>{const open=vi.fn();render(<RunHistoryDetails run={RESEARCH_RUN} demo onOpen={open}/>);expect(screen.getByRole('heading',{name:'선택한 실행 상세'})).toBeInTheDocument();expect(value('실행 ID')).toHaveTextContent(RESEARCH_RUN.run_id);expect(value('처리한 봉')).toHaveTextContent(String(RESEARCH_RUN.cursor));expect(screen.getByTestId('events')).toHaveTextContent(RESEARCH_RUN.run_id+' · 고정 예시');expect(open).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'실행 상세 보기'}));expect(open).toHaveBeenCalledOnce()});
+it('never supplies a missing leverage default',()=>{const config={...RESEARCH_RUN.config};delete config.leverage;render(<RunHistoryDetails run={{...RESEARCH_RUN,config}} onOpen={()=>{}}/>);expect(value('레버리지')).toHaveTextContent('미확인');expect(value('레버리지')).not.toHaveTextContent('10')});
+it('preserves large amounts and fractional precision without floating point rounding',()=>{render(<RunHistoryDetails run={{...RESEARCH_RUN,native:{...RESEARCH_RUN.native,closed_net_pnl:'123456789012345678901234567890.123456789012345678',unrealized_pnl:'-0.000000000000000001'}}} onOpen={()=>{}}/>);expect(value('정리한 가상손익')).toHaveTextContent('123,456,789,012,345,678,901,234,567,890.123456789012345678 USDT');expect(value('미실현 가상손익')).toHaveTextContent('-0.000000000000000001 USDT')});
+it.each([null,'NaN','1e99'])('does not invent zero PnL for invalid saved values %#',bad=>{const run={...RESEARCH_RUN,native:{...RESEARCH_RUN.native,closed_net_pnl:bad}} as unknown as Run;render(<RunHistoryDetails run={run} onOpen={()=>{}}/>);expect(value('정리한 가상손익')).toHaveTextContent('미확인');expect(value('정리한 가상손익')).not.toHaveTextContent('0')});
+it('replaces every selected snapshot and timeline identity when the selection changes',()=>{const view=render(<RunHistoryDetails run={RESEARCH_RUN} onOpen={()=>{}}/>);view.rerender(<RunHistoryDetails run={{...RESEARCH_RUN,run_id:'next',status:'STOPPED'}} onOpen={()=>{}}/>);expect(value('실행 ID')).toHaveTextContent('next');expect(screen.getByTestId('events')).toHaveTextContent('next · 저장 기록');expect(value('저장 상태')).toHaveTextContent('종료')});

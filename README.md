@@ -1,6 +1,6 @@
 # 로컬 시장 연구 · PAPER 플랫폼
 
-2026-11-01 UI 복구 작업은 `gpt/ui-recovery-20261101`의 [초안 PR #9](https://github.com/goldeget/multi-exchange-ai-trader/pull/9)에 있습니다. 12개 화면을 PC·모바일 공통 컴포넌트로 구현했으며, 원본 24장과 [구현·검증 기록](docs/implementation/RECOVERY_PROGRESS.md)을 보존합니다. `?view=overview&demo=1`은 개발 서버에서만 열리는 명시적 예시 데이터 화면입니다. 배포 빌드에서는 이 옵션으로 실제 상태를 대체할 수 없습니다.
+2026-11-01 UI 복구 작업은 `gpt/ui-recovery-20261101`의 [구현 PR #9](https://github.com/goldeget/multi-exchange-ai-trader/pull/9)에 있습니다. 12개 화면을 PC·모바일 공통 컴포넌트로 구현했으며, 원본 24장과 [구현·검증 기록](docs/implementation/RECOVERY_PROGRESS.md)을 보존합니다. `?view=overview&demo=1`은 개발 서버에서만 열리는 명시적 예시 데이터 화면입니다. 배포 빌드에서는 이 옵션으로 실제 상태를 대체할 수 없습니다.
 
 새 현물 PAPER 지정가, 자동실행 V2의 신규 진입 일시정지·가변 레버리지, 평가 V2 설정은 Linux 네이티브 계약 시험을 통과했습니다. Windows에서는 네이티브 실행을 지원한다고 표시하지 않습니다. AI는 `OFFLINE_TEST`이며 실제 제공자·유료 호출은 구성하거나 시험하지 않았습니다. 인증된 휴대전화 원격 접속도 구성하지 않았습니다.
 
