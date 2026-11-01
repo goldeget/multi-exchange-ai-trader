@@ -2,12 +2,15 @@
 
 import asyncio
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .ai.budget import BudgetBook
+from .ai.config import AnthropicConfig, load_anthropic_config
 from .capabilities import capabilities
 from .read_models import read_overview
 from .recommendations.execution import demo_capability
@@ -22,6 +25,9 @@ def _budget(request: Request) -> BudgetBook:
 
 
 def _connections(request: Request) -> dict[str, Any]:
+    ai_config = getattr(request.app.state, "anthropic_config", AnthropicConfig())
+    if not isinstance(ai_config, AnthropicConfig):
+        ai_config = AnthropicConfig(status="INVALID_CONFIGURATION")
     registered = getattr(request.app.state, "bybit_account", None) is not None
     problem = getattr(request.app.state, "bybit_account_problem", "missing_credentials")
     status = "REGISTERED_UNVERIFIED" if registered else "NOT_CONFIGURED"
@@ -33,9 +39,10 @@ def _connections(request: Request) -> dict[str, Any]:
                       "execution": "NONE", "source": "ACCOUNT_READONLY"},
             "bybit_demo": demo_capability(getattr(request.app.state, "bybit_practice", None) is not None,
                                           blocked=_practice_blocked(request)),
-            "ai": {"registered": False, "status": "NOT_CONFIGURED" if isinstance(
+            "ai": {"registered": ai_config.registered, "status": ai_config.status if isinstance(
                        getattr(request.app.state, "ai_budget", None), BudgetBook
                    ) else "STORAGE_UNAVAILABLE", "verified_at": None,
+                   "provider": "ANTHROPIC", "model_id": ai_config.model_id,
                    "mode": "OFFLINE_TEST", "external_calls": False}}
 
 
@@ -66,7 +73,14 @@ def _scheduler(request: Request, value: dict[str, Any]) -> dict[str, object]:
 
 
 def install(application: FastAPI) -> None:
-    router = APIRouter(prefix="/api/v1")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Importing/creating an app must not read an operator credential file.
+        # Capture once at startup; subsequent changes require a restart.
+        app.state.anthropic_config = load_anthropic_config()
+        yield
+
+    router = APIRouter(prefix="/api/v1", lifespan=lifespan)
 
     @router.get("/capabilities")
     async def support(request: Request) -> dict[str, Any]:

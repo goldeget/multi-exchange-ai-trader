@@ -21,3 +21,6 @@ def isolated_api_storage(tmp_path, monkeypatch):
     monkeypatch.delenv("BYBIT_DEMO_API_SECRET", raising=False)
     monkeypatch.delenv("BYBIT_TESTNET", raising=False)
     monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
+    monkeypatch.setenv("ANTHROPIC_ENV_FILE", "off")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)

@@ -1,0 +1,35 @@
+[Unit]
+Description=Local research and PAPER dashboard (trading disabled)
+After=network.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/trader/app
+EnvironmentFile=/etc/trader/runtime.env
+EnvironmentFile=/etc/trader/credentials.env
+# EnvironmentFile overrides Environment=. Enforce gates in the executed process.
+ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=false BYBIT_TESTNET=false BYBIT_ENV_FILE=off ANTHROPIC_ENV_FILE=off /opt/trader/app/.venv/bin/python -m uvicorn multi_exchange_trader.api:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+KillMode=control-group
+UMask=0077
+StateDirectory=trader
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/trader
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

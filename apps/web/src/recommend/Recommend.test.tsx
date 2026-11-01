@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Recommend from "./Recommend";
 
 const card = {
@@ -35,9 +35,14 @@ function payload(next = card, ok = true) {
   };
 }
 
+beforeEach(() => {
+  vi.useFakeTimers({toFake:['Date']});
+  vi.setSystemTime(new Date('2026-11-01T12:10:00Z'));
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("추천", () => {
@@ -91,6 +96,21 @@ describe("추천", () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/approve"))).toBe(false);
+  });
+
+  it('disables approval when an initially valid card expires as time passes',async()=>{
+    vi.useRealTimers();vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-01T12:10:00Z'));
+    const fetchMock=vi.fn().mockResolvedValue(payload());
+    vi.stubGlobal('fetch',fetchMock);
+    await act(async()=>{render(<Recommend/>)});
+    const button=screen.getByRole('button',{name:'연습 계좌에 넣고 바로 닫기'});
+    expect(button).toBeEnabled();
+    act(()=>vi.advanceTimersByTime(5*60*1000));
+    expect(button).toBeDisabled();
+    expect(screen.getByText('추천 유효시간이 지났습니다. 새로 확인하세요.')).toBeVisible();
+    fireEvent.click(button);
+    expect(fetchMock.mock.calls.some(([url])=>String(url).endsWith('/approve'))).toBe(false);
   });
 });
 
