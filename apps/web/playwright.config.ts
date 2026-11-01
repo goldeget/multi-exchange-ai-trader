@@ -18,7 +18,7 @@ export default defineConfig({
     browserName: 'chromium',
     // Use Chromium's web-test CPU path across different hosted runner CPUs.
     // Reviewed pixels and zero-difference assertions remain unchanged.
-    launchOptions: {args: ['--disable-skia-runtime-opts']},
+    launchOptions: {args: ['--disable-skia-runtime-opts', '--disable-accelerated-2d-canvas']},
     locale: 'ko-KR',
     timezoneId: 'Asia/Seoul',
     deviceScaleFactor: 1,

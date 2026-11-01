@@ -1,6 +1,7 @@
 import { test, expect } from "./fixtures";
 import { assertPageStructure, capturePair, openDemo, seedStorageSentinels, storageSnapshot } from "./helpers";
 import { demoUrl, FIXTURE_REPORT_ID, FIXTURE_RUN_ID } from "./routes";
+import { arch, cpus, platform } from "node:os";
 
 test("spot review traps focus, Escape dismisses, and focus returns to its trigger", async ({ page }, testInfo) => {
   await openDemo(page, "view=paper");
@@ -132,7 +133,22 @@ test("malformed identifiers and unknown route names stay within the fixture app"
 });
 
 
-test("chart dimensions stay bounded across repeated full-page captures", async ({ page }) => {
+test("chart dimensions stay bounded across repeated full-page captures", async ({ page, browser }, testInfo) => {
+  const session = await browser.newBrowserCDPSession();
+  try {
+    const { gpu } = await session.send("SystemInfo.getInfo");
+    await testInfo.attach("renderer-environment", {
+      body: Buffer.from(JSON.stringify({
+        schema_version: 1,
+        browser_version: browser.version(),
+        os: { platform: platform(), arch: arch(), cpu_models: [...new Set(cpus().map(cpu => cpu.model))] },
+        gpu: { featureStatus: gpu.featureStatus, auxAttributes: gpu.auxAttributes, devices: gpu.devices },
+      }, null, 2)),
+      contentType: "application/json",
+    });
+  } finally {
+    await session.detach();
+  }
   await openDemo(page, "view=market");
   const chart=page.locator(".market-chart-panel .chart");
   const before=(await chart.boundingBox())!;
