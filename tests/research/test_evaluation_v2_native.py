@@ -14,6 +14,7 @@ def test_actual_native_settings_costs_and_durable_report_identity(tmp_path):
         "config_version": 2, "start_ms": dataset["start_ms"] + 20 * 60000,
         "end_ms": dataset["end_ms"], "fast": 3, "slow": 10,
         "quantity": "0.010", "fee_rate": "0.001", "slippage_ticks": 2, "leverage": 3,
+        "initial_equity": "25000", "train_percent": 50, "validation_percent": 20,
     }
     root = tmp_path / "datasets"
     key = save_dataset(root, dataset)
@@ -25,6 +26,10 @@ def test_actual_native_settings_costs_and_durable_report_identity(tmp_path):
     assert costly["splits"]["train"][0] == 20
     assert costly["selected_config"]["fast"] == 3 and costly["selected_config"]["slow"] == 10
     assert costly["test"]["config"]["leverage"] == 3
+    assert costly["test"]["initial_equity"] == "25000.00000000"
+    assert costly["assumptions"]["seed"] == "25000.00000000"
+    assert costly["splits"]["train"][1] == 130
+    assert all(fold["test_range"][1] <= costly["splits"]["test"][0] for fold in costly["walk_forward"])
     assert costly["network_sandbox"] == "Linux_x86_64_socket_denied"
     assert Decimal(costly["buy_hold_test"]["fees"]) > 0
     for segment in (costly["validation"], costly["test"], costly["buy_hold_test"]):

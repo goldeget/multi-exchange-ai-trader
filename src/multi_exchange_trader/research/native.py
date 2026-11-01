@@ -238,6 +238,7 @@ def run_segment(
         raise ValueError("native version/segment bounds")
     spot = dataset["market"] == "spot"
     fee = Decimal(config.get("fee_rate", str(FEE)))
+    seed = Decimal(config.get("initial_equity", str(SEED)))
     venue = Venue("SPOT_RESEARCH" if spot else "PAPER")
     if spot:
         inst = CurrencyPair(
@@ -265,7 +266,7 @@ def run_segment(
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH if spot else AccountType.MARGIN,
             base_currency=None if spot else USDT,
-            starting_balances=[Money(SEED, USDT)],
+            starting_balances=[Money(seed, USDT)],
             default_leverage=Decimal(1) if spot else Decimal(config.get("leverage", 10)),
             fill_model=FillModel(prob_slippage=0.0 if config.get("config_version") == 2 else 1.0, random_seed=42),
             use_message_queue=False,
@@ -304,7 +305,7 @@ def run_segment(
         if strategy.error:
             raise ValueError(strategy.error)
         final = strategy.equity()
-        adjustment = final - (SEED + strategy.gross - strategy.fees)
+        adjustment = final - (seed + strategy.gross - strategy.fees)
         if (
             strategy.lot
             or abs(adjustment) > UNIT
@@ -320,9 +321,9 @@ def run_segment(
             "start": start,
             "end": end,
             "config": config,
-            "initial_equity": money(SEED),
+            "initial_equity": money(seed),
             "final_equity": money(final),
-            "net_pnl": money(final - SEED),
+            "net_pnl": money(final - seed),
             "gross_pnl": money(strategy.gross),
             "fees": money(strategy.fees),
             "rounding_adjustment": money(adjustment),

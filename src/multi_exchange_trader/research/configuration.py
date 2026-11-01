@@ -10,13 +10,15 @@ FIELDS = {
     "config_version", "start_ms", "end_ms", "fast", "slow", "quantity",
     "fee_rate", "slippage_ticks", "leverage",
 }
+OPTIONAL_FIELDS = {"initial_equity", "train_percent", "validation_percent"}
 
 
 def evaluation_config(
     config: dict[str, Any], dataset: dict[str, Any]
 ) -> tuple[dict[str, Any], int, int]:
     validate_dataset(dataset)
-    if set(config) != FIELDS or type(config["config_version"]) is not int or config["config_version"] != 2:
+    if (not FIELDS <= set(config) <= FIELDS | OPTIONAL_FIELDS
+            or type(config["config_version"]) is not int or config["config_version"] != 2):
         raise ValueError("evaluation config version/fields")
     start, end, step = config["start_ms"], config["end_ms"], dataset["interval_ms"]
     if (
@@ -39,6 +41,13 @@ def evaluation_config(
     if dataset["market"] == "spot" and config["leverage"] != 1:
         raise ValueError("spot CASH evaluation requires leverage1")
     first, last = (start - dataset["start_ms"]) // step, (end - dataset["start_ms"]) // step
+    capital = decimal(config.get("initial_equity", "10000"))
+    if not Decimal(100) <= capital <= Decimal(1000000):
+        raise ValueError("evaluation initial equity within100..1000000 required")
+    train, validation = config.get("train_percent", 60), config.get("validation_percent", 20)
+    if (type(train) is not int or type(validation) is not int
+            or not 40 <= train <= 70 or not 10 <= validation <= 30 or train + validation > 90):
+        raise ValueError("evaluation chronological split percentages")
     tick = Decimal("0.1") if dataset["symbol"] == "BTC-PAPER" else Decimal("0.01")
     if any(Decimal(bar["low"]) <= tick * config["slippage_ticks"] for bar in dataset["bars"][first:last]):
         raise ValueError("evaluation slippage would produce nonpositive quotes")

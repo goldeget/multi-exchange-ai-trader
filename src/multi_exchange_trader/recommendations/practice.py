@@ -16,9 +16,15 @@ from multi_exchange_trader.account.bybit_readonly import (
 )
 from multi_exchange_trader.account.config import allowed_host
 
-OPEN_AND_CLOSE = "연습 계좌에 가장 작은 비트코인 선물 주문을 넣었고, 바로 줄여서 닫았습니다."
+OPEN_AND_CLOSE = (
+    "연습 계좌에 고정 매수·감축 요청을 접수했습니다. 실제 체결과 포지션 종료는 확인하지 않았습니다."
+)
 CLOSE_WARNING = (
     "연습 주문을 넣었지만 바로 닫지 못했습니다. 다시 넣지 않았습니다. 실계좌 주문은 없습니다."
+)
+UNCERTAIN_WARNING = (
+    "연습 주문의 처리 결과를 확인할 수 없습니다. 같은 요청을 다시 보내지 않았습니다. "
+    "연습 계좌의 주문·포지션을 확인하세요. 실계좌 주문은 없습니다."
 )
 
 
@@ -30,6 +36,10 @@ class PracticeUnavailable(Exception):
 
 class PracticeCloseFailed(PracticeUnavailable):
     """One practice order is open because the single close did not succeed."""
+
+
+class PracticeUncertain(PracticeUnavailable):
+    """A persisted attempt without a definitive receipt must never be repeated."""
 
 
 class PracticeCheck(Protocol):

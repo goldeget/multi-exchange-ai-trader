@@ -184,7 +184,8 @@ class SpotStrategy(Strategy):  # type: ignore[misc]
                 "positions": sorted(positions, key=lambda row: row["instrument"]),
                 "orders": orders, "fills": self.fills,
                 "marks": {symbol: str(mark) for symbol, mark in self.marks.items()},
-                "fill_policy": "SPOT_L1_FULL_LIQUIDITY_V2", "fee_currency": "USDT"}
+                "fill_policy": "SPOT_L1_SPREAD_FULL_LIQUIDITY_V2", "fee_currency": "USDT",
+                "bid_offset_ticks": -1, "ask_offset_ticks": 1, "extra_slippage_ticks": 0}
 
 
 def replay(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -198,7 +199,7 @@ def replay(events: list[dict[str, Any]]) -> dict[str, Any]:
         engine.add_venue(VENUE, oms_type=OmsType.NETTING, account_type=AccountType.CASH,
                          base_currency=None, starting_balances=[Money(SEED, USDT), Money(0, BTC), Money(0, ETH)],
                          default_leverage=Decimal(1), allow_cash_borrowing=False,
-                         fill_model=FillModel(prob_slippage=1.0, random_seed=42),
+                         fill_model=FillModel(prob_slippage=0.0, random_seed=42),
                          use_message_queue=False, use_reduce_only=True)
         for inst in specs.values():
             engine.add_instrument(inst)
@@ -208,7 +209,8 @@ def replay(events: list[dict[str, Any]]) -> dict[str, Any]:
 
         def quote(symbol: str, stamp: int) -> Any:
             inst = specs[symbol]
-            return QuoteTick(inst.id, inst.make_price(Decimal(marks[symbol])), inst.make_price(Decimal(marks[symbol])),
+            mark, spread = Decimal(marks[symbol]), Decimal(SPECS[symbol]["tick"])
+            return QuoteTick(inst.id, inst.make_price(mark - spread), inst.make_price(mark + spread),
                              inst.make_qty(Decimal(1000)), inst.make_qty(Decimal(1000)), stamp, stamp)
 
         data = [quote(symbol, BASE_NS + index + 1) for index, symbol in enumerate(specs)]

@@ -75,6 +75,33 @@ class EvaluationConfigTests(unittest.TestCase):
         self.assertTrue(all(c["fee_rate"] == "0.001" and c["slippage_ticks"] == 2
                             for c, _start, _end in observed))
 
+    def test_configured_capital_and_splits_are_applied_without_holdout_overlap(self):
+        from multi_exchange_trader.research.evaluation import evaluate
+
+        settings = {**self.config, "initial_equity": "25000", "train_percent": 50,
+                    "validation_percent": 20}
+        observed = []
+
+        def run(_dataset, config, start, end):
+            observed.append(config)
+            return {"initial_equity": config["initial_equity"],
+                    "curve": [{"equity": config["initial_equity"]}],
+                    "trades": [], "net_pnl": "0", "config": config}
+
+        with patch.dict(sys.modules, {"multi_exchange_trader.research.native": SimpleNamespace(run_segment=run)}):
+            report = evaluate(self.data, settings)
+        self.assertEqual(report["splits"], {"train": [0, 120], "validation": [120, 168], "test": [168, 240]})
+        self.assertEqual(report["assumptions"]["seed"], "25000.00000000")
+        self.assertTrue(all(c["initial_equity"] == "25000" for c in observed))
+        self.assertTrue(all(fold["test_range"][1] <= 168 for fold in report["walk_forward"]))
+
+    def test_capital_and_split_bounds_refuse_invalid_or_ambiguous_requests(self):
+        for fields in ({"initial_equity": "99"}, {"initial_equity": "1000001"},
+                       {"train_percent": True}, {"train_percent": 39},
+                       {"validation_percent": 31}, {"train_percent": 70, "validation_percent": 30}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                self.validator()({**self.config, **fields}, self.data)
+
 
 if __name__ == "__main__":
     unittest.main()

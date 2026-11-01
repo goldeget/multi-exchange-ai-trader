@@ -80,3 +80,8 @@ def test_spot_metadata_never_opens_as_v1_and_sell_reserves_inventory(tmp_path):
     assert Decimal(btc["free"]) == Decimal("0.004")
     with pytest.raises(ValueError, match="inventory|balance"):
         store.command("spot", "oversell", order("sell", quantity="0.005"))
+    filled = store.command("spot", "sell-cross", tick("62000.0"))
+    sale = filled["fills"][-1]
+    assert sale["side"] == "SELL"
+    assert Decimal(sale["price"]) >= Decimal("61000.0")
+    assert Decimal(sale["fee"]) == (Decimal(sale["quantity"]) * Decimal(sale["price"]) * Decimal("0.0004")).quantize(Decimal("0.00000001"))

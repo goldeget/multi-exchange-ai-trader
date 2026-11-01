@@ -9,6 +9,9 @@ def isolated_api_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("PHASE4_DB_PATH", str(tmp_path / "research.sqlite3"))
     monkeypatch.setenv("PHASE4_DATA_ROOT", str(tmp_path / "datasets"))
     monkeypatch.setenv("RECOMMENDATION_DB_PATH", str(tmp_path / "recommendations.sqlite3"))
+    monkeypatch.setenv("PAPER_SPOT_DB_PATH", str(tmp_path / "spot-paper.sqlite3"))
+    monkeypatch.setenv("PAPER_REVIEW_DB_PATH", str(tmp_path / "order-reviews.sqlite3"))
+    monkeypatch.setenv("AI_DB_PATH", str(tmp_path / "ai.sqlite3"))
     # Never read the operator .env or inherited Bybit keys during tests.
     monkeypatch.setenv("BYBIT_ENV_FILE", "off")
     monkeypatch.delenv("BYBIT_API_KEY", raising=False)

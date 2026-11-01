@@ -64,8 +64,10 @@ def evaluate(dataset: dict[str, Any], settings: dict[str, Any] | None = None) ->
     quantity = settings["quantity"] if settings else (
         "0.010" if dataset["symbol"].startswith("BTC") else "0.10"
     )
-    train_end = first + n * 6 // 10
-    test_start = first + n * 8 // 10
+    train_pct = settings.get("train_percent", 60) if settings else 60
+    validation_pct = settings.get("validation_percent", 20) if settings else 20
+    train_end = first + n * train_pct // 100
+    test_start = first + n * (train_pct + validation_pct) // 100
 
     def run(config: dict[str, Any], start: int, end: int) -> dict[str, Any]:
         result = run_segment(dataset, config, start, end)
@@ -86,6 +88,8 @@ def evaluate(dataset: dict[str, Any], settings: dict[str, Any] | None = None) ->
                 config.update({k: settings[k] for k in (
                     "config_version", "fee_rate", "slippage_ticks", "leverage"
                 )})
+                if "initial_equity" in settings:
+                    config["initial_equity"] = settings["initial_equity"]
             result = run(config, first, end)
             candidates.append(
                 {
@@ -103,8 +107,9 @@ def evaluate(dataset: dict[str, Any], settings: dict[str, Any] | None = None) ->
     selected, candidates = select(train_end)
     walk = []
     for pct in (50, 60, 70):
-        train = first + n * pct // 100
-        end = first + n * (pct + 10) // 100
+        # V1 indices remain exact. Configured folds never consume the final holdout.
+        train = first + (test_start - first) * pct // 80 if settings else first + n * pct // 100
+        end = first + (test_start - first) * (pct + 10) // 80 if settings else first + n * (pct + 10) // 100
         config, choices = select(train)
         walk.append(
             {
@@ -157,6 +162,7 @@ def evaluate(dataset: dict[str, Any], settings: dict[str, Any] | None = None) ->
             config_hash=checksum(settings), requested_range=[settings["start_ms"], settings["end_ms"]],
         )
         report["assumptions"].update(
+            seed=money(Decimal(settings.get("initial_equity", "10000"))),
             fee_rate=settings["fee_rate"], adverse_slippage=f"{settings['slippage_ticks']}native ticks",
             leverage=None if dataset["market"] == "spot" else settings["leverage"],
             selection="explicit frozen settings; no optimization; chronological holdout and walk-forward",

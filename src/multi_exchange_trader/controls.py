@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .ai.budget import BudgetBook
 from .capabilities import capabilities
 from .read_models import read_overview
+from .recommendations.execution import demo_capability
 from .research.api import public_scheduler
 
 
@@ -30,10 +31,27 @@ def _connections(request: Request) -> dict[str, Any]:
             "bybit": {"registered": registered, "status": status,
                       "permission": "READ_ONLY_CLIENT", "verified_at": None,
                       "execution": "NONE", "source": "ACCOUNT_READONLY"},
+            "bybit_demo": demo_capability(getattr(request.app.state, "bybit_practice", None) is not None,
+                                          blocked=_practice_blocked(request)),
             "ai": {"registered": False, "status": "NOT_CONFIGURED" if isinstance(
                        getattr(request.app.state, "ai_budget", None), BudgetBook
                    ) else "STORAGE_UNAVAILABLE", "verified_at": None,
                    "mode": "OFFLINE_TEST", "external_calls": False}}
+
+
+def _practice_records(request: Request) -> dict[str, Any]:
+    try:
+        return dict(request.app.state.recommendation_book.practice_summary())
+    except (ValueError, TypeError, AttributeError, sqlite3.Error):
+        return {"uncertain_count": None, "close_failed_count": None, "acknowledged_count": None}
+
+
+def _practice_blocked(request: Request) -> bool:
+    if getattr(request.app.state, "bybit_practice", None) is None:
+        return False
+    records = _practice_records(request)
+    return (records["uncertain_count"] is None or records["close_failed_count"] is None
+            or records["uncertain_count"] > 0 or records["close_failed_count"] > 0)
 
 
 def _scheduler(request: Request, value: dict[str, Any]) -> dict[str, object]:
@@ -54,6 +72,8 @@ def install(application: FastAPI) -> None:
     async def support(request: Request) -> dict[str, Any]:
         value = capabilities(
             account_registered=getattr(request.app.state, "bybit_account", None) is not None,
+            practice_registered=getattr(request.app.state, "bybit_practice", None) is not None,
+            practice_blocked=_practice_blocked(request),
             research_v2=getattr(request.app.state, "research_v2_supported", False) is True,
             spot_qualified=(getattr(request.app.state, "spot_paper_qualified", False) is True
                             and getattr(request.app.state, "spot_paper_store", None) is not None),
@@ -114,6 +134,7 @@ def install(application: FastAPI) -> None:
             pending = await asyncio.to_thread(reviews(request).unresolved_count)
         except (ValueError, TypeError, sqlite3.Error):
             pending = None
+        practice_records = await asyncio.to_thread(_practice_records, request)
         return {"schema_version": 1, "live_order_enabled": False,
                 "components": {
                     "server": {"state": "RESPONDING", "meaning": "LIVENESS_ONLY"},
@@ -123,6 +144,7 @@ def install(application: FastAPI) -> None:
                     ) else "READABLE", "unresolved_confirmations": pending,
                                      "review_state": "UNAVAILABLE" if pending is None else "READABLE"},
                     "account": _connections(request)["bybit"],
+                    "bybit_demo": {**_connections(request)["bybit_demo"], **practice_records},
                     "ai": _connections(request)["ai"],
                 }, "errors": value["errors"]}
 

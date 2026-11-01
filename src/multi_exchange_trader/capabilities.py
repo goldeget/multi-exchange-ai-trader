@@ -6,18 +6,23 @@ import sys
 from typing import Any
 
 from .paper.contract import VERSION
+from .recommendations.execution import demo_capability
 
 
 def capabilities(*, account_registered: bool = False,
                  research_v2: bool = False,
                  native_runtime_available: bool | None = None,
-                 spot_qualified: bool = False) -> dict[str, Any]:
+                 spot_qualified: bool = False,
+                 practice_registered: bool = False, practice_blocked: bool = False) -> dict[str, Any]:
     if native_runtime_available is None:
         native_runtime_available = (sys.platform == "linux" and platform.machine() == "x86_64"
                                     and importlib.util.find_spec("nautilus_trader") is not None)
     return {
         "schema_version": 1,
         "live_order_enabled": False,
+        "demo_order_enabled": practice_registered and not practice_blocked,
+        "recommendations": {"source": "RULE", "local_ledger_execution": "PAPER",
+                            "demo_connectivity_test": demo_capability(practice_registered, blocked=practice_blocked)},
         "account_readonly": {"bybit": account_registered},
         "manual_paper": {
             "source": "SYNTHETIC", "execution": "PAPER", "config_revision": VERSION,
