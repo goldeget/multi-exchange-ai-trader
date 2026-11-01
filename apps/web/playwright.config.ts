@@ -16,6 +16,9 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4174',
     browserName: 'chromium',
+    // Use Chromium's web-test CPU path across different hosted runner CPUs.
+    // Reviewed pixels and zero-difference assertions remain unchanged.
+    launchOptions: {args: ['--disable-skia-runtime-opts']},
     locale: 'ko-KR',
     timezoneId: 'Asia/Seoul',
     deviceScaleFactor: 1,
