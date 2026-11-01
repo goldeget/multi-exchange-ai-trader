@@ -19,3 +19,7 @@ No real account, DEMO account, paid AI, or external order service was called by 
 ## Final capture-source qualification
 
 [CI run 41275471851](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41275471851), source `2ab1439a90225aad03c85cff9daa4e0dfa48a79c`, passed all five jobs. Python492 tests and28 subtests in298.22s; Ruff and mypy63 passed. Frontend158 unit tests, lint, typecheck and build passed. Browser94 passed,24 intentional desktop duplicate skips. Capture-only148PNG artifact13070907150, SHA256 `ed80297392997254be9c9db46ae1154df5407a92353aa336d4dbbd30ecbe6068`. This evidence is not the later strict screenshot gate; final PR and merge CI must qualify the exact final source. No external orders or paid AI calls were made.
+
+## Final reviewed capture checkpoint
+
+[CI run 41277760236](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41277760236), source `e6c774bb9ed6751ca6e403da1158ba687c879948`, passed all five jobs. Python492/28subtests in297.95s, Ruff/mypy63; frontend163 tests across27files/lint/types/build; browser94passed24intentional skips; secret/dependency passed. Reviewed148PNG captures are now pinned by SHA-256 and Git blob value. The final commit removes capture-only workflow mode and requires exact screenshot comparison; its checks and merged main checks remain the authoritative final acceptance evidence.
