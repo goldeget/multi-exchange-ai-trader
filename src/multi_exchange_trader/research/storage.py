@@ -79,7 +79,7 @@ class ResearchStore:
                 db.execute("BEGIN IMMEDIATE")
                 for row in db.execute("SELECT id FROM runs").fetchall():
                     state = self.verify(db, row["id"], native=True)
-                    if state["status"] == "RUNNING":
+                    if state["status"] in {"RUNNING", "ENTRY_PAUSED"}:
                         state.update(
                             status="PAUSED_RECOVERY",
                             reason="process_restart_requires_explicit_resume",
@@ -164,6 +164,14 @@ class ResearchStore:
         if state["run_id"] != run or len(state["native_events"]) + 1 > 500:
             raise ValueError("Phase4 run/event identity")
         validate_config(state["config"], self.dataset(state["dataset_id"]))
+        if state["config"].get("config_version") == 2 and (
+            state.get("config_version") != 2
+            or state.get("config_hash") != checksum(state["config"])
+            or type(state.get("entry_paused")) is not bool
+            or (state["status"] == "ENTRY_PAUSED" and not state["entry_paused"])
+            or (state["status"] == "RUNNING" and state["entry_paused"])
+        ):
+            raise ValueError("Phase4 V2 config/state reconciliation")
         digest = checksum(state)
         if native or digest not in self.verified:
             if sandbox_replay(state["native_events"]) != state["native"]:
@@ -242,6 +250,8 @@ class ResearchStore:
                     "account_scope": "independent_synthetic_account",
                     "funding_entries": 1,
                 }
+                if config.get("config_version") == 2:
+                    state.update(config_version=2, config_hash=checksum(config), entry_paused=False)
                 self.record(db, state, "create:" + checksum([key, payload]))
                 db.execute(
                     "INSERT INTO commands VALUES (?,?,?,?)", (run, key, payload, canonical(state))
@@ -255,7 +265,9 @@ class ResearchStore:
     def command(self, run: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
         identifier(run)
         identifier(key)
-        if set(payload) != {"action"} or payload["action"] not in ("resume", "pause", "stop"):
+        if set(payload) != {"action"} or payload["action"] not in (
+            "resume", "pause", "stop", "pause_entries", "resume_entries"
+        ):
             raise ValueError("Phase4 fixed action required")
         raw = canonical(payload)
         with LOCK, self.db() as db:
@@ -266,6 +278,11 @@ class ResearchStore:
                 if prior is not None:
                     return prior
                 action = payload["action"]
+                if action in {"pause_entries", "resume_entries"} and (
+                    state["config"].get("config_version") != 2
+                    or state["status"] not in {"RUNNING", "ENTRY_PAUSED"}
+                ):
+                    raise ValueError("Phase4 entry control requires an active V2 run")
                 if state["status"] in TERMINAL:
                     if action != "stop":
                         raise ValueError("Phase4 terminal run cannot resume")
@@ -274,9 +291,14 @@ class ResearchStore:
                     state.update(status="STOPPED", reason="operator_stop")
                 elif action == "pause":
                     state.update(status="PAUSED", reason="operator_pause")
-                elif state["status"] != "RUNNING":
+                elif action == "pause_entries":
+                    state.update(status="ENTRY_PAUSED", entry_paused=True, reason="operator_entry_pause")
+                elif action == "resume_entries":
+                    state.update(status="RUNNING", entry_paused=False, reason="operator_entry_resume")
+                elif state["status"] not in {"RUNNING", "ENTRY_PAUSED"}:
                     state.update(
-                        status="RUNNING", reason="explicit_resume", next_due_at=now().isoformat()
+                        status="ENTRY_PAUSED" if state.get("entry_paused") else "RUNNING",
+                        reason="explicit_resume", next_due_at=now().isoformat()
                     )
                 self.record(db, state, action + ":" + checksum([key, raw]))
                 db.execute(
@@ -295,7 +317,7 @@ class ResearchStore:
                 db.execute("BEGIN IMMEDIATE")
                 state = self.verify(db, run)
                 if (
-                    state["status"] != "RUNNING"
+                    state["status"] not in {"RUNNING", "ENTRY_PAUSED"}
                     or state["cursor"] != expected_cursor
                     or now < datetime.fromisoformat(state["next_due_at"])
                 ):
@@ -361,17 +383,31 @@ class ResearchStore:
             or checksum({k: v for k, v in report.items() if k != "reproducibility_hash"}) != key
         ):
             raise ValueError("Phase4 report checksum")
-        self.dataset(report["dataset_id"])
+        dataset = self.dataset(report["dataset_id"])
+        if report.get("schema") == "RESEARCH_REPORT_V2":
+            from .configuration import evaluation_config
 
-    def evaluate(self, key: str, dataset_id: str) -> dict[str, Any]:
+            config, _start, _end = evaluation_config(report["evaluation_config"], dataset)
+            if report.get("config_hash") != checksum(config):
+                raise ValueError("Phase4 evaluation config checksum")
+
+    def evaluate(
+        self, key: str, dataset_id: str, config: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         identifier(key)
         dataset = self.dataset(dataset_id)
+        identity = dataset_id
+        if config is not None:
+            from .configuration import evaluation_config
+
+            config, _start, _end = evaluation_config(config, dataset)
+            identity = canonical({"dataset_id": dataset_id, "config": config})
         with LOCK, self.db() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 old = db.execute("SELECT * FROM report_commands WHERE key=?", (key,)).fetchone()
                 if old:
-                    if old["dataset"] != dataset_id:
+                    if old["dataset"] != identity:
                         raise ValueError("Phase4 idempotency conflict")
                     result: dict[str, Any] = json.loads(
                         db.execute(
@@ -382,11 +418,11 @@ class ResearchStore:
                     return result
                 if db.execute("SELECT count(*) FROM reports").fetchone()[0] >= 32:
                     raise ValueError("Phase4 report limit")
-                report = sandbox_evaluate(dataset)
+                report = sandbox_evaluate(dataset) if config is None else sandbox_evaluate(dataset, config)
                 rid = report["reproducibility_hash"]
                 self.check_report(report, rid)
                 db.execute("INSERT OR IGNORE INTO reports VALUES (?,?)", (rid, canonical(report)))
-                db.execute("INSERT INTO report_commands VALUES (?,?,?)", (key, dataset_id, rid))
+                db.execute("INSERT INTO report_commands VALUES (?,?,?)", (key, identity, rid))
                 db.commit()
                 return report
             except sqlite3.Error:

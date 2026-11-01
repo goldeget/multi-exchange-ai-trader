@@ -2,8 +2,10 @@
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -12,6 +14,8 @@ from fastapi.responses import JSONResponse
 from .account.api import install as install_account
 from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
+from .ai.budget import BudgetBook
+from .controls import install as install_controls
 from .market_data.adapters.base import MarketDataUnavailable
 from .market_data.adapters.binance import BinanceAdapter
 from .market_data.adapters.bybit import BybitAdapter
@@ -20,6 +24,7 @@ from .market_data.models import Candle, MarketType, Ticker
 from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 from .paper.api import install as install_paper
+from .paper.order_preview import OrderReviews
 from .paper.store import PaperStore
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
@@ -44,6 +49,22 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.paper_store = PaperStore(
             os.environ.get("PAPER_DB_PATH", "work/phase3-data/paper.sqlite3")
         )
+        sidecar_root = application.state.paper_store.path.parent
+        application.state.order_reviews = None
+        application.state.ai_budget = None
+        try:
+            application.state.order_reviews = OrderReviews(
+                Path(os.environ.get("PAPER_REVIEW_DB_PATH", str(sidecar_root / "order-reviews.sqlite3"))),
+                application.state.paper_store,
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # Isolate review sidecar failure from existing ledger reads and risk reduction.
+        try:
+            application.state.ai_budget = BudgetBook(
+                Path(os.environ.get("AI_DB_PATH", str(sidecar_root / "ai.sqlite3")))
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # Optional AI state must not stop the PAPER scheduler or other reads.
         application.state.recommendation_book = RecommendationBook(
             os.environ.get("RECOMMENDATION_DB_PATH", "work/recommendations.sqlite3")
         )
@@ -167,6 +188,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
     install_research(application)
     install_recommendations(application)
     install_account(application)
+    install_controls(application)
     return application
 
 

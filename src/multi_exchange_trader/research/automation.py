@@ -23,8 +23,10 @@ def streak_after(current: int, net: str) -> int:
     return current + 1 if Decimal(net) < 0 else 0
 
 
-def default_auto_config(dataset_id: str) -> dict[str, Any]:
-    return {
+def default_auto_config(dataset_id: str, *, version: int = 1) -> dict[str, Any]:
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("automatic config version")
+    config: dict[str, Any] = {
         "dataset_id": dataset_id,
         "bar_limit": 80,
         "quantity": "0.010",
@@ -35,17 +37,27 @@ def default_auto_config(dataset_id: str) -> dict[str, Any]:
         "max_drawdown": "0.05",
         "max_consecutive_losses": 3,
     }
+    if version == 2:
+        config.update(config_version=2, leverage=3)
+    return config
 
 
 def validate_config(config: dict[str, Any], dataset: dict[str, Any]) -> None:
     validate_dataset(dataset)
+    version = config.get("config_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("automatic config version")
     if (
-        set(config) != set(default_auto_config(dataset["dataset_id"]))
+        set(config) != set(default_auto_config(dataset["dataset_id"], version=version))
         or config["dataset_id"] != dataset["dataset_id"]
         or not dataset["synthetic"]
         or dataset["market"] != "synthetic_perpetual"
     ):
         raise ValueError("automatic PAPER only accepts local synthetic perpetual data")
+    if version == 2 and (
+        type(config["leverage"]) is not int or not 1 <= config["leverage"] <= 20
+    ):
+        raise ValueError("synthetic PAPER leverage must be an integer within 1..20")
     config_check(
         {
             "strategy": "SMA_CROSS_V1",
@@ -199,7 +211,7 @@ def advance(state: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
             if current != target:
                 if position and not emit({"kind": "close", "quantity": position["quantity"]}):
                     break
-                if target != "flat":
+                if target != "flat" and state["status"] != "ENTRY_PAUSED":
                     adverse = Decimal(bar["open"]) + Decimal(SPECS[symbol]["tick"]) * (
                         1 if target == "long" else -1
                     )
@@ -212,12 +224,12 @@ def advance(state: dict[str, Any], dataset: dict[str, Any]) -> dict[str, Any]:
                             "kind": "enter",
                             "side": target,
                             "quantity": config["quantity"],
-                            "leverage": 10,
+                            "leverage": config.get("leverage", 10),
                         }
                     ):
                         break
     state["cursor"] = cursor + 1
-    if state["status"] == "RUNNING" and state["cursor"] >= config["bar_limit"]:
+    if state["status"] in {"RUNNING", "ENTRY_PAUSED"} and state["cursor"] >= config["bar_limit"]:
         state.update(status="STOPPED", reason="source_exhausted")
         flatten(state)
     return state

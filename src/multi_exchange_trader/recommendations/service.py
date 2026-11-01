@@ -152,6 +152,33 @@ class RecommendationService:
             "안내": NOTICE,
         }
 
+    def view(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Additive normalized read contract; existing Korean command replies stay intact."""
+        payload = record["payload"]
+        card = self.present(record)
+        return {"id": record["id"], "source": "RULE", "snapshot": dict(payload),
+                "side": payload.get("side", "flat"), "reason": payload.get("why", ""),
+                "invalidation": payload.get("why_not", ""),
+                "missingData": [] if payload.get("fresh") else [payload.get("freshness", "시세 확인 필요")],
+                "expiresAt": payload["expires_at"], "reviewState": record["status"],
+                "approvable": card["승인가능"], "card": card,
+                "execution": "PAPER", "updatedAt": record["updated_at"]}
+
+    async def listing(self) -> dict[str, Any]:
+        async with self.lock:
+            records = self.book.recent()
+            records = [self.book.expire_if_needed(record["id"], self.now()) for record in records]
+            return {"recommendations": [self.view(record) for record in records],
+                    "server_time": self.now().isoformat()}
+
+    async def detail(self, card_id: str) -> dict[str, Any]:
+        self._check_id(card_id)
+        async with self.lock:
+            if self.book.get(card_id) is None:
+                raise Refusal("추천을 찾지 못했습니다. 주문은 없습니다.", 404)
+            record = self.book.expire_if_needed(card_id, self.now())
+            return {"recommendation": self.view(record), "server_time": self.now().isoformat()}
+
     async def preview(self, body: object) -> tuple[dict[str, object], int]:
         exchange, symbol, market_type = parse_selection(body)
         plan = await self._plan(exchange, symbol, market_type)

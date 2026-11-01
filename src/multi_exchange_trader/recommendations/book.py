@@ -82,6 +82,16 @@ class RecommendationBook:
         with self._lock, self._connect() as db:
             return self._row(db, card_id)
 
+    def recent(self, limit: int = 100) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("추천 조회 개수를 확인하세요")
+        with self._lock, self._connect() as db:
+            ids = [str(row[0]) for row in db.execute(
+                "SELECT id FROM cards ORDER BY updated_at DESC,id DESC LIMIT ?", (limit,)
+            )]
+            records = [self._row(db, card_id) for card_id in ids]
+            return [record for record in records if record is not None]
+
     def upsert(self, plan: Plan) -> dict[str, Any]:
         card_id = plan_id(plan)
         payload = json.dumps(plan.payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)

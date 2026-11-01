@@ -244,3 +244,26 @@ async def test_bybit_approval_checks_practice_account_without_an_order(
         assert "실계좌 주문은 없습니다" in body["메시지"]
         assert "자동으로 넣지 않았습니다" in body["메시지"]
         assert app.state.bybit_practice.orders == 0
+
+
+async def test_list_detail_are_rule_sourced_and_expire_without_new_market_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session(tmp_path, monkeypatch) as (client, script, app, clock):
+        card = await preview(client)
+        calls = len(script.calls)
+        listing = await client.get("/api/v1/recommendations")
+        assert listing.status_code == 200
+        view = listing.json()["recommendations"][0]
+        assert view["id"] == card["번호"]
+        assert view["source"] == "RULE"
+        assert view["reviewState"] == "pending"
+        detail = await client.get(f"/api/v1/recommendations/{card['번호']}")
+        assert detail.json()["recommendation"]["id"] == card["번호"]
+        clock.at += timedelta(minutes=16)
+        expired = await client.get(f"/api/v1/recommendations/{card['번호']}")
+        assert expired.json()["recommendation"]["reviewState"] == "expired"
+        assert expired.json()["recommendation"]["approvable"] is False
+        assert len(script.calls) == calls
+        assert app.state.paper_store.scenarios() == []
+        assert (await client.get("/api/v1/recommendations/not-a-card")).status_code == 404

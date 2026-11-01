@@ -236,7 +236,25 @@ class PaperStore:
             raise ValueError("PAPER settlement reconciliation")
         return events, state
 
-    def command(self, scenario: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def preview_command(
+        self, scenario: str, payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Validate with the same native replay as a command, without writing any event."""
+        identifier(scenario)
+        if payload.get("kind") not in {"enter", "close", "protect"}:
+            raise ValueError("unsupported review command")
+        with _LOCK, self.db() as db:
+            db.execute("BEGIN")
+            rows, current = self.verified(db, scenario)
+            candidate = self.rebuild(
+                scenario, rows + [{"payload": payload, "received_at": clock().isoformat()}]
+            )
+            return current, candidate
+
+    def command(
+        self, scenario: str, key: str, payload: dict[str, Any], *,
+        expected_revision: int | None = None, expires_at: datetime | None = None,
+    ) -> dict[str, Any]:
         identifier(scenario)
         identifier(key)
         if not isinstance(payload, dict):
@@ -270,6 +288,12 @@ class PaperStore:
                         raise ValueError("PAPER scenario limit")
                     rows = []
                     old = {"fills": [], "orders": []}
+                # These checks run inside the ledger write transaction. A prior committed
+                # command above is returned first even after its review has expired.
+                if expected_revision is not None and len(rows) != expected_revision:
+                    raise ValueError("PAPER review revision changed; review again")
+                if expires_at is not None and clock() >= expires_at:
+                    raise ValueError("PAPER review expired")
                 if len(rows) >= 500:
                     raise ValueError("PAPER event limit; use a separate scenario")
                 received = clock().isoformat()

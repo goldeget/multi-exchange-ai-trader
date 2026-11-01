@@ -64,7 +64,7 @@ def public_scheduler(request: Request, runs: list[dict[str, Any]]) -> dict[str, 
     health: dict[str, object] = dict(raw) if isinstance(raw, dict) else {}
     task = getattr(request.app.state, "research_task", None)
     alive = isinstance(task, asyncio.Task) and not task.done()
-    stored = sum(1 for row in runs if row.get("status") == "RUNNING")
+    stored = sum(1 for row in runs if row.get("status") in {"RUNNING", "ENTRY_PAUSED"})
     state = health.get("state")
     differs = stored > 0 and (not alive or state in {"FAIL_CLOSED", "STALLED", "STOPPED"})
     health["task_alive"] = alive
@@ -175,10 +175,12 @@ def install(app: FastAPI) -> None:
     async def evaluate(request: Request) -> Any:
         try:
             body = await request.json()
-            if not isinstance(body, dict) or set(body) != {"idempotency_key", "dataset_id"}:
+            if not isinstance(body, dict) or set(body) not in (
+                {"idempotency_key", "dataset_id"}, {"idempotency_key", "dataset_id", "config"}
+            ) or ("config" in body and not isinstance(body["config"], dict)):
                 raise ValueError("research body")
             return await asyncio.to_thread(
-                service(request).evaluate, body["idempotency_key"], body["dataset_id"]
+                service(request).evaluate, body["idempotency_key"], body["dataset_id"], body.get("config")
             )
         except (ValueError, TypeError) as e:
             return failure(e)

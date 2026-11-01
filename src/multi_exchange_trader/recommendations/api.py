@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, cast
 
 from fastapi import APIRouter, FastAPI, Request
@@ -38,6 +39,22 @@ async def _body(request: Request, allowed: set[str]) -> object:
 
 def install(application: FastAPI) -> None:
     router = APIRouter(prefix="/api/v1/recommendations")
+
+    @router.get("")
+    async def listing(request: Request) -> JSONResponse:
+        try:
+            return JSONResponse(content=await _service(request).listing())
+        except (ValueError, TypeError, sqlite3.Error):
+            return JSONResponse(status_code=503, content={"reason": "recommendations_unavailable"})
+
+    @router.get("/{card_id}")
+    async def detail(card_id: str, request: Request) -> JSONResponse:
+        try:
+            return JSONResponse(content=await _service(request).detail(card_id))
+        except Refusal as exc:
+            return JSONResponse(status_code=exc.status_code, content={"reason": "recommendation_not_found"})
+        except (ValueError, TypeError, sqlite3.Error):
+            return JSONResponse(status_code=503, content={"reason": "recommendations_unavailable"})
 
     @router.post("/preview")
     async def preview(request: Request) -> JSONResponse:

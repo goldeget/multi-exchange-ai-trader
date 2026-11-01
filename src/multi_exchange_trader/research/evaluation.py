@@ -49,16 +49,23 @@ def metrics(equities: list[str], trades: list[dict[str, Any]]) -> dict[str, Any]
     }
 
 
-def evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
+def evaluate(dataset: dict[str, Any], settings: dict[str, Any] | None = None) -> dict[str, Any]:
     from .native import run_segment
 
     validate_dataset(dataset)
-    n = len(dataset["bars"])
+    first, last = 0, len(dataset["bars"])
+    if settings is not None:
+        from .configuration import evaluation_config
+
+        settings, first, last = evaluation_config(settings, dataset)
+    n = last - first
     if n < 100:
         raise ValueError("at least100closed bars for chronological evaluation")
-    quantity = "0.010" if dataset["symbol"].startswith("BTC") else "0.10"
-    train_end = n * 6 // 10
-    test_start = n * 8 // 10
+    quantity = settings["quantity"] if settings else (
+        "0.010" if dataset["symbol"].startswith("BTC") else "0.10"
+    )
+    train_end = first + n * 6 // 10
+    test_start = first + n * 8 // 10
 
     def run(config: dict[str, Any], start: int, end: int) -> dict[str, Any]:
         result = run_segment(dataset, config, start, end)
@@ -72,9 +79,14 @@ def evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
 
     def select(end: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         candidates = []
-        for fast, slow in [(3, 10), (5, 20)]:
+        windows = [(settings["fast"], settings["slow"])] if settings else [(3, 10), (5, 20)]
+        for fast, slow in windows:
             config = {"strategy": "SMA_CROSS_V1", "quantity": quantity, "fast": fast, "slow": slow}
-            result = run(config, 0, end)
+            if settings:
+                config.update({k: settings[k] for k in (
+                    "config_version", "fee_rate", "slippage_ticks", "leverage"
+                )})
+            result = run(config, first, end)
             candidates.append(
                 {
                     "config": config,
@@ -91,12 +103,12 @@ def evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
     selected, candidates = select(train_end)
     walk = []
     for pct in (50, 60, 70):
-        train = n * pct // 100
-        end = n * (pct + 10) // 100
+        train = first + n * pct // 100
+        end = first + n * (pct + 10) // 100
         config, choices = select(train)
         walk.append(
             {
-                "train_range": [0, train],
+                "train_range": [first, train],
                 "test_range": [train, end],
                 "selected_config": config,
                 "training_candidates": choices,
@@ -117,16 +129,16 @@ def evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
         else "SPOT_RESEARCH_SHORT_FUNCTIONAL_SAMPLE_NOT_PROFITABILITY_VALIDATION",
         "sample_warning": "30days/720hourly bars (or shorter synthetic fixture) is a short functional sample; not profitability, live readiness or perpetual-data validation",
         "splits": {
-            "train": [0, train_end],
+            "train": [first, train_end],
             "validation": [train_end, test_start],
-            "test": [test_start, n],
+            "test": [test_start, last],
         },
         "selected_config": selected,
         "training_candidates": candidates,
         "validation": run(selected, train_end, test_start),
-        "test": run(selected, test_start, n),
+        "test": run(selected, test_start, last),
         "walk_forward": walk,
-        "buy_hold_test": run({**selected, "strategy": "BUY_HOLD_V1"}, test_start, n),
+        "buy_hold_test": run({**selected, "strategy": "BUY_HOLD_V1"}, test_start, last),
         "assumptions": {
             "seed": money(Decimal(10000)),
             "fee_rate": "0.0004",
@@ -139,5 +151,15 @@ def evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
         },
         "network_sandbox": "direct_function_not_OS_isolated",
     }
+    if settings:
+        report.update(
+            schema="RESEARCH_REPORT_V2", evaluation_config=settings,
+            config_hash=checksum(settings), requested_range=[settings["start_ms"], settings["end_ms"]],
+        )
+        report["assumptions"].update(
+            fee_rate=settings["fee_rate"], adverse_slippage=f"{settings['slippage_ticks']}native ticks",
+            leverage=None if dataset["market"] == "spot" else settings["leverage"],
+            selection="explicit frozen settings; no optimization; chronological holdout and walk-forward",
+        )
     report["reproducibility_hash"] = checksum(report)
     return report
