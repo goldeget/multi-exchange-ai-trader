@@ -46,6 +46,35 @@ jobs:
       - name: Run mypy
         run: uv run mypy src scripts
 
+  operations:
+    name: Linux operations checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "0.12.23"
+          enable-cache: false
+      - name: Install locked test dependencies
+        run: uv sync --locked
+      - name: Prepare nginx for isolated loopback tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends nginx
+          if systemctl is-active --quiet nginx; then
+            sudo systemctl stop nginx
+          fi
+      - name: Verify deployment and recovery boundaries on Linux
+        env:
+          REQUIRE_LINUX_OPERATIONS: "1"
+        run: uv run pytest -q tests/operations
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-24.04

@@ -58,6 +58,8 @@ PY_DATA
 
 ## 기존 DB를 보존하며 시작
 
+Linux 상시 서비스의 loopback 배포 설정과 여섯 장부·데이터셋의 정지 상태 백업·새 폴더 복원 절차는 [운영 배포 문서](docs/operations/LINUX_DEPLOYMENT_KO.md)에 있습니다. 이 설정은 인증된 외부·휴대전화 접속을 제공하지 않으며, 서비스가 재시작돼도 가상 실행은 복구 확인 후 직접 재개해야 합니다. Bybit와 Anthropic의 서버 설정 등록 상태 및 아직 검증하지 않은 권한의 구분은 [연결 준비 문서](docs/operations/CONNECTIONS_KO.md)를 확인하세요. Anthropic 생성 클라이언트와 실제 호출은 아직 구현하지 않았습니다.
+
 backend:
 
 ```sh
