@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -9,6 +9,9 @@ import {
 } from "lightweight-charts";
 import type { Candle } from "../api";
 export default function CandleChart({ candles }: { candles: Candle[] }) {
+  const [fontStatus, setFontStatus] = useState<"loading" | "ready" | "failed">(
+    () => typeof document.fonts?.load === "function" ? "loading" : "ready",
+  );
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<{
     chart: ReturnType<typeof createChart>;
@@ -17,20 +20,38 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     fitted: boolean;
   } | null>(null);
   const previousTimes = useRef<string[]>([]);
+  useEffect(() => {
+    const fonts = document.fonts;
+    if (typeof fonts?.load !== "function") return;
+    let active = true;
+    // Canvas text-width caches must first measure the bundled font, not a fallback.
+    void (async () => {
+      try {
+        await fonts.load('14px "Pretendard"', "0123456789 한글");
+        await fonts.ready;
+        if (active) setFontStatus("ready");
+      } catch {
+        if (active) setFontStatus("failed");
+      }
+    })();
+    return () => { active = false; };
+  }, []);
   useEffect(() => () => {
     instance.current?.chart.remove();
     instance.current = null;
     previousTimes.current = [];
   }, []);
   useEffect(() => {
-    if (!container.current) return;
+    if (!container.current || fontStatus !== "ready") return;
     if (!instance.current && candles.length) {
       const chart = createChart(container.current, {
-        height: 380,
+        height: container.current.clientHeight || 380,
         autoSize: true,
         layout: {
-          background: { type: ColorType.Solid, color: "#121A23" },
+          background: { type: ColorType.Solid, color: "#141E2A" },
           textColor: "#A8B5C4",
+          fontSize: 14,
+          fontFamily: "Pretendard, sans-serif",
           attributionLogo: true,
         },
         grid: {
@@ -45,15 +66,17 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
         handleScroll: { vertTouchDrag: false },
       });
       const series = chart.addSeries(CandlestickSeries, {
-        upColor: "#36C99A",
-        downColor: "#FF737D",
+        upColor: "#FF6B7A",
+        downColor: "#76A1FF",
         borderVisible: false,
-        wickUpColor: "#36C99A",
-        wickDownColor: "#FF737D",
+        wickUpColor: "#FF6B7A",
+        wickDownColor: "#76A1FF",
       });
       const volume = chart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
         priceScaleId: "volume",
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
       volume
         .priceScale()
@@ -83,7 +106,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       candles.map((c) => ({
         time: Math.floor(Date.parse(c.timestamp) / 1000) as UTCTimestamp,
         value: Number(c.volume),
-        color: Number(c.close) >= Number(c.open) ? "#267E67" : "#A34F59",
+        color: Number(c.close) >= Number(c.open) ? "#AD4758" : "#456FB5",
       })),
     );
     if (!candles.length) current.fitted = false;
@@ -94,7 +117,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       from: range.from + offset,
       to: range.to + offset,
     });
-  }, [candles]);
+  }, [candles, fontStatus]);
   return (
     <div
       ref={container}
@@ -105,6 +128,9 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       <span className="sr-only">
         가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.
       </span>
+      {fontStatus === "failed" && candles.length > 0 && (
+        <p role="alert">차트 글꼴을 불러오지 못했습니다. 화면을 새로고침하세요.</p>
+      )}
       {!candles.length && (
         <div className="chart-empty">
           <span aria-hidden="true">⌁</span>

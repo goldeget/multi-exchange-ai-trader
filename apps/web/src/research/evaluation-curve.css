@@ -1,0 +1,12 @@
+.evaluation-curve{margin:0;min-width:0;font-size:14px;line-height:1.5;color:#aebacb}
+.evaluation-curve-plot{display:grid;grid-template-columns:minmax(0,100px) minmax(0,1fr);gap:8px;min-width:0}
+.evaluation-curve-axis{display:flex;flex-direction:column;justify-content:space-between;gap:8px;min-width:0;font-size:14px;font-variant-numeric:tabular-nums}
+.evaluation-curve-axis small{font-size:14px}
+.evaluation-curve-axis span{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}
+.evaluation-curve svg{width:100%;height:240px;display:block;min-width:0}
+.evaluation-curve figcaption{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px;font-size:14px}
+.evaluation-curve-endpoint{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.evaluation-curve-endpoint strong{max-width:100%;overflow-x:auto;white-space:nowrap;font-size:16px;color:#e6edf6;font-variant-numeric:tabular-nums}
+.evaluation-curve-endpoint time{font-size:14px;color:#aebacb;word-break:keep-all}
+.evaluation-curve-unavailable{font-size:16px;line-height:1.5;word-break:keep-all}
+@media(max-width:400px){.evaluation-curve figcaption{grid-template-columns:minmax(0,1fr)}.evaluation-curve svg{height:220px}}

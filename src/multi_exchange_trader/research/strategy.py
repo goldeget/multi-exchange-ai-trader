@@ -7,11 +7,24 @@ from .data import decimal
 
 
 def config_check(config: dict[str, Any], symbol: str) -> None:
-    if set(config) != {"strategy", "quantity", "fast", "slow"} or config["strategy"] not in (
+    fields = {"strategy", "quantity", "fast", "slow"}
+    extra = {"config_version", "fee_rate", "slippage_ticks", "leverage"}
+    if (set(config) not in (fields, fields | extra, fields | extra | {"initial_equity"})
+            or config["strategy"] not in (
         "SMA_CROSS_V1",
         "BUY_HOLD_V1",
-    ):
+    )):
         raise ValueError("research strategy/config")
+    if extra <= set(config) and (
+        type(config["config_version"]) is not int or config["config_version"] != 2
+        or decimal(config["fee_rate"], zero=True) > Decimal("0.01")
+        or type(config["slippage_ticks"]) is not int or not 0 <= config["slippage_ticks"] <= 20
+        or type(config["leverage"]) is not int or not 1 <= config["leverage"] <= 20
+        or (not symbol.endswith("-PAPER") and config["leverage"] != 1)
+    ):
+        raise ValueError("research V2 execution costs")
+    if "initial_equity" in config and not Decimal(100) <= decimal(config["initial_equity"]) <= Decimal(1000000):
+        raise ValueError("research initial equity")
     fast, slow = config["fast"], config["slow"]
     if type(fast) is not int or type(slow) is not int or not 1 <= fast < slow <= 100:
         raise ValueError("SMA windows")

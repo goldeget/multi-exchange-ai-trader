@@ -15,12 +15,14 @@ from multi_exchange_trader.paper.contract import FEE, SPECS, reserve
 from multi_exchange_trader.paper.store import PaperStore
 
 from .book import RecommendationBook
+from .execution import approval_metadata, demo_state
 from .practice import (
     CLOSE_WARNING,
     OPEN_AND_CLOSE,
+    UNCERTAIN_WARNING,
     PracticeCheck,
     PracticeCloseFailed,
-    PracticeUnavailable,
+    PracticeUncertain,
 )
 from .rules import (
     CANDLE_LIMIT,
@@ -43,9 +45,11 @@ from .rules import (
 SCENARIO = "reco-paper"
 CARD_ID = re.compile(r"^[a-f0-9]{32}$")
 NOTICE = (
-    "수량과 레버리지는 규칙이 정합니다. 승인은 바이비트 연습 계좌의 가장 작은 "
-    "비트코인 선물 주문을 넣었다가 바로 닫습니다. 실계좌로 주문을 보내지 않습니다. "
-    "실거래는 꺼져 있습니다."
+    "수량과 레버리지는 규칙이 정합니다. 독립 가상 장부에 반영합니다. 실계좌 주문은 없습니다."
+)
+DEMO_NOTICE = (
+    "승인은 가상 장부 반영과 별도로 바이비트 연습 계좌의 비트코인 0.001 고정 매수·감축 연결 시험을 요청합니다. "
+    "이 시험은 추천 방향을 따르지 않으며, 접수 응답만으로 체결·포지션 종료를 확인하지 않습니다. 실계좌 주문은 없습니다."
 )
 
 
@@ -115,6 +119,13 @@ class RecommendationService:
                 return current if current.tzinfo else current.replace(tzinfo=UTC)
         return datetime.now(UTC)
 
+    def execution(self, payload: dict[str, Any]) -> dict[str, Any]:
+        blocked = False
+        if self.practice is not None and payload.get("exchange") == "bybit":
+            summary = self.book.practice_summary()
+            blocked = summary["uncertain_count"] > 0 or summary["close_failed_count"] > 0
+        return approval_metadata(payload, self.practice is not None, globally_blocked=blocked)
+
     def present(self, record: dict[str, Any]) -> dict[str, object]:
         payload = record["payload"]
         status = str(record["status"])
@@ -131,6 +142,7 @@ class RecommendationService:
             }.get(status, "확인 중")
         leverage = payload.get("leverage")
         expires = datetime.fromisoformat(str(payload["expires_at"]))
+        execution = self.execution(payload)
         approvable = payload.get("demo_close_failed") is not True and (
             status == "approving"
             or (
@@ -141,6 +153,7 @@ class RecommendationService:
                 and self.now() < expires
             )
         )
+        approvable = approvable and not execution["approval_blocked"]
         return {
             "번호": record["id"],
             "상태": shown,
@@ -159,8 +172,43 @@ class RecommendationService:
             "설명": RULE_LABEL,
             "만료": expires.isoformat(),
             "승인가능": approvable,
-            "안내": NOTICE,
+            "안내": DEMO_NOTICE if len(execution["approval_effects"]) > 1 else NOTICE,
+            "승인대상": "가상 장부 + 연습 연결 시험" if len(execution["approval_effects"]) > 1 else "독립 가상 장부",
+            "연습주문상태": {
+                "PAPER_ONLY": "연습 주문 없음", "DEMO_REGISTERED_UNVERIFIED": "연습 요청 권한 확인 전",
+                "DEMO_UNCERTAIN": "연습 결과 확인 불가", "DEMO_CLOSE_FAILED": "연습 감축 확인 필요",
+                "DEMO_SUBMISSION_ACKNOWLEDGED": "연습 요청 접수 기록", "DEMO_TARGET_UNSUPPORTED": "연습 시험 대상 아님",
+                "DEMO_BLOCKED_BY_UNRESOLVED_ATTEMPT": "다른 연습 요청 확인 필요",
+            }[execution["approval_state"]],
         }
+
+    def view(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Additive normalized read contract; existing Korean command replies stay intact."""
+        payload = record["payload"]
+        card = self.present(record)
+        return {"id": record["id"], "source": "RULE", "snapshot": dict(payload),
+                "side": payload.get("side", "flat"), "reason": payload.get("why", ""),
+                "invalidation": payload.get("why_not", ""),
+                "missingData": [] if payload.get("fresh") else [payload.get("freshness", "시세 확인 필요")],
+                "expiresAt": payload["expires_at"], "reviewState": record["status"],
+                "approvable": card["승인가능"], "card": card,
+                "execution": "PAPER", "updatedAt": record["updated_at"],
+                **self.execution(payload)}
+
+    async def listing(self) -> dict[str, Any]:
+        async with self.lock:
+            records = self.book.recent()
+            records = [self.book.expire_if_needed(record["id"], self.now()) for record in records]
+            return {"recommendations": [self.view(record) for record in records],
+                    "server_time": self.now().isoformat()}
+
+    async def detail(self, card_id: str) -> dict[str, Any]:
+        self._check_id(card_id)
+        async with self.lock:
+            if self.book.get(card_id) is None:
+                raise Refusal("추천을 찾지 못했습니다. 주문은 없습니다.", 404)
+            record = self.book.expire_if_needed(card_id, self.now())
+            return {"recommendation": self.view(record), "server_time": self.now().isoformat()}
 
     async def preview(self, body: object) -> tuple[dict[str, object], int]:
         exchange, symbol, market_type = parse_selection(body)
@@ -177,6 +225,10 @@ class RecommendationService:
             if record is None:
                 raise Refusal("추천을 찾지 못했습니다. 주문은 없습니다.", 404)
             record = self.book.expire_if_needed(card_id, self.now())
+            external_state = demo_state(record["payload"])
+            if external_state in {"DEMO_UNCERTAIN", "DEMO_CLOSE_FAILED"}:
+                warning = CLOSE_WARNING if external_state == "DEMO_CLOSE_FAILED" else UNCERTAIN_WARNING
+                return envelope(self.present(record), warning, False), 409
             status = str(record["status"])
             if status == "approved":
                 return (
@@ -202,6 +254,8 @@ class RecommendationService:
                 "rejected": "거절했습니다. 주문은 없습니다.",
                 "expired": "만료된 추천입니다. 주문은 없습니다.",
             }.get(str(record["status"]), "주문은 없습니다.")
+            if external_state == "DEMO_SUBMISSION_ACKNOWLEDGED":
+                message = "가상 반영을 거절했습니다. 이미 접수된 연습 계좌 요청 기록은 취소되지 않습니다."
             return envelope(self.present(record), message, False), 200
 
     async def approve(self, card_id: str) -> tuple[dict[str, object], int]:
@@ -211,10 +265,18 @@ class RecommendationService:
             if record is None:
                 raise Refusal("추천을 찾지 못했습니다. 주문은 없습니다.", 404)
             record = self.book.expire_if_needed(card_id, self.now())
+            external_state = demo_state(record["payload"])
+            if external_state in {"DEMO_UNCERTAIN", "DEMO_CLOSE_FAILED"}:
+                warning = CLOSE_WARNING if external_state == "DEMO_CLOSE_FAILED" else UNCERTAIN_WARNING
+                return envelope(self.present(record), warning, False), 409
             status = str(record["status"])
             if status == "rejected":
+                if external_state == "DEMO_SUBMISSION_ACKNOWLEDGED":
+                    return envelope(self.present(record), "가상 반영을 거절한 추천입니다. 연습 계좌 요청 접수 기록은 남아 있습니다.", False), 409
                 return envelope(self.present(record), "거절한 추천입니다. 주문은 없습니다.", False), 409
             if status == "expired":
+                if external_state == "DEMO_SUBMISSION_ACKNOWLEDGED":
+                    return envelope(self.present(record), "추천은 만료되었습니다. 연습 계좌 요청 접수 기록은 남아 있습니다. 새 가상 주문은 없습니다.", False), 409
                 return envelope(self.present(record), "만료된 추천입니다. 주문은 없습니다.", False), 409
             if status == "approved":
                 return (
@@ -248,7 +310,7 @@ class RecommendationService:
                     await asyncio.to_thread(self._replay, card_id)
                 else:
                     raise Refusal("추천 상태를 확인하지 못했습니다. 주문은 없습니다.")
-            except PracticeCloseFailed as exc:
+            except (PracticeCloseFailed, PracticeUncertain) as exc:
                 stored_failure = self.book.get(card_id)
                 shown = self.present(stored_failure) if stored_failure is not None else None
                 return envelope(shown, exc.message, False), 409
@@ -295,16 +357,34 @@ class RecommendationService:
         if payload.get("demo_round_trip") is True:
             return OPEN_AND_CLOSE
         try:
+            claimed, current = self.book.claim_practice(card_id, now=self.now())
+        except ValueError:
+            raise Refusal("추천 상태나 유효시간이 바뀌었습니다. 연습 요청은 보내지 않았습니다.") from None
+        if not claimed:
+            state = demo_state(current["payload"])
+            if state == "DEMO_SUBMISSION_ACKNOWLEDGED":
+                return OPEN_AND_CLOSE
+            if state == "DEMO_CLOSE_FAILED":
+                raise PracticeCloseFailed(CLOSE_WARNING)
+            raise PracticeUncertain(UNCERTAIN_WARNING)
+        try:
             note = await self.practice.round_trip()
         except PracticeCloseFailed:
             self.book.remember_flag(card_id, "demo_close_failed")
             raise PracticeCloseFailed(CLOSE_WARNING) from None
-        except PracticeUnavailable as exc:
-            raise Refusal(exc.message) from None
+        except asyncio.CancelledError:
+            self.book.remember_flag(card_id, "demo_uncertain")
+            raise
+        except Exception as exc:
+            # After the durable external-attempt claim, every unclassified failure
+            # is uncertain. The domain does not depend on a transport library.
+            self.book.remember_flag(card_id, "demo_uncertain")
+            raise PracticeUncertain(UNCERTAIN_WARNING) from exc
         if not note:
-            raise Refusal("연습 계좌 주문을 확인하지 못했습니다. 실계좌 주문은 없습니다.")
+            self.book.remember_flag(card_id, "demo_uncertain")
+            raise PracticeUncertain(UNCERTAIN_WARNING)
         self.book.remember_flag(card_id, "demo_round_trip")
-        return note
+        return OPEN_AND_CLOSE
 
     def _same(self, payload: dict[str, Any], plan: Plan) -> bool:
         current = plan.identity()

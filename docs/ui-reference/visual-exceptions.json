@@ -1,0 +1,72 @@
+[
+  {
+    "id": "common-navigation",
+    "area": "sidebar / bottom navigation",
+    "reason": "Originals vary between 5, 6 and 7 desktop menu items and vary trading icons. Use 7 desktop sections and 5 mobile tabs from plan 5.2 on every route."
+  },
+  {
+    "id": "readable-controls",
+    "area": "all text / controls",
+    "reason": "16px body, 14px secondary, 48px major control, 44px minimum target. Preserve content by vertical scrolling rather than shrinking to fit the generated image."
+  },
+  {
+    "id": "responsive-composition",
+    "area": "mobile overview / paper / monitor",
+    "reason": "Mobile 01 replaces the large chart with a compact market summary. Mobile 05 omits the chart and prioritizes order form. Mobile 06 omits chart and shows status, limits and recent events. These are deliberate responsive compositions."
+  },
+  {
+    "id": "shared-market-values",
+    "area": "01 overview / 05 paper market summary",
+    "reason": "PC and Mobile mockups disagree on daily changes and OHLC volume. Both surfaces must use the same API/fixture state. Use 65210.40 price, +286.30 (+0.44%) canonical BTC market values; retain literal originals only as reference."
+  },
+  {
+    "id": "source-truth",
+    "area": "recommendation model / connection / budget / operation state",
+    "reason": "Real mode uses actual RULE/LLM source and registered/verified statuses; unconfigured AI is off and unknown data remains unknown. DeepSeek/provider registration/budget mockup examples are allowed only in explicitly labelled dev/test fixtures."
+  },
+  {
+    "id": "unsupported-contracts",
+    "area": "spot limit orders / entry-only pause / leverage / evaluation inputs",
+    "reason": "Never relabel existing unsupported behavior. Disable with reason until server capability and engine contract are qualified. Keep real trading off."
+  },
+  {
+    "id": "account-context",
+    "area": "03 environment badge",
+    "reason": "Account page is live-account read-only scope, not a PAPER ledger. Keep balances and external positions separate from independent simulation ledgers."
+  },
+  {
+    "id": "report-cost-label",
+    "area": "10 included fees",
+    "reason": "8.30 USDT fixture is included fees; slippage is separately already reflected. Use precise backend cost fields rather than implying fees equal fees plus slippage."
+  },
+  {
+    "id": "diagnostics-count",
+    "area": "12 items to inspect",
+    "reason": "Mobile shows badge 2 for a 1 pending request plus reconciliation instruction; desktop shows 1 pending request. Keep request count=1 and separate actionable issue count when available."
+  },
+  {
+    "id": "independent-ledger-controls",
+    "area": "overview / manual PAPER",
+    "reason": "A real independent ledger must be selected explicitly. Add a compact ledger selector; mobile creation uses a labelled 48px plus button and the legacy V1 link follows the order form. These controls add vertical space compared with the static mockup and remain a visible design difference, not evidence of 2px agreement."
+  },
+  {
+    "id": "preview-owned-order-costs",
+    "area": "05 estimated amount / fee / total",
+    "reason": "Before a server review, show that costs will be supplied by the server instead of calculating or asserting an unreviewed fee. The review dialog shows exact server reservation and fee fields. This changes the mockup cost summary wording."
+  },
+  {
+    "id": "compact-mobile-header",
+    "area": "mobile shared shell",
+    "reason": "Use title plus KST time/example label, then one row of environment badges. Omit the desktop description on small screens; preserve 14px helper text and 44/48px targets. Full fixed date remains in the desktop header and screenshot clock manifest."
+  },
+  {
+    "id": "consistent-evaluation-segments",
+    "area": "09/10 periods and cost assumptions",
+    "reason": "A 60/20/20 split over the fixed 720 hourly-bar dataset places the untouched segment at indices576–720. Use those actual KST bounds consistently in chart and conditions rather than the incompatible generated October22 start. Display native slippage ticks, never relabel ticks as the mockup percentage. Stored UTC remains unchanged."
+  },
+  {
+    "id": "saved-result-selection",
+    "area": "10 result selector and mobile metrics",
+    "reason": "Saved results require an explicit selector in the same live controller. Keep its accessible label and 48px input, omit the redundant card heading on mobile, and place PnL beside drawdown/trade count so the chart begins in the first viewport. The extra selector and genuine report cost fields remain a documented difference from the static reference."
+  }
+]

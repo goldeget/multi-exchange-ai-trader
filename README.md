@@ -1,6 +1,12 @@
 # 로컬 시장 연구 · PAPER 플랫폼
 
-공개 시세 대시보드, **NautilusTrader 1.231.0 기반 수동 PAPER**, 과거 데이터 연구, **synthetic 전용 PAPER 자동실행**, 그리고 **Bybit USDT 무기한 읽기 전용 계좌 조회**를 제공합니다. 모두 로컬에서 실행합니다. 주문·레버리지 변경·출금·AI·실거래 전송은 없습니다.
+2026-11-01 UI 복구 작업은 `gpt/ui-recovery-20261101`의 [구현 PR #9](https://github.com/goldeget/multi-exchange-ai-trader/pull/9)에 있습니다. 12개 화면을 PC·모바일 공통 컴포넌트로 구현했으며, 원본 24장과 [구현·검증 기록](docs/implementation/RECOVERY_PROGRESS.md)을 보존합니다. `?view=overview&demo=1`은 개발 서버에서만 열리는 명시적 예시 데이터 화면입니다. 배포 빌드에서는 이 옵션으로 실제 상태를 대체할 수 없습니다.
+
+새 현물 PAPER 지정가, 자동실행 V2의 신규 진입 일시정지·가변 레버리지, 평가 V2 설정은 Linux 네이티브 계약 시험을 통과했습니다. Windows에서는 네이티브 실행을 지원한다고 표시하지 않습니다. AI는 `OFFLINE_TEST`이며 실제 제공자·유료 호출은 구성하거나 시험하지 않았습니다. 인증된 휴대전화 원격 접속도 구성하지 않았습니다.
+
+별도 Bybit DEMO 키가 등록된 환경에는 **명시적 승인에 따른 고정 BTC 연결 시험**이 있습니다. 추천 방향을 따라 매매하는 기능이 아니며, 주문 접수 응답만으로 포지션 정리가 입증되지 않습니다. 이 복구 작업에서는 실제 계좌·DEMO 주문을 전송하지 않았습니다. 아래의 기존 계좌 조회 기능과 PAPER 설명을 이 별도 승인 효과와 구분하세요.
+
+공개 시세 대시보드, **NautilusTrader 1.231.0 기반 수동 PAPER**, 과거 데이터 연구, **synthetic 전용 PAPER 자동실행**, 그리고 **Bybit USDT 무기한 읽기 전용 계좌 조회**를 제공합니다. 모두 로컬에서 실행합니다. 실계좌 주문·레버리지 변경·출금·외부 AI 전송은 없습니다.
 
 **PHASE2A는 PARTIAL입니다.** Binance spot 두 시장의 기존 확인과 별개로 Binance 무기한/Bybit 여섯 시장은 지역 제한으로 BLOCKED입니다. 과거 spot 연구나 synthetic PAPER 성공으로 이 상태를 통과 처리하지 않습니다. OKX는 비활성·미검증이며 요청하지 않습니다.
 

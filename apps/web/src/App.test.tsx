@@ -44,7 +44,7 @@ function response(url: string) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(epoch));
-  window.history.replaceState({}, "", "/");
+  window.history.replaceState({}, "", "/?view=market");
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
 });
@@ -61,7 +61,7 @@ async function settle() {
 }
 describe("공개 시세 대시보드", () => {
   it("preview is explicit and makes zero API requests", () => {
-    window.history.replaceState({}, "", "/?preview=1");
+    window.history.replaceState({}, "", "/?view=market&preview=1");
     render(<App />);
     expect(screen.getByText("예시 숫자 · 실제 시세 아님")).toBeVisible();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -167,7 +167,10 @@ describe("공개 시세 대시보드", () => {
       await vi.advanceTimersByTimeAsync(16000);
     });
     expect(screen.getAllByText(/늦음 ·/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
+    const retainedRow = screen.getByRole("row", { name: /바이낸스.*BTC \/ USDT/ });
+    fireEvent.click(within(retainedRow).getByText("시세 상세"));
+    expect(within(retainedRow).getByText("가격 시각: 21:00:00 KST")).toBeVisible();
+    expect(within(retainedRow).getByText("105.00")).toBeVisible();
   });
   it("prevents overlapping requests and aborts on unmount", async () => {
     fetchMock.mockImplementation(() => new Promise(() => {}));
@@ -189,7 +192,7 @@ describe("공개 시세 대시보드", () => {
     fetchMock.mockImplementation(response);
     render(<App />);
     await settle();
-    expect(screen.getByRole("button", { name: "Bybit 잔고" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "계좌 · 포지션" })).toBeVisible();
     expect(fetchMock.mock.calls.every(([url]) => !String(url).includes("/account/"))).toBe(true);
   });
   it("shows Bybit spot and futures prices in Korean", async () => {
@@ -212,6 +215,7 @@ describe("공개 시세 대시보드", () => {
         screen.getByRole("button", { name: `바이비트${symbol} / USDT · 선물` }),
       ).toBeVisible();
       expect(within(row).getByText(symbol === "ETH" ? "205.00" : "105.00")).toBeVisible();
+      fireEvent.click(within(row).getByText("시세 상세"));
       expect(within(row).getByText(/바이비트 공개 시세/)).toBeVisible();
     }
     expect(screen.getByRole("heading", { name: /바이낸스 · 선물/ })).toBeVisible();
@@ -299,9 +303,9 @@ describe("공개 시세 대시보드", () => {
       }),
     });
     render(<App />);
-    expect(screen.getByRole("heading", { name: "추천" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "추천" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/실계좌로 주문을 보내지 않습니다/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "분석 · 추천", level: 1 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "분석 · 추천" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("실제 주문 꺼짐")).toBeVisible();
     await settle();
     await settle();
     expect(screen.getByText("지금은 들어갈 추천이 없습니다.")).toBeVisible();
@@ -312,8 +316,16 @@ it("keeps terminal restriction visible instead of replacing it with generic stal
   fetchMock.mockImplementation(response);render(<App/>);await settle();
   fetchMock.mockResolvedValue({ok:false,json:async()=>({reason:"operator_disabled"})});
   await act(async()=>{await vi.advanceTimersByTimeAsync(65000);});
-  expect(screen.getAllByText(/이 시세는 꺼져 있습니다/).length).toBe(5);
+  for (const venue of ["바이낸스", "바이비트"]) {
+    for (const symbol of ["BTC", "ETH"]) {
+      const row = screen.getByRole("row", { name: new RegExp(`${venue}.*${symbol} / USDT`) });
+      expect(within(row).getByText(/이 시세는 꺼져 있습니다/)).toBeVisible();
+    }
+  }
+  expect(document.querySelector(".market-chart-state")).toHaveTextContent("이 시세는 꺼져 있습니다");
   expect(screen.queryByText("늦음 · 마지막 차트")).not.toBeInTheDocument();
-  expect(screen.getAllByText(/12:00:00/).length).toBeGreaterThan(0);
-  expect(screen.getAllByText(/공개 시세/).length).toBeGreaterThan(0);
+  const retainedRow = screen.getByRole("row", { name: /바이낸스.*BTC \/ USDT/ });
+  fireEvent.click(within(retainedRow).getByText("시세 상세"));
+  expect(within(retainedRow).getByText("가격 시각: 21:00:00 KST")).toBeVisible();
+  expect(within(retainedRow).getByText(/바이낸스 공개 시세/)).toBeVisible();
 });

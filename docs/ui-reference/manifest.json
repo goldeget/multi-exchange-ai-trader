@@ -1,0 +1,423 @@
+{
+  "sourceZip": "TRADING_UI_MOCKUPS_PC_MOBILE_24_20261101.zip",
+  "sourceZipSha256": "a3d1d29b0bed47149a2cf93c09ff52e2328d56798e8ebd98d22959b9c10624b9",
+  "clock": "2026-11-01T00:10:03Z",
+  "locale": "ko-KR",
+  "timezone": "Asia/Seoul",
+  "originalsInspected": 24,
+  "canonicalTransform": {
+    "policy": "Originals are unchanged. For comparison only, scale proportionally to viewport width, then center crop/pad vertically to viewport height.",
+    "pcScaledHeight": 1024.5595,
+    "mobileScaledHeight": 843.09496
+  },
+  "pages": [
+    {
+      "pageId": "01-pc",
+      "title": "종합 현황",
+      "route": "?view=overview",
+      "fixtureId": "visual-01",
+      "file": "original/PC/01_종합현황_PC.png",
+      "originalSha": "925822db2f904e66482f7ee04be1523593d9185dc3f07342b6e1f30f281318fa",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "01-mobile",
+      "title": "종합 현황",
+      "route": "?view=overview",
+      "fixtureId": "visual-01",
+      "file": "original/Mobile/01_종합현황_Mobile.png",
+      "originalSha": "c32d1b7227f0522a9a229420259a811c46ea13a99b8579ef6ff6f233469bf2c5",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "02-pc",
+      "title": "시장·차트",
+      "route": "?view=market",
+      "fixtureId": "visual-02",
+      "file": "original/PC/02_시장차트_PC.png",
+      "originalSha": "d2e06f1f1539115ae62ecae6e9f6f213e18ebbf5b726a27c80626a73a8588683",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "02-mobile",
+      "title": "시장·차트",
+      "route": "?view=market",
+      "fixtureId": "visual-02",
+      "file": "original/Mobile/02_시장차트_Mobile.png",
+      "originalSha": "3583b018cc9a4e44b305a94020d8562c441589f7319165ba21c6c6462271f2e0",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "03-pc",
+      "title": "계좌·포지션",
+      "route": "?view=account",
+      "fixtureId": "visual-03",
+      "file": "original/PC/03_계좌포지션_PC.png",
+      "originalSha": "8c54e8db0f4f93d744c42c3d5eeb4ad243f3b3d6688a298b80a722ff8db771d0",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "03-mobile",
+      "title": "계좌·포지션",
+      "route": "?view=account",
+      "fixtureId": "visual-03",
+      "file": "original/Mobile/03_계좌포지션_Mobile.png",
+      "originalSha": "b2e58f72345c28fe2883e2d1a07635cdf567b50fe0e835ed30384b474247df95",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "04-pc",
+      "title": "분석·추천",
+      "route": "?view=recommend",
+      "fixtureId": "visual-04",
+      "file": "original/PC/04_AI분석추천_PC.png",
+      "originalSha": "b3bd0c5887b84e3e6531fa80cdd683b34c702fc082abebb4982a1e97919d0814",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "04-mobile",
+      "title": "분석·추천",
+      "route": "?view=recommend",
+      "fixtureId": "visual-04",
+      "file": "original/Mobile/04_AI분석추천_Mobile.png",
+      "originalSha": "582f92ef59a0a45f990b9882a45fbfb6eedbffb128a8753a13e4f8ce22daefab",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "05-pc",
+      "title": "수동 가상매매",
+      "route": "?view=paper",
+      "fixtureId": "visual-05",
+      "file": "original/PC/05_수동가상매매_PC.png",
+      "originalSha": "f6912ca567c2d28b53b43e8351ae689d4a5ffd8764a6a4d009dd77974851cc0c",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "05-mobile",
+      "title": "수동 가상매매",
+      "route": "?view=paper",
+      "fixtureId": "visual-05",
+      "file": "original/Mobile/05_수동가상매매_Mobile.png",
+      "originalSha": "ce35b542fb72edfd3995e1846bf99c13cab84f0c1318c6bf17ec79d6add1541a",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "06-pc",
+      "title": "자동실행 모니터",
+      "route": "?view=research&tab=run&run_id=visual-btc-20261101",
+      "fixtureId": "visual-06",
+      "file": "original/PC/06_자동실행모니터_PC.png",
+      "originalSha": "213b926051e1c847d535bb75d45ff7514f1ffd7b1585802427d5e838a8a3d0c3",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "06-mobile",
+      "title": "자동실행 모니터",
+      "route": "?view=research&tab=run&run_id=visual-btc-20261101",
+      "fixtureId": "visual-06",
+      "file": "original/Mobile/06_자동실행모니터_Mobile.png",
+      "originalSha": "fe9ab68f25c8ddcdef5c659a80db1120cbe860e2932f40d51049dddd0bd86747",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "07-pc",
+      "title": "새 가상 실행",
+      "route": "?view=research&tab=create",
+      "fixtureId": "visual-07",
+      "file": "original/PC/07_새자동실행설정_PC.png",
+      "originalSha": "44a9695233446ff6b91f58e4b606cedc51a1c6e4fff2925a7b5c0b506e1d503c",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "07-mobile",
+      "title": "새 가상 실행",
+      "route": "?view=research&tab=create",
+      "fixtureId": "visual-07",
+      "file": "original/Mobile/07_새자동실행설정_Mobile.png",
+      "originalSha": "0e161b567feb0d778d3466f2a337f24aa2c5bd726b886656d5d2defc48b8c38e",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "08-pc",
+      "title": "실행 기록",
+      "route": "?view=research&tab=history",
+      "fixtureId": "visual-08",
+      "file": "original/PC/08_실행기록_PC.png",
+      "originalSha": "f0f06904f63da9310f6e437e15f1208addfa161ae8e3410db4df5a680a994a05",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "08-mobile",
+      "title": "실행 기록",
+      "route": "?view=research&tab=history",
+      "fixtureId": "visual-08",
+      "file": "original/Mobile/08_실행기록_Mobile.png",
+      "originalSha": "6d11dcfd31f06489d9dd17eac8daa9ca2cd130f788694914d58376ba50fbc7a8",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "09-pc",
+      "title": "백테스트 설정",
+      "route": "?view=research&tab=backtest",
+      "fixtureId": "visual-09",
+      "file": "original/PC/09_백테스트설정_PC.png",
+      "originalSha": "c4e80236cfae720bf7100531bd56f02f6ef5a31bc757c9422cbdecf4e1599afd",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "09-mobile",
+      "title": "백테스트 설정",
+      "route": "?view=research&tab=backtest",
+      "fixtureId": "visual-09",
+      "file": "original/Mobile/09_백테스트설정_Mobile.png",
+      "originalSha": "206647cebbcf9464c0c8d53e7e095c984fa29578d40f2f6df06ab7c4a53d0f0d",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "10-pc",
+      "title": "검증 결과",
+      "route": "?view=research&tab=report&report_id=visual-eval-20261101",
+      "fixtureId": "visual-10",
+      "file": "original/PC/10_전략검증결과_PC.png",
+      "originalSha": "d4139a028fdb84d1ab156b4d869c55e2617a54c12f078658408d1240ebef76ea",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "10-mobile",
+      "title": "검증 결과",
+      "route": "?view=research&tab=report&report_id=visual-eval-20261101",
+      "fixtureId": "visual-10",
+      "file": "original/Mobile/10_전략검증결과_Mobile.png",
+      "originalSha": "b2558a56af55ce73c384dc858462715dca85bc81bb2675393e98b34ddacf18b9",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "11-pc",
+      "title": "연결·예산 설정",
+      "route": "?view=settings&tab=connections",
+      "fixtureId": "visual-11",
+      "file": "original/PC/11_연결예산설정_PC.png",
+      "originalSha": "1267f9591ff30f88726ba1968a859fed12d9acaa24e3aea84d0045b70ab85e53",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "11-mobile",
+      "title": "연결·예산 설정",
+      "route": "?view=settings&tab=connections",
+      "fixtureId": "visual-11",
+      "file": "original/Mobile/11_연결예산설정_Mobile.png",
+      "originalSha": "28f097c6da5e760416e09d05d50aba7926390e2f5ad39d5d63a3e973440b0b3a",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "12-pc",
+      "title": "진단·복구",
+      "route": "?view=settings&tab=diagnostics",
+      "fixtureId": "visual-12",
+      "file": "original/PC/12_진단복구_PC.png",
+      "originalSha": "b6f699d0795b4466ad4153b4cab0c7041aaa431f435b3e8dd4c9a9ac1c87a932",
+      "originalSize": [
+        1487,
+        1058
+      ],
+      "viewport": {
+        "width": 1440,
+        "height": 1024
+      },
+      "deviceScaleFactor": 1
+    },
+    {
+      "pageId": "12-mobile",
+      "title": "진단·복구",
+      "route": "?view=settings&tab=diagnostics",
+      "fixtureId": "visual-12",
+      "file": "original/Mobile/12_진단복구_Mobile.png",
+      "originalSha": "e3216f745096dbc755619bebea0f6406f54e341962088dd64bd07aef383bf822",
+      "originalSize": [
+        853,
+        1844
+      ],
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "deviceScaleFactor": 1
+    }
+  ]
+}

@@ -82,6 +82,16 @@ class RecommendationBook:
         with self._lock, self._connect() as db:
             return self._row(db, card_id)
 
+    def recent(self, limit: int = 100) -> list[dict[str, Any]]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("추천 조회 개수를 확인하세요")
+        with self._lock, self._connect() as db:
+            ids = [str(row[0]) for row in db.execute(
+                "SELECT id FROM cards ORDER BY updated_at DESC,id DESC LIMIT ?", (limit,)
+            )]
+            records = [self._row(db, card_id) for card_id in ids]
+            return [record for record in records if record is not None]
+
     def upsert(self, plan: Plan) -> dict[str, Any]:
         card_id = plan_id(plan)
         payload = json.dumps(plan.payload(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -154,9 +164,10 @@ class RecommendationBook:
         return current
 
     def remember_flag(self, card_id: str, name: str) -> dict[str, Any]:
-        if name not in ("demo_round_trip", "demo_close_failed"):
+        if name not in ("demo_round_trip", "demo_close_failed", "demo_uncertain"):
             raise ValueError("추천 상태를 확인하지 못했습니다")
         with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             current = self._row(db, card_id)
             if current is None:
                 raise ValueError("추천을 찾지 못했습니다")
@@ -172,3 +183,45 @@ class RecommendationBook:
         if stored is None:
             raise ValueError("추천을 찾지 못했습니다")
         return stored
+
+    def claim_practice(self, card_id: str, *, now: datetime | None = None) -> tuple[bool, dict[str, Any]]:
+        """Commit a no-repeat marker before any optional external DEMO attempt."""
+        from .execution import demo_state
+
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = self._row(db, card_id)
+            if current is None:
+                raise ValueError("추천을 찾지 못했습니다")
+            payload = dict(current["payload"])
+            if any(payload.get(name) is True for name in (
+                "demo_attempt_started", "demo_round_trip", "demo_close_failed", "demo_uncertain"
+            )):
+                return False, current
+            instant = now if now is not None else datetime.now(UTC)
+            if (current["status"] != "pending"
+                    or instant >= datetime.fromisoformat(str(payload["expires_at"]))):
+                raise ValueError("practice card status or expiry changed before claim")
+            for row in db.execute("SELECT payload FROM cards WHERE id<>?", (card_id,)):
+                if demo_state(_object(row[0])) in {"DEMO_UNCERTAIN", "DEMO_CLOSE_FAILED"}:
+                    return False, current
+            payload["demo_attempt_started"] = True
+            raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            db.execute("UPDATE cards SET payload=?,updated_at=? WHERE id=?",
+                       (raw, datetime.now(UTC).isoformat(), card_id))
+            db.commit()
+            stored = self._row(db, card_id)
+        if stored is None:
+            raise ValueError("추천 저장을 확인하지 못했습니다")
+        return True, stored
+
+    def practice_summary(self) -> dict[str, Any]:
+        from .execution import demo_state
+
+        with self._lock, self._connect() as db:
+            states = [(row["id"], demo_state(_object(row["payload"])))
+                      for row in db.execute("SELECT id,payload FROM cards")]
+        uncertain = [card_id for card_id, state in states if state == "DEMO_UNCERTAIN"]
+        return {"uncertain_count": len(uncertain), "uncertain_card_ids": uncertain[:100],
+                "close_failed_count": sum(state == "DEMO_CLOSE_FAILED" for _, state in states),
+                "acknowledged_count": sum(state == "DEMO_SUBMISSION_ACKNOWLEDGED" for _, state in states)}

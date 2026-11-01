@@ -1,12 +1,14 @@
 """Anonymous local-only PAPER routes; no reset, live mode, account or exchange API."""
 
 import asyncio
+import sqlite3
 from typing import Any, cast
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from .order_preview import OrderReviews
 from .store import PaperStore
 
 ORIGINS = {
@@ -29,6 +31,10 @@ def failure(error: Exception) -> JSONResponse:
             409,
             "paper_idempotency_conflict",
             "같은 요청에 다른 내용은 넣을 수 없습니다.",
+        )
+    elif "review" in text and ("revision" in text or "expired" in text):
+        status, reason, message = (
+            409, "paper_review_changed_or_expired", "가상 주문 검토가 만료되었거나 장부가 바뀌었습니다. 다시 검토하세요.",
         )
     elif "margin" in text or "notional" in text:
         status, reason, message = (
@@ -63,13 +69,22 @@ def service(request: Request) -> PaperStore:
     return cast(PaperStore, request.app.state.paper_store)
 
 
+def reviews(request: Request) -> OrderReviews:
+    value = getattr(request.app.state, "order_reviews", None)
+    if not isinstance(value, OrderReviews):
+        raise TypeError("PAPER review storage unavailable")
+    return value
+
+
 def install(application: FastAPI) -> None:
     router = APIRouter(prefix="/api/v1/paper")
 
     @application.middleware("http")
     async def local_paper_boundary(request: Request, call_next: Any) -> Any:
         if request.url.path.startswith(
-            ("/api/v1/paper", "/api/v1/research", "/api/v1/recommendations")
+            ("/api/v1/paper", "/api/v1/research", "/api/v1/recommendations",
+             "/api/v1/settings", "/api/v1/ai", "/api/v1/overview",
+             "/api/v1/diagnostics", "/api/v1/connections", "/api/v1/capabilities")
         ):
             try:
                 host = urlsplit("http://" + request.headers.get("host", ""))
@@ -139,5 +154,27 @@ def install(application: FastAPI) -> None:
             )
         except (ValueError, TypeError) as exc:
             return failure(exc)
+
+    @router.post("/order-previews")
+    async def order_preview(request: Request) -> Any:
+        try:
+            return await asyncio.to_thread(reviews(request).preview, await request.json())
+        except (ValueError, TypeError) as exc:
+            return failure(exc)
+        except sqlite3.Error:
+            return failure(ValueError("PAPER review storage unavailable"))
+
+    @router.post("/order-confirmations")
+    async def order_confirmation(request: Request) -> Any:
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or set(body) != {"preview_id", "idempotency_key"}:
+                raise ValueError("PAPER confirmation fields")
+            return await asyncio.to_thread(reviews(request).confirm,
+                                           body["preview_id"], body["idempotency_key"])
+        except (ValueError, TypeError) as exc:
+            return failure(exc)
+        except sqlite3.Error:
+            return failure(ValueError("PAPER review storage unavailable"))
 
     application.include_router(router)

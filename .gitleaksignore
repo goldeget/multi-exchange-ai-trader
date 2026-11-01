@@ -8,3 +8,8 @@
 # Exact historical public browser storage namespace (not its contents or a credential).
 # Variable renamed; stored namespace preserved for uncertain-intent recovery.
 13f5bf498f1a87dac1ff0b3b5b081a62ef1435b6:apps/web/src/research/Research.tsx:generic-api-key:17
+
+# Exact historical public visual-route identifiers, not credentials.
+# The field was renamed from key to screenId; see docs/implementation/SECRET_SCAN_REVIEW.md.
+3e46477ce2c7d9db8f6eda2f5d32da7c98082b76:apps/web/tests/ui-browser/routes.ts:generic-api-key:17
+3e46477ce2c7d9db8f6eda2f5d32da7c98082b76:apps/web/tests/ui-browser/offline.spec.ts:generic-api-key:39

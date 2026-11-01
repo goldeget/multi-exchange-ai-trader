@@ -93,3 +93,15 @@ describe("추천", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/approve"))).toBe(false);
   });
 });
+
+ it('does not show an old approval on a newly selected recommendation',async()=>{
+ let resolveApproval!:(value:ReturnType<typeof payload>)=>void;
+ const fetchMock=vi.fn().mockImplementation((url:string)=>String(url).endsWith('/approve')?new Promise(r=>{resolveApproval=r}):Promise.resolve(payload(String(url).endsWith('/preview')&&fetchMock.mock.calls.length>2?{...card,번호:'b'.repeat(32),종목:'ETH / USDT'}:card)));
+ vi.stubGlobal('fetch',fetchMock);render(<Recommend/>);
+ await screen.findByText('규칙 설명');fireEvent.click(screen.getByRole('button',{name:'연습 계좌에 넣고 바로 닫기'}));
+ fireEvent.change(screen.getByRole('combobox',{name:'종목'}),{target:{value:'ETH / USDT'}});
+ await waitFor(()=>expect(screen.getAllByText('ETH / USDT').length).toBeGreaterThan(1));
+ resolveApproval(payload({...card,상태:'승인'}));
+ await waitFor(()=>expect(screen.queryByText('승인')).not.toBeInTheDocument());
+ expect(screen.getAllByText('ETH / USDT').length).toBeGreaterThan(1);
+ });

@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
-def sandbox_evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
+def sandbox_evaluate(
+    dataset: dict[str, Any], config: dict[str, Any] | None = None
+) -> dict[str, Any]:
     env = {
         "PATH": os.defpath,
         "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
@@ -28,7 +30,7 @@ def sandbox_evaluate(dataset: dict[str, Any]) -> dict[str, Any]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "multi_exchange_trader.research.worker"],
-            input=json.dumps(dataset, allow_nan=False),
+            input=json.dumps(dataset if config is None else {"dataset": dataset, "config": config}, allow_nan=False),
             text=True,
             capture_output=True,
             close_fds=True,

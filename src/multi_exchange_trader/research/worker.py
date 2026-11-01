@@ -17,7 +17,12 @@ def main() -> int:
             raise ValueError("research worker input limit")
         dataset = json.loads(raw)
         no_floats(dataset)
-        result = evaluate(dataset)
+        if isinstance(dataset, dict) and set(dataset) == {"dataset", "config"}:
+            if not isinstance(dataset["config"], dict):
+                raise ValueError("research evaluation config")
+            result = evaluate(dataset["dataset"], dataset["config"])
+        else:
+            result = evaluate(dataset)
         from .data import checksum
 
         result["network_sandbox"] = "Linux_x86_64_socket_denied"

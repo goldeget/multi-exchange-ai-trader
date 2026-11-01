@@ -41,6 +41,9 @@ class ResearchStrategy(Strategy):  # type: ignore[misc]
         )
         self.inst, self.venue = inst, venue
         self.spot = dataset["market"] == "spot"
+        self.fee = Decimal(config.get("fee_rate", str(FEE)))
+        self.leverage = int(config.get("leverage", 10))
+        self.slippage_ticks = int(config.get("slippage_ticks", 1))
         self.base = BTC if dataset["symbol"].startswith("BTC") else ETH
         self.mark = Decimal(dataset["bars"][start]["open"])
         self.curve: list[dict[str, Any]] = []
@@ -108,15 +111,18 @@ class ResearchStrategy(Strategy):  # type: ignore[misc]
             raise ValueError("spot cannot short")
         qty = Decimal(self.settings["quantity"])
         tick = self.inst.price_increment.as_decimal()
-        price = self.mark + (tick if target == "long" else -tick)
+        slip = tick * self.slippage_ticks
+        price = self.mark + (slip if target == "long" else -slip)
         required = (
-            qty * price * (1 + FEE) if self.spot else reserve(qty, price, 10) + qty * price * FEE
+            qty * price * (1 + self.fee) if self.spot else (
+                reserve(qty, price, self.leverage) + qty * price * self.fee
+            )
         )
         if required > self.balance(USDT) or qty * price > 100000:
             self.halted = "insufficient_cash_or_margin"
             return
         if not self.spot:
-            self.cache.account_for_venue(self.venue).set_leverage(self.inst.id, Decimal(10))
+            self.cache.account_for_venue(self.venue).set_leverage(self.inst.id, Decimal(self.leverage))
         self.market(OrderSide.BUY if target == "long" else OrderSide.SELL, qty, "enter")
 
     def on_quote_tick(self, tick: Any) -> None:
@@ -130,12 +136,12 @@ class ResearchStrategy(Strategy):  # type: ignore[misc]
             self.phase = {0: "open", step // 3: "low", 2 * step // 3: "high", step - 1: "close"}[
                 remainder
             ]
-            self.mark = tick.bid_price.as_decimal()
+            self.mark = (tick.bid_price.as_decimal() + tick.ask_price.as_decimal()) / 2
             if self.lot and not self.spot:
                 p = self.cache.positions_open(instrument_id=self.inst.id)[0]
-                if reserve(self.lot["quantity"], self.lot["entry"], 10) + p.unrealized_pnl(
+                if reserve(self.lot["quantity"], self.lot["entry"], self.leverage) + p.unrealized_pnl(
                     self.inst.make_price(self.mark)
-                ).as_decimal() <= self.lot["quantity"] * self.mark * (MMR + FEE):
+                ).as_decimal() <= self.lot["quantity"] * self.mark * (MMR + self.fee):
                     self.close("liquidation")
             if self.phase == "open":
                 target = (
@@ -231,6 +237,8 @@ def run_segment(
     ):
         raise ValueError("native version/segment bounds")
     spot = dataset["market"] == "spot"
+    fee = Decimal(config.get("fee_rate", str(FEE)))
+    seed = Decimal(config.get("initial_equity", str(SEED)))
     venue = Venue("SPOT_RESEARCH" if spot else "PAPER")
     if spot:
         inst = CurrencyPair(
@@ -242,13 +250,13 @@ def run_segment(
             size_precision=3 if dataset["symbol"] == "BTCUSDT" else 2,
             price_increment=Price.from_str("0.01"),
             size_increment=Quantity.from_str("0.001" if dataset["symbol"] == "BTCUSDT" else "0.01"),
-            maker_fee=FEE,
-            taker_fee=FEE,
+            maker_fee=fee,
+            taker_fee=fee,
             ts_event=0,
             ts_init=0,
         )
     else:
-        inst = instruments()[dataset["symbol"]]
+        inst = instruments(fee=fee)[dataset["symbol"]]
     engine = BacktestEngine(
         BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True), run_analysis=False)
     )
@@ -258,9 +266,9 @@ def run_segment(
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH if spot else AccountType.MARGIN,
             base_currency=None if spot else USDT,
-            starting_balances=[Money(SEED, USDT)],
-            default_leverage=Decimal(1) if spot else Decimal(10),
-            fill_model=FillModel(prob_slippage=1.0, random_seed=42),
+            starting_balances=[Money(seed, USDT)],
+            default_leverage=Decimal(1) if spot else Decimal(config.get("leverage", 10)),
+            fill_model=FillModel(prob_slippage=0.0 if config.get("config_version") == 2 else 1.0, random_seed=42),
             use_message_queue=False,
             use_reduce_only=True,
         )
@@ -277,12 +285,15 @@ def run_segment(
                 ("close", step - 1),
             ]:
                 price = inst.make_price(Decimal(bar[key]))
+                slip = inst.price_increment.as_decimal() * config.get("slippage_ticks", 0)
+                bid = inst.make_price(Decimal(bar[key]) - slip)
+                ask = inst.make_price(Decimal(bar[key]) + slip)
                 ts = (bar["time_ms"] + offset) * 1_000_000
                 quotes.append(
                     QuoteTick(
                         inst.id,
-                        price,
-                        price,
+                        bid if config.get("config_version") == 2 else price,
+                        ask if config.get("config_version") == 2 else price,
                         inst.make_qty(Decimal(1000)),
                         inst.make_qty(Decimal(1000)),
                         ts,
@@ -294,7 +305,7 @@ def run_segment(
         if strategy.error:
             raise ValueError(strategy.error)
         final = strategy.equity()
-        adjustment = final - (SEED + strategy.gross - strategy.fees)
+        adjustment = final - (seed + strategy.gross - strategy.fees)
         if (
             strategy.lot
             or abs(adjustment) > UNIT
@@ -310,9 +321,9 @@ def run_segment(
             "start": start,
             "end": end,
             "config": config,
-            "initial_equity": money(SEED),
+            "initial_equity": money(seed),
             "final_equity": money(final),
-            "net_pnl": money(final - SEED),
+            "net_pnl": money(final - seed),
             "gross_pnl": money(strategy.gross),
             "fees": money(strategy.fees),
             "rounding_adjustment": money(adjustment),

@@ -2,8 +2,10 @@
 
 import asyncio
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Literal, cast
 
 from fastapi import Depends, FastAPI, Query, Request
@@ -13,6 +15,8 @@ from .account.api import install as install_account
 from .account.bybit_demo_order import BybitDemoOrderClient
 from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
+from .ai.budget import BudgetBook
+from .controls import install as install_controls
 from .market_data.adapters.base import MarketDataUnavailable
 from .market_data.adapters.binance import BinanceAdapter
 from .market_data.adapters.bybit import BybitAdapter
@@ -21,6 +25,10 @@ from .market_data.models import Candle, MarketType, Ticker
 from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 from .paper.api import install as install_paper
+from .paper.order_preview import OrderReviews
+from .paper.spot_api import install as install_spot
+from .paper.spot_contract import QUALIFIED as SPOT_QUALIFIED
+from .paper.spot_store import SpotPaperStore
 from .paper.store import PaperStore
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
@@ -42,9 +50,37 @@ Service = Annotated[MarketDataService, Depends(get_market_data_service)]
 def create_app(service: MarketDataService | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        # V2 native leverage/pause/replay and evaluation capital/splits passed CI50.
+        # This declares the contract; capabilities separately reports native availability.
+        application.state.research_v2_supported = True
         application.state.paper_store = PaperStore(
             os.environ.get("PAPER_DB_PATH", "work/phase3-data/paper.sqlite3")
         )
+        sidecar_root = application.state.paper_store.path.parent
+        application.state.order_reviews = None
+        application.state.ai_budget = None
+        application.state.spot_paper_store = None
+        application.state.spot_paper_qualified = SPOT_QUALIFIED
+        try:
+            application.state.spot_paper_store = SpotPaperStore(
+                Path(os.environ.get("PAPER_SPOT_DB_PATH", str(sidecar_root / "spot-paper.sqlite3")))
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # A separate product never replaces or funds the original PAPER ledger.
+        try:
+            application.state.order_reviews = OrderReviews(
+                Path(os.environ.get("PAPER_REVIEW_DB_PATH", str(sidecar_root / "order-reviews.sqlite3"))),
+                application.state.paper_store,
+                spot=application.state.spot_paper_store, spot_qualified=SPOT_QUALIFIED,
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # Isolate review sidecar failure from existing ledger reads and risk reduction.
+        try:
+            application.state.ai_budget = BudgetBook(
+                Path(os.environ.get("AI_DB_PATH", str(sidecar_root / "ai.sqlite3")))
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # Optional AI state must not stop the PAPER scheduler or other reads.
         application.state.recommendation_book = RecommendationBook(
             os.environ.get("RECOMMENDATION_DB_PATH", "work/recommendations.sqlite3")
         )
@@ -175,6 +211,8 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
     install_research(application)
     install_recommendations(application)
     install_account(application)
+    install_controls(application)
+    install_spot(application)
     return application
 
 

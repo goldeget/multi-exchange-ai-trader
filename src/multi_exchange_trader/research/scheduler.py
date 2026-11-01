@@ -75,7 +75,7 @@ def _iso(moment: datetime) -> str:
 
 
 def _overdue(state: dict[str, Any], moment: datetime) -> bool:
-    if state.get("status") != "RUNNING":
+    if state.get("status") not in {"RUNNING", "ENTRY_PAUSED"}:
         return False
     raw = state.get("next_due_at")
     if not isinstance(raw, str):
@@ -187,7 +187,7 @@ async def scheduler(
                     message="저장 확인 중 예기치 않은 오류로 자동 진행을 멈췄습니다.",
                 )
                 return
-            running = [row for row in states if row.get("status") == "RUNNING"]
+            running = [row for row in states if row.get("status") in {"RUNNING", "ENTRY_PAUSED"}]
             health["stored_running"] = len(running)
             moment = datetime.now(UTC)
             overdue = any(_overdue(row, moment) for row in running)

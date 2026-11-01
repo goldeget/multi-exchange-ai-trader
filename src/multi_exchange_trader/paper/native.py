@@ -36,7 +36,7 @@ PAPER = Venue("PAPER")
 BASE_NS = 1767225600000000000  # Separate deterministic PAPER execution clock; not exchange time.
 
 
-def instruments() -> dict[str, Any]:
+def instruments(*, fee: Decimal = FEE) -> dict[str, Any]:
     return {
         symbol: CryptoPerpetual(
             instrument_id=InstrumentId.from_str(f"{symbol.split('-')[0]}-USDT-PERP.PAPER"),
@@ -53,8 +53,8 @@ def instruments() -> dict[str, Any]:
             max_quantity=Quantity.from_str(s["max_qty"]),
             margin_init=Decimal(1),
             margin_maint=MMR,
-            maker_fee=FEE,
-            taker_fee=FEE,
+            maker_fee=fee,
+            taker_fee=fee,
             ts_event=0,
             ts_init=0,
         )

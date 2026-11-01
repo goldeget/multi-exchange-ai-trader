@@ -1,5 +1,5 @@
 // Offline lifecycle contract tests; live range behavior is verified separately in Chromium.
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Candle } from "../api";
 const mocks=vi.hoisted(()=>{
@@ -12,7 +12,28 @@ const mocks=vi.hoisted(()=>{
 vi.mock("lightweight-charts",()=>({createChart:mocks.createChart,CandlestickSeries:{},HistogramSeries:{},ColorType:{Solid:"solid"}}));
 import CandleChart from "./CandleChart";
 const candle: Candle={timestamp:"2026-10-31T00:00:00Z",open:"10",high:"12",low:"9",close:"11",volume:"2",is_closed:false};
-afterEach(()=>{cleanup();mocks.createChart.mockClear();mocks.charts.length=0;});
+const originalFonts=Object.getOwnPropertyDescriptor(document,'fonts');
+function pendingFonts(){let loaded!:()=>void,ready!:()=>void;const load=vi.fn(()=>new Promise<void>(resolve=>{loaded=resolve}));const completion=new Promise<void>(resolve=>{ready=resolve});Object.defineProperty(document,'fonts',{configurable:true,value:{load,ready:completion}});return{load,loaded:()=>loaded(),ready:()=>ready()}}
+afterEach(()=>{cleanup();mocks.createChart.mockClear();mocks.charts.length=0;if(originalFonts)Object.defineProperty(document,'fonts',originalFonts);else Reflect.deleteProperty(document,'fonts');});
+it('waits for the bundled font load and ready, then initializes once with the latest candles and preserves range updates',async()=>{
+ const fonts=pendingFonts();const view=render(<CandleChart candles={[candle]}/>);
+ expect(fonts.load).toHaveBeenCalledWith('14px "Pretendard"','0123456789 한글');expect(mocks.createChart).not.toHaveBeenCalled();
+ view.rerender(<CandleChart candles={[{...candle,close:'11.75'}]}/>);
+ await act(async()=>fonts.loaded());expect(mocks.createChart).not.toHaveBeenCalled();
+ await act(async()=>fonts.ready());expect(mocks.createChart).toHaveBeenCalledTimes(1);
+ const first=mocks.charts[0];expect(first.setData.mock.calls[0][0][0].close).toBe(11.75);
+ view.rerender(<CandleChart candles={[{...candle,close:'11.90'}]}/>);
+ expect(mocks.createChart).toHaveBeenCalledTimes(1);expect(first.fit).toHaveBeenCalledTimes(1);expect(first.setRange).toHaveBeenLastCalledWith({from:25,to:75});
+ view.unmount();expect(first.remove).toHaveBeenCalledTimes(1);
+});
+it('never creates a chart when font completion arrives after unmount',async()=>{
+ const fonts=pendingFonts();const view=render(<CandleChart candles={[candle]}/>);expect(mocks.createChart).not.toHaveBeenCalled();
+ view.unmount();await act(async()=>{fonts.loaded();fonts.ready()});expect(mocks.createChart).not.toHaveBeenCalled();
+});
+it('does not silently create a fallback-font chart when the bundled font fails to load',async()=>{
+ Object.defineProperty(document,'fonts',{configurable:true,value:{load:vi.fn().mockRejectedValue(new Error('font unavailable')),ready:Promise.resolve()}});
+ render(<CandleChart candles={[candle]}/>);expect(await screen.findByRole('alert')).toHaveTextContent('차트 글꼴을 불러오지 못했습니다.');expect(mocks.createChart).not.toHaveBeenCalled();
+});
 it("updates live series in place without recreating or fitting the user's periodic viewport",()=>{
  const view=render(<CandleChart candles={[candle]}/>);const first=mocks.charts[0];
  view.rerender(<CandleChart candles={[{...candle,close:"11.5"}]}/>);
