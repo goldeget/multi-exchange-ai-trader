@@ -4,16 +4,16 @@
 
 ## 같은 소스에서 확인한 결과
 
-캡처 소스 `822da2315610906ea09aeca8bb0372a4c61add7a`의 [CI 41285407544](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41285407544)은 다섯 작업을 모두 통과했습니다.
+캡처 소스 `e0d6bfa1887ac2025d780e99d8cdc5c1583e1be0`의 [CI 41290522060](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41290522060)은 다섯 작업을 모두 통과했습니다.
 
 | 검사 | 결과 |
 |---|---|
 | Python·네이티브 | 492개 및 하위 검사 28개 통과, Ruff 통과, mypy 63개 파일 통과 |
-| 프런트엔드 | 27개 파일의 166개 검사, ESLint·타입 검사·배포 빌드 통과 |
+| 프런트엔드 | 29개 파일의 182개 검사, ESLint·타입 검사·배포 빌드 통과 |
 | 브라우저 | 96개 통과, 좁은 화면의 중복 PC 실행 24개는 명시적으로 제외 |
 | 비밀정보·의존성 | 두 검사 통과. 전체 이력 검사를 유지하며 확인한 공개 화면 식별자의 정확한 과거 지문 두 개만 예외 처리 |
 
-이 실행은 검토용 캡처입니다. 이 문서와 승인 이미지를 추가한 최종 커밋에서는 캡처 전용 환경변수를 제거하고, 이미지 자동 갱신 없이 `maxDiffPixels=0`, `threshold=0`으로 비교합니다. 최종 합격과 병합 결과는 [PR #9](https://github.com/goldeget/multi-exchange-ai-trader/pull/9)의 최종 검사 및 외부 완료 보고서에 기록합니다. 과거 캡처 성공으로 최종 비교 성공을 대신하지 않습니다.
+이 실행은 검토용 캡처입니다. 이 문서와 승인 이미지를 추가한 최종 커밋에서는 캡처 전용 환경변수를 제거하고, 이미지 자동 갱신 없이 `maxDiffPixels=0`, `threshold=0`으로 비교합니다. 최종 합격과 병합 결과는 [PR #11](https://github.com/goldeget/multi-exchange-ai-trader/pull/11)의 최종 검사 및 외부 완료 보고서에 기록합니다. 과거 캡처 성공으로 최종 비교 성공을 대신하지 않습니다.
 
 ## 화면 기준과 검토 방법
 
