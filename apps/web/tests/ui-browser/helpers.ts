@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { expect, type Page, type TestInfo } from "@playwright/test";
 import { FIXED_TIME, demoUrl } from "./routes";
 
@@ -38,6 +39,25 @@ export async function assertPageStructure(page: Page, title: string, demo = true
   expect(layout.scroll, `Body overflow: ${layout.scroll}px exceeds viewport ${layout.width}px.`).toBeLessThanOrEqual(layout.width);
 }
 
+type ScreenshotOptions = NonNullable<Parameters<Page['screenshot']>[0]>;
+
+// Candidate images must satisfy the same consecutive-pixel stability premise as
+// Playwright's strict screenshot assertion. This writes output artifacts only.
+export async function captureStableImage(page: Page, options: ScreenshotOptions) {
+  const maxAttempts = 8;
+  let previous: Buffer | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await page.evaluate(async () => { await document.fonts.ready; });
+    await settleFrames(page);
+    const current = await page.screenshot(options);
+    if (previous?.equals(current)) return { image: current, attempts: attempt };
+    previous = current;
+  }
+  throw new Error('Screenshot pixels did not stabilize in ' + maxAttempts +
+    ' consecutive captures (' + (options.fullPage ? 'full page' : 'viewport') +
+    '). Investigate font, canvas, focus, or layout changes; no candidate was accepted.');
+}
+
 export async function capturePair(page: Page, testInfo: TestInfo, stem: string) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await settleFrames(page);
@@ -45,13 +65,15 @@ export async function capturePair(page: Page, testInfo: TestInfo, stem: string) 
     const name = `${stem}-${fullPage ? "full" : "viewport"}.png`;
     const options = { fullPage, animations: "disabled" as const, caret: "hide" as const, scale: "css" as const };
     const candidatePath = testInfo.outputPath(`baseline-${name}`);
-    await page.screenshot({ ...options, path: candidatePath });
+    const stable = await captureStableImage(page, options);
+    await writeFile(candidatePath, stable.image);
     await testInfo.attach(name, { path: candidatePath, contentType: "image/png" });
     const captureOnly = process.env.UI_CAPTURE_BASELINE === "1";
     await testInfo.attach(`${name}-manifest`, { body: Buffer.from(JSON.stringify({
       project: testInfo.project.name, name, candidate: candidatePath,
       baseline: testInfo.snapshotPath(name), viewport: page.viewportSize(), fullPage,
       mode: captureOnly ? "capture-only-needs-review" : "strict-comparison",
+      candidateStability: { consecutiveExactImages: 2, attempts: stable.attempts, maxAttempts: 8 },
     }, null, 2)), contentType: "application/json" });
     if (!captureOnly) {
       expect(testInfo.config.updateSnapshots, "Baseline updates must remain disabled.").toBe("none");

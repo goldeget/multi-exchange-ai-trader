@@ -57,3 +57,5 @@ body{min-width:0}.financial-value{font-variant-numeric:tabular-nums;white-space:
 h2,.safety-list strong{word-break:keep-all;overflow-wrap:normal}
 
 .analysis-meta strong{word-break:keep-all;overflow-wrap:normal}
+
+.chart .tv-lightweight-charts table,.chart .tv-lightweight-charts td{border:0;padding:0;border-collapse:separate;border-spacing:0}

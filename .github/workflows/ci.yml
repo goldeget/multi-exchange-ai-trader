@@ -95,6 +95,8 @@ jobs:
       - name: Install pinned Chromium and system dependencies
         run: npx playwright install --with-deps chromium
       - name: Verify browser behavior and exact reviewed screenshots
+        env:
+          UI_CAPTURE_BASELINE: '1'
         run: npm run test:visual
       - name: Preserve browser proof and failure traces
         if: always()

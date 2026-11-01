@@ -5,3 +5,5 @@
 .market-screen .market-quotes button{min-width:48px;min-height:48px}.market-screen .market-quotes summary{min-height:48px;padding:12px 0;cursor:pointer}
 
 .market-refresh-status{word-break:keep-all;overflow-wrap:normal}
+
+@media(min-width:769px){.market-chart-panel .chart{flex:none;height:490px;min-height:490px;max-height:490px}}

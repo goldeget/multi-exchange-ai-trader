@@ -130,3 +130,16 @@ test("malformed identifiers and unknown route names stay within the fixture app"
   await page.goto(demoUrl("view=not-a-real-screen"));
   await expect(page.getByRole("heading", { level: 1 })).toContainText("종합 현황");
 });
+
+
+test("chart dimensions stay bounded across repeated full-page captures", async ({ page }) => {
+  await openDemo(page, "view=market");
+  const chart=page.locator(".market-chart-panel .chart");
+  const before=(await chart.boundingBox())!;
+  expect(before.height).toBeLessThanOrEqual(page.viewportSize()!.width>768?500:300);
+  for(let n=0;n<3;n++){
+    await page.screenshot({fullPage:true,animations:"disabled",caret:"hide",scale:"css"});
+    expect((await chart.boundingBox())!.height).toBe(before.height);
+  }
+  for(const cell of await chart.locator(".tv-lightweight-charts td").all()) await expect(cell).toHaveCSS("border-bottom-width","0px");
+});

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -9,6 +9,9 @@ import {
 } from "lightweight-charts";
 import type { Candle } from "../api";
 export default function CandleChart({ candles }: { candles: Candle[] }) {
+  const [fontStatus, setFontStatus] = useState<"loading" | "ready" | "failed">(
+    () => typeof document.fonts?.load === "function" ? "loading" : "ready",
+  );
   const container = useRef<HTMLDivElement>(null);
   const instance = useRef<{
     chart: ReturnType<typeof createChart>;
@@ -17,13 +20,29 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
     fitted: boolean;
   } | null>(null);
   const previousTimes = useRef<string[]>([]);
+  useEffect(() => {
+    const fonts = document.fonts;
+    if (typeof fonts?.load !== "function") return;
+    let active = true;
+    // Canvas text-width caches must first measure the bundled font, not a fallback.
+    void (async () => {
+      try {
+        await fonts.load('14px "Pretendard"', "0123456789 한글");
+        await fonts.ready;
+        if (active) setFontStatus("ready");
+      } catch {
+        if (active) setFontStatus("failed");
+      }
+    })();
+    return () => { active = false; };
+  }, []);
   useEffect(() => () => {
     instance.current?.chart.remove();
     instance.current = null;
     previousTimes.current = [];
   }, []);
   useEffect(() => {
-    if (!container.current) return;
+    if (!container.current || fontStatus !== "ready") return;
     if (!instance.current && candles.length) {
       const chart = createChart(container.current, {
         height: container.current.clientHeight || 380,
@@ -98,7 +117,7 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       from: range.from + offset,
       to: range.to + offset,
     });
-  }, [candles]);
+  }, [candles, fontStatus]);
   return (
     <div
       ref={container}
@@ -109,6 +128,9 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       <span className="sr-only">
         가격과 거래량 차트입니다. 상세 수치는 아래 캔들 요약을 참조하세요.
       </span>
+      {fontStatus === "failed" && candles.length > 0 && (
+        <p role="alert">차트 글꼴을 불러오지 못했습니다. 화면을 새로고침하세요.</p>
+      )}
       {!candles.length && (
         <div className="chart-empty">
           <span aria-hidden="true">⌁</span>
