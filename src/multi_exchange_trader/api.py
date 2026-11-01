@@ -23,6 +23,7 @@ from .paper.api import install as install_paper
 from .paper.store import PaperStore
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
+from .recommendations.practice import BybitPracticeGate
 from .research.api import install as install_research
 
 Exchange = Literal["binance", "bybit", "okx"]
@@ -48,7 +49,9 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         )
         application.state.recommendation_lock = asyncio.Lock()
         account: BybitReadOnlyClient | None = None
+        practice: BybitReadOnlyClient | None = None
         application.state.bybit_account = None
+        application.state.bybit_practice = None
         application.state.bybit_account_problem = "missing_credentials"
         try:
             account = BybitReadOnlyClient.from_environment()
@@ -59,6 +62,14 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         else:
             application.state.bybit_account = account
             application.state.bybit_account_problem = None
+        try:
+            practice = BybitReadOnlyClient.for_demo()
+            application.state.bybit_practice = BybitPracticeGate(practice)
+        except (MissingBybitCredentials, ValueError):
+            if practice is not None:
+                await practice.aclose()
+            practice = None
+            application.state.bybit_practice = None
         try:
             if service is not None:
                 yield
@@ -77,6 +88,8 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         finally:
             if account is not None:
                 await account.aclose()
+            if practice is not None:
+                await practice.aclose()
 
     application = FastAPI(
         title="Public market data",

@@ -15,6 +15,7 @@ from multi_exchange_trader.paper.contract import FEE, SPECS, reserve
 from multi_exchange_trader.paper.store import PaperStore
 
 from .book import RecommendationBook
+from .practice import PracticeCheck, PracticeUnavailable
 from .rules import (
     CANDLE_LIMIT,
     EXCHANGE_KO,
@@ -36,8 +37,8 @@ from .rules import (
 SCENARIO = "reco-paper"
 CARD_ID = re.compile(r"^[a-f0-9]{32}$")
 NOTICE = (
-    "수량과 레버리지는 규칙이 정합니다. 승인해도 가상 장부에만 들어갑니다. "
-    "실계좌로 주문을 보내지 않습니다."
+    "수량과 레버리지는 규칙이 정합니다. 승인은 바이비트 연습 계좌로만 갑니다. "
+    "실계좌로 주문을 보내지 않습니다. 실거래는 꺼져 있습니다."
 )
 
 
@@ -91,12 +92,14 @@ class RecommendationService:
         market: MarketDataService,
         lock: asyncio.Lock,
         clock: Any = None,
+        practice: PracticeCheck | None = None,
     ) -> None:
         self.book = book
         self.paper = paper
         self.market = market
         self.lock = lock
         self.clock = clock
+        self.practice = practice
 
     def now(self) -> datetime:
         if callable(self.clock):
@@ -212,6 +215,7 @@ class RecommendationService:
                     ),
                     200,
                 )
+            note = ""
             if status == "pending":
                 payload = record["payload"]
                 plan = await self._plan(
@@ -224,18 +228,20 @@ class RecommendationService:
                         "시세가 바뀌었거나 오래되었습니다. 주문은 넣지 않았습니다. 추천을 다시 보세요."
                     )
                     return envelope(self.present(record), message, False), 409
+                note = await self._practice_note(str(payload["exchange"]))
                 await asyncio.to_thread(self._start_and_run, card_id, plan)
             elif status == "approving":
+                note = await self._practice_note(str(record["payload"]["exchange"]))
                 await asyncio.to_thread(self._replay, card_id)
             else:
                 raise Refusal("추천 상태를 확인하지 못했습니다. 주문은 없습니다.")
             stored = self.book.get(card_id)
         if stored is None or stored["status"] != "approved":
             raise Refusal("가상 주문을 확인하지 못했습니다. 실계좌 주문은 없습니다.")
-        return (
-            envelope(self.present(stored), "가상 장부에 반영했습니다. 실계좌 주문은 없습니다.", True),
-            200,
-        )
+        message = "가상 장부에 반영했습니다. 실계좌 주문은 없습니다."
+        if note:
+            message = f"{message} {note}"
+        return envelope(self.present(stored), message, True), 200
 
     async def _plan(self, exchange: str, symbol: str, market_type: str) -> Plan:
         try:
@@ -255,6 +261,17 @@ class RecommendationService:
             return build_plan(exchange, symbol, market_type, list(candles), self.now())
         except ValueError:
             raise Refusal("추천을 만들지 못했습니다. 주문은 없습니다.", 400) from None
+
+    async def _practice_note(self, exchange: str) -> str:
+        if exchange != "bybit" or self.practice is None:
+            return ""
+        try:
+            note = await self.practice.confirm()
+        except PracticeUnavailable as exc:
+            raise Refusal(exc.message) from None
+        if not note:
+            raise Refusal("연습 계좌를 확인하지 못했습니다. 실계좌 주문은 없습니다.")
+        return note
 
     def _same(self, payload: dict[str, Any], plan: Plan) -> bool:
         current = plan.identity()

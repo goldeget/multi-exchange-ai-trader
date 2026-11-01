@@ -29,6 +29,7 @@ from .config import (
     MissingBybitCredentials,
     allowed_host,
     require_bybit_credentials,
+    require_demo_credentials,
     resolve_environment,
 )
 
@@ -196,6 +197,18 @@ class BybitReadOnlyClient:
             api_secret=secret,
             base_url=base_url,
             environment=environment,
+            transport=transport,
+        )
+
+    @classmethod
+    def for_demo(cls, transport: httpx.AsyncBaseTransport | None = None) -> "BybitReadOnlyClient":
+        """Practice-account reads. The host is fixed and the live key is refused."""
+        key, secret = require_demo_credentials()
+        return cls(
+            api_key=key,
+            api_secret=secret,
+            base_url=allowed_host("demo"),
+            environment="demo",
             transport=transport,
         )
 

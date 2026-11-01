@@ -350,6 +350,7 @@ export default function Account({ pollIntervalMs = 15000, deadlineMs = 20000 }: 
           </section>
           <section className="account-panel" aria-labelledby="account-env">
             <h2 id="account-env">어떤 계좌인지</h2>
+            <p>실계좌는 이 화면에서 읽기만 합니다. 연습 계좌는 추천 승인에서만 확인합니다. 실거래는 꺼져 있습니다.</p>
             <ul>
               {environmentSentences(view.환경코드).map((item) => (
                 <li key={item}>{item}</li>

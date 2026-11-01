@@ -74,7 +74,13 @@ def ok(result: object, time_ms: int = 1700000000000) -> httpx.Response:
     return httpx.Response(200, json=envelope(result, time_ms=time_ms))
 
 
-def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> httpx.MockTransport:
+def success_handler(
+    seen: list[httpx.Request],
+    host: str = "api.bybit.com",
+    *,
+    key: str = KEY,
+    secret: str = SECRET,
+) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         assert request.url.host == host
@@ -99,7 +105,7 @@ def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> h
                 }
             )
         if path == "/v5/account/wallet-balance":
-            assert_signed(request)
+            assert_signed(request, secret, key)
             assert query_text(request) == "accountType=UNIFIED"
             return ok(
                 {
@@ -115,7 +121,7 @@ def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> h
                 }
             )
         if path == "/v5/account/info":
-            assert_signed(request)
+            assert_signed(request, secret, key)
             return ok(
                 {
                     "marginMode": "REGULAR_MARGIN",
@@ -124,7 +130,7 @@ def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> h
                 }
             )
         if path == "/v5/position/list":
-            assert_signed(request)
+            assert_signed(request, secret, key)
             return ok(
                 {
                     "category": "linear",
@@ -149,7 +155,7 @@ def success_handler(seen: list[httpx.Request], host: str = "api.bybit.com") -> h
                 }
             )
         if path == "/v5/order/realtime":
-            assert_signed(request)
+            assert_signed(request, secret, key)
             return ok(
                 {
                     "category": "linear",
@@ -703,15 +709,39 @@ async def test_unexpected_error_does_not_echo_the_secret(bybit_env: None) -> Non
     assert view.잔고 is None
 
 
-async def test_demo_is_not_mainnet_or_paper(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_demo_flag_does_not_move_the_live_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BYBIT_ENV_FILE", "off")
     monkeypatch.setenv("BYBIT_API_KEY", KEY)
     monkeypatch.setenv("BYBIT_API_SECRET", SECRET)
     monkeypatch.setenv("BYBIT_TESTNET", "false")
     monkeypatch.setenv("BYBIT_DEMO", "true")
     seen: list[httpx.Request] = []
-    client = BybitReadOnlyClient.from_environment(
-        transport=success_handler(seen, "api-demo.bybit.com")
+    client = BybitReadOnlyClient.from_environment(transport=success_handler(seen, "api.bybit.com"))
+    try:
+        view = await build_account_view(client, None)
+    finally:
+        await client.aclose()
+    assert view.환경코드 == "mainnet"
+    assert view.환경 == "실계좌"
+    assert seen[0].url.host == "api.bybit.com"
+
+
+async def test_demo_is_not_mainnet_or_paper(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BYBIT_ENV_FILE", "off")
+    monkeypatch.setenv("BYBIT_API_KEY", KEY)
+    monkeypatch.setenv("BYBIT_API_SECRET", SECRET)
+    monkeypatch.setenv("BYBIT_DEMO_API_KEY", "demo-bybit-key")
+    monkeypatch.setenv("BYBIT_DEMO_API_SECRET", "demo-bybit-secret")
+    monkeypatch.setenv("BYBIT_TESTNET", "false")
+    monkeypatch.setenv("BYBIT_DEMO", "true")
+    seen: list[httpx.Request] = []
+    client = BybitReadOnlyClient.for_demo(
+        transport=success_handler(
+            seen,
+            "api-demo.bybit.com",
+            key="demo-bybit-key",
+            secret="demo-bybit-secret",
+        )
     )
     try:
         view = await build_account_view(client, None)

@@ -13,5 +13,7 @@ def isolated_api_storage(tmp_path, monkeypatch):
     monkeypatch.delenv("BYBIT_API_KEY", raising=False)
     monkeypatch.delenv("BYBIT_API_SECRET", raising=False)
     monkeypatch.delenv("BYBIT_DEMO", raising=False)
+    monkeypatch.delenv("BYBIT_DEMO_API_KEY", raising=False)
+    monkeypatch.delenv("BYBIT_DEMO_API_SECRET", raising=False)
     monkeypatch.delenv("BYBIT_TESTNET", raising=False)
     monkeypatch.delenv("LIVE_TRADING_ENABLED", raising=False)
