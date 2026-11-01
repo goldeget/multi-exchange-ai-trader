@@ -95,3 +95,26 @@ async def test_ai_storage_failure_does_not_block_overview_or_claim_zero_budget(c
         assert failed.status_code == 503
         assert "remaining" not in failed.json()
         assert (await client.get("/api/v1/overview")).status_code == 200
+
+
+async def test_unqualified_spot_server_refuses_funding_ticks_and_order_review(control_app, tmp_path):
+    from multi_exchange_trader.paper.order_preview import OrderReviews
+    from multi_exchange_trader.paper.spot_api import install
+
+    control_app.state.spot_paper_qualified = False
+    control_app.state.order_reviews = OrderReviews(tmp_path / "reviews.sqlite3", None)
+    install(control_app)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(control_app), base_url="http://localhost:8000") as client:
+        capabilities = (await client.get("/api/v1/capabilities")).json()
+        assert capabilities["manual_paper"]["spot_limit"]["supported"] is False
+        route = "/api/v1/paper/spot/scenarios/manual/commands"
+        create = await client.post(route, json={"idempotency_key": "seed", "command": {"kind": "create"}})
+        assert create.status_code == 409
+        assert create.json()["reason"] == "spot_not_qualified"
+        order = {"kind": "order", "instrument": "BTC-PAPER", "side": "buy", "quantity": "0.001", "order_type": "MARKET"}
+        bypass = await client.post(route, json={"idempotency_key": "bypass", "command": order})
+        assert bypass.status_code == 409
+        assert bypass.json()["reason"] == "spot_order_review_required"
+        preview = await client.post("/api/v1/paper/order-previews", json={"scenario_id": "manual", "product": "SPOT",
+            "order_type": "MARKET", "config_revision": "SPOT-PAPER-v2", "command": order})
+        assert preview.status_code == 400

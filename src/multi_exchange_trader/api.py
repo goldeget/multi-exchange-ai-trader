@@ -1,4 +1,4 @@
-"""Public market API plus a read-only Bybit account view. No order sender."""
+"""Public market API, a read-only live Bybit view, and one practice-account order path."""
 
 import asyncio
 import os
@@ -12,6 +12,7 @@ from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from .account.api import install as install_account
+from .account.bybit_demo_order import BybitDemoOrderClient
 from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
 from .ai.budget import BudgetBook
@@ -25,10 +26,13 @@ from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 from .paper.api import install as install_paper
 from .paper.order_preview import OrderReviews
+from .paper.spot_api import install as install_spot
+from .paper.spot_contract import QUALIFIED as SPOT_QUALIFIED
+from .paper.spot_store import SpotPaperStore
 from .paper.store import PaperStore
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
-from .recommendations.practice import BybitPracticeGate
+from .recommendations.practice import BybitPracticeGate, PracticeUnavailable
 from .research.api import install as install_research
 
 Exchange = Literal["binance", "bybit", "okx"]
@@ -52,10 +56,19 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         sidecar_root = application.state.paper_store.path.parent
         application.state.order_reviews = None
         application.state.ai_budget = None
+        application.state.spot_paper_store = None
+        application.state.spot_paper_qualified = SPOT_QUALIFIED
+        try:
+            application.state.spot_paper_store = SpotPaperStore(
+                Path(os.environ.get("PAPER_SPOT_DB_PATH", str(sidecar_root / "spot-paper.sqlite3")))
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass  # A separate product never replaces or funds the original PAPER ledger.
         try:
             application.state.order_reviews = OrderReviews(
                 Path(os.environ.get("PAPER_REVIEW_DB_PATH", str(sidecar_root / "order-reviews.sqlite3"))),
                 application.state.paper_store,
+                spot=application.state.spot_paper_store, spot_qualified=SPOT_QUALIFIED,
             )
         except (ValueError, sqlite3.Error, OSError):
             pass  # Isolate review sidecar failure from existing ledger reads and risk reduction.
@@ -71,6 +84,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.recommendation_lock = asyncio.Lock()
         account: BybitReadOnlyClient | None = None
         practice: BybitReadOnlyClient | None = None
+        practice_orders: BybitDemoOrderClient | None = None
         application.state.bybit_account = None
         application.state.bybit_practice = None
         application.state.bybit_account_problem = "missing_credentials"
@@ -85,11 +99,15 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
             application.state.bybit_account_problem = None
         try:
             practice = BybitReadOnlyClient.for_demo()
-            application.state.bybit_practice = BybitPracticeGate(practice)
-        except (MissingBybitCredentials, ValueError):
+            practice_orders = BybitDemoOrderClient.from_environment()
+            application.state.bybit_practice = BybitPracticeGate(practice, practice_orders)
+        except (MissingBybitCredentials, ValueError, PracticeUnavailable):
             if practice is not None:
                 await practice.aclose()
+            if practice_orders is not None:
+                await practice_orders.aclose()
             practice = None
+            practice_orders = None
             application.state.bybit_practice = None
         try:
             if service is not None:
@@ -111,6 +129,8 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
                 await account.aclose()
             if practice is not None:
                 await practice.aclose()
+            if practice_orders is not None:
+                await practice_orders.aclose()
 
     application = FastAPI(
         title="Public market data",
@@ -189,6 +209,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
     install_recommendations(application)
     install_account(application)
     install_controls(application)
+    install_spot(application)
     return application
 
 

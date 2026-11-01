@@ -1,4 +1,4 @@
-"""Turn a stored rule card into a virtual order, or refuse. No exchange order."""
+"""Turn a stored rule card into a virtual order. Bybit approval also uses the practice account."""
 
 from __future__ import annotations
 
@@ -15,7 +15,13 @@ from multi_exchange_trader.paper.contract import FEE, SPECS, reserve
 from multi_exchange_trader.paper.store import PaperStore
 
 from .book import RecommendationBook
-from .practice import PracticeCheck, PracticeUnavailable
+from .practice import (
+    CLOSE_WARNING,
+    OPEN_AND_CLOSE,
+    PracticeCheck,
+    PracticeCloseFailed,
+    PracticeUnavailable,
+)
 from .rules import (
     CANDLE_LIMIT,
     EXCHANGE_KO,
@@ -37,8 +43,9 @@ from .rules import (
 SCENARIO = "reco-paper"
 CARD_ID = re.compile(r"^[a-f0-9]{32}$")
 NOTICE = (
-    "수량과 레버리지는 규칙이 정합니다. 승인은 바이비트 연습 계좌로만 갑니다. "
-    "실계좌로 주문을 보내지 않습니다. 실거래는 꺼져 있습니다."
+    "수량과 레버리지는 규칙이 정합니다. 승인은 바이비트 연습 계좌의 가장 작은 "
+    "비트코인 선물 주문을 넣었다가 바로 닫습니다. 실계좌로 주문을 보내지 않습니다. "
+    "실거래는 꺼져 있습니다."
 )
 
 
@@ -124,12 +131,15 @@ class RecommendationService:
             }.get(status, "확인 중")
         leverage = payload.get("leverage")
         expires = datetime.fromisoformat(str(payload["expires_at"]))
-        approvable = status == "approving" or (
-            status == "pending"
-            and side in ("long", "short")
-            and bool(payload.get("actionable"))
-            and bool(payload.get("fresh"))
-            and self.now() < expires
+        approvable = payload.get("demo_close_failed") is not True and (
+            status == "approving"
+            or (
+                status == "pending"
+                and side in ("long", "short")
+                and bool(payload.get("actionable"))
+                and bool(payload.get("fresh"))
+                and self.now() < expires
+            )
         )
         return {
             "번호": record["id"],
@@ -242,26 +252,33 @@ class RecommendationService:
                     ),
                     200,
                 )
+            if record["payload"].get("demo_close_failed") is True:
+                return envelope(self.present(record), CLOSE_WARNING, False), 409
             note = ""
-            if status == "pending":
-                payload = record["payload"]
-                plan = await self._plan(
-                    str(payload["exchange"]),
-                    str(payload["symbol"]),
-                    str(payload["market_type"]),
-                )
-                if not self._same(payload, plan) or not plan.actionable:
-                    message = (
-                        "시세가 바뀌었거나 오래되었습니다. 주문은 넣지 않았습니다. 추천을 다시 보세요."
+            try:
+                if status == "pending":
+                    payload = record["payload"]
+                    plan = await self._plan(
+                        str(payload["exchange"]),
+                        str(payload["symbol"]),
+                        str(payload["market_type"]),
                     )
-                    return envelope(self.present(record), message, False), 409
-                note = await self._practice_note(str(payload["exchange"]))
-                await asyncio.to_thread(self._start_and_run, card_id, plan)
-            elif status == "approving":
-                note = await self._practice_note(str(record["payload"]["exchange"]))
-                await asyncio.to_thread(self._replay, card_id)
-            else:
-                raise Refusal("추천 상태를 확인하지 못했습니다. 주문은 없습니다.")
+                    if not self._same(payload, plan) or not plan.actionable:
+                        message = (
+                            "시세가 바뀌었거나 오래되었습니다. 주문은 넣지 않았습니다. 추천을 다시 보세요."
+                        )
+                        return envelope(self.present(record), message, False), 409
+                    note = await self._practice_note(card_id, payload)
+                    await asyncio.to_thread(self._start_and_run, card_id, plan)
+                elif status == "approving":
+                    note = await self._practice_note(card_id, record["payload"])
+                    await asyncio.to_thread(self._replay, card_id)
+                else:
+                    raise Refusal("추천 상태를 확인하지 못했습니다. 주문은 없습니다.")
+            except PracticeCloseFailed as exc:
+                stored_failure = self.book.get(card_id)
+                shown = self.present(stored_failure) if stored_failure is not None else None
+                return envelope(shown, exc.message, False), 409
             stored = self.book.get(card_id)
         if stored is None or stored["status"] != "approved":
             raise Refusal("가상 주문을 확인하지 못했습니다. 실계좌 주문은 없습니다.")
@@ -289,15 +306,31 @@ class RecommendationService:
         except ValueError:
             raise Refusal("추천을 만들지 못했습니다. 주문은 없습니다.", 400) from None
 
-    async def _practice_note(self, exchange: str) -> str:
+    async def _practice_note(self, card_id: str, payload: dict[str, Any]) -> str:
+        exchange = str(payload.get("exchange") or "")
         if exchange != "bybit" or self.practice is None:
             return ""
+        symbol = str(payload.get("symbol") or "")
+        market_type = str(payload.get("market_type") or "")
+        if symbol != "BTCUSDT" or market_type != "perpetual":
+            raise Refusal(
+                "이 추천은 연습 계좌의 가장 작은 비트코인 선물 주문과 달라서 넣지 않았습니다. "
+                "실계좌 주문은 없습니다."
+            )
+        if payload.get("demo_close_failed") is True:
+            raise PracticeCloseFailed(CLOSE_WARNING)
+        if payload.get("demo_round_trip") is True:
+            return OPEN_AND_CLOSE
         try:
-            note = await self.practice.confirm()
+            note = await self.practice.round_trip()
+        except PracticeCloseFailed:
+            self.book.remember_flag(card_id, "demo_close_failed")
+            raise PracticeCloseFailed(CLOSE_WARNING) from None
         except PracticeUnavailable as exc:
             raise Refusal(exc.message) from None
         if not note:
-            raise Refusal("연습 계좌를 확인하지 못했습니다. 실계좌 주문은 없습니다.")
+            raise Refusal("연습 계좌 주문을 확인하지 못했습니다. 실계좌 주문은 없습니다.")
+        self.book.remember_flag(card_id, "demo_round_trip")
         return note
 
     def _same(self, payload: dict[str, Any], plan: Plan) -> bool:

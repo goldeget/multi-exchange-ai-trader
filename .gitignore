@@ -236,3 +236,6 @@ work/phase3-data/
 
 # Local Phase4 datasets/reports/session DB are not source artifacts.
 work/phase4-data/
+
+# Disposable isolated browser-verification data.
+.qa-session/

@@ -1,4 +1,4 @@
-"""Local recommendation routes. Approval can reach the virtual ledger only."""
+"""Local recommendation routes. Bybit approval can place one practice order."""
 
 from __future__ import annotations
 

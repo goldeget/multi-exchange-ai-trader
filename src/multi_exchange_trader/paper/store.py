@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .contract import SPECS, VERSION, validate_event
 from .sandbox import sandbox_replay as replay
@@ -61,6 +61,8 @@ def identifier(value: str) -> None:
 
 
 class PaperStore:
+    metadata: ClassVar[dict[str, Any]] = META
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         with _LOCK:
@@ -80,7 +82,7 @@ class PaperStore:
                         CREATE TABLE settlements(scenario TEXT NOT NULL,seq INTEGER NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(scenario,seq));
                         PRAGMA user_version=1;
                         """)
-                        db.execute("INSERT INTO metadata VALUES (?)", (canonical(META),))
+                        db.execute("INSERT INTO metadata VALUES (?)", (canonical(self.metadata),))
                         for table in ("events", "commands", "fills", "orders", "settlements"):
                             for action in ("UPDATE", "DELETE"):
                                 db.execute(
@@ -92,7 +94,7 @@ class PaperStore:
                     if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                         raise ValueError("paper storage corruption")
                     meta = db.execute("SELECT value FROM metadata").fetchone()
-                    if meta is None or meta[0] != canonical(META):
+                    if meta is None or meta[0] != canonical(self.metadata):
                         raise ValueError("PAPER schema/assumptions mismatch")
                     ids = [row[0] for row in db.execute("SELECT id FROM scenarios")]
                 for scenario in ids:
@@ -246,14 +248,20 @@ class PaperStore:
         with _LOCK, self.db() as db:
             db.execute("BEGIN")
             rows, current = self.verified(db, scenario)
+            self.admission(len(rows), current, payload)
             candidate = self.rebuild(
                 scenario, rows + [{"payload": payload, "received_at": clock().isoformat()}]
             )
             return current, candidate
 
+    def admission(self, event_count: int, state: dict[str, Any], payload: dict[str, Any]) -> None:
+        if event_count >= 500:
+            raise ValueError("PAPER event limit; use a separate scenario")
+
     def command(
         self, scenario: str, key: str, payload: dict[str, Any], *,
         expected_revision: int | None = None, expires_at: datetime | None = None,
+        allow_new: bool = True,
     ) -> dict[str, Any]:
         identifier(scenario)
         identifier(key)
@@ -290,12 +298,13 @@ class PaperStore:
                     old = {"fills": [], "orders": []}
                 # These checks run inside the ledger write transaction. A prior committed
                 # command above is returned first even after its review has expired.
+                if not allow_new:
+                    raise ValueError("PAPER product not qualified for new orders")
                 if expected_revision is not None and len(rows) != expected_revision:
                     raise ValueError("PAPER review revision changed; review again")
                 if expires_at is not None and clock() >= expires_at:
                     raise ValueError("PAPER review expired")
-                if len(rows) >= 500:
-                    raise ValueError("PAPER event limit; use a separate scenario")
+                self.admission(len(rows), old, payload)
                 received = clock().isoformat()
                 candidate = rows + [{"payload": payload, "received_at": received}]
                 result = self.rebuild(scenario, candidate)

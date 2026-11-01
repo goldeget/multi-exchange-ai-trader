@@ -55,6 +55,8 @@ def install(application: FastAPI) -> None:
         value = capabilities(
             account_registered=getattr(request.app.state, "bybit_account", None) is not None,
             research_v2=getattr(request.app.state, "research_v2_supported", False) is True,
+            spot_qualified=(getattr(request.app.state, "spot_paper_qualified", False) is True
+                            and getattr(request.app.state, "spot_paper_store", None) is not None),
         )
         if getattr(request.app.state, "order_reviews", None) is None:
             value["manual_paper"]["synthetic_perpetual"]["order_preview"] = False
@@ -63,7 +65,8 @@ def install(application: FastAPI) -> None:
     @router.get("/overview")
     async def overview(request: Request) -> dict[str, Any]:
         value = await asyncio.to_thread(read_overview, request.app.state.paper_store,
-                                        request.app.state.research_store)
+                                        request.app.state.research_store,
+                                        spot=getattr(request.app.state, "spot_paper_store", None))
         value["automation"]["scheduler"] = _scheduler(request, value)
         return value
 
@@ -102,7 +105,8 @@ def install(application: FastAPI) -> None:
     @router.get("/diagnostics")
     async def diagnostics(request: Request) -> dict[str, Any]:
         value = await asyncio.to_thread(read_overview, request.app.state.paper_store,
-                                        request.app.state.research_store)
+                                        request.app.state.research_store,
+                                        spot=getattr(request.app.state, "spot_paper_store", None))
         scheduler = _scheduler(request, value)
         try:
             from .paper.api import reviews

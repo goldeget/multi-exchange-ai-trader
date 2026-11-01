@@ -11,13 +11,18 @@ from typing import Any
 from uuid import uuid4
 
 from .contract import FEE, VERSION, money, validate_event
+from .spot_contract import VERSION as SPOT_VERSION
+from .spot_contract import validate_spot_event
+from .spot_store import SpotPaperStore
 from .store import PaperStore, canonical, digest, identifier, parse_time
 
 
 class OrderReviews:
     def __init__(self, path: str | Path, paper: PaperStore,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None, *,
+                 spot: SpotPaperStore | None = None, spot_qualified: bool = False) -> None:
         self.path, self.paper = Path(path), paper
+        self.spot, self.spot_qualified = spot, spot_qualified
         self.clock = clock or (lambda: datetime.now(UTC))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
@@ -42,15 +47,25 @@ class OrderReviews:
         fields = {"scenario_id", "product", "order_type", "config_revision", "command"}
         if not isinstance(body, dict) or set(body) != fields:
             raise ValueError("PAPER review fields")
-        if (body["product"] != "SYNTHETIC_PERPETUAL" or body["order_type"] != "MARKET"
-                or body["config_revision"] != VERSION):
-            raise ValueError("PAPER product/order/config not qualified")
         scenario, command = body["scenario_id"], body["command"]
         identifier(scenario)
-        if not isinstance(command, dict) or command.get("kind") not in {"enter", "close", "protect"}:
-            raise ValueError("PAPER review command")
-        validate_event(command)
-        current, candidate = self.paper.preview_command(scenario, command)
+        if not isinstance(command, dict):
+            raise TypeError("PAPER review command")
+        if body["product"] == "SPOT":
+            if (not self.spot_qualified or self.spot is None or body["config_revision"] != SPOT_VERSION
+                    or body["order_type"] not in {"MARKET", "LIMIT"}
+                    or command.get("order_type") != body["order_type"] or command.get("kind") != "order"):
+                raise ValueError("PAPER product/order/config not qualified")
+            validate_spot_event(command)
+            ledger: PaperStore = self.spot
+        else:
+            if (body["product"] != "SYNTHETIC_PERPETUAL" or body["order_type"] != "MARKET"
+                    or body["config_revision"] != VERSION
+                    or command.get("kind") not in {"enter", "close", "protect"}):
+                raise ValueError("PAPER product/order/config not qualified")
+            validate_event(command)
+            ledger = self.paper
+        current, candidate = ledger.preview_command(scenario, command)
         token = uuid4().hex
         review = {
             **body, "preview_id": token, "revision": current["revision"],
@@ -61,6 +76,16 @@ class OrderReviews:
                       "available_balance_after": candidate["available_balance"],
                       "reserved_margin_after": candidate["reserved_margin"]},
         }
+        if body["product"] == "SPOT":
+            charged = review["costs"]["estimated_fee"]
+            review["costs"]["charged_fee_at_preview"] = charged
+            if body["order_type"] == "LIMIT":
+                review["costs"]["estimated_fee"] = money(Decimal(command["quantity"]) * Decimal(command["limit_price"]) * FEE)
+            review["costs"]["fee_estimate_policy"] = "MAXIMUM_AT_LIMIT" if body["order_type"] == "LIMIT" else "NATIVE_FILLED_FEE"
+            review["costs"]["reserved_order_cash_after"] = candidate["reserved_order_cash"]
+            review["costs"]["reserved_order_fee_after"] = candidate["reserved_order_fee"]
+            review["order_state_after"] = candidate["orders"][-1]
+            review["balances_after"] = candidate["balances"]
         review["contract_hash"] = digest(review)
         with self.connect() as db:
             db.execute("INSERT INTO order_reviews VALUES (?,?,?,NULL,NULL)",
@@ -94,9 +119,13 @@ class OrderReviews:
         except sqlite3.IntegrityError:
             raise ValueError("PAPER review idempotency conflict") from None
         command_id = "review-" + preview_id
-        result = self.paper.command(
+        ledger = self.spot if review["product"] == "SPOT" else self.paper
+        if ledger is None:
+            raise ValueError("PAPER review storage unavailable")
+        result = ledger.command(
             review["scenario_id"], command_id, review["command"],
             expected_revision=review["revision"], expires_at=parse_time(review["expires_at"]),
+            allow_new=review["product"] != "SPOT" or self.spot_qualified,
         )
         response = {"preview_id": preview_id, "command_id": command_id,
                     "idempotency_key": idempotency_key, "status": "confirmed", "state": result}
