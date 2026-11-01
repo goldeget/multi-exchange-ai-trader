@@ -58,9 +58,9 @@ def test_budget_unknown_usage_keeps_reservation_and_cannot_lower_below_exposure(
     book.uncertain("timeout")
     with pytest.raises(ValueError):
         book.configure(1, "0.50")
-    with pytest.raises(ValueError):
-        book.settle("timeout", "0.81")
-    assert Decimal(book.summary()["reserved"]) == Decimal("0.80")
+    book.settle("timeout", "0.81")
+    assert Decimal(book.summary()["used"]) == Decimal("0.81")
+    assert book.summary()["overrun_hold"] is True
     assert book.settings()["mode"] == "OFFLINE_TEST"
     assert book.settings()["provider_status"] == "NOT_CONFIGURED"
 

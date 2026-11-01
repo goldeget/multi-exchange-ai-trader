@@ -46,6 +46,40 @@ jobs:
       - name: Run mypy
         run: uv run mypy src scripts
 
+  native-contracts:
+    name: Native execution contracts (network isolated)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "0.12.23"
+          enable-cache: false
+      - name: Install exact locked native wheel
+        run: uv sync --locked
+      - name: Require OS network isolation and actual native contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_bybit_native_linux.py --junitxml=native-contracts.xml
+      - name: Reject empty or skipped native qualification
+        run: |
+          .venv/bin/python - <<'PY'
+          import xml.etree.ElementTree as ET
+          suites = list(ET.parse("native-contracts.xml").getroot().iter("testsuite"))
+          total = sum(int(s.attrib.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.attrib.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.attrib.get("failures", 0)) + int(s.attrib.get("errors", 0)) for s in suites)
+          if total != 8 or skipped or failures:
+              raise SystemExit("Native contracts require all eight unskipped passing cases")
+          print(f"Verified {total} actual native contract tests without network access")
+          PY
+
   operations:
     name: Linux operations checks
     runs-on: ubuntu-24.04
