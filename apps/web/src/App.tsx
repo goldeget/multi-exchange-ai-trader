@@ -1,5 +1,6 @@
 import Account from "./account/Account";
 import Paper from "./paper/Paper";
+import Recommend from "./recommend/Recommend";
 import Research from "./research/Research";
 import { useEffect, useState } from "react";
 import {
@@ -320,11 +321,13 @@ function MarketDashboard() {
   );
 }
 
-type AppView = "market" | "paper" | "research" | "account";
+type AppView = "market" | "paper" | "research" | "account" | "recommend";
 
 function currentView(): AppView {
   const value = new URLSearchParams(window.location.search).get("view");
-  if (value === "paper" || value === "research" || value === "account") return value;
+  if (value === "paper" || value === "research" || value === "account" || value === "recommend") {
+    return value;
+  }
   return "market";
 }
 
@@ -333,6 +336,7 @@ const titles: Record<AppView, string> = {
   paper: "가상 거래",
   research: "연습 자동매매",
   account: "Bybit 잔고",
+  recommend: "추천",
 };
 
 export default function App() {
@@ -353,6 +357,9 @@ export default function App() {
         <button aria-pressed={view === "market"} onClick={() => select("market")}>
           시세 보기
         </button>
+        <button aria-pressed={view === "recommend"} onClick={() => select("recommend")}>
+          추천
+        </button>
         <button aria-pressed={view === "paper"} onClick={() => select("paper")}>
           가상 거래
         </button>
@@ -369,6 +376,8 @@ export default function App() {
         <Paper />
       ) : view === "account" ? (
         <Account />
+      ) : view === "recommend" ? (
+        <Recommend />
       ) : (
         <MarketDashboard />
       )}

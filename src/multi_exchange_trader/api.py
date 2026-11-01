@@ -21,6 +21,8 @@ from .market_data.public_client import PublicMarketClient, parse_blocked_hosts
 from .market_data.service import MarketDataService
 from .paper.api import install as install_paper
 from .paper.store import PaperStore
+from .recommendations.api import install as install_recommendations
+from .recommendations.book import RecommendationBook
 from .research.api import install as install_research
 
 Exchange = Literal["binance", "bybit", "okx"]
@@ -41,6 +43,10 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.paper_store = PaperStore(
             os.environ.get("PAPER_DB_PATH", "work/phase3-data/paper.sqlite3")
         )
+        application.state.recommendation_book = RecommendationBook(
+            os.environ.get("RECOMMENDATION_DB_PATH", "work/recommendations.sqlite3")
+        )
+        application.state.recommendation_lock = asyncio.Lock()
         account: BybitReadOnlyClient | None = None
         application.state.bybit_account = None
         application.state.bybit_account_problem = "missing_credentials"
@@ -146,6 +152,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
 
     install_paper(application)
     install_research(application)
+    install_recommendations(application)
     install_account(application)
     return application
 

@@ -287,6 +287,25 @@ describe("공개 시세 대시보드", () => {
       ),
     ).toBe(true);
   });
+  it("opens the recommendation screen from the address", async () => {
+    window.history.replaceState({}, "", "/?view=recommend");
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        카드: null,
+        메시지: "지금은 들어갈 추천이 없습니다.",
+        실계좌주문: false,
+        가상반영: false,
+      }),
+    });
+    render(<App />);
+    expect(screen.getByRole("heading", { name: "추천" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "추천" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/실계좌로 주문을 보내지 않습니다/)).toBeVisible();
+    await settle();
+    await settle();
+    expect(screen.getByText("지금은 들어갈 추천이 없습니다.")).toBeVisible();
+  });
 });
 
 it("keeps terminal restriction visible instead of replacing it with generic stale state", async()=>{

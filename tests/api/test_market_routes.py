@@ -58,6 +58,9 @@ async def test_health_and_route_inventory_have_no_exchange_access():
             ("/api/v1/account/bybit/view", ("GET",)),
             ("/api/v1/account/bybit/orders", ("POST",)),
             ("/api/v1/account/bybit/leverage", ("POST",)),
+            ("/api/v1/recommendations/preview", ("POST",)),
+            ("/api/v1/recommendations/{card_id}/approve", ("POST",)),
+            ("/api/v1/recommendations/{card_id}/reject", ("POST",)),
         }
 
 

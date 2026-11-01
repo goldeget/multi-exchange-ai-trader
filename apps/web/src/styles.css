@@ -503,6 +503,111 @@ footer {
   text-align: left;
   white-space: nowrap;
 }
+.app-mode-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 4%;
+  background: #121a23;
+  border-bottom: 1px solid #2a3745;
+}
+.app-mode-nav button {
+  border: 1px solid #425565;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #18232e;
+  color: #e8eef5;
+}
+.app-mode-nav button[aria-pressed="true"] {
+  border-color: #43c6d8;
+}
+.recommend {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 4% 64px;
+}
+.recommend-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 0 18px;
+  background: transparent;
+  border: 0;
+}
+.recommend-warning,
+.recommend-error {
+  padding: 14px 16px;
+  border-radius: 8px;
+}
+.recommend-warning {
+  border: 1px solid #ddaf55;
+  background: #292719;
+  color: #ffe3a3;
+}
+.recommend-error {
+  border: 1px solid #8f4a42;
+  background: #2a1816;
+  color: #ffb4a8;
+}
+.recommend-panel {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #2a3745;
+  border-radius: 10px;
+  background: #121a23;
+}
+.recommend-choices,
+.recommend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+.recommend label {
+  display: grid;
+  gap: 6px;
+  min-width: 160px;
+}
+.recommend select {
+  color: #e8eef5;
+  background: #18232e;
+  border: 1px solid #425565;
+  border-radius: 6px;
+  padding: 10px;
+}
+.recommend button {
+  border: 1px solid #3d8c99;
+  border-radius: 6px;
+  padding: 10px 14px;
+  background: #17323b;
+  color: #e8eef5;
+}
+.recommend-card {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 8px 16px;
+  margin: 16px 0;
+}
+.recommend-card div {
+  display: contents;
+}
+.recommend-card dt {
+  color: #c5d0dc;
+}
+.recommend-card dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 640px) {
+  .recommend-card,
+  .recommend-card div {
+    display: block;
+  }
+  .recommend-card dt {
+    margin-top: 10px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

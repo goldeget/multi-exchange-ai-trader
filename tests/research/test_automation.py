@@ -20,10 +20,11 @@ def make(tmp_path, **overrides):
     return store, config
 
 
+ANCHOR = datetime.now(UTC).replace(microsecond=0) + timedelta(days=2)
+
+
 def tick(store, run, cursor):
-    return store.step(
-        run, cursor, now=datetime(2026, 11, 1, tzinfo=UTC) + timedelta(seconds=cursor * 10)
-    )
+    return store.step(run, cursor, now=ANCHOR + timedelta(seconds=cursor * 10))
 
 
 def open_run(tmp_path, **overrides):
@@ -213,7 +214,7 @@ def test_next_due_is_one_second_after_actual_work_completion(tmp_path):
     store, config = make(tmp_path)
     store.create("cadence", "create", config)
     store.command("cadence", "start", {"action": "resume"})
-    started = datetime(2026, 11, 1, tzinfo=UTC)
+    started = ANCHOR
     finished = started + timedelta(seconds=5)
     store.clock = lambda: finished
     state = store.step("cadence", 0, now=started)
@@ -331,7 +332,7 @@ def test_redundant_resume_cannot_reset_a_running_completion_cooldown(tmp_path):
     store, config = make(tmp_path)
     store.create("running", "create", config)
     store.command("running", "start", {"action": "resume"})
-    started = datetime(2026, 11, 1, tzinfo=UTC)
+    started = ANCHOR
     finished = started + timedelta(seconds=5)
     store.clock = lambda: finished
     state = store.step("running", 0, now=started)
