@@ -6,6 +6,14 @@ vi.mock('../chart/CandleChart',()=>({default:()=>null}));
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
 const response=(value:unknown)=>Promise.resolve(new Response(JSON.stringify(value),{status:200}));
 
+it('does not describe unknown automation as a confirmed empty list',async()=>{
+ vi.stubGlobal('fetch',vi.fn(()=>Promise.resolve(new Response('{}',{status:503}))));
+ render(<OverviewPage route={{page:'overview',demo:false,id:''}}/>);
+ expect(screen.queryByText('저장된 실행 없음')).not.toBeInTheDocument();
+ await screen.findByText('자동실행 상태를 확인하지 못했습니다.');
+ expect(screen.queryByText('저장된 자동실행이 없습니다.')).not.toBeInTheDocument();
+});
+
 it('discards live budget values when entering the fixture and makes no fixture request',async()=>{
  const fetcher=vi.fn((url:string)=>response(url.endsWith('/connections/status')?
   {schema_version:1,bybit:{registered:false,status:'NOT_CONFIGURED'},ai:{registered:false,status:'NOT_CONFIGURED',mode:'OFFLINE_TEST',external_calls:false}}:

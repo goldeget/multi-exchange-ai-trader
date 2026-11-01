@@ -7,7 +7,7 @@ from .contract import instrument, price, quantity
 
 VERSION = "SPOT-PAPER-v2"
 TICK_SOURCE = "LOCAL_SPOT_SCENARIO_V2"
-# Native market/limit/inventory/restart/review tests passed in Linux CI49, acb22f4.
+# Native market/limit/inventory/restart/review tests passed in Linux CI50, 1e3ba764.
 # Runtime availability remains an independent gate (see capabilities.py).
 QUALIFIED = True
 

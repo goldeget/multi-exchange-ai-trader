@@ -15,7 +15,7 @@ export default function App(){const[location,setLocation]=useState(()=>parseLoca
  else if(route.page==='diagnostics')content=<DiagnosticsPage route={route}/>;
  else if(route.page==='market')content=<MarketDashboard demo={route.demo} polished/>;
  else if(route.page==='account')content=<Account demo={route.demo} polished/>;
- else if(route.page==='paper')content=<SpotPaper key={'spot:'+route.demo} demo={route.demo} capabilities={cap.data}/>;
+ else if(route.page==='paper')content=<SpotPaper key={'spot:'+route.demo} demo={route.demo} capabilities={cap.data} capabilitiesFailed={cap.failed}/>;
  else if(route.page==='recommend')content=<Recommend key={'recommend:'+route.demo} demo={route.demo} polished/>;
- else content=<Research key={route.page+route.id+route.demo} demo={route.demo} polished page={route.page} selectedId={route.id} capabilities={cap.data} onOpenRun={id=>navigate({...route,page:'run',id})}/>;
+ else content=<Research key={route.page+route.id+route.demo} demo={route.demo} polished page={route.page} selectedId={route.id} capabilities={cap.data} capabilitiesFailed={cap.failed} onOpenRun={id=>navigate({...route,page:'run',id})}/>;
  return <AppShell route={route}><PageBoundary key={route.page+':'+route.demo+':'+route.id}>{content}</PageBoundary></AppShell>}

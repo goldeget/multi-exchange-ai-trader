@@ -6,6 +6,25 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const reply = (body: unknown) => ({ ok: true, json: async () => body });
 
 describe("saved recommendation history", () => {
+  it("keeps the count unknown during loading or failure and shows zero only after a confirmed empty read", async () => {
+    let finish: (value: unknown) => void = () => undefined;
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+      .mockResolvedValueOnce(reply({ recommendations: [] }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<RecommendationHistory onSelect={vi.fn()} />);
+    const heading = screen.getByRole("heading", { name: /이전 분석/ });
+    expect(heading).toHaveTextContent("확인 중");
+    expect(heading).not.toHaveTextContent("최근 0건");
+    expect(screen.queryByText("저장된 추천이 없습니다.")).not.toBeInTheDocument();
+    await act(async () => finish({ ok: false, json: async () => ({ reason: "unavailable" }) }));
+    expect(heading).toHaveTextContent("건수 미확인");
+    expect(heading).not.toHaveTextContent("최근 0건");
+    expect(screen.queryByText("저장된 추천이 없습니다.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "목록 새로고침" }));
+    await waitFor(() => expect(heading).toHaveTextContent("최근 0건"));
+    expect(screen.getByText("저장된 추천이 없습니다.")).toBeVisible();
+  });
+
   it("injects the same example history without fetching or executing an order", () => {
     const fetcher = vi.fn(), selected = vi.fn(); vi.stubGlobal("fetch", fetcher);
     render(<RecommendationHistory demo onSelect={selected} />);

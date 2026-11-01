@@ -56,6 +56,8 @@ export default function CandleChart({ candles }: { candles: Candle[] }) {
       const volume = chart.addSeries(HistogramSeries, {
         priceFormat: { type: "volume" },
         priceScaleId: "volume",
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
       volume
         .priceScale()

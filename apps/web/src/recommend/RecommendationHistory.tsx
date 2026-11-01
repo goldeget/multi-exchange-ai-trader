@@ -99,6 +99,9 @@ export default function RecommendationHistory({ demo = false, onSelect, refreshK
     return () => { active = false; controller.abort(); detailGeneration.current += 1; detailRequest.current?.abort(); };
   }, [demo, mode, refreshKey, nonce]);
   const rows = result.mode === mode ? result.rows : [];
+  const loading = result.mode !== mode || result.loading;
+  const listError = result.mode === mode ? result.error : "";
+  const countLabel = loading ? "확인 중" : listError ? "건수 미확인" : `최근 ${rows.length}건`;
   const current = detail?.mode === mode ? detail.row : null;
   const expired = (row: SavedRecommendation) => (demo ? fixtureNow : now) >= Date.parse(row.expiresAt);
   function forward(row: SavedRecommendation) {
@@ -126,13 +129,13 @@ export default function RecommendationHistory({ demo = false, onSelect, refreshK
       if (generation === detailGeneration.current) { setPending(""); detailRequest.current = null; }
     }
   }
-  return <Panel className="recommendation-history" title={<><Icon name="file" size={19} /> 이전 분석 <small>최근 {rows.length}건</small></>}
-    aside={<button className="secondary" disabled={result.loading} onClick={() => setNonce(value => value + 1)}><Icon name="refresh" size={17} />{demo ? "예시 다시 보기" : "목록 새로고침"}</button>}>
+  return <Panel className="recommendation-history" title={<><Icon name="file" size={19} /> 이전 분석 <small>{countLabel}</small></>}
+    aside={<button className="secondary" disabled={loading} onClick={() => setNonce(value => value + 1)}><Icon name="refresh" size={17} />{demo ? "예시 다시 보기" : "목록 새로고침"}</button>}>
     {demo && <p className="helper">고정 예시 목록 · 실제 서버를 조회하지 않습니다.</p>}
-    {result.loading && <p role="status">저장된 추천을 읽는 중입니다.</p>}
-    {result.mode === mode && result.error && <p role="alert" className="warning">{result.error}</p>}
+    {loading && <p role="status">저장된 추천을 읽는 중입니다.</p>}
+    {listError && <p role="alert" className="warning">{listError}</p>}
     {detailError && <p role="alert" className="warning">{detailError}</p>}
-    {!result.loading && !result.error && rows.length === 0 && <Empty title="저장된 추천이 없습니다." />}
+    {!loading && !listError && rows.length === 0 && <Empty title="저장된 추천이 없습니다." />}
     {rows.length > 0 && <div className="recommendation-history-table"><table><thead><tr>{["기록 갱신 시각", "종목", "결과 · 출처", "주요 근거", "유효시간", "상세"].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead><tbody>{rows.map(row => <tr key={row.id} aria-selected={current?.id === row.id}>
       <td data-label="기록 갱신">{kst(row.updatedAt)}</td><th scope="row">{row.card.종목}</th><td data-label="결과"><Badge>{expired(row) ? "만료" : statusLabels[row.reviewState]}</Badge><small>RULE</small></td><td data-label="근거">{row.reason}</td><td data-label="유효시간">{kst(row.expiresAt)}</td><td><button className="text-button" aria-pressed={current?.id === row.id} aria-label={`추천 열기 ${row.card.종목} ${kst(row.updatedAt)}`} onClick={() => void select(row)}>{pending === row.id ? "확인 중" : "추천 열기"}<Icon name="arrow" size={16} /></button></td>
     </tr>)}</tbody></table></div>}

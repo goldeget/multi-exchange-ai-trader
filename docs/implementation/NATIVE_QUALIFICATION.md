@@ -11,3 +11,7 @@ Evidence: [CI50](https://github.com/goldeget/multi-exchange-ai-trader/actions/ru
 - Evaluation V2: actual native configured fee/slippage/leverage/capital, requested range and split boundaries, holdout isolation, persistent configuration hash, restart/idempotency, zero-cost comparison.
 
 No real account, DEMO account, paid AI, or external order service was called by qualification. The worker cannot open network sockets. Runtime prerequisite checks are not a guarantee that every host can install the sandbox; worker failures remain fail-closed.
+
+## Combined-source repeat qualification
+
+[CI run 41272013569](https://github.com/goldeget/multi-exchange-ai-trader/actions/runs/41272013569), source `feda6c25ab6ec52f6a56715a585359d06b4ed14a`, passed all five jobs. Python: 492 tests and 28 subtests in 307.76s; Ruff passed; mypy passed for 63 files. Frontend: 120 unit tests, ESLint, typecheck and build passed. Browser: 90 passed, 24 intentional desktop duplicates skipped; capture-only review evidence, not yet strict screenshot acceptance. Secret scan and dependency review passed. Subsequent offline wording corrections and reviewed baseline installation require the final source CI.

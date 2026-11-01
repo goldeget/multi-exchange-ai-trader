@@ -18,6 +18,9 @@ for (const route of demoRoutes) {
       await expect(values).toHaveText(["—", "—", "—"]);
       await expect(page.locator(".overview-market .price-bar strong")).toHaveText("— USDT");
       await expect(page.locator(".live-overview")).not.toContainText("10,000.00");
+      await expect(page.getByText("자동실행 상태를 확인하지 못했습니다.", { exact: true })).toBeVisible();
+      await expect(page.locator("main")).not.toContainText("저장된 실행 없음");
+      await expect(page.locator("main")).not.toContainText("저장된 자동실행이 없습니다.");
     } else if (route.screenId === "03-account") {
       await expect(page.locator(".account-summary-values")).toContainText("확인 불가");
       await expect(page.locator(".account-summary-values")).not.toContainText("0.00");
@@ -26,10 +29,20 @@ for (const route of demoRoutes) {
       await expect(page.getByRole("button", { name: "새 현물 장부 만들기", exact: true })).toBeDisabled();
       await expect(page.locator(".order-input")).toContainText("사용 가능 — USDT");
       await expect(page.locator(".order-input")).not.toContainText("사용 가능 0");
+      await expect(page.getByText("서버 지원 범위를 확인하지 못해 신규 진입을 차단했습니다.", { exact: true })).toBeVisible();
+      await expect(page.locator("main")).not.toContainText("서버가 현물 지정가 주문을 지원하지 않습니다.");
+    } else if (["04-recommend", "06-run", "08-history"].includes(route.screenId)) {
+      await expect(page.locator("main")).not.toContainText("저장된 실행이 없습니다.");
+      await expect(page.locator("main")).not.toContainText("최근 0건");
     } else if (route.screenId === "07-create") {
       await expect(page.getByRole("button", { name: "설정 검토", exact: true })).toBeDisabled();
+      await expect(page.locator("main")).not.toContainText("레버리지 · V1 고정");
+      await expect(page.getByText("서버 지원 범위를 확인하지 못해 신규 실행을 차단했습니다.", { exact: true })).toBeVisible();
     } else if (route.screenId === "09-backtest") {
       await expect(page.getByRole("button", { name: "가상 검증 검토", exact: true })).toBeDisabled();
+      await expect(page.locator("main")).not.toContainText("서버 V1");
+      await expect(page.locator("main")).not.toContainText("구성 편집을 지원하지 않습니다");
+      await expect(page.getByText("서버 지원 범위를 확인하지 못해 신규 실행을 차단했습니다.", { exact: true })).toBeVisible();
     } else if (route.screenId === "11-connections") {
       const limit = page.getByRole("textbox", { name: "월 내부 예산 한도 (USD)" });
       await expect(limit).toBeDisabled(); await expect(limit).toHaveValue("");

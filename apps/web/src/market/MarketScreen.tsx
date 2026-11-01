@@ -51,7 +51,7 @@ export function MarketScreen(props: Props) {
       <label><span>거래소</span><select aria-label="거래소" value={venue} onChange={event => onVenue(event.target.value as Venue)}><option value="bybit">Bybit</option><option value="binance">Binance</option></select></label>
       <label><span>시장</span><select aria-label="시장" value={market} onChange={event => onMarket(event.target.value as Market)}><option value="spot">현물</option><option value="perpetual">선물</option></select></label>
       <label className="market-symbol-filter"><span>종목</span><select aria-label="종목" value={symbol} onChange={event => onSymbol(event.target.value)}><option value="BTCUSDT">BTC / USDT</option><option value="ETHUSDT">ETH / USDT</option></select></label>
-      <span className="market-refresh-status"><Icon name="refresh" size={18} />{preview ? "3초 전 갱신 · 예시 시세" : selectedState.text}</span>
+      <span className="market-refresh-status"><Icon name="refresh" size={18} />{preview ? "예시 · 3초 전" : selectedState.text}</span>
     </div></Panel>
     <div className="market-content-grid">
       <Panel title={preview ? "거래소별 예시 시세" : "거래소별 시세"} className="market-quotes-panel">

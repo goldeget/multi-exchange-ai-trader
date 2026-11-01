@@ -43,5 +43,20 @@
     "id": "diagnostics-count",
     "area": "12 items to inspect",
     "reason": "Mobile shows badge 2 for a 1 pending request plus reconciliation instruction; desktop shows 1 pending request. Keep request count=1 and separate actionable issue count when available."
+  },
+  {
+    "id": "independent-ledger-controls",
+    "area": "overview / manual PAPER",
+    "reason": "A real independent ledger must be selected explicitly. Add a compact ledger selector; mobile creation uses a labelled 48px plus button and the legacy V1 link follows the order form. These controls add vertical space compared with the static mockup and remain a visible design difference, not evidence of 2px agreement."
+  },
+  {
+    "id": "preview-owned-order-costs",
+    "area": "05 estimated amount / fee / total",
+    "reason": "Before a server review, show that costs will be supplied by the server instead of calculating or asserting an unreviewed fee. The review dialog shows exact server reservation and fee fields. This changes the mockup cost summary wording."
+  },
+  {
+    "id": "compact-mobile-header",
+    "area": "mobile shared shell",
+    "reason": "Use title plus KST time/example label, then one row of environment badges. Omit the desktop description on small screens; preserve 14px helper text and 44/48px targets. Full fixed date remains in the desktop header and screenshot clock manifest."
   }
 ]
