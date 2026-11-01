@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal, localcontext
 from pathlib import Path
@@ -276,14 +276,15 @@ class OfflineExecutionCoordinator:
             tuple(getattr(decision.tiers, field.name) for field in fields(decision.tiers)
                   if field.name != "observed_at"))
 
-    def _entry_gate(self) -> None:
+    def _entry_gate(self, exclude: str | None = None) -> None:
         self._guard()
         self._capabilities()
         if (not self._active or not self._reconciled or self._reconciled_at is None
                 or not self._fresh(self._reconciled_at)):
             raise CoordinatorBlocked("RECONCILE_AND_EXPLICIT_ACTIVATION_REQUIRED")
         if (any(state.entries_blocked for state in self._states())
-                or self.journal.list_commands((CommandState.UNKNOWN, CommandState.SENDING))):
+                or any(record.command_key != exclude for record in self.journal.list_commands(
+                    (CommandState.UNKNOWN, CommandState.SENDING)))):
             raise CoordinatorBlocked("UNRESOLVED_EXPOSURE_OR_COMMAND")
         if any(record.kind is CommandKind.ENTRY and not record.terminal_confirmed
                for record in self.journal.list_commands((CommandState.ACKNOWLEDGED,))):
@@ -296,7 +297,6 @@ class OfflineExecutionCoordinator:
             scope = self.journal.scope
             try:
                 if (type(plan) is not r.EntryDecision or self._reassess(plan) != plan
-                        or not self._fresh(plan.assessed_at)
                         or (plan.scope.account_id, plan.scope.environment)
                         != (scope.account_id, scope.environment)
                         or protection_policy.revision != plan.policy.revision
@@ -308,15 +308,21 @@ class OfflineExecutionCoordinator:
                     raise CoordinatorBlocked("INVALID_QUEUED_PLAN")
             except (ValueError, TypeError, AttributeError):
                 raise CoordinatorBlocked("INVALID_QUEUED_PLAN") from None
-            reservations = self._reservation_snapshot(plan.scope, self._now())
-            if (plan.reservations.notional_amount, plan.reservations.risk_amount,
-                    plan.reservations.margin_amount, plan.reservations.position_count) != (
-                    reservations.notional_amount, reservations.risk_amount,
-                    reservations.margin_amount, reservations.position_count):
-                raise CoordinatorBlocked("RESERVATIONS_MUST_EXCLUDE_ACCOUNT_COUNTERS")
             payload = {"position_id": position_id, "plan": json.loads(codec.encode(plan)),
                        "protection_policy": json.loads(codec.encode(protection_policy))}
+            if self.journal.get(command_key) is None:
+                if not self._fresh(plan.assessed_at):
+                    raise CoordinatorBlocked("INVALID_QUEUED_PLAN")
+                reservations = self._reservation_snapshot(plan.scope, self._now())
+                if (plan.reservations.notional_amount, plan.reservations.risk_amount,
+                        plan.reservations.margin_amount, plan.reservations.position_count) != (
+                        reservations.notional_amount, reservations.risk_amount,
+                        reservations.margin_amount, reservations.position_count):
+                    raise CoordinatorBlocked("RESERVATIONS_MUST_EXCLUDE_ACCOUNT_COUNTERS")
             policy, account = plan.policy, plan.account
+            # Existing immutable payload/reservation is verified by register before
+            # restoring the separate mapping commit. It never acquires capacity twice;
+            # current risk, including every other reservation, is checked at dispatch.
             record = self.journal.register(command_key, CommandKind.ENTRY, payload,
                 reservation=Reservation(plan.estimated_loss, plan.notional,
                                         _reserved_margin(plan.margin_amount)),
@@ -342,7 +348,7 @@ class OfflineExecutionCoordinator:
             raise CoordinatorBlocked("INVALID_IMMUTABLE_ENTRY_PAYLOAD")
         return EntryIntent(record.command_key, payload["position_id"], plan, policy)
 
-    def _validate_submit(self, record: CommandRecord) -> None:
+    def _validate_submit(self, record: CommandRecord) -> r.EntryDecision:
         intent = self._intent(record)
         state = self._owned_state(record.client_order_id)
         expected_order = p.OwnedOrder(record.client_order_id, intent.position_id,
@@ -363,6 +369,23 @@ class OfflineExecutionCoordinator:
                 raise CoordinatorBlocked("SUBMIT_RISK_OR_PLAN_CHANGED")
         except Exception:  # noqa: BLE001 - callback errors must not leak arbitrary secret strings.
             raise CoordinatorBlocked("SUBMIT_RISK_OR_PLAN_CHANGED") from None
+        return final
+
+    def _validate_current_submit(self, final: r.EntryDecision,
+                                 exclude: str | None = None) -> None:
+        self._entry_gate(exclude)
+        try:
+            # Re-run every evidence/cost/loss-day gate using the actual clock,
+            # without calling the potentially slow evidence supplier again.
+            now = self._now()
+            if (self._reconciled_at is None
+                    or not timedelta(0) <= now - self._reconciled_at <= self._max_age):
+                raise CoordinatorBlocked("RECONCILE_AND_EXPLICIT_ACTIVATION_REQUIRED")
+            current = replace(final, assessed_at=now)
+            if self._reassess(current) != current:
+                raise CoordinatorBlocked("SUBMIT_RISK_OR_PLAN_CHANGED")
+        except Exception:  # noqa: BLE001 - persist no arbitrary provider/error text.
+            raise CoordinatorBlocked("SUBMIT_RISK_OR_PLAN_CHANGED") from None
 
     def _required(self, key: str) -> CommandRecord:
         record = self.journal.get(key)
@@ -379,7 +402,8 @@ class OfflineExecutionCoordinator:
                 return record  # UNKNOWN is only queried, never re-claimed.
             if record.kind is CommandKind.ENTRY:
                 self._entry_gate()
-                self._validate_submit(record)
+                final = self._validate_submit(record)
+                self._validate_current_submit(final)
             elif record.kind is CommandKind.EXIT:
                 self._validate_exit(record)
             elif record.kind is not CommandKind.CANCEL:
@@ -389,6 +413,16 @@ class OfflineExecutionCoordinator:
             if claimed is None:
                 return self._required(command_key)
             self._guard()
+            if record.kind is CommandKind.ENTRY:
+                try:
+                    self._validate_current_submit(final, command_key)
+                except CoordinatorBlocked:
+                    self._guard()
+                    # Claim can wait for SQLite after the pre-claim check. This
+                    # command is known unsent; retain its reservation and ID.
+                    self.journal.reject(command_key, "ENTRY_GATE_EXPIRED_BEFORE_EFFECT")
+                    self._active = self._reconciled = False
+                    raise CoordinatorBlocked("ENTRY_GATE_EXPIRED_BEFORE_EFFECT") from None
             try:
                 if record.kind is CommandKind.CANCEL:
                     target = self._cancel_target(record)

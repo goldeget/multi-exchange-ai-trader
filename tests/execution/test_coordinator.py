@@ -17,8 +17,10 @@ from multi_exchange_trader.execution.coordinator import (
 )
 from multi_exchange_trader.execution.journal import (
     CommandJournal,
+    CommandKind,
     CommandState,
     ExecutionScope,
+    JournalConflict,
 )
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import (
@@ -442,3 +444,162 @@ def test_unconfirmed_first_entry_blocks_another_entry(setup: Any) -> None:
         worker.queue_entry("entry-two", "position-2", assess_entry(**data),
                            ProtectionPolicy("policy-1", 0, SCOPE_PRICE, TP_PRICE, "MARK"))
     assert len(gateway.submissions) == 1
+
+
+@pytest.mark.parametrize("recovery_delay", [timedelta(0), timedelta(seconds=11)])
+def test_mapping_commit_crash_replays_exact_intent_without_second_reservation(
+    setup: Any, monkeypatch: Any, recovery_delay: timedelta,
+) -> None:
+    worker, journal, gateway, lock, directory = setup
+    activate(worker)
+    data = qualified_inputs()
+    data["policy"] = replace(data["policy"], max_positions=1)
+    plan = assess_entry(**data)
+    policy = ProtectionPolicy("policy-1", 0, SCOPE_PRICE, TP_PRICE, "MARK")
+
+    def fail_mapping(*args: object) -> None:
+        raise OSError("injected mapping commit failure")
+
+    monkeypatch.setattr(worker, "_register_order", fail_mapping)
+    with pytest.raises(OSError, match="injected mapping commit failure"):
+        worker.queue_entry("entry", "position-1", plan, policy)
+    original = journal.get("entry")
+    assert original.state == CommandState.PENDING
+    assert journal.get_projection("offline-owned-state-v1") is None
+    worker.shutdown()
+    restarted = OfflineExecutionCoordinator(journal=journal, worker_lock=lock,
+        lock_directory=directory, gateway=gateway, entry_risk=risk_check,
+        clock=lambda: NOW + recovery_delay, max_evidence_age=timedelta(seconds=10))
+    restarted.reconcile(SimulatedReconciliation("account-1", "DEMO", NOW + recovery_delay,
+                                               True, False, ()))
+    restarted.activate()
+    for _ in range(2):
+        assert restarted.queue_entry("entry", "position-1", plan, policy) == original
+    assert len(journal.list_commands()) == 1
+    held = restarted._reservation_snapshot(plan.scope, NOW)
+    assert held.position_count == 1
+    assert held.notional_amount == original.reservation.notional_amount
+    assert held.risk_amount == original.reservation.risk_amount
+    assert held.margin_amount == original.reservation.margin_amount
+    assert len(restarted.projection("position-1").orders) == 1
+
+    def check(intent: Any, now: datetime, reservations: ReservationTotals) -> EntryDecision:
+        for name in ("market", "instrument", "account", "tiers", "liquidation",
+                     "leverage_readback"):
+            data[name] = replace(data[name], observed_at=now)
+        data["now"] = now
+        data["reservations"] = reservations
+        data["liquidation"] = replace(data["liquidation"],
+            reservation_snapshot_id=reservations.snapshot_id)
+        return assess_entry(**data)
+
+    restarted.entry_risk = check
+    restarted.dispatch("entry")
+    restarted.dispatch("entry")
+    assert journal.get("entry").state == CommandState.ACKNOWLEDGED
+    assert gateway.submissions == [original.client_order_id]
+
+
+@pytest.mark.parametrize("change", ["position", "plan", "policy", "kind"])
+def test_entry_replay_rejects_conflicting_immutable_identity(setup: Any, change: str) -> None:
+    worker, journal, gateway, _, _ = setup
+    activate(worker)
+    original = queue(worker)
+    position = "position-2" if change == "position" else "position-1"
+    data = qualified_inputs()
+    if change == "plan":
+        data["market"] = replace(data["market"], quote_id="different-quote")
+        data["liquidation"] = replace(data["liquidation"], quote_id="different-quote")
+    policy = ProtectionPolicy("policy-1", 1 if change == "policy" else 0,
+                              SCOPE_PRICE, TP_PRICE, "MARK")
+    key = "other-kind" if change == "kind" else "entry"
+    if change == "kind":
+        journal.register(key, CommandKind.CANCEL, {"target_client_order_id": "external"})
+    with pytest.raises(JournalConflict):
+        worker.queue_entry(key, position, assess_entry(**data), policy)
+    assert journal.get("entry") == original
+    assert len(worker.projection("position-1").orders) == 1
+    assert gateway.submissions == []
+
+
+def test_stale_original_plan_only_replays_an_existing_immutable_command(
+    setup: Any, monkeypatch: Any,
+) -> None:
+    worker, journal, gateway, _, _ = setup
+    later = NOW + timedelta(seconds=11)
+    monkeypatch.setattr(worker, "_clock", lambda: later)
+    worker.reconcile(SimulatedReconciliation("account-1", "DEMO", later, True, False, ()))
+    worker.activate()
+    with pytest.raises(CoordinatorBlocked, match="INVALID_QUEUED_PLAN"):
+        queue(worker)
+    assert journal.list_commands() == ()
+    assert gateway.submissions == []
+
+
+@pytest.mark.parametrize("delay_at", ["callback", "claim"])
+@pytest.mark.parametrize("expired", ["quote", "reconciliation", "costs", "funding", "loss_day"])
+def test_elapsed_time_rechecks_current_entry_evidence_before_effect(
+    setup: Any, monkeypatch: Any, delay_at: str, expired: str,
+) -> None:
+    worker, journal, gateway, _, _ = setup
+    data = qualified_inputs()
+    start = NOW
+    delay = timedelta(seconds=3)
+    if expired == "reconciliation":
+        delay = timedelta(seconds=11)
+        data["policy"] = replace(data["policy"], max_quote_age_seconds=Decimal(20),
+                                 max_evidence_age_seconds=Decimal(20))
+    elif expired == "costs":
+        data["market"] = replace(data["market"], costs_valid_until=NOW + timedelta(seconds=1))
+        delay = timedelta(seconds=2)
+    elif expired == "funding":
+        data["market"] = replace(data["market"], next_funding_at=NOW + timedelta(seconds=1))
+        delay = timedelta(seconds=1)
+    elif expired == "loss_day":
+        start = NOW.replace(hour=23, minute=59, second=59)
+        delay = timedelta(seconds=1)
+        for name in ("market", "instrument", "account", "tiers", "reservations",
+                     "liquidation", "leverage_readback"):
+            data[name] = replace(data[name], observed_at=start)
+        data["market"] = replace(data["market"], next_funding_at=start + timedelta(hours=1),
+                                 costs_valid_until=start + timedelta(minutes=1))
+    data["now"] = start
+    clock = [start]
+    monkeypatch.setattr(worker, "_clock", lambda: clock[0])
+    worker.reconcile(SimulatedReconciliation("account-1", "DEMO", start, True, False, ()))
+    worker.activate()
+    original = worker.queue_entry("entry", "position-1", assess_entry(**data),
+        ProtectionPolicy("policy-1", 0, SCOPE_PRICE, TP_PRICE, "MARK"))
+
+    def delayed_risk(intent: Any, now: datetime, reservations: ReservationTotals) -> EntryDecision:
+        data["now"] = now
+        data["reservations"] = reservations
+        data["liquidation"] = replace(data["liquidation"],
+            reservation_snapshot_id=reservations.snapshot_id)
+        decision = assess_entry(**data)
+        if delay_at == "callback":
+            clock[0] += delay
+        return decision
+
+    worker.entry_risk = delayed_risk
+    claim = journal.claim
+
+    def delayed_claim(key: str) -> Any:
+        claimed = claim(key)
+        clock[0] += delay
+        return claimed
+
+    if delay_at == "claim":
+        monkeypatch.setattr(journal, "claim", delayed_claim)
+    with pytest.raises(CoordinatorBlocked):
+        worker.dispatch("entry")
+    record = journal.get("entry")
+    assert record.state == (CommandState.PENDING if delay_at == "callback"
+                            else CommandState.REJECTED)
+    assert record.reservation == original.reservation
+    assert record.terminal_confirmed is False
+    assert gateway.submissions == []
+    if delay_at == "claim":
+        assert "ENTRY_GATE_EXPIRED_BEFORE_EFFECT" in str(journal.audit_events())
+        worker.dispatch("entry")
+        assert gateway.submissions == []
