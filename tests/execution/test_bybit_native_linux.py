@@ -46,7 +46,9 @@ def isolated_native_runtime() -> None:
     assert sys.platform == "linux", "native contract requires Linux"
     assert os.environ.get("NATIVE_NETWORK_ISOLATED") == "1"
     assert Path("/proc/self/ns/net").readlink() != Path("/proc/1/ns/net").readlink()
-    assert sorted(path.name for path in Path("/sys/class/net").iterdir()) == ["lo"]
+    # sysfs can retain the host mount's view after unshare --net. Query the
+    # kernel for interfaces in this process's network namespace instead.
+    assert sorted(name for _index, name in socket.if_nameindex()) == ["lo"]
     # Check both IP families. Unlike socket monkeypatching this protects Rust too.
     for family, address in [(socket.AF_INET, ("192.0.2.1", 9)),
                             (socket.AF_INET6, ("2001:db8::1", 9))]:

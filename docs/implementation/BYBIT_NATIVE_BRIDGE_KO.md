@@ -61,6 +61,8 @@ native 일반 position report에는 원시 leverage/TP/SL이 없다. 모든 결�
 
 Linux 전용 테스트는 `REQUIRE_NATIVE_CONTRACTS=1`과 `NATIVE_NETWORK_ISOLATED=1`을 요구한다. 별도 네트워크 namespace, PID 1과 다른 netns, loopback 외 interface 부재와 IPv4/IPv6 route 불가를 먼저 확인한 뒤 exact wheel version을 검사한다. Python socket monkeypatch만으로 Rust 네트워크를 막았다고 주장하지 않는다. 필수 실행 모드에서 의존성·환경·서명이 맞지 않으면 skip 대신 실패한다.
 
+인터페이스 목록은 `socket.if_nameindex()`로 현재 프로세스의 network namespace를 커널에 조회한다. `unshare --net` 뒤에도 `/sys/class/net`은 공유된 sysfs mount의 기존 namespace를 보여줄 수 있어 격리 검사의 근거로 사용하지 않는다.
+
 실제 native `OrderFactory`, 등록된 `Strategy`, native `SubmitOrder`의 RiskEngine 메시지 경계, 실제 Bybit adapter의 `_submit_order`·validity·position resolver·position cache·PyO3 `BybitNativeTpSlParams`를 사용한다. HTTP/event emission 경계만 fake로 교체한다. 실제 native 설정·OrderSubmitted/Accepted/Rejected/Denied/Canceled/Filled·OrderStatusReport/FillReport/PositionStatusReport 객체도 사용한다. native node나 execution client를 생성·시작·연결하지 않는다. CI는 총 테스트 수 양수와 skip 0을 별도로 확인한다.
 
 이 문서는 테스트 설계와 구현 범위를 설명한다. 최종 exact-head Linux 성공 여부와 전체 회귀 결과는 해당 변경의 CI 증거로 확인해야 한다. 테스트 통과가 실제 DEMO의 주문 접수·체결·TP/SL 유효성이나 MAINNET 운용 자격을 뜻하지 않는다.
