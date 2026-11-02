@@ -113,11 +113,18 @@ async def test_actual_node_signal_replacement_is_reclaimed_by_monitor(
     worker_cli.install_signal_handlers(loop, stop)
     original = loop._signal_handlers[sig]  # type: ignore[attr-defined]
     observed: list[bool] = []
+    producer_calls: list[str] = []
 
     async def run() -> None:
+        producer_calls.append("run")
+        # Connected supervision does not refresh. Deliver the reclaimed signal
+        # only after the existing mock producer is actually running.
+        assert connect and not stop.is_set()
+        loop._signal_handlers[sig]._run()  # type: ignore[attr-defined]
         await done.wait()
 
     async def shutdown() -> None:
+        producer_calls.append("stop")
         done.set()
 
     def after_start() -> None:
@@ -128,12 +135,14 @@ async def test_actual_node_signal_replacement_is_reclaimed_by_monitor(
         worker_cli.install_signal_handlers(loop, stop)
 
     async def refresh() -> None:
+        assert not connect
         loop._signal_handlers[sig]._run()  # type: ignore[attr-defined]
 
     try:
         await asyncio.wait_for(worker_cli.serve_monitor(h.worker, stop=stop, refresh=refresh,
             interval=0.001, connect=connect, on_started=after_start), 2)
         assert observed == [True] and stop.is_set() and h.worker._stopped
+        assert producer_calls == (["run", "stop"] if connect else [])
         lock = AccountWorkerLock(tmp_path, account_id=h.worker.scope.account_id, environment="DEMO")
         lock.acquire()
         lock.release()

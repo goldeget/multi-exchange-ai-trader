@@ -9,10 +9,10 @@ paid AI generation were used during implementation.
 ## Concrete lifecycle
 
 `execution/native_node.py` lazily imports the pinned Linux wheel. The exact
-credential-owning `BybitDemoAccountSession.configure_native_execution` callback
+credential-owning `BybitDemoAccountSession.configure_native_monitoring` callback
 delivers the DEMO/LINEAR config to an actual `TradingNode`; its registered
-`BybitLiveExecClientFactory` constructs the execution client captured for leverage
-control. The registered actual `Strategy` supplies its real order factory/cache
+factory constructs the genuine `MonitoringBybitExecutionClient` subclass, with
+financial entrypoints and final transports denied. The registered actual `Strategy` supplies its real order factory/cache
 to `NativeBybitBridge`. Construction/build does not connect the node.
 
 The provider has explicit instruments, no load-all default. The strategy uses
@@ -27,9 +27,10 @@ independently required by risk/readback; NETTING alone does not prove venue mode
 `ExecutionWorker.start_passive` acquires the existing account/environment lease,
 creates the existing journal and runtime-state handles on the running worker loop,
 and validates/restores the sealed local native generation before recovering
-ownership/unknown commands without sending. `connect_monitoring` is a separate
-explicit call to `TradingNode.run_async`, currently refused for restored local
-generations. Neither calls runtime.start.
+ownership/unknown commands without sending. `resume_restored_monitoring()` is a
+separate explicit, bounded PRE/start/POST admission; `connect_monitoring()` delegates
+to that path for restored generations. Fresh-cache connection is refused with
+`MONITORING_RESTORED_CACHE_REQUIRED`. Neither call activates runtime trading.
 An independent subscription to the exact `events.order.<strategy-id>` message-bus
 topic is the sole worker callback route; the Strategy retains its default no-op
 order callback. The subscription stays alive when the native Strategy enters
@@ -85,9 +86,17 @@ An explicitly invoked `--run-monitor` requires `--uid`, `--parent-uid`,
 `--is-master true|false`, repeated `--symbol`, `--directory` and `--policy-db`.
 Only that path reads `BYBIT_DEMO_API_KEY`/`BYBIT_DEMO_API_SECRET` from the process
 environment and performs UID authentication GETs. It creates passive runtime
-state, periodically refreshes same-session identity and polls owned-position
-readback. Adding `--connect-monitoring` requests a native read/stream connection;
-a restored local generation refuses that request pending reviewed reconciliation.
+state. Passive mode periodically refreshes same-session identity and polls
+owned-position readback. Adding `--connect-monitoring` requests a native read/stream connection;
+a supported sealed restored generation must pass the same fresh PRE/start/POST
+admission described below before monitoring becomes ready.
+Connected mode supervises the admitted stream's status and node task without
+periodic reauthentication or REST position polling. Fresh REST authority naturally
+expires while exact original-event provenance remains valid. A retired status or
+ended native task fails closed through the orderly worker stop path; there is no
+automatic reconnect, reauthentication or new admission. Fresh REST polling needs
+a separate explicit workflow. The new Linux case12 exercises this public
+supervisor with an actual new worker and the same two isolated I/O boundaries.
 The process has an empty plan registry and a risk producer which
 always raises a monitor-only blocker. It has no automatic entry generation,
 strategy import path, paid AI dispatch, web port, or policy activation path.
@@ -428,3 +437,112 @@ Official pinned sources: [TradingNode](https://github.com/nautechsystems/nautilu
 [live config](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/live/config.py),
 [Bybit factories](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/adapters/bybit/factories.py),
 [strategy config](https://github.com/nautechsystems/nautilus_trader/blob/v1.231.0/nautilus_trader/trading/config.py).
+
+## Restored monitoring API and operating limits
+
+After `await worker.start_passive()`, explicitly call
+`await worker.resume_restored_monitoring()`. The result is a frozen
+`WorkerMonitoringStatus`; `worker.monitoring_status` refreshes its current status.
+The phases are PASSIVE, RECONCILING, CONNECTING, MONITORING, ATTENTION and STOPPED.
+`scope`, `symbols`, `reconciled_at`, `reconciliation_fingerprint`,
+`current_fingerprint`, `current_revision`, `reconciliation_current`,
+`fresh_read_authority`, `stream_stamp`, `retained_stamp`, `fault` and
+`resources_retained` distinguish the last reconciliation from current observation.
+`trading_enabled`, `credit_authorized`, `production_supported` and
+`venue_event_complete` are always false. A running task alone is not readiness.
+
+Authentication verifies the explicit numeric UID, parent UID and master status
+using the exact credential-owning session. A read-only key with no Wallet Capital
+or order permission can qualify observation; it cannot qualify execution. Fresh
+read/admission authority expires. The exact already-attested live event provenance
+can remain valid after that expiry: genuine original fills continue through the
+native engine and application quarantine, while `fresh_read_authority` becomes
+false and the previous reconciliation becomes stale. Reauthentication, session
+close/replacement, transport loss/reconnect, invalid original data or owner/lease
+change retires the attempt. There is no automatic reconnect or trading activation.
+
+Supported scope is a bounded, explicit DEMO LINEAR symbol set with an intact
+sealed local native cache and unambiguous application ownership. Stable ACCEPTED,
+PARTIALLY_FILLED, FILLED, CANCELED and REJECTED originals need fresh positive venue
+rows, both order IDs and exact original execution sets. One-way positionIdx=0 is
+explicit even when zero. Native filled state may coexist with application quantity
+zero only with exact original uncredited provenance. UNKNOWN commands,
+reservations, original cache events, existing credits and history remain intact.
+Missing originals, unsupported pending/conditional/economic updates, hedge/split/
+reversal/reopen ambiguity, missing retention, incomplete pagination and metadata
+drift block admission. A missing row never means flat or terminal.
+
+One operation shares at most 200 physical HTTP attempts and 60 seconds across
+binding refresh, PRE, real provider/account startup and POST. Each receipt has
+at most 32 logical reads, 20 seconds and three physical attempts per GET. There
+are at most 16 outstanding receipts and three POST capture cycles. Terminal
+quota, ban, malformed page/row/body or ownership failures cannot be converted into
+a successful retarget. A genuine observed delta requires a fresh exact POST proof.
+The owned generic private stream sends only auth, the exact three-topic batch
+subscription and ping/control pong. Admission requires the correct ACKs, private
+pong, live modes, actual native/portfolio readiness and native plus application
+acknowledgement of the observed delivery watermark.
+
+A new original execution can update real native Order/Position state and persist
+an uncredited application candidate. REST reads never manufacture fills, credit,
+terminal acknowledgements, repayment or reservation release. This is not
+whole-account reconciliation, a complete venue event replay, a valuation proof,
+live Bybit acceptance or permission to trade in DEMO or production.
+
+The expected corroboration-required quarantine hold remains a trading/accounting
+block, but does not itself retire monitoring when backed by the exact owned
+candidate. Other conflicts, mixed or malformed holds and credit decisions still
+block monitoring. PRE/POST and live acknowledgement share this distinction.
+
+Execution rows are applied serially: each row waits for native completion and
+application acknowledgement before the next row is dispatched. Whole batches and
+duplicate input may queue during that wait; duplicate evaluation then observes the
+already-applied original. This limits throughput to per-row completion. Linux
+qualification observes queued input and each native-before-app window; defensive
+pending-ledger duplicate evaluation is separately unit-tested, not claimed as a
+reachable concurrent production dispatch path.
+
+Call `await worker.stop()` and wait for completion. Shutdown first retires
+admission, then waits for actual node/client/socket tasks and accepted callbacks.
+The monitor-only native post-stop wait is 0.05 seconds; actual residual/queue/drain
+checks still apply and the complete cleanup has a 10-second bound. The direct
+nonmonitoring builder retains its 10-second default. The worker preserves the
+caller's running event loop and default thread executor, including queued work;
+it disposes only its own proven-quiescent SDK resources.
+
+The pinned SDK recreates an internal actor worker during stop and leaves its
+disconnect coroutine untracked. Cleanup verifies their exact owner, kernel pool
+and loop, requires idle actor queues and awaits only those owned tasks. Unsupported
+ownership fails closed. A startup connection wait may be interrupted only after
+genuine stop and disconnection are proven. A bounded delivery failure remains
+sticky even after the SDK finishes closing the transport: later logical shutdown
+proof rethrows it, retaining the gap, stores, callback channel and lease.
+
+An unproven stop, observed unprocessed gap or changed final cleanup owner retains
+the callback channel, stores and lease (`resources_retained=True`). It must not be
+reported as a clean STOPPED seal. Release any blocking operation, await the same
+owned stop task and explicitly retry stop; do not clear faults or replace a live
+owner's handles. A retired attempt cannot rearm. After a genuine clean seal, a
+later explicit attempt uses a new worker/client and fresh PRE/POST proofs; genuine
+native/application effects survive that seal and restore. An unresolved delivery
+gap requires investigation rather than a fabricated checkpoint.
+
+## Qualification evidence boundaries
+
+CI keeps three distinct isolated runs: the original 36 native contracts, the six
+restart contracts, and exactly 12 named contracts in
+`tests/execution/test_restored_monitoring_linux.py`. Each new case executes the
+production worker/builder and genuine lifecycle; only HTTP send and generic
+WebSocket dial are synthetic. The venue ledger is independent of the cache.
+The Linux namespace fixture checks cleared-environment flags, lo-only networking,
+blocked external IPv4 and IPv6 probes and the pinned 1.231.0 wheel before native
+construction. The new XML gate requires exactly 12 unique specified names, the
+exact module, zero skips, errors and failures. CI archives all three XML receipts
+under the tested commit SHA.
+
+Collection, static checks and Windows skips do not establish native acceptance.
+Actual Linux execution of all these contracts and all required project CI must
+pass on the reviewed commit before any passing-main integration claim.
+No fixture result establishes real provider/account acceptance or operational
+financial qualification. Existing v4 backup, sealed generation, offline restore
+and history restrictions remain in force.

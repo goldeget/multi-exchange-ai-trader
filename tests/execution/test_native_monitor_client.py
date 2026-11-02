@@ -1,0 +1,322 @@
+"""Real SDK constructor, with no lifecycle/network startup."""
+# ruff: noqa: F811 -- shared pytest session fixture
+
+import asyncio
+import importlib
+import inspect
+
+import pytest
+from test_monitoring_receipts import SCOPE, session  # noqa: F401
+
+
+def module():
+    spec = importlib.util.find_spec("multi_exchange_trader.execution.native_monitor_client")
+    assert spec is not None, "passive genuine Bybit subclass is required"
+    return importlib.import_module(spec.name)
+
+
+@pytest.fixture
+async def client(session):
+    if importlib.util.find_spec("multi_exchange_trader.execution.native_monitor_client") is None:
+        yield None
+        return
+    mod = module()
+    from nautilus_trader.cache.cache import Cache
+    from nautilus_trader.common.component import LiveClock, MessageBus
+    from nautilus_trader.model.identifiers import TraderId
+
+    owner, binding, *_ = session
+    configs = []
+    owner.configure_native_monitoring(binding, scope=SCOPE, install=configs.append)
+    clock = LiveClock()
+    bus = MessageBus(trader_id=TraderId("TRADER-001"), clock=clock)
+    result = mod.create_monitor_client(
+        session=owner,
+        binding=binding,
+        scope=SCOPE,
+        symbols=("BTCUSDT",),
+        loop=asyncio.get_running_loop(),
+        name="BYBIT",
+        config=configs[0],
+        msgbus=bus,
+        cache=Cache(),
+        clock=clock,
+    )
+    yield result
+    await result._disconnect()
+
+
+async def test_constructor_is_genuine_and_repayment_task_is_inert(client):
+    module()
+    from nautilus_trader.adapters.bybit.execution import BybitExecutionClient
+
+    assert isinstance(client, BybitExecutionClient)
+    await client._repay_task
+    assert client._repay_queues == {}
+    assert not client.is_connected
+    assert client.monitoring_stamp().epoch == 0
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "submit_order",
+        "submit_order_list",
+        "modify_order",
+        "cancel_order",
+        "cancel_all_orders",
+        "batch_cancel_orders",
+        "query_account",
+        "query_order",
+        "_submit_order",
+        "_submit_order_list",
+        "_submit_order_list_http",
+        "_submit_order_list_ws",
+        "_modify_order",
+        "_cancel_order",
+        "_cancel_all_orders",
+        "_batch_cancel_orders",
+        "_query_account",
+        "_query_order",
+        "generate_order_status_reports",
+        "generate_order_status_report",
+        "generate_fill_reports",
+        "generate_position_status_reports",
+        "generate_mass_status",
+        "set_leverage",
+        "set_position_mode",
+        "_handle_borrow_action",
+        "_handle_repay_action",
+        "_repay_spot_borrow_if_needed",
+        "_send_fill_report",
+        "_send_order_status_report",
+        "_send_position_status_report",
+        "_send_mass_status_report",
+        "generate_order_filled",
+        "generate_order_submitted",
+        "generate_order_rejected",
+        "arbitrary_future_write",
+    ],
+)
+async def test_financial_query_report_and_synthesis_denial_is_sticky_before_event(client, method):
+    module()
+    with pytest.raises(ValueError, match="MONITORING_"):
+        result = getattr(client, method)(object())
+        if inspect.isawaitable(result):
+            await result
+    assert client.monitoring_fault is not None
+    assert client._cache.orders() == []
+    with pytest.raises(ValueError):
+        await client.wait_monitoring_ready()
+
+
+@pytest.mark.parametrize("name", ["_ws_private_client", "_ws_trade_client"])
+async def test_constructor_held_specialized_socket_cannot_connect_or_trade(client, name):
+    module()
+    socket = getattr(client, name)
+    with pytest.raises(ValueError):
+        socket.connect(loop_=asyncio.get_running_loop(), callback=lambda x: None)
+    assert client.monitoring_fault
+
+
+def test_full_semantic_comparison_excludes_only_acquisition_times_and_empty_info():
+    mod = module()
+    from nautilus_trader.test_kit.providers import TestInstrumentProvider
+
+    source = TestInstrumentProvider.xrpusdt_linear_bybit()
+    raw = source.to_dict(source)
+    raw["ts_event"] += 100
+    raw["ts_init"] += 100
+    raw["info"] = {}
+    assert mod.instrument_semantics(source) == mod.instrument_semantics(type(source).from_dict(raw))
+    for field, value in [
+        ("maker_fee", "0.002"),
+        ("margin_init", "0.2"),
+        ("info", {"changed": True}),
+    ]:
+        changed = dict(raw)
+        changed[field] = value
+        assert mod.instrument_semantics(source) != mod.instrument_semantics(
+            type(source).from_dict(changed)
+        )
+
+
+def test_passive_config_disables_all_background_queries_and_cache_writes():
+    mod = module()
+    assert hasattr(mod, "passive_node_settings"), "explicit passive node settings required"
+    settings = mod.passive_node_settings([])
+    engine, cache = settings["exec_engine"], settings["cache"]
+    assert engine.load_cache is False and engine.reconciliation is False
+    assert engine.inflight_check_interval_ms == 0
+    assert engine.filter_unclaimed_external_orders and engine.filter_position_reports
+    for field in (
+        "open_check_interval_secs",
+        "position_check_interval_secs",
+        "own_books_audit_interval_secs",
+        "snapshot_positions_interval_secs",
+        "purge_closed_orders_interval_mins",
+        "purge_closed_positions_interval_mins",
+        "purge_account_events_interval_mins",
+        "external_clients",
+    ):
+        assert getattr(engine, field) is None
+    for field in (
+        "generate_missing_orders",
+        "manage_own_order_books",
+        "snapshot_orders",
+        "snapshot_positions",
+        "purge_from_database",
+    ):
+        assert getattr(engine, field) is False
+    assert cache.database is None and cache.flush_on_start is False
+
+
+def test_direct_builder_defaults_remain_nonmonitoring():
+    from multi_exchange_trader.execution.native_node import build_native_node, build_node_config
+
+    for builder in (build_native_node, build_node_config):
+        assert "monitor_only" in inspect.signature(builder).parameters
+        assert inspect.signature(builder).parameters["monitor_only"].default is False
+
+
+async def test_cleanup_preserves_owned_stream_original_loss_evidence(client):
+    from multi_exchange_trader.execution.private_monitor_stream import OwnedPrivateMonitorStream
+
+    async def dispatch(*args):
+        pass
+
+    # Real unconnected objects: this tests fault retention, not admission/lifecycle.
+    stream = OwnedPrivateMonitorStream(
+        api_key="synthetic", api_secret="synthetic", guard=lambda: None, dispatch=dispatch
+    )
+    client._monitor_stream = stream
+    stream.retire("MONITORING_INGRESS_LIMIT")
+    client.retire_monitoring("MONITORING_STOPPED")
+    assert client.monitoring_fault == "MONITORING_INGRESS_LIMIT"
+    await client._disconnect()
+    assert client.monitoring_fault == "MONITORING_INGRESS_LIMIT"
+
+
+async def test_sdk_disconnect_closes_transport_but_never_erases_delivery_gap(client, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    async def dispatch(*args):
+        raise MonitoringError("MONITORING_ORIGINAL_DELIVERY_FAILED")
+
+    stream, wire = await connected(monkeypatch, dispatch)
+    client._monitor_stream = stream
+    wire.emit({"topic": "execution.linear", "data": [{}]})
+    for _ in range(20):
+        if stream.fault:
+            break
+        await asyncio.sleep(0)
+    assert stream.stamp().received > stream.stamp().delivered
+    before = asyncio.all_tasks()
+    client.disconnect()  # Genuine SDK wrapper must complete its normal state transition.
+    tasks = asyncio.all_tasks() - before
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+    assert wire.is_closed() and not client.is_connected
+    assert all(task.done() for task in stream._tasks)
+    for _ in range(2):
+        with pytest.raises(MonitoringError, match="^MONITORING_DELIVERY_GAP_RETAINS_RESOURCES$"):
+            await client.drain_monitoring()
+    assert stream.stamp().received > stream.stamp().delivered
+    await client._disconnect()
+    with pytest.raises(MonitoringError, match="^MONITORING_DELIVERY_GAP_RETAINS_RESOURCES$"):
+        await client.drain_monitoring()
+
+
+async def test_disconnect_preserves_first_bounded_drain_error_after_real_close(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    async def dispatch(*args):
+        pass
+    async def unresolved():
+        raise MonitoringError("MONITORING_APPLICATION_ACK_MISMATCH")
+    stream, wire = await connected(monkeypatch, dispatch)
+    # Unit input for an already failed application ACK; SDK disconnect/stream
+    # lifecycle remain real. This is not an actual native admission proof.
+    client._monitor_stream = stream
+    client._monitor_reports = SimpleNamespace(drain_accepted=unresolved, retire=lambda: None)
+    before = asyncio.all_tasks()
+    client.disconnect()
+    await asyncio.gather(*(asyncio.all_tasks() - before))
+    assert wire.is_closed() and not client.is_connected
+    for _ in range(2):
+        await client._disconnect()
+        with pytest.raises(MonitoringError, match="^MONITORING_APPLICATION_ACK_MISMATCH$"):
+            await client.drain_monitoring()
+
+
+async def test_disconnect_does_not_hide_real_socket_close_failure(client, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    async def dispatch(*args):
+        pass
+    async def failed_close():
+        raise RuntimeError("synthetic socket close failed")
+    stream, wire = await connected(monkeypatch, dispatch)
+    client._monitor_stream = stream
+    close = wire.disconnect
+    wire.disconnect = failed_close  # The permitted socket I/O seam only.
+    try:
+        with pytest.raises(RuntimeError, match="synthetic socket close failed"):
+            await client._disconnect()
+        assert not wire.is_closed()
+    finally:
+        wire.disconnect = close
+        await client._disconnect()
+
+
+async def test_original_session_provenance_survives_read_expiry_but_not_reauthentication(
+    client, session
+):
+    from datetime import timedelta
+
+    owner, binding, wall, mono, _ = session
+    client._require_event_session()
+    wall[0] += timedelta(seconds=31)
+    mono[0] += 31
+    with pytest.raises(ValueError):
+        owner.require_observation_binding(binding, scope=SCOPE)
+    client._require_event_session()
+    await owner.authenticate(
+        expected_uid="12345", expected_parent_uid="0", expected_is_master=False
+    )
+    with pytest.raises(ValueError):
+        client._require_event_session()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_connect_error_boundary_redacts_context_and_preserves_cancellation(client, cancelled):
+    import traceback
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    private_payload = "synthetic-private-startup-diagnostic"
+    error = asyncio.CancelledError() if cancelled else ValueError(private_payload)
+
+    class InvalidTarget:
+        @property
+        def _witness(self):
+            raise error
+
+    # Negative boundary only: never arms, bypasses a guard, or reaches provider I/O.
+    client._monitor_target = InvalidTarget()
+    with pytest.raises(asyncio.CancelledError if cancelled else MonitoringError) as caught:
+        await client._connect()
+    assert client.monitoring_fault == "MONITORING_NATIVE_CONNECT_FAILED"
+    assert not client.is_connected and client._monitor_account_event is None
+    if cancelled:
+        assert caught.value is error
+    else:
+        assert str(caught.value) == "MONITORING_NATIVE_CONNECT_FAILED"
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+        assert private_payload not in "".join(traceback.format_exception(caught.value))

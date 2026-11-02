@@ -69,6 +69,7 @@ from .journal import (
     Reservation,
     ReservationLimits,
 )
+from .monitoring_models import ApplicationMonitoringSummary
 from .native_controls import (
     LeverageObservation,
     NativeLeverageControl,
@@ -305,6 +306,62 @@ class NativeExecutionRuntime:
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
             result.append(NativeOwnedRequest(request, record.state, frozenset(venues)))
         return tuple(result)
+
+    def monitoring_state(self) -> ApplicationMonitoringSummary:
+        """Typed read-only logical view; no order acknowledgement or fill promotion."""
+        with self._mutex:
+            self._guard()
+            states = self._states()
+            contexts = tuple(self._projections[state.position_id][3] for state in states)
+            connections = [self.journal._db, self.store._db]
+            if self._history_store is not None:
+                connections.append(self._history_store._db)
+            ledgers = []
+            for connection in connections:
+                tables = connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+                content = []
+                for name, schema in tables:
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    rows = sorted(repr(tuple(row)) for row in connection.execute("SELECT * FROM " + quoted))
+                    content.append((name, schema, rows))
+                ledgers.append(content)
+            digest = hashlib.sha256(repr((ledgers, self._active, self._control_busy)).encode()).hexdigest()
+            conflicts = tuple(sorted(
+                ["PROJECTION_CONFLICT" for state, context in zip(states, contexts, strict=True)
+                 if not self._monitorable_quarantine(state, context)]
+                + ["CREDIT_DECISION" for context in contexts
+                   if context.credit.decisions or context.history.decisions]))
+            return ApplicationMonitoringSummary(self.native_owned_requests(),
+                self.journal.list_commands(), states,
+                tuple(item for context in contexts for item in context.candidates),
+                tuple(item for context in contexts for item in context.credit.credits),
+                tuple(item for context in contexts for item in context.history.credits),
+                conflicts, digest)
+
+    @staticmethod
+    def _monitorable_quarantine(state: p.ProtectionProjection, context: _ReplayContext) -> bool:
+        """Classify monitoring only; the durable accounting hold remains untouched."""
+        seen: set[str] = set()
+        for conflict in state.conflicts:
+            client = conflict.client_order_id
+            order = next((row for row in state.orders if row.client_order_id == client), None)
+            if (type(conflict) is not p.ProjectionConflict
+                    or conflict.reason != "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED"
+                    or conflict.event is not None or conflict.order is not None
+                    or not client or client in seen or order is None):
+                return False
+            seen.add(client)
+            candidates = tuple(row for row in context.candidates
+                               if row.fill.client_order_id == client)
+            if not candidates or any(
+                type(row) is not NativeExecutionCandidate
+                or row.fill.scope != state.scope or row.fill.position_id != state.position_id
+                or row.fill.instrument_id != state.instrument_id or row.fill.side != order.side
+                or not row.venue_order_id for row in candidates
+            ):
+                return False
+        return True
 
     @property
     def receipt_session(self) -> BybitDemoAccountSession | None:

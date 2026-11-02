@@ -202,6 +202,7 @@ def test_allowlist_has_no_order_paths() -> None:
             "/v5/market/time",
             "/v5/market/instruments-info",
             "/v5/account/wallet-balance",
+            "/v5/account/fee-rate",
             "/v5/account/info",
             "/v5/user/query-api",
             "/v5/position/list",

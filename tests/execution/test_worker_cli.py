@@ -77,3 +77,79 @@ async def test_monitor_connect_is_explicit_and_shutdown_stops_native_producer(tm
     await worker_cli.serve_monitor(h.worker, stop=stop, refresh=refresh, connect=True)
     assert calls == ["run", "stop"]
     assert not h.assembly.strategy.commands
+
+
+def loop_worker():
+    """CLI scheduling unit double only; never native monitoring qualification."""
+    calls = []
+
+    async def start():
+        calls.append("start")
+
+    async def connect():
+        calls.append("connect")
+
+    async def stop():
+        calls.append("stop")
+
+    async def poll(position_id):
+        calls.append("poll")
+
+    worker = SimpleNamespace(start_passive=start, connect_monitoring=connect, stop=stop,
+        poll_position=poll, _node_task=None, monitoring_status=SimpleNamespace(phase="MONITORING"),
+        runtime=SimpleNamespace(store=SimpleNamespace(list_positions=lambda: [SimpleNamespace(position_id="p")]),
+            pause_entries=lambda: calls.append("pause")))
+    return worker, calls
+
+
+async def test_connected_loop_multiple_ticks_never_reauthenticates_or_polls():
+    worker, calls = loop_worker()
+    stop = asyncio.Event()
+
+    async def refresh():
+        calls.append("refresh")
+
+    async def later_stop():
+        await asyncio.sleep(0.02)
+        stop.set()
+
+    stopper = asyncio.create_task(later_stop())
+    try:
+        await worker_cli.serve_monitor(worker, stop=stop, refresh=refresh, interval=0.001, connect=True)
+    finally:
+        await stopper
+    assert calls == ["start", "connect", "stop"]
+
+
+async def test_passive_loop_keeps_explicit_refresh_and_owned_position_polling():
+    worker, calls = loop_worker()
+    stop = asyncio.Event()
+
+    async def refresh():
+        calls.append("refresh")
+        if calls.count("refresh") == 3:
+            stop.set()
+
+    await worker_cli.serve_monitor(worker, stop=stop, refresh=refresh, interval=0.001)
+    assert calls == ["start", "refresh", "poll", "refresh", "poll", "refresh", "stop"]
+
+
+async def test_retired_connected_status_fails_closed_and_uses_orderly_stop():
+    worker, calls = loop_worker()
+    stop = asyncio.Event()
+
+    async def refresh():
+        calls.append("refresh")
+
+    async def retire():
+        await asyncio.sleep(0.005)
+        worker.monitoring_status.phase = "ATTENTION"
+
+    retired = asyncio.create_task(retire())
+    try:
+        with pytest.raises(worker_cli.RuntimeBlocked, match="NATIVE_MONITORING_RETIRED"):
+            await asyncio.wait_for(worker_cli.serve_monitor(worker, stop=stop, refresh=refresh,
+                interval=0.001, connect=True), timeout=0.05)
+    finally:
+        await retired
+    assert calls == ["start", "connect", "stop"]

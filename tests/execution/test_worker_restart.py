@@ -73,7 +73,7 @@ async def test_fresh_active_marker_clean_seal_and_restored_connection_block(
     def expired(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("restored connect must block before binding/network")
     monkeypatch.setattr(new.session, "require_execution_binding", expired)
-    with pytest.raises(RuntimeBlocked, match="NATIVE_RESTART_RECONCILIATION_REQUIRED"):
+    with pytest.raises(ValueError, match="MONITORING_"):
         await new.worker.connect_monitoring()
     assert new.worker._node_task is None
     assert not new.assembly.bridge._submissions
@@ -127,7 +127,7 @@ async def test_stop_drains_posted_callbacks_and_transport_loss_before_capture(
     original = restart.capture_native_cache
 
     def capture(*args: Any, **kwargs: Any) -> Any:
-        assert h.trace == ["quiesced", "closed", "callback"]
+        assert h.trace == ["quiesced", "callback", "closed"]
         assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
         assert h.worker._lock.acquired and h.worker._stopping
         return original(*args, **kwargs)
@@ -220,6 +220,11 @@ def test_restart_safe_config_disables_cache_load_and_reconciliation_explicitly(
             trader_id="WORKER-001", restart_safe=restart_safe)
         assert node.exec_engine.load_cache is (not restart_safe)
         assert node.exec_engine.reconciliation is (not restart_safe)
+        assert node.timeout_post_stop == 10.0
+    monitor = native_node.build_node_config(config, symbols=("BTCUSDT",),
+        trader_id="WORKER-001", restart_safe=True, monitor_only=True)
+    assert monitor.timeout_post_stop == 0.05
+    assert monitor.exec_engine.reconciliation is False
 
 
 def test_history_order_evidence_allows_exact_client_only_lookup(tmp_path: Path) -> None:

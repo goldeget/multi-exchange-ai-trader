@@ -39,7 +39,7 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
                         refresh: Callable[[], Awaitable[None]],
                         interval: float = 10.0, connect: bool = False,
                         on_started: Callable[[], None] | None = None) -> None:
-    """Run passive recovery, optional native monitoring and GET-only owned readback."""
+    """Run passive GET polling or supervise one explicitly admitted native stream."""
     await worker.start_passive()
     try:
         # TradingNode construction replaces asyncio's signal handlers.
@@ -48,18 +48,22 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
         if connect and not stop.is_set():
             await worker.connect_monitoring()
         while not stop.is_set():
+            if connect and worker.monitoring_status.phase != "MONITORING":
+                raise RuntimeBlocked("NATIVE_MONITORING_RETIRED")
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
-                # A failed refresh pauses entries but preserves native event processing.
-                try:
-                    await refresh()
-                    for position in worker.runtime.store.list_positions():
-                        if stop.is_set():
-                            break
-                        await worker.poll_position(position.position_id)
-                except Exception:  # noqa: BLE001 - provider bodies never reach daemon logs.
-                    worker.runtime.pause_entries()
+                # Reauthentication revokes an admitted stream's exact provenance.
+                # Connected observation keeps that owner and lets REST authority expire.
+                if not connect:
+                    try:
+                        await refresh()
+                        for position in worker.runtime.store.list_positions():
+                            if stop.is_set():
+                                break
+                            await worker.poll_position(position.position_id)
+                    except Exception:  # noqa: BLE001 - provider bodies never reach daemon logs.
+                        worker.runtime.pause_entries()
             if not stop.is_set() and worker._node_task is not None and worker._node_task.done():
                 raise RuntimeBlocked("NATIVE_MONITORING_ENDED")
     finally:

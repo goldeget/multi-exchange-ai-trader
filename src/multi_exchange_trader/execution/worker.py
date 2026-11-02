@@ -12,8 +12,8 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from contextlib import asynccontextmanager, suppress
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -34,8 +34,10 @@ from .history_receipts import AuthenticatedHistoryReceipt
 from .history_recovery import HistoryRecoveryResult
 from .history_store import HistoryStore
 from .journal import CommandJournal, CommandRecord, ExecutionScope
+from .monitoring_models import WorkerMonitoringStatus
+from .monitoring_resume import MonitoringResume
 from .native_controls import NativeLeverageControl
-from .native_events import NativeEventContext, NativeEventDecoder
+from .native_events import NativeEventContext, NativeEventDecoder, NativeOrderEvidence
 from .native_node import NativeChannel, NativeNodeAssembly, build_native_node
 from .native_restart import NativeRestartCoordinator, WorkerNativeRestartStatus
 from .ownership import AccountWorkerLock
@@ -149,6 +151,8 @@ class ExecutionWorker:
         self._history_store: HistoryStore | None = None
         self._lock: AccountWorkerLock | None = None
         self._node_task: asyncio.Task[None] | None = None
+        self._node_stop_task: asyncio.Task[None] | None = None
+        self._monitoring: MonitoringResume | None = None
         self._restart: NativeRestartCoordinator | None = None
         self._native_restart_status = WorkerNativeRestartStatus("BLOCKED")
         self._stopped = False
@@ -172,8 +176,16 @@ class ExecutionWorker:
             raise RuntimeBlocked("WORKER_OWNER_LOOP_REQUIRED")
         return self._runtime
 
+    @property
+    def monitoring_status(self) -> WorkerMonitoringStatus:
+        if self._monitoring is not None:
+            return self._monitoring.snapshot()
+        return WorkerMonitoringStatus("PASSIVE", self.scope, self.symbols)
+
     def _require_admission(self) -> None:
         _ = self.runtime
+        if self._monitoring is not None and self._monitoring.in_progress:
+            raise RuntimeBlocked("MONITORING_RESUME_IN_PROGRESS")
         if self._stopping:
             raise RuntimeBlocked("WORKER_STOPPING")
 
@@ -195,7 +207,7 @@ class ExecutionWorker:
             if self._factory is None:
                 self._assembly = build_native_node(session=self.session, binding=self.binding,
                     scope=self.scope, symbols=self.symbols, trader_id=self.trader_id,
-                    on_event=self.post_native, restart_safe=True)
+                    on_event=self.post_native, restart_safe=True, monitor_only=True)
             else:
                 self._assembly = self._factory(self.post_native)
             channel = self._assembly.channel
@@ -243,11 +255,21 @@ class ExecutionWorker:
             self.rejected_channels += 1
             return
         try:
-            self.runtime.consume_native(event, NativeEventContext(channel.scope,
+            if self._monitoring is not None and self._monitoring.armed:
+                self._monitoring.require_cleanup_owner()
+                self._assembly.require_monitoring_delivery(event)
+            evidence = self.runtime.consume_native(event, NativeEventContext(channel.scope,
                 channel.native_account_id, received_ns), decoder=self._decoder)
+            if self._monitoring is not None and self._monitoring.armed:
+                if type(evidence) is not NativeOrderEvidence:
+                    raise RuntimeBlocked("MONITORING_APPLICATION_EVIDENCE_REQUIRED")
+                self._assembly.acknowledge_monitoring(event, evidence=evidence)
+                self._monitoring.event_completed()
         except Exception:  # noqa: BLE001 - keep monitoring alive without leaking provider payload.
             self.callback_failures += 1
             self.runtime.pause_entries()
+            if self._monitoring is not None:
+                self._monitoring.retire("MONITORING_APPLICATION_CALLBACK_FAILED")
 
     def _fresh_policy(self, request: modes.SelectionRequest,
                       mode: modes.AutomaticMode) -> None:
@@ -329,6 +351,18 @@ class ExecutionWorker:
                                  max_evidence_age=self.max_age)
 
     @_admitted
+    async def resume_restored_monitoring(self) -> WorkerMonitoringStatus:
+        return await self._resume_restored_monitoring()
+
+    async def _resume_restored_monitoring(self) -> WorkerMonitoringStatus:
+        if self._operations != 1 or self._staging:
+            raise RuntimeBlocked("MONITORING_OPERATION_IN_PROGRESS")
+        self.runtime.pause_entries()
+        controller = MonitoringResume(self)
+        self._monitoring = controller
+        return await controller.run()
+
+    @_admitted
     async def connect_monitoring(self) -> None:
         """Explicit network start for the passive node, never entry activation.
 
@@ -336,8 +370,11 @@ class ExecutionWorker:
         This call is not made by app startup, saved policy, or start_passive.
         """
         self.runtime.pause_entries()
-        if self._restart is not None and self._restart.status.status == "RESTORED_LOCAL_CACHE":
-            raise RuntimeBlocked("NATIVE_RESTART_RECONCILIATION_REQUIRED")
+        if self.native_restart_status.status == "RESTORED_LOCAL_CACHE":
+            await self._resume_restored_monitoring()
+            return
+        if self._factory is None:
+            raise RuntimeBlocked("MONITORING_RESTORED_CACHE_REQUIRED")
         self.session.require_execution_binding(self.binding, scope=self.scope)
         if self._node_task is not None:
             raise RuntimeBlocked("NATIVE_MONITORING_ALREADY_STARTED")
@@ -518,6 +555,8 @@ class ExecutionWorker:
         # refuses because a previously admitted operation still owns liabilities.
         self._stopping = True
         runtime.pause_entries()
+        if self._monitoring is not None:
+            self._monitoring.retire("MONITORING_STOPPED")
         if self._stop_in_progress:
             raise RuntimeBlocked("WORKER_STOP_ALREADY_RUNNING")
         if self._staging:
@@ -530,23 +569,82 @@ class ExecutionWorker:
         finally:
             self._stop_in_progress = False
 
+    async def _quiesce(self) -> None:
+        assembly, monitoring, factory = self._assembly, self._monitoring, self._factory
+        assert assembly is not None
+        node, run_task, stop_task = assembly.node, self._node_task, self._node_stop_task
+
+        def require_owner() -> None:
+            if (self._assembly is not assembly or assembly.node is not node
+                    or self._monitoring is not monitoring or self._factory is not factory
+                    or self._node_task is not run_task or self._node_stop_task is not stop_task):
+                raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
+            if monitoring is not None:
+                monitoring.require_cleanup_owner()
+
+        require_owner()
+        if run_task is not None:
+            if factory is None:
+                assembly.capture_engine_queues(require_owner)
+            if (stop_task is None or stop_task.done()
+                    and (stop_task.cancelled() or stop_task.exception() is not None)):
+                stop_task = self._node_stop_task = asyncio.create_task(node.stop_async())
+            await asyncio.shield(stop_task)
+            require_owner()
+            if factory is None:
+                await assembly.settle_engine_queues(require_owner)
+                require_owner()
+                assembly.require_quiesced()
+                # Pinned startup's connection wait ignores concurrent stop.
+                # Bind the waiter before the stop await: a replacement task
+                # is never evidence for, or owned by, this stopped node.
+                if not run_task.done():
+                    run_task.cancel()
+            await asyncio.shield(run_task)
+            require_owner()
+            if factory is None:
+                await assembly.settle_owned_tasks()
+                require_owner()
+        if monitoring is not None:
+            stamp = await assembly.drain_monitoring()
+            require_owner()
+            assembly.require_monitoring_tasks_quiesced()
+            retained = monitoring.state.retained_stamp
+            if (stamp.received != stamp.delivered or retained is not None and (
+                    stamp.received < retained.received or stamp.delivered < retained.delivered
+                    or retained.conn_id and (retained.epoch, retained.conn_id) != (stamp.epoch, stamp.conn_id))):
+                raise RuntimeBlocked("MONITORING_DELIVERY_GAP_RETAINS_RESOURCES")
+        if factory is None:
+            assembly.require_quiesced()
+
     async def _finish_stop(self, runtime: NativeExecutionRuntime) -> None:
+        monitoring, assembly, factory = self._monitoring, self._assembly, self._factory
         try:
-            if self._node_task is not None:
-                assert self._assembly is not None
-                await self._assembly.node.stop_async()
-                await self._node_task
-            assert self._assembly is not None
-            if self._factory is None:
-                self._assembly.require_quiesced()
-            self._assembly.close_event_channel()
-            self._channel_closed = True
-            # Process callbacks already posted by the stopped producer before closing SQLite.
+            assert assembly is not None
+            node, run_task = assembly.node, self._node_task
+            async with asyncio.timeout(10):
+                await self._quiesce()
+            stop_task = self._node_stop_task
+            # Yield before closing the sink. A queued owner/lease replacement
+            # must retain every resource, even after successful producer quiescence.
             await asyncio.sleep(0)
+            if (self._monitoring is not monitoring or self._assembly is not assembly
+                    or assembly.node is not node or self._factory is not factory
+                    or self._node_task is not run_task or self._node_stop_task is not stop_task):
+                raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
+            if monitoring is not None:
+                monitoring.require_cleanup_owner()
+            assembly.close_event_channel()
+            self._channel_closed = True
+            # No await from this final exact-owner check through seal/dispose/close.
         except BaseException:
-            # No proof of producer quiescence: keep ownership and the callback sink
-            # alive for retry/reconciliation, and never call this a clean shutdown.
-            runtime.transport_lost()
+            # Stop tasks remain owned even when a bounded attempt times out.
+            # Never close the callback sink or stores without producer proof.
+            with suppress(RuntimeBlocked):
+                runtime.transport_lost()
+            if monitoring is not None:
+                monitoring.state = replace(monitoring.state,
+                    resources_retained=True, stream_stamp=monitoring.client.monitoring_stamp())
             raise
         try:
             runtime.transport_lost()
@@ -562,6 +660,10 @@ class ExecutionWorker:
         finally:
             self._stopped = True
             self._close_stores()
+            if self._monitoring is not None:
+                self._monitoring.state = replace(self._monitoring.state,
+                    phase="STOPPED", resources_retained=False,
+                    stream_stamp=self._assembly.monitoring_stamp())
 
     def _close_stores(self) -> None:
         try:

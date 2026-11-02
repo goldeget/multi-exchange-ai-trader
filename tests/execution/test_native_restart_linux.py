@@ -30,6 +30,7 @@ from test_runtime import SCOPE, selection
 from test_worker import stage
 from worker_receipt_support import synthetic_session
 
+from multi_exchange_trader.execution.account_binding import AccountBindingError
 from multi_exchange_trader.execution.journal import (
     CommandJournal,
     CommandKind,
@@ -107,7 +108,10 @@ async def start(h: Any) -> None:
     assert type(h.assembly.node) is module("live.node").TradingNode
     assert type(h.assembly.node.cache) is module("cache.cache").Cache
     assert type(h.assembly.strategy) is module("trading.strategy").Strategy
-    assert type(h.assembly.execution_client) is module("adapters.bybit.execution").BybitExecutionClient
+    from multi_exchange_trader.execution.native_monitor_client import MonitoringBybitExecutionClient
+
+    assert type(h.assembly.execution_client) is MonitoringBybitExecutionClient
+    assert isinstance(h.assembly.execution_client, module("adapters.bybit.execution").BybitExecutionClient)
     assert h.assembly.strategy.cache is h.assembly.node.cache
     assert h.assembly.node.is_built() and not h.assembly.node.is_running()
     assert h.assembly.node.kernel.exec_engine.command_count == 0
@@ -404,10 +408,14 @@ async def test_actual_uncertainty_control_liabilities_and_fixed_authority_blocks
             assert new.worker.runtime.projection("position-1").owned_quantity == 0
             assert len(new.worker.runtime.store.list_position_events("position-1")) == 1
             assert new.worker.runtime.store.get_position("position-1").reconciliation_required
-            with pytest.raises(RuntimeBlocked, match="NATIVE_RESTART_RECONCILIATION_REQUIRED"):
-                await new.worker.connect_monitoring()
             with pytest.raises(RuntimeBlocked, match="QUALIFICATION"):
                 new.worker.runtime.start()
+            # This restart-only fixture has no genuine session attestation.
+            # Failed resume retires/cleans the worker, so test runtime authority
+            # above while it is still open; never manufacture monitoring proof.
+            assert new.session._attested is None
+            with pytest.raises(AccountBindingError, match="^MONITORING_PRIOR_ATTESTATION_REQUIRED$"):
+                await new.worker.connect_monitoring()
             no_effects(new)
         finally:
             await new.worker.stop()

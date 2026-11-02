@@ -33,22 +33,31 @@ async def test_monitor_reclaims_handlers_after_native_construction(
 
     h.worker._factory = build
     finished = asyncio.Event()
+    producer_calls: list[str] = []
 
     async def run() -> None:
+        producer_calls.append("run")
+        assert connect and not stop.is_set()
+        # Connected mode no longer refreshes; the reclaimed signal arrives only
+        # after its existing mock native producer has actually started.
+        handlers[sig]()
         await finished.wait()
 
     async def shutdown() -> None:
+        producer_calls.append("stop")
         finished.set()
 
     h.assembly.node = SimpleNamespace(run_async=run, stop_async=shutdown)
 
     async def refresh() -> None:
+        assert not connect
         handlers[sig]()
 
     await asyncio.wait_for(worker_cli.serve_monitor(h.worker, stop=stop, refresh=refresh,
         interval=0.001, connect=connect,
         on_started=lambda: worker_cli.install_signal_handlers(loop, stop)), 1)
     assert stop.is_set() and h.worker._stopped
+    assert producer_calls == (["run", "stop"] if connect else [])
     lock = AccountWorkerLock(tmp_path, account_id=h.worker.scope.account_id, environment="DEMO")
     lock.acquire()
     lock.release()
