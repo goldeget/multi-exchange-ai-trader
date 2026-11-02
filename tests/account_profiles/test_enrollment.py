@@ -672,3 +672,136 @@ def test_late_finalizer_cannot_retire_a_newer_operations_candidate(
     finally:
         release.set()
         asyncio.run(owner.aclose())
+
+
+def test_final_publication_winner_prevents_close_returning_before_commit(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _, create = setup
+    owner = create()
+    candidate = asyncio.run(owner.observe())
+    entered, release, closing, closed = (threading.Event() for _ in range(4))
+    original = profiles.current_identity
+    target_calls = [0]
+    state_at_close: list[str] = []
+
+    def paused_identity(path: Path) -> Any:
+        if path == store.path:
+            target_calls[0] += 1
+            if target_calls[0] == 2:
+                # Existing target-identity seam after the final guard and before
+                # replacement. Do not mutate any owner field or guard behavior.
+                entered.set()
+                assert release.wait(3)
+        return original(path)
+
+    def close() -> None:
+        async def close_owner() -> None:
+            closing.set()
+            await owner.aclose()
+
+        asyncio.run(close_owner())
+        state_at_close.append(store.load().state)
+        closed.set()
+
+    monkeypatch.setattr(profiles, "current_identity", paused_identity)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            publication = pool.submit(adopt, owner, candidate)
+            assert entered.wait(3)
+            assert store.load().state == "PENDING"
+            cleanup = pool.submit(close)
+            assert closing.wait(3)
+            closed_before_commit = closed.wait(0.1)
+            release.set()
+            result = publication.result(timeout=3)
+            cleanup.result(timeout=3)
+        assert not closed_before_commit
+        assert state_at_close == ["COMPLETE"]
+        assert (result.state, store.load().revision) == ("COMPLETE", 2)
+        with pytest.raises(enrollment.AccountEnrollmentError):
+            adopt(owner, candidate)
+    finally:
+        release.set()
+        asyncio.run(owner.aclose())
+
+
+def test_close_winner_after_temp_fsync_prevents_final_publication(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader import _credential_files as files
+
+    store, _, create = setup
+    owner = create()
+    candidate = asyncio.run(owner.observe())
+    entered, release = threading.Event(), threading.Event()
+    original = files.os.fsync
+    first = [True]
+
+    def prepared(descriptor: int) -> None:
+        original(descriptor)
+        if first[0]:
+            first[0] = False
+            entered.set()
+            assert release.wait(3)
+
+    monkeypatch.setattr(files.os, "fsync", prepared)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            publication = pool.submit(adopt, owner, candidate)
+            assert entered.wait(3)
+            cleanup = pool.submit(asyncio.run, owner.aclose())
+            cleanup.result(timeout=2)
+            assert store.load().state == "PENDING"
+            release.set()
+            with pytest.raises(profiles.AccountProfileError):
+                publication.result(timeout=3)
+        assert (store.load().state, store.load().revision) == ("PENDING", 1)
+        with pytest.raises(enrollment.AccountEnrollmentError):
+            adopt(owner, candidate)
+    finally:
+        release.set()
+        asyncio.run(owner.aclose())
+
+
+@pytest.mark.parametrize("phase", ["replace", "directory-sync"])
+def test_failed_commit_section_releases_owner_and_never_replays(
+    setup: Any, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    from multi_exchange_trader import _credential_files as files
+
+    store, _, create = setup
+    owner = create()
+    candidate = asyncio.run(owner.observe())
+
+    def failed(*args: Any, **kwargs: Any) -> None:
+        raise OSError("synthetic commit failure")
+
+    if phase == "replace":
+        monkeypatch.setattr(files.os, "replace", failed)
+    else:
+        original = profiles.publish_private
+
+        def failed_sync(*args: Any, **kwargs: Any) -> None:
+            original(*args, **kwargs, sync=failed)
+
+        monkeypatch.setattr(profiles, "publish_private", failed_sync)
+    try:
+        with pytest.raises(profiles.AccountProfileError, match="PERSISTENCE_FAILED"):
+            adopt(owner, candidate)
+        closed = threading.Event()
+
+        def close() -> None:
+            asyncio.run(owner.aclose())
+            closed.set()
+
+        # A leaked owner lock must fail within the bound, not hang pytest shutdown.
+        closer = threading.Thread(target=close, daemon=True)
+        closer.start()
+        assert closed.wait(2)
+        closer.join(timeout=2)
+        assert store.load().state == ("PENDING" if phase == "replace" else "COMPLETE")
+        with pytest.raises(enrollment.AccountEnrollmentError):
+            adopt(owner, candidate)
+    finally:
+        asyncio.run(owner.aclose())

@@ -11,7 +11,8 @@ import asyncio
 import math
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Self
@@ -95,7 +96,7 @@ class BybitDemoEnrollmentSession:
         self._adopting: object | None = None
         self._last_clock: tuple[datetime, float] | None = None
         self._closed = False
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._operation: object | None = None
 
     @classmethod
@@ -259,6 +260,16 @@ class BybitDemoEnrollmentSession:
                     self._fresh(observation.started_at, observation.started_mono,
                                 now, mono, observation.server_times)
 
+            @contextmanager
+            def publication_section() -> Iterator[None]:
+                # The store lock is already acquired and the temporary file is
+                # prepared. Keep close outside this checked filesystem commit;
+                # the nested nonpublishing guard uses the same reentrant mutex.
+                # Close may wait for OS I/O here; no bounded OS latency is claimed.
+                with self._state_lock:
+                    self._require_operation(operation)
+                    yield
+
             guard()
             stamp = observation.observed_at.isoformat().replace("+00:00", "Z")
             relationship: dict[str, object] = {
@@ -274,7 +285,8 @@ class BybitDemoEnrollmentSession:
             }
             return self._store._adopt_initial(profile_id=self._snapshot.profile_id,
                 expected_uid=self._snapshot._uid, expected_revision=self._snapshot.revision,
-                relationship=relationship, last_observation=last_observation, guard=guard)
+                relationship=relationship, last_observation=last_observation, guard=guard,
+                publication_section=publication_section)
         finally:
             self._finish(operation)
 

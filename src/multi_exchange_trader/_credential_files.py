@@ -7,7 +7,7 @@ import stat
 import tempfile
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -259,12 +259,16 @@ def publish_private(
     identify: Callable[[Path], tuple[int, int, int, int] | None] = current_identity,
     sync: Callable[[Path], None] = sync_directory,
     before_replace: Callable[[], None] = lambda: None,
+    publication_section: Callable[[], AbstractContextManager[None]] = nullcontext,
 ) -> None:
     """Shared private publication; callers own CAS, confirmation and safe errors.
 
     Credential defaults and its existing filesystem seams remain unchanged.
     The profile issuer's final freshness check executes after file fsync, while
     the fixed lock is held, immediately before target verification/replacement.
+    An opt-in owner section can order final checked publication against close.
+    It starts only after temporary-file preparation, never during a lock wait.
+    Credentials retain the default null section and original publication seams.
     """
     if prefix not in {".credentials-", ".account-profiles-"}:
         raise CredentialStoreError("UNSAFE_PATH")
@@ -279,15 +283,16 @@ def publish_private(
             stream.flush()
             os.fsync(stream.fileno())
             temporary_identity = identity(os.fstat(stream.fileno()))
-        before_replace()
-        if identify(path) != original:
-            raise CredentialStoreError("REVISION_CONFLICT")
-        verify_lock()
-        if identify(temporary) != temporary_identity:
-            raise CredentialStoreError("UNSAFE_PATH")
-        os.replace(temporary, path)
-        temporary = None
-        sync(path.parent)
+        with publication_section():
+            before_replace()
+            if identify(path) != original:
+                raise CredentialStoreError("REVISION_CONFLICT")
+            verify_lock()
+            if identify(temporary) != temporary_identity:
+                raise CredentialStoreError("UNSAFE_PATH")
+            os.replace(temporary, path)
+            temporary = None
+            sync(path.parent)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

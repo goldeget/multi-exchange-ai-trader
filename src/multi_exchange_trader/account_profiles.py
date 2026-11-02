@@ -9,6 +9,7 @@ import os
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -295,11 +296,13 @@ class AccountProfileStore:
     def _publish_and_confirm(
         self, snapshot: AccountProfileSnapshot, original: tuple[int, int, int, int] | None,
         verify_lock: Callable[[], None], *, guard: Callable[[], None] = lambda: None,
+        publication_section: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> None:
         content = _encode(snapshot)
         _decode(content)
         publish_private(self.path, content, original, verify_lock, prefix=".account-profiles-",
-                        identify=current_identity, before_replace=guard)
+                        identify=current_identity, before_replace=guard,
+                        publication_section=publication_section)
         try:
             confirmed = self.load()
         except AccountProfileError:
@@ -311,6 +314,7 @@ class AccountProfileStore:
         self, *, profile_id: str, expected_uid: str, expected_revision: int,
         relationship: Mapping[str, object], last_observation: Mapping[str, object],
         guard: Callable[[], None],
+        publication_section: Callable[[], AbstractContextManager[None]] = nullcontext,
     ) -> AccountProfileResult:
         """Private issuer boundary; guard checks the same ongoing consumed operation.
 
@@ -318,6 +322,8 @@ class AccountProfileStore:
         side-effect-free checks and run before lock, after lock and before replace.
         The store permits only the exact pending target's first adopted relation.
         It never accepts an existing complete relationship as an update.
+        The issuer may separately hold a final publication section to order close
+        against checked replacement; the repeated guard itself never publishes.
         """
         try:
             if type(expected_revision) is not int or not 1 <= expected_revision < _MAX_REVISION:
@@ -350,7 +356,7 @@ class AccountProfileStore:
                 except (ValueError, TypeError, OverflowError, RecursionError):
                     raise AccountProfileError("INVALID_VALUES") from None
                 self._publish_and_confirm(snapshot, original, verify_lock,
-                                          guard=lambda: self._check_guard(guard))
+                    guard=lambda: self._check_guard(guard), publication_section=publication_section)
                 return snapshot.safe_result()
         except AccountProfileError:
             raise
