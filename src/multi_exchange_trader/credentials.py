@@ -5,7 +5,6 @@ import binascii
 import json
 import os
 import re
-import tempfile
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -19,8 +18,8 @@ from ._credential_files import (
     WindowsDPAPI,
     create_private_parent,
     current_identity,
-    identity,
     private_lock,
+    publish_private,
     read_checked,
     sync_directory,
 )
@@ -242,29 +241,8 @@ class CredentialStore:
 
     def _publish(self, content: bytes, original: tuple[int, int, int, int] | None,
                  verify_lock: Callable[[], None]) -> None:
-        temporary: Path | None = None
-        try:
-            descriptor, name = tempfile.mkstemp(prefix=".credentials-", dir=self.path.parent)
-            temporary = Path(name)
-            # mkstemp is exclusive and 0600 before any plaintext is written on POSIX.
-            with os.fdopen(descriptor, "wb") as stream:
-                if current_identity(temporary) != identity(os.fstat(stream.fileno())):
-                    raise CredentialStoreError("UNSAFE_PATH")
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-                temporary_identity = identity(os.fstat(stream.fileno()))
-            if current_identity(self.path) != original:
-                raise CredentialStoreError("REVISION_CONFLICT")
-            verify_lock()
-            if current_identity(temporary) != temporary_identity:
-                raise CredentialStoreError("UNSAFE_PATH")
-            os.replace(temporary, self.path)
-            temporary = None
-            sync_directory(self.path.parent)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        publish_private(self.path, content, original, verify_lock, prefix=".credentials-",
+                        identify=current_identity, sync=sync_directory)
 
 
 def default_credential_store(environ: Mapping[str, str]) -> CredentialStore | None:
