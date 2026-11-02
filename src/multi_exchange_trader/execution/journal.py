@@ -33,6 +33,7 @@ class CommandKind(StrEnum):
     PROTECTION = "PROTECTION"
     EXIT = "EXIT"
     CANCEL = "CANCEL"
+    LEVERAGE = "LEVERAGE"
 
 
 class CommandState(StrEnum):

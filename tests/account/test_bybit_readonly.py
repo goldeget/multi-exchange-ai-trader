@@ -206,6 +206,10 @@ def test_allowlist_has_no_order_paths() -> None:
             "/v5/user/query-api",
             "/v5/position/list",
             "/v5/order/realtime",
+            "/v5/execution/list",
+            "/v5/order/history",
+            "/v5/account/transaction-log",
+            "/v5/market/risk-limit",
         }
     )
     names = {name.lower() for name in dir(BybitReadOnlyClient)}

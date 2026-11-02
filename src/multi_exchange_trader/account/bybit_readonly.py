@@ -42,6 +42,10 @@ READ_ONLY_PATHS = frozenset(
         "/v5/user/query-api",
         "/v5/position/list",
         "/v5/order/realtime",
+        "/v5/execution/list",
+        "/v5/order/history",
+        "/v5/account/transaction-log",
+        "/v5/market/risk-limit",
     }
 )
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})

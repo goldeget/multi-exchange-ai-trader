@@ -8,7 +8,9 @@ boundaries; the fake HTTP transport can never reach an exchange.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
+import inspect
 import os
 import socket
 import sys
@@ -28,6 +30,7 @@ from multi_exchange_trader.execution.bybit_native import (
     build_demo_exec_config,
     load_native_bindings,
 )
+from multi_exchange_trader.execution.native_controls import NativeLeverageControl
 from multi_exchange_trader.execution.native_events import NativeEventContext
 from multi_exchange_trader.execution.protection import OwnedOrder, ProtectionScope
 
@@ -151,6 +154,11 @@ class FakeHttpBoundary:
 
     async def submit_order(self, **arguments: Any) -> None:
         self.calls.append(arguments)
+
+    async def set_leverage(self, *, product_type: object, symbol: str,
+                           buy_leverage: str, sell_leverage: str) -> None:
+        self.calls.append({"product_type": product_type, "symbol": symbol,
+                           "buy_leverage": buy_leverage, "sell_leverage": sell_leverage})
 
 
 def adapter_boundary(harness: Any) -> Any:
@@ -322,3 +330,72 @@ def test_real_native_reports_never_promote_cumulative_status_or_empty_position_t
             query_succeeded=success, query_complete=complete)
         assert result.complete is False
         assert result.flat_verified is result.leverage_verified is result.protection_verified is False
+
+
+def test_actual_strategy_cancel_uses_same_cached_order_and_exact_native_identity(
+    native_harness: Any,
+) -> None:
+    harness = native_harness
+    harness.bridge.submit(request())
+    order = harness.commands[0].order
+    ids, events = module("model.identifiers"), module("model.events.order")
+    uuid = module("core.uuid").UUID4
+    base = {"trader_id": order.trader_id, "strategy_id": order.strategy_id,
+        "instrument_id": order.instrument_id, "client_order_id": order.client_order_id,
+        "account_id": ids.AccountId("BYBIT-UNIFIED"), "ts_event": TS_EVENT, "ts_init": TS_INIT}
+    order.apply(events.OrderSubmitted(**base, event_id=uuid()))
+    order.apply(events.OrderAccepted(**base, venue_order_id=ids.VenueOrderId("venue-1"),
+                                    event_id=uuid()))
+    harness.cache.update_order(order)
+    cancels: list[Any] = []
+    harness.msgbus.register(endpoint="ExecEngine.execute", handler=cancels.append)
+    assert harness.bridge.cached_owned_order(CLIENT_ID) is order
+    assert harness.bridge.cancel_owned(CLIENT_ID).state == "SUBMITTING"
+    assert len(cancels) == 1
+    assert type(cancels[0]) is module("execution.messages").CancelOrder
+    assert str(cancels[0].client_order_id) == CLIENT_ID
+    assert str(cancels[0].venue_order_id) == "venue-1"
+    assert str(cancels[0].instrument_id) == INSTRUMENT
+    assert order.is_pending_cancel
+    harness.bridge.cancel_owned(CLIENT_ID)
+    assert len(cancels) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leverage", [Decimal(2), Decimal("1.8")])
+async def test_actual_existing_client_leverage_api_and_same_client_fractional_extension(
+    leverage: Decimal, native_harness: Any,
+) -> None:
+    native = module("core.nautilus_pyo3")
+    adapter = module("adapters.bybit.execution").BybitExecutionClient
+    assert tuple(inspect.signature(native.BybitHttpClient.set_leverage).parameters) == (
+        "self", "product_type", "symbol", "buy_leverage", "sell_leverage")
+    assert "leverage" in inspect.signature(adapter.set_leverage).parameters
+    # Genuine pinned constructor and type binding; never connect/start a node.
+    http = native.BybitHttpClient(api_key="fixture-only",
+        api_secret="fixture-only", demo=True, timeout_secs=1, max_retries=0)
+    provider = module("adapters.bybit.providers").BybitInstrumentProvider(
+        client=http, product_types=(native.BybitProductType.LINEAR,))
+    client = adapter(loop=asyncio.get_running_loop(), client=http,
+        msgbus=native_harness.msgbus, cache=native_harness.cache,
+        clock=module("common.component").LiveClock(), instrument_provider=provider,
+        config=build_demo_exec_config(api_key="fixture-only", api_secret="fixture-only"),
+        name=None)
+    # Pinned constructor schedules an empty repayment queue loop; cancel it
+    # immediately, before yielding, because this contract runs no background work.
+    client._repay_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await client._repay_task
+    controller = NativeLeverageControl(client=client, scope=SCOPE,
+                                       native_account_id="BYBIT-UNIFIED")
+    # Replace only the effect transport in this isolated test. Production rejects
+    # any client transport swap; the dedicated negative assertion checks that.
+    boundary = FakeHttpBoundary()
+    client._http_client = boundary
+    with pytest.raises(ValueError, match="CLIENT_CHANGED"):
+        await controller.apply("BTCUSDT", leverage)
+    assert not boundary.calls
+    controller._http_client = boundary
+    await controller.apply("BTCUSDT", leverage)
+    assert boundary.calls == [{"product_type": native.BybitProductType.LINEAR,
+        "symbol": "BTCUSDT", "buy_leverage": str(leverage), "sell_leverage": str(leverage)}]
