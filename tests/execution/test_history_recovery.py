@@ -7,11 +7,11 @@ import json
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from test_runtime import queue
+from test_runtime import setup as setup  # noqa: PLC0414
 
 from multi_exchange_trader.execution import codec
 from multi_exchange_trader.execution import protection as p
@@ -398,28 +398,25 @@ def test_native_credit_cannot_replay_after_history_guard() -> None:
         NativeExecutionRuntime._reduce_event(state, replay_credit(candidate), {}, context)
 
 
-def test_v4_reopen_recomputes_and_later_generic_writes_preserve_history(tmp_path: Path) -> None:
-    from multi_exchange_trader.execution.journal import ExecutionScope
-    from multi_exchange_trader.execution.state_store import RuntimeStateStore
-
-    event = credit()
-    state = projection()
-    with RuntimeStateStore(tmp_path / "state.sqlite3", ExecutionScope("fixture-account", "DEMO")) as store:
-        base = p.ProtectionProjection(state.scope, state.position_id, state.instrument_id, state.entry_side)
-        store.apply_position_event("owned", json.loads(codec.encode(event.owned_order)), state.position_id,
-            0, json.loads(codec.encode(NativeExecutionRuntime._summary(state))))
-        reduced, native, replay = reduce(state, event)
-        guard = execution_guard(state.scope, state.instrument_id, "exec-1")
-        store.apply_position_event(guard, json.loads(codec.encode(event)), state.position_id, 1,
-            json.loads(codec.encode(NativeExecutionRuntime._summary(reduced, {}, native, replay))))
-        runtime = object.__new__(NativeExecutionRuntime)
-        runtime._projections = {}
-        runtime.store = store
-        runtime.bridge = SimpleNamespace(scope=base.scope)
-        runtime._guard = lambda: None
-        assert runtime._states() == (reduced,)
-        runtime._persist(("READBACK", "later", ()), reduced)
-        runtime._projections.clear()
-        assert runtime._states() == (reduced,)
-        summary = codec.decode(store.get_position(state.position_id).payload_json)
-        assert summary[0] == "RUNTIME_POSITION_V4" and summary[17] == 1
+def test_v4_reopen_recomputes_and_later_generic_writes_preserve_history(setup: Any) -> None:
+    runtime, _, store, _, _, _ = setup
+    command = queue(runtime)
+    state = runtime.projection("position-1")
+    owned = state.orders[0]
+    ref = replace(source(), scope=state.scope)
+    event = credit(owned_order=owned, command_key=command.command_key,
+        command_payload_hash=command.payload_hash,
+        execution=evidence(execution(client_order_id=owned.client_order_id), ref),
+        order=order_evidence(order(client_order_id=owned.client_order_id, quantity=owned.quantity,
+            leaves_quantity=owned.quantity - Decimal("0.004")), ref))
+    reduced, native, replay = reduce(state, event)
+    guard = execution_guard(state.scope, state.instrument_id, "exec-1")
+    store.apply_position_event(guard, json.loads(codec.encode(event)), state.position_id, 1,
+        json.loads(codec.encode(NativeExecutionRuntime._summary(reduced, {}, native, replay))))
+    runtime._projections.clear()
+    assert runtime._states() == (reduced,)
+    runtime._persist(("READBACK", "later", ()), reduced)
+    runtime._projections.clear()
+    assert runtime._states() == (reduced,)
+    summary = codec.decode(store.get_position(state.position_id).payload_json)
+    assert summary[0] == "RUNTIME_POSITION_V4" and summary[17] == 1
