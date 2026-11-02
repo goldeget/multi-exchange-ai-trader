@@ -437,7 +437,8 @@ def test_terminal_budget_fault_survives_target_change_and_new_receipt(failure, m
     assert budget.physical_attempts == 0
 
 @pytest.mark.parametrize('field,value', [('quantity', Decimal(3)), ('price', Decimal(101)),
-                                       ('venue_order_id', 'foreign'), ('time_in_force', 'IOC')])
+                                       ('venue_order_id', 'foreign'), ('client_order_id', 'foreign'),
+                                       ('time_in_force', 'IOC')])
 def test_positive_owned_order_immutable_economics_are_validated_per_response(field, value):
     from dataclasses import replace
 
@@ -449,3 +450,32 @@ def test_positive_owned_order_immutable_economics_are_validated_per_response(fie
     module._validate_positive_order(target.native.orders[0], observation.orders[0])
     with pytest.raises(ValueError):
         module._validate_positive_order(target.native.orders[0], replace(observation.orders[0], **{field: value}))
+
+
+@pytest.mark.parametrize("conflict", ["foreign-client", "blank-client", "foreign-venue", "cross-owned"])
+async def test_known_either_order_id_conflict_stops_at_response_before_later_reads(reader_core, conflict):
+    """Typed target + real HTTP parser proof, not native-worker authority evidence."""
+    from dataclasses import replace
+
+    core = list(reader_core)
+    row = core[5]()
+    if conflict == "foreign-client":
+        row["orderLinkId"] = "foreign-client"
+    elif conflict == "blank-client":
+        row["orderLinkId"] = ""
+    elif conflict == "foreign-venue":
+        row["orderId"] = "foreign-venue"
+    else:
+        target = core[2]
+        other = replace(target.native.orders[0], client_order_id="client-2", venue_order_id="venue-2")
+        core[2] = replace(target, native=replace(target.native, orders=(*target.native.orders, other)))
+        row["orderLinkId"] = "client-2"
+    core[4]["/v5/order/realtime"] = lambda request: {
+        "category": "linear", "list": [row], "nextPageCursor": "",
+    }
+    before = len(core[3])
+    with pytest.raises(ValueError):
+        await read(core)
+    assert [request.url.path for request in core[3][before:]] == [
+        "/v5/market/time", "/v5/position/list", "/v5/order/realtime",
+    ]

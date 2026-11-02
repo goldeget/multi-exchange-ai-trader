@@ -82,7 +82,8 @@ def parse_order(
 
 
 def _validate_positive_order(native: MonitoringOrder, row: MonitoringOrder) -> None:
-    if row.venue_order_id != native.venue_order_id:
+    if (row.client_order_id != native.client_order_id
+            or row.venue_order_id != native.venue_order_id):
         raise MonitoringError("MONITORING_POSITIVE_ORDER_REQUIRED")
     if any(
         getattr(row, key) != getattr(native, key)
@@ -301,7 +302,8 @@ class BybitMonitoringReader:
                                       source: str = source) -> None:
                         row = parse_order(raw, symbol, retention, source)
                         for native in self.target.native.orders:
-                            if native.client_order_id == row.client_order_id:
+                            if (native.client_order_id == row.client_order_id
+                                    or native.venue_order_id == row.venue_order_id):
                                 _validate_positive_order(native, row)
                         prior = orders.get(row.client_order_id)
                         if prior is not None:
