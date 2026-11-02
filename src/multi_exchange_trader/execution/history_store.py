@@ -22,6 +22,7 @@ from .history import (
     OrderHistoryRecord,
     TransactionRecord,
     _symbol,
+    _text,
     canonical_history_decimal,
     validate_history_record,
     validate_history_scope,
@@ -36,6 +37,7 @@ from .history_coverage import (
     IngestionReceipt,
     ObservedVariant,
     QueryProvenance,
+    StoredExecutionEvidence,
     compose_coverage,
 )
 from .protection import ProtectionScope
@@ -556,6 +558,107 @@ class HistoryStore:
     def coverage(self, symbol: str, *, start_ms: int, end_ms: int) -> HistoryCoverage:
         """Report bounded query completion, gaps and durable contradictions."""
         return self._query_window(symbol, start_ms, end_ms, include_variants=False).coverage
+
+    def _stored_observation(self, observation_key: str) -> HistorySnapshot:
+        """Read and validate one complete stored observation inside the caller's transaction."""
+        raw = self._db.execute("SELECT * FROM history_snapshots WHERE observation_key=?",
+                               (observation_key,)).fetchone()
+        if raw is None:
+            raise HistoryError("HISTORY_OBSERVATION_NOT_FOUND")
+        records: list[HistoryRecord] = []
+        members: list[VariantKey] = []
+        for member in self._db.execute(
+                "SELECT m.kind,m.record_id,m.variant_hash,v.kind,v.record_id,v.variant_hash,"
+                "v.symbol,v.event_ms,v.updated_ms,v.payload FROM history_members m "
+                "LEFT JOIN history_variants v ON m.kind=v.kind AND m.record_id=v.record_id "
+                "AND m.variant_hash=v.variant_hash WHERE m.observation_key=? "
+                "ORDER BY m.kind,m.record_id,m.variant_hash", (observation_key,)):
+            record = _decode_record(member[0], member[9])
+            if tuple(member[3:]) != _variant(record) or tuple(member[:3]) != _variant(record)[:3]:
+                _fail()
+            records.append(record)
+            members.append(tuple(member[:3]))
+        if len({(kind, identity) for kind, identity, _hash in members}) != len(members):
+            _fail()
+        key, snapshot_id, symbol, start, end, observed, server, injected = raw
+        if type(injected) is not int or injected not in (0, 1):
+            _fail()
+        snapshot = HistorySnapshot(self.scope, symbol, snapshot_id, HistoryWindow(start, end),
+            datetime.fromisoformat(observed), datetime.fromisoformat(server),
+            tuple(record for record in records if type(record) is ExecutionRecord),
+            tuple(record for record in records if type(record) is OrderHistoryRecord),
+            tuple(record for record in records if type(record) is TransactionRecord), bool(injected))
+        validate_history_snapshot(snapshot)
+        if (tuple(raw)[1:] != _metadata(snapshot)
+                or key != _observation_key(self.scope, _metadata(snapshot), members)):
+            _fail()
+        return snapshot
+
+    def require_observation(self, snapshot: HistorySnapshot, observation_key: str) -> None:
+        """Require exact original metadata and complete canonical membership; issue no authority.
+
+        Runtime must call this for the receipt's complete snapshot before using an
+        execution member. This read never calls ingest or refreshes observation times.
+        """
+        self._check_open()
+        validate_history_snapshot(snapshot)
+        if snapshot.scope != self.scope:
+            raise HistoryError("HISTORY_SCOPE_MISMATCH")
+        observation_key = _text(observation_key)
+        db = self._db
+        try:
+            db.execute("BEGIN")
+            stored = self._stored_observation(observation_key)
+            records: tuple[HistoryRecord, ...] = (*snapshot.executions, *snapshot.orders,
+                                                  *snapshot.transactions)
+            expected_members: list[VariantKey] = sorted(_variant(record)[:3] for record in records)
+            if (_metadata(snapshot) != _metadata(stored)
+                    or observation_key != _observation_key(self.scope, _metadata(snapshot),
+                                                           expected_members)):
+                raise HistoryError("HISTORY_OBSERVATION_MISMATCH")
+            db.execute("COMMIT")
+        except Exception as error:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            if isinstance(error, HistoryError):
+                raise
+            raise HistoryError("HISTORY_DATABASE_INVALID") from None
+
+    def execution_evidence(self, observation_key: str, execution_id: str) -> StoredExecutionEvidence:
+        """Read exact membership plus account-wide execution-identity contradictions."""
+        self._check_open()
+        observation_key, execution_id = _text(observation_key), _text(execution_id)
+        db = self._db
+        try:
+            db.execute("BEGIN")
+            snapshot = self._stored_observation(observation_key)
+            matches = [record for record in snapshot.executions if record.execution_id == execution_id]
+            if not matches:
+                raise HistoryError("HISTORY_EXECUTION_NOT_FOUND")
+            if len(matches) != 1:
+                _fail()
+            conflicts = tuple(HistoryConflict(*row) for row in db.execute(
+                "SELECT * FROM history_conflicts WHERE (kind='EXECUTION' AND record_id=?) "
+                "OR (kind='SNAPSHOT' AND (left_observation_key=? OR right_observation_key=?)) "
+                "ORDER BY conflict_key", (execution_id, observation_key, observation_key)))
+            for conflict in conflicts:
+                if (conflict.reason != ("EVENT_CONTENT_CHANGED" if conflict.kind == "EXECUTION"
+                                        else "SNAPSHOT_ID_REUSED")
+                        or conflict.left_observation_key == conflict.right_observation_key
+                        or conflict != _conflict(conflict.kind, conflict.record_id,
+                            conflict.left_observation_key, conflict.right_observation_key,
+                            conflict.reason)):
+                    _fail()
+            result = StoredExecutionEvidence(matches[0], _variant(matches[0])[2], observation_key,
+                                             tuple(item.conflict_key for item in conflicts))
+            db.execute("COMMIT")
+            return result
+        except Exception as error:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            if isinstance(error, HistoryError):
+                raise
+            raise HistoryError("HISTORY_DATABASE_INVALID") from None
 
     def load_window(self, symbol: str, *, start_ms: int, end_ms: int) -> HistoryWindowView:
         """Return every distinct relevant variant, never a newly fresh snapshot."""

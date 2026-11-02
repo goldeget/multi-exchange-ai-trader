@@ -11,6 +11,14 @@ HistoryRecord = ExecutionRecord | TransactionRecord | OrderHistoryRecord
 
 
 @dataclass(frozen=True)
+class StoredExecutionEvidence:
+    record: ExecutionRecord
+    variant_hash: str
+    observation_key: str
+    conflict_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class QueryProvenance:
     observation_key: str
     snapshot_id: str
