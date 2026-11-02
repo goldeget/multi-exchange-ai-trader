@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal, localcontext
 from pathlib import Path
@@ -24,7 +24,17 @@ from . import codec, modes
 from . import protection as p
 from . import risk as r
 from .bybit_native import AttachedProtection, NativeBybitBridge, NativeOrderRequest
+from .execution_credit import (
+    CorroboratedExecutionCredit,
+    CreditReplayState,
+    ExecutionCorroborationConflict,
+    candidate_identity,
+    decision_event_id,
+    execution_guard,
+    reduce_credit_event,
+)
 from .execution_provenance import FillQuarantineRecord, NativeExecutionCandidate
+from .history import _symbol
 from .journal import (
     CommandJournal,
     CommandKind,
@@ -71,6 +81,19 @@ class RuntimeStatus:
     owned_positions: int
     blockers: tuple[str, ...]
     production_supported: Literal[False] = False
+
+
+@dataclass
+class _ReplayContext:
+    candidates: tuple[NativeExecutionCandidate, ...] = ()
+    credit: CreditReplayState = field(default_factory=CreditReplayState)
+
+
+def _record_digest(records: tuple[object, ...]) -> str:
+    # Frame canonical complete records; sorting makes traversal order irrelevant.
+    encoded = json.dumps(sorted(codec.encode(item) for item in records),
+                         ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def _sum(values: tuple[Decimal, ...]) -> Decimal:
@@ -151,7 +174,7 @@ class NativeExecutionRuntime:
         self._leverage_readbacks: dict[str, LeverageObservation] = {}
         self._control_busy = False
         self._projections: dict[str, tuple[int, p.ProtectionProjection,
-                                           dict[str, tuple[object, ...]]]] = {}
+                                           dict[str, tuple[object, ...]], _ReplayContext]] = {}
         self._active = self._closed = False
         self._guard()
         # The OS lease excludes other processes. Also exclude a second object
@@ -241,13 +264,36 @@ class NativeExecutionRuntime:
                 continue
             persisted = codec.decode(record.payload_json)
             identities: dict[str, tuple[object, ...]] = {}
+            context = _ReplayContext()
+            events = self.store.list_position_events(record.position_id)
+            decoded: list[object] = []
+            for item in events:
+                event = codec.decode(item.payload_json)
+                if type(event) is CorroboratedExecutionCredit:
+                    fill = event.candidate.fill
+                    if item.event_id != execution_guard(
+                            fill.scope, fill.instrument_id, fill.execution_id):
+                        raise RuntimeBlocked("INVALID_DURABLE_CREDIT_GUARD")
+                elif type(event) is ExecutionCorroborationConflict:
+                    key = decision_event_id(event)
+                    if item.event_id != key:
+                        raise RuntimeBlocked("INVALID_DURABLE_DECISION_ID")
+                    if event.prior_credit_event_id is not None:
+                        original = self.store.get_inbox_event(event.prior_credit_event_id)
+                        if (original is None
+                                or type(codec.decode(original.payload_json))
+                                is not CorroboratedExecutionCredit):
+                            raise RuntimeBlocked("INVALID_DURABLE_PRIOR_CREDIT")
+                decoded.append(event)
             if type(persisted) is p.ProtectionProjection:
                 # Version-one projections already have independently committed inbox
                 # evidence. Their next write replaces the aggregate with a summary.
                 state = p.ProtectionProjection(persisted.scope, persisted.position_id,
                                                persisted.instrument_id, persisted.entry_side)
-                for item in self.store.list_position_events(record.position_id):
-                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
+                for event in decoded:
+                    state = self._reduce_event(state, event, identities, context)
+                if context.credit.credits or context.credit.decisions:
+                    raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
                 # Retain the aggregate's original conflicts. Any legacy fill
                 # tuple above has already failed closed without a recovery write.
                 if (replace(state, conflicts=persisted.conflicts) != persisted
@@ -256,52 +302,60 @@ class NativeExecutionRuntime:
             elif (type(persisted) is tuple and len(persisted) == 11
                   and persisted[0] == "RUNTIME_POSITION_V1") or (
                       type(persisted) is tuple and len(persisted) == 13
-                      and persisted[0] == "RUNTIME_POSITION_V2"):
+                      and persisted[0] == "RUNTIME_POSITION_V2") or (
+                          type(persisted) is tuple and len(persisted) == 17
+                          and persisted[0] == "RUNTIME_POSITION_V3"):
                 state = p.ProtectionProjection(persisted[1], persisted[2],
                                                persisted[3], persisted[4])
-                for item in self.store.list_position_events(record.position_id):
-                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
-                if self._summary(state, identities) != persisted:
+                for event in decoded:
+                    state = self._reduce_event(state, event, identities, context)
+                if self._summary(state, identities, context.credit) != persisted:
                     raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
             else:
                 raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
             if (type(state) is not p.ProtectionProjection or state.scope != self.bridge.scope
                     or state.position_id != record.position_id):
                 raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
-            self._projections[record.position_id] = (record.revision, state, identities)
+            self._projections[record.position_id] = (record.revision, state, identities, context)
             states.append(state)
         return tuple(states)
 
     @staticmethod
     def _summary(state: p.ProtectionProjection,
-                 identities: dict[str, tuple[object, ...]] | None = None) -> tuple[object, ...]:
+                 identities: dict[str, tuple[object, ...]] | None = None,
+                 replay: CreditReplayState | None = None) -> tuple[object, ...]:
         """Bounded current state; immutable event rows hold all historical evidence."""
         summary = ("RUNTIME_POSITION_V1", state.scope, state.position_id, state.instrument_id,
                 state.entry_side, state.signed_quantity, state.latest_fill_at,
                 len(state.orders), len(state.executions), len(state.cancelled_order_ids),
                 len(state.conflicts))
-        if not identities:
+        v3 = replay is not None and bool(replay.credits or replay.decisions)
+        if not identities and not v3:
             return summary
-        keys = sorted(str(key) for values in identities.values() for key in values)
+        keys = sorted(str(key) for values in (identities or {}).values() for key in values)
         digest = hashlib.sha256("".join(keys).encode()).hexdigest()
+        if v3 and replay is not None:
+            return ("RUNTIME_POSITION_V3", *summary[1:], len(keys), digest,
+                    len(replay.credits), _record_digest(replay.credits),
+                    len(replay.decisions), _record_digest(replay.decisions))
         return ("RUNTIME_POSITION_V2", *summary[1:], len(keys), digest)
 
     @staticmethod
     def _candidate_identity(candidate: NativeExecutionCandidate) -> str:
         """Canonical candidate content; receipt/init times never create executions."""
-        fill = candidate.fill
-        # Decimal scale is representation, not economic content. Use sufficient
-        # precision to retain every validated digit, including negative rebates.
-        with localcontext() as context:
-            context.prec = 256
-            canonical = replace(candidate, fill=replace(fill, ts_init_ns=0, received_at_ns=0,
-                quantity=fill.quantity.normalize(), price=fill.price.normalize(),
-                commission=fill.commission.normalize() if fill.commission else Decimal(0)))
-        return hashlib.sha256(codec.encode(canonical).encode()).hexdigest()
+        return candidate_identity(candidate)
 
     @staticmethod
     def _reduce_event(state: p.ProtectionProjection, event: object,
-                      identities: dict[str, tuple[object, ...]]) -> p.ProtectionProjection:
+                      identities: dict[str, tuple[object, ...]],
+                      context: _ReplayContext | None = None) -> p.ProtectionProjection:
+        if type(event) in (CorroboratedExecutionCredit, ExecutionCorroborationConflict):
+            if context is None:
+                raise RuntimeBlocked("EXECUTION_CREDIT_REPLAY_CONTEXT_REQUIRED")
+            assert isinstance(event, (CorroboratedExecutionCredit, ExecutionCorroborationConflict))
+            state, context.credit = reduce_credit_event(state, event,
+                candidates=context.candidates, replay=context.credit)
+            return state
         if type(event) is p.OwnedOrder:
             return p.register_order(state, event)
         if type(event) is FillQuarantineRecord:
@@ -326,6 +380,8 @@ class NativeExecutionRuntime:
                 if conflict not in conflicts:
                     conflicts.append(conflict)
             identities[fill.execution_id] = (*previous, identity)
+            if context is not None:
+                context.candidates += (event.candidate,)
             return replace(state, conflicts=tuple(conflicts))
         if type(event) is not tuple:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
@@ -356,10 +412,37 @@ class NativeExecutionRuntime:
                     return state
             raise RuntimeBlocked("UNKNOWN_OWNED_POSITION")
 
+    def persisted_candidates(self, *, symbol: str | None = None) -> tuple[NativeExecutionCandidate, ...]:
+        """Read-only quarantine history, including credited records, without time filtering."""
+        with self._mutex:
+            self._guard()
+            if symbol is not None:
+                _symbol(symbol)
+            self._states()
+            result: list[NativeExecutionCandidate] = []
+            for position_id in sorted(self._projections):
+                for candidate in sorted(self._projections[position_id][3].candidates,
+                                        key=candidate_identity):
+                    if symbol is not None:
+                        record = next((item for item in self.journal.list_commands()
+                            if item.client_order_id == candidate.fill.client_order_id), None)
+                        if record is None:
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        request = self._request(record)
+                        if request.owned.instrument_id != candidate.fill.instrument_id:
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        if request.owned.instrument_id != symbol + "-LINEAR.BYBIT":
+                            continue
+                    result.append(candidate)
+            return tuple(result)
+
     def _persist(self, event: object, state: p.ProtectionProjection) -> None:
         self._guard()
+        if type(event) in (CorroboratedExecutionCredit, ExecutionCorroborationConflict):
+            raise RuntimeBlocked("AUTHENTICATED_EXECUTION_RECEIPT_REQUIRED")
         cached = self._projections.get(state.position_id)
         identities = {} if cached is None else dict(cached[2])
+        context = _ReplayContext() if cached is None else replace(cached[3])
         encoded = codec.encode(event)
         key = "native:" + hashlib.sha256(encoded.encode()).hexdigest()
         if type(event) is FillQuarantineRecord:
@@ -367,15 +450,15 @@ class NativeExecutionRuntime:
             if identity in identities.get(event.candidate.fill.execution_id, ()):
                 return  # Keep the first durable observation, including its original receipt times.
             key = "native:" + identity
-        self._reduce_event(state, event, identities)
+        self._reduce_event(state, event, identities, context)
         current = self.store.get_position(state.position_id)
         saved = self.store.apply_position_event(key, json.loads(encoded), state.position_id,
             0 if current is None else current.revision,
-            json.loads(codec.encode(self._summary(state, identities))))
+            json.loads(codec.encode(self._summary(state, identities, context.credit))))
         # Cache only after the atomic inbox/projection commit. A duplicate event
         # returns the current revision, so cannot replace it with an older reduction.
         if saved.revision == (0 if current is None else current.revision) + 1:
-            self._projections[state.position_id] = (saved.revision, state, identities)
+            self._projections[state.position_id] = (saved.revision, state, identities, context)
 
     def _find_owned(self, client_id: str) -> p.ProtectionProjection | None:
         return next((state for state in self._states()
