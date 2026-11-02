@@ -744,6 +744,24 @@ class NativeExecutionRuntime:
                 or self._request_for_state(record, state).owned != event.owned_order):
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
 
+    def _prior_execution_targets(self, execution_id: str) -> tuple[tuple[str, str, str], ...]:
+        """Data-only routing for existing credits; never establish first ownership."""
+        targets: list[tuple[str, str, str]] = []
+        for cached in self._projections.values():
+            for event in (*cached[3].credit.credits, *cached[3].history.credits):
+                if type(event) is HistoryExecutionCredit:
+                    scope, instrument = event.execution.source.scope, event.owned_order.instrument_id
+                    identity = event.execution.execution.execution_id
+                    client, venue = event.owned_order.client_order_id, event.execution.execution.venue_order_id
+                else:
+                    assert isinstance(event, CorroboratedExecutionCredit)
+                    fill = event.candidate.fill
+                    scope, instrument, identity = fill.scope, fill.instrument_id, fill.execution_id
+                    client, venue = fill.client_order_id, event.candidate.venue_order_id
+                if identity == execution_id and scope == self.bridge.scope:
+                    targets.append((execution_guard(scope, instrument, identity), client, venue))
+        return tuple(dict.fromkeys(targets))
+
     def recover_history_execution(self, *, receipt: AuthenticatedHistoryReceipt,
                                   binding: AuthenticatedAccountBinding, observation_key: str,
                                   execution_id: str) -> HistoryRecoveryResult:
@@ -786,7 +804,22 @@ class NativeExecutionRuntime:
             if target is not None:
                 guard_instrument = self._request_for_state(records[0], target).owned.instrument_id
         guard = execution_guard(snapshot.scope, guard_instrument, execution_id)
+        intended_guard = guard
+        targets = self._prior_execution_targets(execution_id)
+        if targets:
+            linked = tuple(item for item in targets if (
+                (candidate is not None and item[0] == intended_guard)
+                or (candidate is None and (
+                    (bool(row.client_order_id) and item[1] == row.client_order_id)
+                    or (bool(row.venue_order_id) and item[2] == row.venue_order_id)
+                    or (len(records) == 1 and item[0] == intended_guard)))))
+            possible = {item[0] for item in linked or targets}
+            if len(possible) != 1:
+                return replace(result, reason_codes=("EXECUTION_GUARD_CONFLICT",))
+            guard = next(iter(possible))
         previous = self._prior_credit(guard)
+        if targets and previous is None:
+            raise RuntimeBlocked("INVALID_DURABLE_PRIOR_CREDIT")
         if type(previous) is CorroboratedExecutionCredit:
             if previous.candidate not in candidates:
                 raise RuntimeBlocked("INVALID_DURABLE_PRIOR_CREDIT")
@@ -802,7 +835,7 @@ class NativeExecutionRuntime:
                 return replace(result, reason_codes=("HISTORY_TRADE_REQUIRED",))
             if not row.client_order_id:
                 return replace(result, reason_codes=("HISTORY_CLIENT_ORDER_ID_REQUIRED",))
-        if not records and previous is not None:
+        if previous is not None and (not records or guard != intended_guard):
             records = (self._required(previous.command_key),)
         if len(records) != 1 or (previous is None and (records[0].state in (
                 CommandState.PENDING, CommandState.REJECTED) or records[0].terminal_confirmed)):

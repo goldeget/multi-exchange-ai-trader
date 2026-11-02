@@ -111,6 +111,7 @@ class HistoryExecutionCredit:
                 or not row.client_order_id or not row.venue_order_id
                 or row.client_order_id != order.client_order_id
                 or row.venue_order_id != order.venue_order_id or row.symbol != order.symbol
+                or owned.instrument_id != row.symbol + "-LINEAR.BYBIT"
                 or row.client_order_id != owned.client_order_id
                 or row.side != order.side or row.side.upper() != owned.side
                 or order.position_idx != 0 or order.reduce_only != owned.reduce_only

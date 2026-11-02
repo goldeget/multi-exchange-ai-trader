@@ -1,5 +1,6 @@
 """History-only accounting uses real temporary stores and synthetic receipt slots."""
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
@@ -201,6 +202,125 @@ def test_history_first_wrong_symbol_remains_conflict_after_terminal(live: Any, r
         result = recover(live, wrong)
     assert result.status == "CONFLICT" and "INSTRUMENT_ID_MISMATCH" in result.reason_codes
     assert live.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+
+
+@pytest.mark.parametrize("prior_source", ["history", "native"])
+@pytest.mark.parametrize("funding", [False, True])
+def test_prior_target_survives_combined_wrong_symbol_and_missing_ids_after_terminal(
+    live: Any, prior_source: str, funding: bool,
+) -> None:
+    if prior_source == "history":
+        record = owned(live)
+        snap = observed(record)
+        assert recover(live, snap).status == "CREDITED"
+    else:
+        candidate = native(live)
+        record = live.journal.get("entry")
+        snap = snapshot(candidate)
+        assert credit(live, candidate).status == "CREDITED"
+    guard = execution_guard(SCOPE, "BTCUSDT-LINEAR.BYBIT", "fill-1")
+    original = live.store.get_inbox_event(guard)
+    live.journal.acknowledge("entry", "synthetic-ack")
+    live.journal.release_reservation("entry", confirmed_terminal=True, terminal_evidence="synthetic-terminal")
+    changes = {"symbol": "ETHUSDT", "client_order_id": ""}
+    if funding:
+        changes.update(execution_type="Funding", venue_order_id="", quantity=Decimal(0),
+                       price=Decimal(0), value=Decimal(0))
+    wrong = replace(snap, snapshot_id="combined-contradiction", symbol="ETHUSDT", orders=(),
+        executions=(replace(snap.executions[0], **changes),))
+    result = recover(live, wrong)
+    assert result.status == "CONFLICT" and "INSTRUMENT_ID_MISMATCH" in result.reason_codes
+    decision = codec.decode(live.store.list_position_events("position-1")[-1].payload_json)
+    source = decision.execution.source if prior_source == "history" else decision.source
+    retained = live.history.execution_evidence(source.observation_key, "fill-1").record
+    assert source.symbol == "ETHUSDT" and retained == wrong.executions[0]
+    assert retained.client_order_id == "" and (not funding or retained.venue_order_id == "")
+    assert decision.prior_credit_event_id == guard
+    assert live.store.get_inbox_event(guard) == original
+    assert live.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+    live.runtime.shutdown()
+    live.runtime = live.module.NativeExecutionRuntime(**live.kwargs)
+    assert live.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+
+
+def test_ambiguous_prior_execution_targets_do_not_guess_or_create_new_guard(live: Any) -> None:
+    from multi_exchange_trader.execution.history_recovery import (
+        HistoryExecutionEvidence,
+        HistoryOrderEvidence,
+    )
+    from multi_exchange_trader.execution.history_store import _variant
+
+    record = owned(live)
+    snap = observed(record)
+    assert recover(live, snap).status == "CREDITED"
+    first = codec.decode(live.store.get_inbox_event(execution_guard(SCOPE,
+        "BTCUSDT-LINEAR.BYBIT", "fill-1")).payload_json)
+    payload = json.loads(record.payload_json.replace('"BTCUSDT"', '"ETHUSDT"'))
+    command = live.journal.register("other-symbol", record.kind, {**payload, "position_id": "other-position"})
+    live.runtime._recover_entry_mapping(command)
+    state = live.runtime.projection("other-position")
+    source = replace(first.execution.source, symbol="ETHUSDT", snapshot_id="separate-prior", observation_key="b" * 64)
+    row = replace(first.execution.execution, symbol="ETHUSDT", client_order_id=command.client_order_id,
+                  venue_order_id="other-venue")
+    order = replace(first.order.order, symbol="ETHUSDT", client_order_id=command.client_order_id,
+                    venue_order_id="other-venue")
+    event = HistoryExecutionCredit(HistoryExecutionEvidence(source, row, _variant(row)[2]),
+        HistoryOrderEvidence(source, order, _variant(order)[2]), state.orders[0], command.command_key,
+        command.payload_hash)
+    cached = live.runtime._projections[state.position_id]
+    context = replace(cached[3])
+    reduced = live.runtime._reduce_event(state, event, dict(cached[2]), context)
+    live.store.apply_position_event(execution_guard(SCOPE, state.instrument_id, "fill-1"),
+        json.loads(codec.encode(event)), state.position_id, cached[0],
+        json.loads(codec.encode(live.runtime._summary(reduced, cached[2], context.credit, context.history))))
+    before = tuple(live.store.list_positions()), tuple(live.store.list_position_events("position-1")), tuple(
+        live.store.list_position_events("other-position"))
+    wrong = replace(snap, snapshot_id="ambiguous", symbol="SOLUSDT", orders=(), executions=(replace(
+        snap.executions[0], symbol="SOLUSDT", client_order_id="", venue_order_id="", execution_type="Funding",
+        quantity=Decimal(0), price=Decimal(0), value=Decimal(0)),))
+    result = recover(live, wrong)
+    assert result.status == "UNRESOLVED" and result.reason_codes == ("EXECUTION_GUARD_CONFLICT",)
+    assert (tuple(live.store.list_positions()), tuple(live.store.list_position_events("position-1")), tuple(
+        live.store.list_position_events("other-position"))) == before
+    assert live.store.get_inbox_event(execution_guard(SCOPE, "SOLUSDT-LINEAR.BYBIT", "fill-1")) is None
+
+
+def test_raw_cross_instrument_positive_credit_fails_restore_before_recovery_writes(live: Any, monkeypatch: Any) -> None:
+    from multi_exchange_trader.execution.history_recovery import (
+        HistoryExecutionEvidence,
+        HistoryOrderEvidence,
+    )
+    from multi_exchange_trader.execution.history_store import _variant
+
+    record = owned(live)
+    assert recover(live, observed(record)).status == "CREDITED"
+    guard = execution_guard(SCOPE, "BTCUSDT-LINEAR.BYBIT", "fill-1")
+    original = codec.decode(live.store.get_inbox_event(guard).payload_json)
+    wrong_source = replace(original.execution.source, symbol="ETHUSDT")
+    wrong_row = replace(original.execution.execution, symbol="ETHUSDT")
+    wrong_order = replace(original.order.order, symbol="ETHUSDT")
+    raw = json.loads(codec.encode(original))
+    raw["fields"]["execution"] = json.loads(codec.encode(HistoryExecutionEvidence(
+        wrong_source, wrong_row, _variant(wrong_row)[2])))
+    raw["fields"]["order"] = json.loads(codec.encode(HistoryOrderEvidence(
+        wrong_source, wrong_order, _variant(wrong_order)[2])))
+    payload = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    summary = list(codec.decode(live.store.get_position("position-1").payload_json))
+    summary[18] = hashlib.sha256(json.dumps([payload], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+    with sqlite3.connect(live.kwargs["lock_directory"] / "runtime-state.sqlite3") as db:
+        db.execute("UPDATE runtime_inbox SET event_payload=? WHERE event_id=?", (payload, guard))
+        db.execute("UPDATE runtime_positions SET payload=? WHERE position_id='position-1'",
+            (json.dumps(json.loads(codec.encode(tuple(summary))), sort_keys=True, separators=(",", ":")),))
+    before = live.store.list_position_events("position-1"), live.store.get_position("position-1"), live.journal.audit_events()
+    live.runtime.shutdown()
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("malformed positive credit reached recovery writes")
+    monkeypatch.setattr(live.journal, "recover_sending", forbidden)
+    monkeypatch.setattr(live.store, "recover", forbidden)
+    with pytest.raises(ValueError, match="HISTORY_RECOVERY_CREDIT_INVALID"):
+        live.module.NativeExecutionRuntime(**live.kwargs)
+    assert (live.store.list_position_events("position-1"), live.store.get_position("position-1"),
+        live.journal.audit_events()) == before
 
 
 @pytest.mark.parametrize("route", ["history", "native", "new_history_replay"])

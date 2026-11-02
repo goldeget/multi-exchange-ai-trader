@@ -61,7 +61,7 @@ def order_evidence(row: OrderHistoryRecord | None = None, ref: Any = None) -> An
 
 
 def credit(**changes: Any) -> Any:
-    owned = p.OwnedOrder("client-1", "logical-position", "BTC.BYBIT", "BUY", "ENTRY",
+    owned = p.OwnedOrder("client-1", "logical-position", "BTCUSDT-LINEAR.BYBIT", "BUY", "ENTRY",
         Decimal("0.020"), False, 0, "policy")
     return replace(api().HistoryExecutionCredit(evidence(), order_evidence(), owned,
         "command", "b" * 64), **changes)
@@ -93,7 +93,37 @@ def late_candidate() -> Any:
 
     original = candidate()
     return replace(original, venue_order_id="venue-1", fill=replace(original.fill,
-        execution_id="exec-1", ts_event_ns=1000000000))
+        execution_id="exec-1", ts_event_ns=1000000000, instrument_id="BTCUSDT-LINEAR.BYBIT"))
+
+
+@pytest.mark.parametrize("stage", ["construction", "reducer"])
+def test_positive_credit_rejects_historical_symbol_different_from_owned_instrument(stage: str) -> None:
+    from dataclasses import fields
+
+    event = credit()
+    wrong_source = replace(source(), symbol="ETHUSDT")
+    wrong_execution = evidence(execution(symbol="ETHUSDT"), wrong_source)
+    wrong_order = order_evidence(order(symbol="ETHUSDT"), wrong_source)
+    with pytest.raises(ValueError, match="HISTORY_RECOVERY_CREDIT_INVALID"):
+        if stage == "construction":
+            replace(event, execution=wrong_execution, order=wrong_order)
+        else:
+            # A reflected object must still fail the reducer's independent invariant check.
+            malformed = object.__new__(type(event))
+            for field in fields(event):
+                object.__setattr__(malformed, field.name, getattr(event, field.name))
+            object.__setattr__(malformed, "execution", wrong_execution)
+            object.__setattr__(malformed, "order", wrong_order)
+            reduce(projection(event), malformed)
+
+
+def test_conflict_keeps_contrary_observed_symbol_without_changing_owned_instrument() -> None:
+    event = credit()
+    contrary = evidence(execution(symbol="ETHUSDT"), replace(source(), symbol="ETHUSDT"))
+    record = decision(event, execution=contrary, mismatch_codes=("INSTRUMENT_ID_MISMATCH",))
+    state, _, replay = reduce(projection(event), record)
+    assert state.owned_quantity == 0 and replay.decisions[0].execution.execution.symbol == "ETHUSDT"
+    assert replay.decisions[0].owned_order.instrument_id == "BTCUSDT-LINEAR.BYBIT"
 
 
 def resolution(event: Any = None, candidate: Any = None) -> Any:
