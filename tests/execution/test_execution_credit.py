@@ -361,6 +361,7 @@ def test_v1_v2_candidate_and_summary_hashes_are_pinned() -> None:
 def test_v3_empty_candidates_and_complete_record_digests() -> None:
     import hashlib
 
+    from multi_exchange_trader.execution import codec
     from multi_exchange_trader.execution.runtime import NativeExecutionRuntime
 
     event = replay_credit()
@@ -370,6 +371,8 @@ def test_v3_empty_candidates_and_complete_record_digests() -> None:
     assert len(summary) == 17 and summary[0] == 'RUNTIME_POSITION_V3'
     assert summary[11:13] == (0, hashlib.sha256(b'').hexdigest())
     assert summary[13] == 1 and summary[15] == 0
+    assert hashlib.sha256(codec.encode(summary).encode()).hexdigest() == (
+        'f9497dee2b359c60d59f93f59e123f9ebf6501dfa356bd120f38ee2cb86fe1d9')
     changed = replace(replay, credits=(replace(event, source=replace(event.source,
         observed_at=event.source.observed_at + timedelta(seconds=1))),))
     assert NativeExecutionRuntime._summary(state, {}, changed)[14] != summary[14]

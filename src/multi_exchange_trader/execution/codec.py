@@ -15,8 +15,10 @@ from typing import Literal, Union, get_args, get_origin, get_type_hints
 
 from . import execution_credit as c
 from . import execution_provenance as e
+from . import history_recovery as h
 from . import protection as p
 from . import risk as r
+from .history import ExecutionRecord, OrderHistoryRecord
 from .native_events import NativeFillEvidence
 
 _RECORDS: tuple[type[object], ...] = (
@@ -30,6 +32,9 @@ _RECORDS: tuple[type[object], ...] = (
     e.ExecutionComparison, e.FillQuarantineRecord,
     c.ExecutionObservationReference, c.CorroboratedExecutionCredit,
     c.ExecutionCorroborationConflict, c.HistoricalOrderEvidence,
+    ExecutionRecord, OrderHistoryRecord,
+    h.HistoryExecutionEvidence, h.HistoryOrderEvidence, h.HistoryExecutionCredit,
+    h.HistoryRecoveryConflict, h.NativeHistoryResolution, h.HistoryRecoveryResult,
 )
 _REGISTRY = {cls.__name__: cls for cls in _RECORDS}
 
@@ -54,6 +59,10 @@ def _validate_record(value: object) -> None:
     if any(not _matches(getattr(value, field.name), hints[field.name])
            for field in fields(value)):
         raise ValueError("record field differs from explicit schema")
+    if isinstance(value, (h.HistoryExecutionEvidence, h.HistoryOrderEvidence,
+                          h.HistoryExecutionCredit, h.HistoryRecoveryConflict,
+                          h.NativeHistoryResolution, h.HistoryRecoveryResult)):
+        value.__post_init__()
 
 
 def _pack(value: object, depth: int = 0) -> object:
