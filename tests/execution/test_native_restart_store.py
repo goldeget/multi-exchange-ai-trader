@@ -1,6 +1,7 @@
 """Only temporary synthetic SQLite ledgers; never operator state."""
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import os
@@ -181,3 +182,70 @@ def test_traversal_and_linked_ancestor_rejected(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(Path, "lstat", linked)
     with pytest.raises(api().NativeRestartError):
         api().NativeRestartStore(tmp_path).load(identity())
+
+
+@pytest.mark.parametrize("inventory", ["orders", "positions"])
+@pytest.mark.parametrize("defect", ["missing", "unknown", "empty-events", "wrong-events",
+    "wrong-event", "empty-event", "invalid-base64", "wrong-state", "empty-state"])
+def test_exact_row_schema_rejected_by_seal_load_and_pure_validator(
+    tmp_path: Path, inventory: str, defect: str,
+) -> None:
+    row: dict[str, object] = {"events": ["eA=="], "state": {"type": "fixture"}}
+    if inventory == "orders":
+        row.update(position_id=None, client_id=None)
+    if defect == "missing":
+        row.pop("state")
+    elif defect == "unknown":
+        row["unexpected"] = "fixture"
+    elif defect == "empty-events":
+        row["events"] = []
+    elif defect == "wrong-events":
+        row["events"] = "eA=="
+    elif defect == "wrong-event":
+        row["events"] = [12]
+    elif defect == "empty-event":
+        row["events"] = [""]
+    elif defect == "invalid-base64":
+        row["events"] = ["???"]
+    elif defect == "wrong-state":
+        row["state"] = []
+    elif defect == "empty-state":
+        row["state"] = {}
+    invalid = payload()
+    invalid[inventory] = [row]
+    store = api().NativeRestartStore(tmp_path)
+    # Build a valid envelope first, then recompute its hash around the malformed
+    # native row. Refusal must be schema-based rather than corruption-based.
+    store.seal(identity(), payload())
+    document = json.loads((tmp_path / "native-restart.json").read_bytes())
+    document["payload"] = invalid
+    document.pop("content_hash")
+    document["content_hash"] = hashlib.sha256(api().canonical_bytes(document)).hexdigest()
+    (tmp_path / "native-restart.json").write_bytes(api().canonical_bytes(document))
+    with pytest.raises(api().NativeRestartError, match="^NATIVE_RESTART_BLOCKED$"):
+        store.load(identity())
+    with pytest.raises(api().NativeRestartError, match="^NATIVE_RESTART_BLOCKED$"):
+        api().validate_generation_document(document)
+    (tmp_path / "native-restart.json").unlink()
+    with pytest.raises(api().NativeRestartError, match="^NATIVE_RESTART_BLOCKED$"):
+        store.seal(identity(), invalid)
+    assert not (tmp_path / "native-restart.json").exists()
+
+
+@pytest.mark.parametrize("field,value", [("client_id", 1), ("client_id", ""),
+    ("position_id", []), ("position_id", ""), ("position_id", "x" * 257)])
+def test_row_links_are_nullable_bounded_text(tmp_path: Path, field: str, value: object) -> None:
+    row = {"events": ["eA=="], "state": {"type": "fixture"}, "position_id": None, "client_id": None}
+    row[field] = value
+    invalid = payload()
+    invalid["orders"] = [row]
+    with pytest.raises(api().NativeRestartError):
+        api().NativeRestartStore(tmp_path).seal(identity(), invalid)
+
+
+@pytest.mark.parametrize("value", [1, {}, "", "???"])
+def test_instrument_rows_require_nonempty_encoded_blob(tmp_path: Path, value: object) -> None:
+    invalid = payload()
+    invalid["instruments"] = [value]
+    with pytest.raises(api().NativeRestartError):
+        api().NativeRestartStore(tmp_path).seal(identity(), invalid)

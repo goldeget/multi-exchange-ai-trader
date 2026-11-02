@@ -29,8 +29,11 @@ from .native_restart_store import (
 _ORDER_EVENTS = (
     "OrderInitialized", "OrderDenied", "OrderSubmitted", "OrderRejected", "OrderAccepted",
     "OrderPendingUpdate", "OrderPendingCancel", "OrderModifyRejected", "OrderCancelRejected",
-    "OrderUpdated", "OrderCanceled", "OrderExpired", "OrderFilled",
+    "OrderCanceled", "OrderExpired", "OrderFilled",
 )
+# Successful OrderUpdated histories are unsupported in this first release. An
+# initial/final match cannot authorize intermediate quantity, price, trigger or
+# quote-quantity changes. Reject the original stream rather than normalize it.
 
 
 @dataclass(frozen=True)

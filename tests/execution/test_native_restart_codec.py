@@ -252,3 +252,38 @@ def test_effective_fill_sequence_must_preserve_original_order_event_sequence() -
     payload["positions"][0]["state"] = alternative.to_dict()
     with pytest.raises(NativeRestartError):
         api().prepare_native_cache(payload, identity=source.identity, owners=source.owners)
+
+
+@pytest.mark.parametrize("changed_field", ["quantity", "price"])
+@pytest.mark.parametrize("phase", ["capture", "prepare"])
+def test_original_change_and_return_updates_block_capture_and_prepare(
+    changed_field: str, phase: str,
+) -> None:
+    import base64
+
+    source = fixture("ACCEPTED")
+    payload = api().capture_native_cache(source.cache, identity=source.identity, owners=source.owners)
+    serializer = module("serialization.serializer").MsgSpecSerializer(
+        importlib.import_module("msgspec").msgpack, timestamps_as_str=True)
+    events, objects, uuid = module("model.events.order"), module("model.objects"), module("core.uuid").UUID4
+    for index in range(2):
+        event = events.OrderUpdated(trader_id=source.order.trader_id,
+            strategy_id=source.order.strategy_id, instrument_id=source.order.instrument_id,
+            client_order_id=source.order.client_order_id, venue_order_id=source.order.venue_order_id,
+            account_id=source.order.account_id,
+            quantity=objects.Quantity.from_str("20" if changed_field == "quantity" and index == 0 else "10"),
+            price=objects.Price.from_str("0.6000" if changed_field == "price" and index == 0 else "0.5000"),
+            trigger_price=None, event_id=uuid(), ts_event=5 + index, ts_init=5 + index)
+        source.order.apply(event)
+        payload["orders"][0]["events"].append(base64.b64encode(serializer.serialize(event)).decode())
+    source.cache.build_index()
+    payload["orders"][0]["state"] = source.order.to_dict()
+    assert source.order.quantity.as_decimal() == source.owners[0].request.owned.quantity
+    assert source.order.price.as_decimal() == source.owners[0].request.limit_price
+    target = module("cache.cache").Cache()
+    with pytest.raises(NativeRestartError, match="^NATIVE_RESTART_BLOCKED$"):
+        if phase == "capture":
+            api().capture_native_cache(source.cache, identity=source.identity, owners=source.owners)
+        else:
+            api().prepare_native_cache(payload, identity=source.identity, owners=source.owners)
+    assert target.orders() == target.positions() == target.instruments() == []

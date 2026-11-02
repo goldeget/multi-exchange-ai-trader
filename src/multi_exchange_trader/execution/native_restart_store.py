@@ -117,7 +117,18 @@ def decode_document(raw: bytes) -> dict[str, Any]:
         raise NativeRestartError() from None
 
 
+def _encoded_blob(value: object) -> None:
+    _require(type(value) is str and 0 < len(value) <= MAX_BYTES)
+    assert isinstance(value, str)
+    try:
+        raw = base64.b64decode(value, validate=True)
+        _require(bool(raw) and base64.b64encode(raw).decode("ascii") == value)
+    except ValueError:
+        raise NativeRestartError() from None
+
+
 def validate_payload_shape(payload: object) -> None:
+    """Validate the inert wire schema; native event/state semantics belong to the codec."""
     _require(type(payload) is dict)
     assert isinstance(payload, dict)
     _require(set(payload) == {"schema", "encoding", "instruments", "orders", "positions"})
@@ -129,10 +140,26 @@ def validate_payload_shape(payload: object) -> None:
         _require(type(values) is list and len(values) <= MAX_OBJECTS)
         if key != "instruments":
             for item in values:
-                _require(type(item) is dict and type(item.get("events")) is list)
+                fields = {"events", "state", "position_id", "client_id"} if key == "orders" else {
+                    "events", "state"}
+                _require(type(item) is dict and set(item) == fields)
+                _require(type(item["events"]) is list and bool(item["events"]))
+                _require(type(item["state"]) is dict and bool(item["state"]))
+                if key == "orders":
+                    for field in ("position_id", "client_id"):
+                        value = item[field]
+                        _require(value is None or (type(value) is str and 0 < len(value) <= 256))
                 total += len(item["events"])
                 _require(total <= MAX_EVENTS)
+    # Enforce total encoded size before allocating any decoded blob buffers.
     canonical_bytes(payload)
+    for key in ("instruments", "orders", "positions"):
+        for item in payload[key]:
+            if key == "instruments":
+                _encoded_blob(item)
+            else:
+                for event in item["events"]:
+                    _encoded_blob(event)
 
 
 def identity_document(identity: NativeRestartIdentity) -> dict[str, object]:
