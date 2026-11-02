@@ -84,6 +84,7 @@ def test_actual_builder_rejects_mutating_or_implicit_account_configuration() -> 
 
 def native_worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     h = harness(tmp_path)
+    h.core.permit_fake_monitoring()
     session = BybitDemoAccountSession(api_key="fixture", api_secret="fixture")
 
     def install(_binding: object, *, scope: object, install: Any) -> None:

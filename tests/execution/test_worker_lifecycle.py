@@ -21,6 +21,8 @@ async def test_monitor_reclaims_handlers_after_native_construction(
     tmp_path: Path, connect: bool, sig: int,
 ) -> None:
     h, stop = harness(tmp_path), asyncio.Event()
+    if connect:
+        h.core.permit_fake_monitoring()
     handlers: dict[int, Any] = {}
     loop = SimpleNamespace(add_signal_handler=lambda sig, cb: handlers.update({sig: cb}))
     worker_cli.install_signal_handlers(loop, stop)
@@ -56,6 +58,7 @@ async def test_failed_native_stop_preserves_sink_stores_lease_and_unknown_liabil
     tmp_path: Path,
 ) -> None:
     h = harness(tmp_path)
+    h.core.permit_fake_monitoring()
     await h.worker.start_passive()
     record = await stage(h)
     h.worker.runtime.journal.claim("entry")

@@ -14,6 +14,7 @@ import pytest
 from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import NOW, inputs
 from test_runtime import SCOPE, selection
+from worker_receipt_support import SyntheticSession, synthetic_session
 
 from multi_exchange_trader.execution import codec
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
@@ -33,8 +34,16 @@ from multi_exchange_trader.execution.worker import (
 )
 
 
+def fresh_assembly() -> NativeNodeAssembly:
+    strategy = FakeStrategy()
+    bridge = NativeBybitBridge(scope=SCOPE, native_account_id="BYBIT-UNIFIED",
+        factory=FakeFactory(), strategy=strategy, bindings=NativeBindings(str, str, str, str, str))
+    return NativeNodeAssembly(SimpleNamespace(), strategy, object(), bridge,
+                              NativeChannel(SCOPE, "BYBIT-UNIFIED"))
+
+
 def harness(tmp_path: Path, *, mode: str = "FULL_AUTO",
-            lock_directory: Path | None = None) -> Any:
+            lock_directory: Path | None = None, core: SyntheticSession | None = None) -> Any:
     book = RuntimePolicyBook(tmp_path / "runtime-policy.sqlite3")
     data = inputs()
     draft = book.read()["policy"]
@@ -53,21 +62,17 @@ def harness(tmp_path: Path, *, mode: str = "FULL_AUTO",
     protection = ProtectionPolicy("1", 0, Decimal(90), Decimal(120), "MarkPrice")
     registry = TrustedPlanRegistry((RegisteredPlan("plan-1", request.candidates[0].strategy,
                                                   plan, protection),))
-    strategy = FakeStrategy()
-    bridge = NativeBybitBridge(scope=SCOPE, native_account_id="BYBIT-UNIFIED",
-        factory=FakeFactory(), strategy=strategy, bindings=NativeBindings(str, str, str, str, str))
-    assembly = NativeNodeAssembly(SimpleNamespace(), strategy, object(), bridge,
-                                  NativeChannel(SCOPE, "BYBIT-UNIFIED"))
-    session = SimpleNamespace(require_binding=lambda *_args, **_kwargs: None,
-                              require_execution_binding=lambda *_args, **_kwargs: None)
-    worker = ExecutionWorker(directory=tmp_path, scope=SCOPE, session=session, binding=object(),
+    assembly = fresh_assembly()
+    core = synthetic_session(SCOPE, NOW) if core is None else core
+    session, binding = core.session, core.binding
+    worker = ExecutionWorker(directory=tmp_path, scope=SCOPE, session=session, binding=binding,
         symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=book, registry=registry,
-        entry_risk=lambda _plan, _now, _reservations: plan, clock=lambda: NOW,
+        entry_risk=lambda _plan, _now, _reservations: plan, clock=lambda: core.wall[0],
         max_age=timedelta(seconds=10), assembly_factory=lambda _sink: assembly,
         decoder=NativeEventDecoder(event_types={SimpleNamespace: "OrderFilled"}),
         lock_directory=lock_directory)
     return SimpleNamespace(worker=worker, request=request, assembly=assembly, session=session,
-                           book=book, registry=registry)
+                           binding=binding, core=core, book=book, registry=registry)
 
 
 async def stage(h: Any) -> Any:
@@ -136,7 +141,7 @@ async def test_foreign_thread_fill_survives_expired_metadata_and_restart(tmp_pat
 
 def harness_existing(tmp_path: Path, h: Any) -> ExecutionWorker:
     assembly = replace(h.assembly, channel=NativeChannel(SCOPE, "BYBIT-UNIFIED"))
-    return ExecutionWorker(directory=tmp_path, scope=SCOPE, session=h.session, binding=object(),
+    return ExecutionWorker(directory=tmp_path, scope=SCOPE, session=h.session, binding=h.binding,
         symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=h.book, registry=h.registry,
         entry_risk=h.worker.entry_risk, clock=lambda: NOW, max_age=timedelta(seconds=10),
         assembly_factory=lambda _sink: assembly)

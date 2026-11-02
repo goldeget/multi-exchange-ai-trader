@@ -56,6 +56,7 @@ async def test_signal_shutdown_releases_actual_sqlite_owner_lease(tmp_path: Path
 
 async def test_monitor_connect_is_explicit_and_shutdown_stops_native_producer(tmp_path: Path) -> None:
     h = harness(tmp_path)
+    h.core.permit_fake_monitoring()
     stop = asyncio.Event()
     native_stop = asyncio.Event()
     calls: list[str] = []

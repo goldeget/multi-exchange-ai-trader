@@ -23,6 +23,7 @@ from ..ai.generation import GenerationPriceQuote
 from . import modes
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
+from .execution_credit import ExecutionCreditResult, candidate_identity
 from .history import BybitHistoryReader, HistorySnapshot, HistoryWindow
 from .history_coverage import IngestionReceipt
 from .history_store import HistoryStore
@@ -194,7 +195,8 @@ class ExecutionWorker:
             self._runtime = NativeExecutionRuntime(journal=self._journal, store=self._store,
                 worker_lock=self._lock, lock_directory=self.lock_directory,
                 bridge=self._assembly.bridge,
-                entry_risk=self.entry_risk, clock=self.clock, max_evidence_age=self.max_age)
+                entry_risk=self.entry_risk, clock=self.clock, max_evidence_age=self.max_age,
+                receipt_session=self.session, history_store=self._history_store)
         except BaseException:
             try:
                 if self._assembly is not None and self._factory is None:
@@ -381,6 +383,66 @@ class ExecutionWorker:
         assert self._history_store is not None
         # No await or thread handoff between final guards and the atomic commit.
         return self._history_store.ingest(snapshot)
+
+    @_admitted
+    async def corroborate_native_fills(self, symbol: str, *, start_ms: int,
+                                       end_ms: int) -> tuple[ExecutionCreditResult, ...]:
+        """Explicit history-first accounting for persisted native candidates only.
+
+        The bounded receipt is discarded on every continuation. Each candidate
+        commits independently; an exception may follow earlier durable credits.
+        Neither an empty result nor a completed batch establishes flatness.
+        """
+        runtime = self.runtime
+        lock, scope = self._lock, self.scope
+        session, binding, history = self.session, self.binding, self._history_store
+        if lock is None or history is None:
+            raise RuntimeBlocked("WORKER_HISTORY_OWNER_CHANGED")
+        epoch = lock.acquisition_id
+        window = HistoryWindow(start_ms, end_ms)
+
+        def require_owner() -> None:
+            # Sticky stop wins before status or any history/runtime SQL read.
+            self._require_admission()
+            if (self.runtime is not runtime or self._lock is not lock
+                    or lock is not runtime.worker_lock or lock.acquisition_id != epoch
+                    or self.scope != scope or self.session is not session
+                    or self.binding is not binding or self._history_store is not history
+                    or runtime.receipt_session is not session or runtime.history_store is not history
+                    or history.scope != scope
+                    or runtime.journal.scope != ExecutionScope(scope.account_id, scope.environment)):
+                raise RuntimeBlocked("WORKER_HISTORY_OWNER_CHANGED")
+            if symbol not in self.symbols:
+                raise RuntimeBlocked("WORKER_SYMBOL_SCOPE_REQUIRED")
+            session.require_observation_binding(binding, scope=scope)
+            _ = runtime.status
+
+        require_owner()
+        receipt = await session.read_history_receipt(binding, scope=scope, symbol=symbol,
+            start_ms=start_ms, end_ms=end_ms)
+        try:
+            require_owner()
+            view = session.require_history_receipt(receipt, binding=binding, scope=scope)
+            snapshot = view.snapshot
+            if (type(snapshot) is not HistorySnapshot or snapshot.scope != scope
+                    or snapshot.symbol != symbol or snapshot.window != window):
+                raise RuntimeBlocked("WORKER_HISTORY_REQUEST_MISMATCH")
+            # No await or thread handoff between final guards and history commit.
+            observation = history.ingest(snapshot)
+            execution_ids = {row.execution_id for row in snapshot.executions}
+            candidates = sorted((candidate for candidate in runtime.persisted_candidates(symbol=symbol)
+                if (start_ms <= candidate.fill.ts_event_ns // 1_000_000 <= end_ms
+                    or candidate.fill.execution_id in execution_ids)), key=candidate_identity)
+            results = []
+            for candidate in candidates:
+                require_owner()
+                session.require_history_receipt(receipt, binding=binding, scope=scope)
+                results.append(runtime.corroborate_execution(receipt=receipt, binding=binding,
+                    observation_key=observation.observation_key,
+                    candidate_id=candidate_identity(candidate)))
+            return tuple(results)
+        finally:
+            session.discard_history_receipt(receipt)
 
     def realized_loss(self, history: HistorySnapshot, baseline: DailyCashBaseline) -> DailyRealizedLoss:
         _ = self.runtime
