@@ -86,10 +86,18 @@
 
 ### Task 3: Worker PRE/start/POST admission, live-change status and cleanup fences
 
+**Create focused helpers if needed**
+
+- `src/multi_exchange_trader/execution/monitoring_resume.py`: worker-owned admission/status controller, keeping worker.py focused
+- `src/multi_exchange_trader/execution/native_loop_ownership.py`: versioned shared-loop default-executor ownership preservation
+- `tests/execution/test_native_loop_ownership.py`: actual thread/executor ownership behavior
+
 **Modify**
 
 - `src/multi_exchange_trader/execution/worker.py`
 - `src/multi_exchange_trader/execution/native_node.py` only for Task2 assembly integration
+- `src/multi_exchange_trader/execution/monitoring_models.py` only for immutable real monitoring status/checkpoint fields
+- `src/multi_exchange_trader/execution/private_monitor_stream.py` only for deferred M1 owned-task retirement accounting below
 - `tests/execution/test_restored_monitoring_worker.py` (create)
 - `tests/execution/test_worker_shutdown_admission.py`, `test_worker_lifecycle.py`, `test_worker_restart.py`, `worker_receipt_support.py` only where legitimate affected behavior needs adaptation
 - `tests/execution/test_native_restart_linux.py`: only genuine exact-subclass+inheritance assertion compatibility if worker now selects monitor factory; keep6 distinct contracts/coverage intact
@@ -101,6 +109,8 @@
 - [ ] Genuine postadmission fill continues native/app quarantine processing, stales historical proof and preserves STOPPED. Fault/revocation/disconnect retires current epoch; explicit later admission requires fresh exact refresh/PRE/POST/new socket, never automatic reconnect. Keep binding expiry's fresh-authority limits distinct from original received-event provenance.
 - [ ] Stop/cancel/reauth/close/key/client replacement/lease reacquire/owner replacement during every awaited phase must win. Track run/stop/reads before awaits; settle cancellation then propagate. Keep accepted callbacks draining until producer quiescence; preserve valid native effects on failed POST. Cleanup timeout retains stores/channel/lease and never seals/disposes. Safe cleanup seals actual evolved native state, using existing codec restrictions.
 - [ ] Keep actual shared owner loop alive: await real stop_async/run completion, check disconnected queues/tasks, seal before quiesced dispose_local. Never call TradingNode.dispose on running shared loop. No implicit session close; caller owns session.
+- [ ] Preserve shared default-executor ownership around genuine monitor-only node construction before any yield, using the source-backed spec correction. Kernel construction installs its own pool; disposing it must not break unrelated asyncio.to_thread users or cancel their queued work. A focused CPython3.12 ownership helper may restore the previous pool/absent setting, fail closed for unsupported loops, and leave the kernel's explicit executor intact for actual SDK work. Add real thread-work preservation tests and carry actual-node verification into Task4's existing shutdown case, without changing old36/6/new12 counts.
+- [ ] Resolve deferred Task2 minor M1 while integrating long-lived task ownership: remove completed control-pong/deferred-completion tasks from the owned active set with a done callback, preserve deterministic close of running tasks and retrieve exceptions into fixed sticky faults. Add focused completion/exception tests; do not silently drop or log raw failures. This is lifecycle resource accounting, not a trigger to repeat Task2's broad review.
 - [ ] Run focused worker/shutdown/history/restart regressions and new worker tests; report exact state machine/cleanup statuses and pending Linux proof. No count weakening or passing claim based on test assembly.
 
 ### Task 4: Twelve actual isolated Linux contracts, exact CI gate and operator documentation
