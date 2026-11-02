@@ -12,6 +12,10 @@ from test_native_monitor_client import client  # noqa: F401
 from multi_exchange_trader.execution.native_node import NativeNodeAssembly
 
 
+async def _settle_empty(guard):
+    guard()
+
+
 def assembly(pool):
     stopped = SimpleNamespace(check_disconnected=lambda: True, evt_qsize=lambda: 0,
                               cmd_qsize=lambda: 0)
@@ -98,7 +102,9 @@ async def test_worker_interrupts_only_owned_start_wait_after_proven_stop():
         calls.append("disconnected")
     worker = object.__new__(ExecutionWorker)
     worker._assembly = SimpleNamespace(node=SimpleNamespace(stop_async=stop),
-                                       require_quiesced=prove, settle_owned_tasks=settle)
+                                       capture_engine_queues=lambda guard: guard(),
+                                       require_quiesced=prove, settle_owned_tasks=settle,
+                                       settle_engine_queues=lambda guard: _settle_empty(guard))
     worker._monitoring = None
     worker._factory = None
     worker._node_stop_task = None
@@ -143,7 +149,8 @@ async def test_cancelled_cleanup_caller_does_not_cancel_node_before_real_stop():
     async def run():
         await asyncio.Event().wait()
     worker = object.__new__(ExecutionWorker)
-    worker._assembly = SimpleNamespace(node=SimpleNamespace(stop_async=stop))
+    worker._assembly = SimpleNamespace(node=SimpleNamespace(stop_async=stop),
+                                       capture_engine_queues=lambda guard: guard())
     worker._monitoring = None
     worker._factory = None
     worker._node_stop_task = None
@@ -189,7 +196,8 @@ async def test_stop_await_owner_replacement_never_cancels_replacement_work(repla
     worker = object.__new__(ExecutionWorker)
     original_node = SimpleNamespace(stop_async=stop)
     original_assembly = SimpleNamespace(node=original_node,
-        require_quiesced=lambda: effects.append("proof"), settle_owned_tasks=settle,
+        capture_engine_queues=lambda guard: guard(), require_quiesced=lambda: effects.append("proof"), settle_owned_tasks=settle,
+        settle_engine_queues=lambda guard: _settle_empty(guard),
         drain_monitoring=drain, require_monitoring_tasks_quiesced=lambda: None)
     worker._assembly, worker._monitoring, worker._factory = original_assembly, None, None
     original = worker._node_task = asyncio.create_task(run("original-cancelled"))
@@ -249,7 +257,8 @@ async def test_later_quiesce_await_rechecks_task_owner_before_further_effects(ph
         return SimpleNamespace(received=0, delivered=0)
     worker = object.__new__(ExecutionWorker)
     worker._assembly = SimpleNamespace(node=SimpleNamespace(stop_async=stop),
-        require_quiesced=lambda: None, settle_owned_tasks=settle, drain_monitoring=drain,
+        capture_engine_queues=lambda guard: guard(), require_quiesced=lambda: None, settle_owned_tasks=settle, drain_monitoring=drain,
+        settle_engine_queues=lambda guard: _settle_empty(guard),
         require_monitoring_tasks_quiesced=lambda: effects.append("final-proof"))
     worker._monitoring = SimpleNamespace(require_cleanup_owner=lambda: None,
                                          state=SimpleNamespace(retained_stamp=None))
@@ -271,3 +280,215 @@ async def test_later_quiesce_await_rechecks_task_owner_before_further_effects(ph
         for task in (cleanup, original, foreign):
             task.cancel()
         await asyncio.gather(cleanup, original, foreign, return_exceptions=True)
+
+async def test_worker_waits_for_real_sdk_queue_sentinels_before_cancelling_startup():
+    """Actual pinned execution queue methods, inert engine shell, no native node."""
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+
+    from multi_exchange_trader.execution.worker import ExecutionWorker
+
+    loop = asyncio.get_running_loop()
+    assembly, engine = _queue_shell()
+    cmd, evt = engine._cmd_queue_task, engine._evt_queue_task
+    async def run():
+        try:
+            await asyncio.gather(cmd, evt)
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass  # Pinned run_async consumes its startup cancellation.
+    async def stop():
+        LiveExecutionEngine._enqueue_sentinel(engine)
+    def prove():
+        assert engine.cmd_qsize() == engine.evt_qsize() == 0
+    async def settle():
+        prove()
+    assembly.node.stop_async = stop
+    assembly.require_quiesced = prove
+    assembly.settle_owned_tasks = settle
+    worker = object.__new__(ExecutionWorker)
+    worker._assembly = assembly
+    worker._monitoring = worker._factory = None
+    worker._node_task = asyncio.create_task(run())
+    await asyncio.sleep(0)
+    stopped = loop.create_future()
+    stopped.set_result(None)
+    worker._node_stop_task = stopped
+    LiveExecutionEngine._enqueue_sentinel(engine)
+    try:
+        await worker._quiesce()
+        assert cmd.done() and evt.done()
+        assert not cmd.cancelled() and not evt.cancelled()
+        prove()
+    finally:
+        for task in (cmd, evt, worker._node_task):
+            task.cancel()
+        await asyncio.gather(cmd, evt, worker._node_task, return_exceptions=True)
+
+
+def _queue_shell():
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+
+    loop = asyncio.get_running_loop()
+    log = SimpleNamespace(debug=lambda *args: None, warning=lambda *args: None)
+    data = SimpleNamespace(_loop=loop, _cmd_queue_task=None, _req_queue_task=None,
+                           _res_queue_task=None, _data_queue_task=None)
+    risk = SimpleNamespace(_loop=loop, _cmd_queue_task=None, _evt_queue_task=None)
+    engine = SimpleNamespace(_loop=loop, _cmd_queue=asyncio.Queue(), _evt_queue=asyncio.Queue(),
+                             _sentinel=None, _log=log)
+    engine.cmd_qsize = engine._cmd_queue.qsize
+    engine.evt_qsize = engine._evt_queue.qsize
+    engine._cmd_queue_task = asyncio.create_task(LiveExecutionEngine._run_cmd_queue(engine))
+    engine._evt_queue_task = asyncio.create_task(LiveExecutionEngine._run_evt_queue(engine))
+    for owner, names in ((data, ("cmd", "req", "res", "data")),
+                         (risk, ("cmd", "evt")), (engine, ("cmd", "evt"))):
+        for name in names:
+            setattr(owner, f"get_{name}_queue_task",
+                    lambda owner=owner, name=name: getattr(owner, f"_{name}_queue_task"))
+    kernel = SimpleNamespace(loop=loop, is_running=lambda: False, data_engine=data,
+                             risk_engine=risk, exec_engine=engine)
+    return NativeNodeAssembly(SimpleNamespace(kernel=kernel), None, None, None, None), engine
+
+
+async def test_owned_engine_queues_complete_on_real_sdk_sentinels():
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+
+    node, engine = _queue_shell()
+    try:
+        LiveExecutionEngine._enqueue_sentinel(engine)
+        await node.settle_engine_queues(lambda: None)
+        assert engine._cmd_queue_task.done() and engine._evt_queue_task.done()
+        assert engine.cmd_qsize() == engine.evt_qsize() == 0
+    finally:
+        for task in (engine._cmd_queue_task, engine._evt_queue_task):
+            task.cancel()
+        await asyncio.gather(engine._cmd_queue_task, engine._evt_queue_task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("change", ["task", "engine", "node", "guard", "caller"])
+async def test_queue_await_owner_changes_and_caller_cancel_leave_consumers_untouched(change):
+    node, engine = _queue_shell()
+    original = engine._cmd_queue_task, engine._evt_queue_task
+    foreign = asyncio.create_task(asyncio.Event().wait())
+    valid = True
+    def guard():
+        if not valid:
+            raise RuntimeError("GUARD_CHANGED")
+    cleanup = asyncio.create_task(node.settle_engine_queues(guard))
+    await asyncio.sleep(0)
+    if change == "task":
+        engine._evt_queue_task = foreign
+    elif change == "engine":
+        node.node.kernel.exec_engine = SimpleNamespace(_loop=asyncio.get_running_loop())
+    elif change == "node":
+        node.node = SimpleNamespace(kernel=node.node.kernel)
+    elif change == "guard":
+        valid = False
+    else:
+        cleanup.cancel()
+    if change != "caller":
+        engine._cmd_queue.put_nowait(None)
+    try:
+        with pytest.raises(asyncio.CancelledError if change == "caller" else RuntimeError):
+            await cleanup
+        assert not foreign.done() and not foreign.cancelling()
+        assert not original[1].done() and not original[1].cancelling()
+        if change == "caller":
+            assert not original[0].done() and not original[0].cancelling()
+    finally:
+        for task in (*original, foreign, cleanup):
+            task.cancel()
+        await asyncio.gather(*original, foreign, cleanup, return_exceptions=True)
+
+
+async def test_foreign_queue_task_is_rejected_before_wait_or_cancellation():
+    node, engine = _queue_shell()
+    original = engine._cmd_queue_task, engine._evt_queue_task
+    foreign = asyncio.create_task(asyncio.Event().wait())
+    engine._cmd_queue_task = foreign
+    try:
+        with pytest.raises(RuntimeError, match="NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED"):
+            await node.settle_engine_queues(lambda: None)
+        assert not foreign.done() and not foreign.cancelling()
+        assert all(not task.done() and not task.cancelling() for task in original)
+    finally:
+        for task in (*original, foreign):
+            task.cancel()
+        await asyncio.gather(*original, foreign, return_exceptions=True)
+
+async def test_same_sdk_queue_coroutine_from_another_engine_is_rejected():
+    node, own = _queue_shell()
+    _, foreign = _queue_shell()
+    original = own._cmd_queue_task, own._evt_queue_task
+    foreign_tasks = foreign._cmd_queue_task, foreign._evt_queue_task
+    own._cmd_queue_task = foreign._cmd_queue_task
+    try:
+        with pytest.raises(RuntimeError, match="NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED"):
+            await node.settle_engine_queues(lambda: None)
+        assert all(not task.done() and not task.cancelling() for task in (*original, *foreign_tasks))
+    finally:
+        for task in (*original, *foreign_tasks):
+            task.cancel()
+        await asyncio.gather(*original, *foreign_tasks, return_exceptions=True)
+
+
+async def test_nonterminating_engine_queues_exhaust_existing_caller_budget_without_cancellation():
+    node, engine = _queue_shell()
+    tasks = engine._cmd_queue_task, engine._evt_queue_task
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.02):
+                await node.settle_engine_queues(lambda: None)
+        assert all(not task.done() and not task.cancelling() for task in tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+async def test_proven_queue_snapshot_survives_completion_and_retry():
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+
+    node, engine = _queue_shell()
+    tasks = engine._cmd_queue_task, engine._evt_queue_task
+    try:
+        node.capture_engine_queues(lambda: None)
+        LiveExecutionEngine._enqueue_sentinel(engine)
+        await node.settle_engine_queues(lambda: None)
+        assert all(task.get_coro().cr_frame is None for task in tasks)
+        await node.settle_engine_queues(lambda: None)
+        assert all(task.done() and not task.cancelling() for task in tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_unproven_completed_queue_task_is_rejected():
+    from nautilus_trader.live.execution_engine import LiveExecutionEngine
+
+    node, engine = _queue_shell()
+    tasks = engine._cmd_queue_task, engine._evt_queue_task
+    try:
+        LiveExecutionEngine._enqueue_sentinel(engine)
+        await asyncio.gather(*tasks)
+        with pytest.raises(RuntimeError, match='NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED'):
+            node.capture_engine_queues(lambda: None)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_initial_none_queue_snapshot_rejects_later_start_without_cancelling():
+    node, engine = _queue_shell()
+    tasks = engine._cmd_queue_task, engine._evt_queue_task
+    engine._cmd_queue_task = engine._evt_queue_task = None
+    try:
+        node.capture_engine_queues(lambda: None)
+        engine._cmd_queue_task, engine._evt_queue_task = tasks
+        with pytest.raises(RuntimeError, match='NATIVE_QUEUE_OWNER_CHANGED'):
+            await node.settle_engine_queues(lambda: None)
+        assert all(not task.done() and not task.cancelling() for task in tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

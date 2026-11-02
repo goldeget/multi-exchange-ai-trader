@@ -584,12 +584,16 @@ class ExecutionWorker:
 
         require_owner()
         if run_task is not None:
+            if factory is None:
+                assembly.capture_engine_queues(require_owner)
             if (stop_task is None or stop_task.done()
                     and (stop_task.cancelled() or stop_task.exception() is not None)):
                 stop_task = self._node_stop_task = asyncio.create_task(node.stop_async())
             await asyncio.shield(stop_task)
             require_owner()
             if factory is None:
+                await assembly.settle_engine_queues(require_owner)
+                require_owner()
                 assembly.require_quiesced()
                 # Pinned startup's connection wait ignores concurrent stop.
                 # Bind the waiter before the stop await: a replacement task

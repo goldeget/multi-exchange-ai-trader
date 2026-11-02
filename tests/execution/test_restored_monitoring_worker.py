@@ -376,6 +376,7 @@ async def test_stop_wait_owner_change_retains_real_resources(prepared, monkeypat
     async def settle():
         effects.append('settle')
     monkeypatch.setattr(node, 'stop_async', stop, raising=False)
+    monkeypatch.setattr(assembly, 'capture_engine_queues', lambda guard: guard())
     monkeypatch.setattr(assembly, 'require_quiesced', lambda: effects.append('proof'))
     monkeypatch.setattr(assembly, 'settle_owned_tasks', settle)
     monkeypatch.setattr(assembly, 'close_event_channel', lambda: effects.append('channel-close'))
@@ -418,3 +419,73 @@ async def test_stop_wait_owner_change_retains_real_resources(prepared, monkeypat
         assembly.node = node
         worker._assembly, worker._monitoring = assembly, controller
         worker._node_task = worker._node_stop_task = None
+
+@pytest.mark.parametrize('change', ['lease', 'run', 'caller'])
+async def test_queue_wait_change_retains_real_worker_resources(prepared, monkeypatch, change):
+    # Real worker/controller/stores; this gate only schedules a portable queue wait.
+    from types import SimpleNamespace
+
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+
+    worker = prepared[2]
+    assembly, runtime = worker._assembly, worker._runtime
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    controller.in_progress = False
+    entered, release = asyncio.Event(), asyncio.Event()
+    effects = []
+    async def run():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            effects.append('run-cancel')
+    async def stop():
+        pass
+    async def queues(guard):
+        entered.set()
+        await release.wait()
+        guard()
+    monkeypatch.setattr(assembly.node, 'stop_async', stop, raising=False)
+    monkeypatch.setattr(assembly, 'capture_engine_queues', lambda guard: guard())
+    monkeypatch.setattr(assembly, 'settle_engine_queues', queues)
+    monkeypatch.setattr(assembly, 'require_quiesced', lambda: effects.append('proof'))
+    monkeypatch.setattr(assembly, 'settle_owned_tasks', lambda: effects.append('settle'))
+    monkeypatch.setattr(assembly, 'close_event_channel', lambda: effects.append('channel-close'))
+    monkeypatch.setattr(assembly, 'dispose_local', lambda: effects.append('dispose'))
+    worker._restart = SimpleNamespace(seal=lambda _: effects.append('seal'))
+    for store in (worker._store, worker._journal):
+        monkeypatch.setattr(store, 'close', lambda: effects.append('store-close'))
+    original = worker._node_task = asyncio.create_task(run())
+    foreign = asyncio.create_task(asyncio.Event().wait())
+    stopping = asyncio.create_task(worker.stop())
+    await entered.wait()
+    stopped = worker._node_stop_task
+    if change == 'run':
+        worker._node_task = foreign
+    elif change == 'lease':
+        worker._lock.release()
+        worker._lock.acquire()
+    else:
+        stopping.cancel()
+    release.set()
+    try:
+        with pytest.raises((ValueError, RuntimeBlocked, asyncio.CancelledError)):
+            await stopping
+        assert effects == []
+        assert not original.done() and not original.cancelling()
+        assert not foreign.done() and not foreign.cancelling()
+        assert not worker._stopped and not worker._channel_closed
+        assert worker._lock.acquired and controller.state.resources_retained
+        assert controller.state.phase == 'ATTENTION'
+        if change == 'lease':
+            with pytest.raises(RuntimeBlocked, match='ACCOUNT_WORKER_LEASE_REQUIRED'):
+                runtime.monitoring_state()
+        else:
+            assert runtime.monitoring_state().credits == ()
+    finally:
+        for task in (stopping, stopped, original, foreign):
+            task.cancel()
+        await asyncio.gather(stopping, stopped, original, foreign, return_exceptions=True)
+        worker._node_task = worker._node_stop_task = None
+        if change == 'lease':
+            worker._lock.release()

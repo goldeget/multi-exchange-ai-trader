@@ -433,17 +433,22 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
                         require_fixture_owner()
                     if client._monitor_reports is not None:
                         client._monitor_reports.retire()
+                    assembly.capture_engine_queues(require_fixture_owner)
                     await node.stop_async()
                     require_fixture_owner()
                     assert not node.is_running()
-                    assembly.require_quiesced()
-                    if run_task is not None:
-                        # The pinned connection waiter ignores concurrent stop.
-                        # End only this captured fixture producer after real stop.
-                        if not run_task.done():
-                            run_task.cancel()
-                        await asyncio.wait_for(asyncio.shield(run_task), 12)
+                    # The existing 12-second fixture bound covers both queue and run completion.
+                    async with asyncio.timeout(12):
+                        await assembly.settle_engine_queues(require_fixture_owner)
                         require_fixture_owner()
+                        assembly.require_quiesced()
+                        if run_task is not None:
+                            # End only the captured startup waiter after the queue consumers.
+                            if not run_task.done():
+                                run_task.cancel()
+                            await asyncio.shield(run_task)
+                            require_fixture_owner()
+                    if run_task is not None:
                         await assembly.settle_owned_tasks()
                         require_fixture_owner()
                     assert not node.is_running()

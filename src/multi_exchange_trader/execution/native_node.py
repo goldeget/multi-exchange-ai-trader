@@ -43,6 +43,7 @@ class NativeNodeAssembly:
     _owned_executor: Any = field(default=None, repr=False)
     _actor_workers: dict[Any, asyncio.Task[Any]] = field(default_factory=dict, repr=False)
     _disconnect_workers: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
+    _engine_queues: Any = field(default=None, repr=False)
 
     def _owned_sdk_tasks(self) -> tuple[list[tuple[Any, asyncio.Task[Any]]], list[asyncio.Task[Any]]]:
         """Pinned 1.231.0 hides Actor._executor and does not retain disconnect tasks.
@@ -75,6 +76,85 @@ class NativeNodeAssembly:
             elif code is disconnect_codes[0] and owner is self.execution_client:
                 disconnects.append(task)
         return actors, disconnects
+
+    def capture_engine_queues(self, require_owner: Callable[[], None]) -> None:
+        """Bind live coroutine owners before stop can erase their frames."""
+        from nautilus_trader.live.data_engine import LiveDataEngine
+        from nautilus_trader.live.execution_engine import LiveExecutionEngine
+        from nautilus_trader.live.risk_engine import LiveRiskEngine
+
+        _require_native_version()
+        require_owner()
+        if self._engine_queues is not None:
+            self._check_engine_queues(require_owner, stopped=False)
+            return
+        node, loop = self.node, asyncio.get_running_loop()
+        kernel = node.kernel
+        engines = (kernel.data_engine, kernel.risk_engine, kernel.exec_engine)
+        shapes = ((LiveDataEngine, ("cmd", "req", "res", "data")),
+                  (LiveRiskEngine, ("cmd", "evt")),
+                  (LiveExecutionEngine, ("cmd", "evt")))
+        entries = []
+        if kernel.loop is not loop:
+            raise RuntimeError("NATIVE_QUEUE_OWNER_CHANGED")
+        for engine, (cls, names) in zip(engines, shapes, strict=True):
+            if engine._loop is not loop:
+                raise RuntimeError("NATIVE_QUEUE_OWNER_CHANGED")
+            tasks = tuple(getattr(engine, f"get_{name}_queue_task")() for name in names)
+            if any(getattr(engine, f"_{name}_queue_task") is not task
+                   for name, task in zip(names, tasks, strict=True)):
+                raise RuntimeError("NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED")
+            if any(task is None for task in tasks) and not all(task is None for task in tasks):
+                raise RuntimeError("NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED")
+            for name, task in zip(names, tasks, strict=True):
+                if task is not None:
+                    if (not isinstance(task, asyncio.Task) or task.get_loop() is not loop
+                            or task.cancelling()):
+                        raise RuntimeError("NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED")
+                    coro = task.get_coro()
+                    frame = getattr(coro, "cr_frame", None)
+                    if (getattr(coro, "cr_code", None) is not getattr(cls, f"_run_{name}_queue").__code__
+                            or frame is None or frame.f_locals.get("self") is not engine):
+                        raise RuntimeError("NATIVE_QUEUE_TASK_SHAPE_UNSUPPORTED")
+                entries.append((engine, name, task))
+        self._engine_queues = node, kernel, loop, engines, tuple(entries)
+        self._check_engine_queues(require_owner, stopped=False)
+
+    def _check_engine_queues(self, require_owner: Callable[[], None], *, stopped: bool) -> None:
+        require_owner()
+        node, kernel, loop, engines, entries = self._engine_queues
+        if (self.node is not node or node.kernel is not kernel or kernel.loop is not loop
+                or asyncio.get_running_loop() is not loop or stopped and kernel.is_running()
+                or any(current is not original for current, original in zip(
+                    (kernel.data_engine, kernel.risk_engine, kernel.exec_engine), engines, strict=True))
+                or any(engine._loop is not loop for engine in engines)):
+            raise RuntimeError("NATIVE_QUEUE_OWNER_CHANGED")
+        for engine, name, task in entries:
+            if (getattr(engine, f"_{name}_queue_task") is not task
+                    or getattr(engine, f"get_{name}_queue_task")() is not task):
+                raise RuntimeError("NATIVE_QUEUE_OWNER_CHANGED")
+            if task is not None and task.cancelling():
+                raise RuntimeError("NATIVE_QUEUE_TASK_CANCELLED")
+
+    async def settle_engine_queues(self, require_owner: Callable[[], None]) -> None:
+        """Await the exact captured stopped-node consumers, without cancelling them."""
+        self.capture_engine_queues(require_owner)
+        snapshot = self._engine_queues
+        _, _, _, _, entries = snapshot
+
+        def check() -> None:
+            if self._engine_queues is not snapshot:
+                raise RuntimeError("NATIVE_QUEUE_OWNER_CHANGED")
+            self._check_engine_queues(require_owner, stopped=True)
+
+        check()
+        for _, _, task in entries:
+            if task is not None:
+                await asyncio.shield(task)
+                check()
+                if task.cancelled() or task.cancelling():
+                    raise RuntimeError("NATIVE_QUEUE_TASK_CANCELLED")
+        check()
 
     async def settle_owned_tasks(self) -> None:
         """After genuine stop, await disconnect and retire only idle owned actors."""
