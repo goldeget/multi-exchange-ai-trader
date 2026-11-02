@@ -161,6 +161,36 @@ def seed_original_order(h: Any, record: Any) -> Any:
     return order
 
 
+def seed_original_position(cache: Any, order: Any) -> Any:
+    """Original fixture fill populates real native order/Position only, never runtime."""
+    instrument = cache.instrument(order.instrument_id)
+    ids, enums, obj = module("model.identifiers"), module("model.enums"), module("model.objects")
+    quantity = obj.Quantity.from_str(format(order.quantity.as_decimal(),
+        f".{instrument.size_precision}f"))
+    assert quantity.as_decimal() == order.quantity.as_decimal()
+    fill = module("model.events.order").OrderFilled(trader_id=order.trader_id,
+        strategy_id=order.strategy_id, instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id, account_id=order.account_id,
+        venue_order_id=order.venue_order_id, trade_id=ids.TradeId("original-worker-fill"),
+        position_id=ids.PositionId(str(order.instrument_id) + "-" + str(order.strategy_id)),
+        order_side=order.side, order_type=order.order_type, last_qty=quantity,
+        last_px=obj.Price.from_str(format(Decimal(100), f".{instrument.price_precision}f")),
+        currency=instrument.quote_currency, commission=obj.Money(0.01, instrument.quote_currency),
+        liquidity_side=enums.LiquiditySide.TAKER, event_id=module("core.uuid").UUID4(),
+        ts_event=order.ts_init + 3, ts_init=order.ts_init + 3)
+    order.apply(fill)
+    position = module("model.position").Position(instrument, fill)
+    cache.update_order(order)
+    cache.add_position(position, enums.OmsType.NETTING)
+    cache.add_position_id(position.id, order.instrument_id.venue, order.client_order_id,
+        order.strategy_id)
+    cache.build_index()
+    assert cache.check_integrity() is True
+    assert cache.position_for_order(order.client_order_id) is position
+    assert cache.position_id(order.client_order_id) == order.position_id == position.id
+    return position
+
+
 def complete_offline_ledgers(directory: Path) -> dict[str, Any]:
     tool = runpy.run_path(str(ROOT / "scripts/operations/state_snapshot.py"))
     (directory / "datasets").mkdir()
@@ -264,10 +294,20 @@ async def test_actual_worker_clean_stop_v4_restore_new_lease_channel_no_callback
     assert source.worker.native_restart_status.status == "FRESH_EMPTY_CACHE"
     record = await stage(source)
     original = seed_original_order(source, record)
+    original_position = seed_original_position(source.assembly.node.cache, original)
+    original_instrument = source.assembly.node.cache.instrument(original.instrument_id)
     source.worker.runtime.journal.claim("entry")
+    before_command = source.worker.runtime.journal.get("entry")
+    assert before_command.state is CommandState.SENDING
+    before_reservations = source.worker.runtime.reservation_totals(source.plan.scope)
     channel, lease = source.assembly.channel, source.worker._lock
     native_state = original.to_dict()
     original_events = [e.to_dict(e) for e in original.events]
+    position_state = original_position.to_dict()
+    position_events = [e.to_dict(e) for e in original_position.events]
+    instrument_state = original_instrument.to_dict(original_instrument)
+    assert source.worker.runtime.projection("position-1").owned_quantity == 0
+    assert len(source.worker.runtime.store.list_position_events("position-1")) == 1
     no_effects(source)
     await source.worker.stop()
     assert decode_document((source.worker.directory / "native-restart.json").read_bytes())["state"] == "sealed"
@@ -283,12 +323,34 @@ async def test_actual_worker_clean_stop_v4_restore_new_lease_channel_no_callback
     await start(next_worker)
     try:
         assert next_worker.worker.native_restart_status.status == "RESTORED_LOCAL_CACHE"
+        assert next_worker.worker.native_restart_status.orders == 1
+        assert next_worker.worker.native_restart_status.positions == 1
+        assert next_worker.worker.native_restart_status.missing_owned_orders == 0
         assert next_worker.assembly.channel is not channel and next_worker.assembly.channel != channel
         assert next_worker.worker._lock is not lease and next_worker.worker._lock.acquired
-        order = next_worker.assembly.node.cache.order(original.client_order_id)
+        cache = next_worker.assembly.node.cache
+        order = cache.order(original.client_order_id)
         assert order.to_dict() == native_state
         assert [e.to_dict(e) for e in order.events] == original_events
-        assert next_worker.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
+        position = cache.position_for_order(order.client_order_id)
+        assert type(position) is module("model.position").Position
+        assert position is cache.position(original_position.id) and position is not original_position
+        assert position.id == cache.position_id(order.client_order_id) == order.position_id
+        assert position.to_dict() == position_state
+        assert [e.to_dict(e) for e in position.events] == position_events
+        assert position.opening_order_id == order.client_order_id == original_position.opening_order_id
+        assert position.instrument_id == order.instrument_id == original_instrument.id
+        assert cache.positions_open() == [position] and cache.positions_closed() == []
+        assert cache.orders_open() == [] and cache.orders_closed() == [order]
+        instrument = cache.instrument(position.instrument_id)
+        assert type(instrument) is type(original_instrument) and instrument is not original_instrument
+        assert instrument.to_dict(instrument) == instrument_state
+        assert cache.check_integrity() is True
+        assert next_worker.worker.runtime.journal.get("entry") == replace(
+            before_command, state=CommandState.UNKNOWN)
+        assert not next_worker.worker.runtime.journal.get("entry").terminal_confirmed
+        reservations = next_worker.worker.runtime.reservation_totals(source.plan.scope)
+        assert replace(reservations, snapshot_id=before_reservations.snapshot_id) == before_reservations
         assert next_worker.worker.runtime.projection("position-1").owned_quantity == 0
         assert len(next_worker.worker.runtime.store.list_position_events("position-1")) == 1
         next_worker.worker.post_native(channel, original.last_event)
