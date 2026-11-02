@@ -39,6 +39,7 @@ READ_ONLY_PATHS = frozenset(
         "/v5/market/instruments-info",
         "/v5/account/wallet-balance",
         "/v5/account/info",
+        "/v5/user/query-api",
         "/v5/position/list",
         "/v5/order/realtime",
     }
@@ -122,8 +123,19 @@ def _parse_json(raw: bytes) -> object:
     if len(raw) > _MAX_BYTES:
         raise BybitReadError("response_too_large")
     try:
-        return cast(object, json.loads(raw))
-    except json.JSONDecodeError:
+        def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate JSON field")
+                result[key] = value
+            return result
+
+        def constant(_: str) -> object:
+            raise ValueError("nonfinite JSON")
+
+        return cast(object, json.loads(raw, object_pairs_hook=pairs, parse_constant=constant))
+    except (ValueError, UnicodeError, RecursionError):
         raise BybitReadError("invalid_json") from None
 
 
@@ -279,9 +291,9 @@ class BybitReadOnlyClient:
             if remaining is not None and remaining <= 0:
                 raise BybitReadError("timeout")
             try:
-                send = self._client.send(request)
+                send = self._bounded_response(request)
                 if remaining is None:
-                    response = await send
+                    response = await asyncio.wait_for(send, timeout=10.0)
                 else:
                     response = await asyncio.wait_for(send, timeout=min(10.0, remaining))
             except TimeoutError:
@@ -310,6 +322,20 @@ class BybitReadOnlyClient:
             # Account info can return retCode 0 with no envelope time.
             # Wallet, positions, and orders still require a positive server time.
             return self._accepted(response, require_time=path != "/v5/account/info")
+
+    async def _bounded_response(self, request: httpx.Request) -> httpx.Response:
+        response = await self._client.send(request, stream=True)
+        try:
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(data) + len(chunk) > _MAX_BYTES:
+                    raise BybitReadError("response_too_large")
+                data.extend(chunk)
+            # aiter_bytes() already decodes content. The wire encoding/length
+            # headers no longer describe this body and must not trigger decoding again.
+            return httpx.Response(response.status_code, content=bytes(data), request=request)
+        finally:
+            await response.aclose()
 
     async def read_pages(
         self,

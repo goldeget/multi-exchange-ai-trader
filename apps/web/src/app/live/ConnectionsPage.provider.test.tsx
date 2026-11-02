@@ -15,6 +15,20 @@ function serve(ai:unknown){
 }
 function provider(name:string){return screen.getByRole('heading',{name}).closest<HTMLElement>('.provider')!}
 
+it('retains the offline fallback without exposing the policy editor when connection reads fail',async()=>{
+ vi.stubGlobal('fetch',vi.fn(()=>Promise.resolve(new Response('{}',{status:503}))));
+ render(<ConnectionsPage/>);
+ expect(await screen.findByText('연결 상태를 확인하지 못했습니다.')).toBeVisible();
+ expect(screen.queryByRole('button',{name:'운용 한도 설정 열기'})).not.toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'설정 저장'})).toBeDisabled();
+});
+
+it('offers the policy editor after a valid unconfigured connection response',async()=>{
+ serve(connectionFixture.ai);
+ render(<ConnectionsPage/>);
+ expect(await screen.findByRole('button',{name:'운용 한도 설정 열기'})).toBeVisible();
+});
+
 it('shows selected OpenRouter registration as unverified with its model and calls off',async()=>{
  serve(registered);
  render(<ConnectionsPage/>);

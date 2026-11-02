@@ -1,0 +1,700 @@
+"""Durable native lifecycle, with real handoff held behind missing qualification.
+
+CommandJournal owns immutable commands/reservations; RuntimeStateStore owns
+per-position inbox/projection state. Cross-store operations commit command intent
+first, then mapping, and only then may claim/send. Incomplete mapping never sends.
+ACK/fill/report processing remains available while entries are paused. No HTTP
+write path, implicit credentials, native node startup or fake qualification flag.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, fields, replace
+from datetime import datetime, timedelta
+from decimal import ROUND_CEILING, Decimal, localcontext
+from pathlib import Path
+from threading import RLock
+from typing import Literal
+from weakref import WeakValueDictionary
+
+from . import codec, modes
+from . import protection as p
+from . import risk as r
+from .bybit_native import AttachedProtection, NativeBybitBridge, NativeOrderRequest
+from .journal import (
+    CommandJournal,
+    CommandKind,
+    CommandRecord,
+    CommandState,
+    Reservation,
+    ReservationLimits,
+)
+from .native_events import NativeEventContext, NativeEventDecoder, NativeOrderEvidence
+from .ownership import AccountWorkerLock
+from .state_store import RuntimeStateStore
+from .venue_readback import BybitVenueReadback, VenueSnapshot
+
+QUALIFICATION_BLOCKERS = (
+    "NATIVE_WORKER_QUALIFICATION_REQUIRED",
+    "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",
+    "COMPLETE_EXECUTION_HISTORY_REQUIRED",
+    "QUALIFIED_LOSS_AND_LIQUIDATION_EVIDENCE_REQUIRED",
+    "NATIVE_LEVERAGE_SEQUENCE_AND_READBACK_REQUIRED",
+    "ATTACHED_CHILD_OWNERSHIP_AND_PROTECTION_QUALIFICATION_REQUIRED",
+    "OWNED_CANCEL_AND_PROTECTION_REPAIR_REQUIRED",
+    "VENUE_READBACK_QUALIFICATION_REQUIRED",
+)
+RiskCheck = Callable[[r.EntryDecision, datetime, r.ReservationTotals], r.EntryDecision]
+_OWNERS: WeakValueDictionary[str, NativeExecutionRuntime] = WeakValueDictionary()
+_OWNERS_LOCK = RLock()
+
+
+class RuntimeBlocked(ValueError):
+    """Fixed execution blocker; never transport error text."""
+
+
+@dataclass(frozen=True)
+class RuntimeStatus:
+    state: Literal["BLOCKED", "PAUSED", "RUNNING"]
+    entries_paused: bool
+    unresolved_commands: int
+    owned_positions: int
+    blockers: tuple[str, ...]
+    production_supported: Literal[False] = False
+
+
+def _sum(values: tuple[Decimal, ...]) -> Decimal:
+    if not values:
+        return Decimal(0)
+    exponent = min(int(item.as_tuple().exponent) for item in values)
+    with localcontext() as context:
+        context.prec = max(item.adjusted() for item in values) - exponent + len(values) + 3
+        return sum(values, Decimal(0))
+
+
+def _margin(value: Decimal) -> Decimal:
+    if len(value.as_tuple().digits) <= 256:
+        return value
+    with localcontext() as context:
+        context.prec = 256
+        return value.quantize(Decimal(1).scaleb(value.adjusted() - 255), rounding=ROUND_CEILING)
+
+
+def _reassess(plan: r.EntryDecision, now: datetime) -> r.EntryDecision:
+    return r.assess_entry(policy=plan.policy, proposal=plan.proposal, market=plan.market,
+        instrument=plan.instrument, account=plan.account, tiers=plan.tiers,
+        reservations=plan.reservations, now=now, stage=plan.stage,
+        liquidation=plan.liquidation, leverage_readback=plan.leverage_readback)
+
+
+def _economic_identity(plan: r.EntryDecision) -> object:
+    """Fresh snapshots may advance; immutable command economics may not."""
+    omitted = {"market", "instrument", "account", "tiers", "reservations", "liquidation",
+               "leverage_readback", "assessed_at", "stage", "submission_ready", "blockers"}
+    return (tuple(getattr(plan, field.name) for field in fields(plan) if field.name not in omitted),
+        tuple(getattr(plan.market, field.name) for field in fields(plan.market)
+              if field.name not in ("observed_at", "quote_id")),
+        tuple(getattr(plan.instrument, field.name) for field in fields(plan.instrument)
+              if field.name != "observed_at"),
+        tuple(getattr(plan.tiers, field.name) for field in fields(plan.tiers)
+              if field.name != "observed_at"))
+
+
+class NativeExecutionRuntime:
+    """One designated account worker, with passive recovery and monitoring.
+
+    Only start/dispatch could authorize native writes; both consult the fixed
+    missing-qualification gate. Removing it requires an independently reviewed
+    deployed worker/identity/evidence implementation, not a caller-provided bool.
+    The native dispatch implementation is exercised with fake native boundaries.
+    """
+
+    production_supported: Literal[False] = False
+
+    def __init__(self, *, journal: CommandJournal, store: RuntimeStateStore,
+                 worker_lock: AccountWorkerLock, lock_directory: Path,
+                 bridge: NativeBybitBridge, entry_risk: RiskCheck,
+                 clock: Callable[[], datetime], max_evidence_age: timedelta) -> None:
+        if (type(journal) is not CommandJournal or type(store) is not RuntimeStateStore
+                or type(bridge) is not NativeBybitBridge
+                or type(worker_lock) is not AccountWorkerLock
+                or type(max_evidence_age) is not timedelta or max_evidence_age <= timedelta(0)
+                or journal.scope != store.scope
+                or bridge.scope != p.ProtectionScope(
+                    journal.scope.account_id, journal.scope.environment)):
+            raise RuntimeBlocked("MATCHING_DURABLE_NATIVE_SCOPE_REQUIRED")
+        self.journal, self.store, self.bridge = journal, store, bridge
+        self.worker_lock = worker_lock
+        self.entry_risk = entry_risk
+        self._clock, self._max_age = clock, max_evidence_age
+        self._lease = worker_lock.acquisition_id
+        self._lock_path = AccountWorkerLock(lock_directory,
+            account_id=journal.scope.account_id, environment=journal.scope.environment).path.resolve()
+        self._mutex = RLock()
+        self._readbacks: dict[str, VenueSnapshot] = {}
+        self._projections: dict[str, tuple[int, p.ProtectionProjection,
+                                           dict[str, tuple[object, ...]]]] = {}
+        self._active = self._closed = False
+        self._guard()
+        # The OS lease excludes other processes. Also exclude a second object
+        # sharing the same live descriptor; it must not recover an active sender.
+        with _OWNERS_LOCK:
+            previous = _OWNERS.get(str(self._lock_path))
+            if (previous is not None and not previous._closed
+                    and previous._lease == self._lease and previous.worker_lock.acquired):
+                raise RuntimeBlocked("ACCOUNT_RUNTIME_ALREADY_RUNNING")
+            self._states()  # Corrupt projection fails before any recovery mutation.
+            self.journal.recover_sending(exclusive_owner=True)
+            self.store.recover(exclusive_owner=True)
+            for record in journal.list_commands():
+                if (record.kind is CommandKind.ENTRY and record.state is CommandState.PENDING
+                        and self._find_owned(record.client_order_id) is None):
+                    self._recover_entry_mapping(record)
+                # Restore immutable mapping for callbacks without submitting.
+                if (record.kind in (CommandKind.ENTRY, CommandKind.EXIT)
+                        and self._find_owned(record.client_order_id) is not None):
+                    self.bridge.register_owned(self._request(record))
+            _OWNERS[str(self._lock_path)] = self
+
+    def _guard(self) -> None:
+        if (self._closed or self.worker_lock.acquisition_id != self._lease
+                or self.worker_lock.path.resolve() != self._lock_path
+                or not self.worker_lock.matches_scope(account_id=self.journal.scope.account_id,
+                                                      environment=self.journal.scope.environment)):
+            self._active = False
+            raise RuntimeBlocked("ACCOUNT_WORKER_LEASE_REQUIRED")
+
+    def _now(self) -> datetime:
+        now = self._clock()
+        if (type(now) is not datetime or now.tzinfo is None
+                or now.utcoffset() != timedelta(0)):
+            raise RuntimeBlocked("UTC_CLOCK_REQUIRED")
+        return now
+
+    def _fresh(self, when: datetime) -> bool:
+        return timedelta(0) <= self._now() - when <= self._max_age
+
+    def _require_qualification(self) -> None:
+        raise RuntimeBlocked("NATIVE_WORKER_QUALIFICATION_REQUIRED")
+
+    @property
+    def status(self) -> RuntimeStatus:
+        with self._mutex:
+            self._guard()
+            unresolved = len(self.journal.list_commands((CommandState.UNKNOWN, CommandState.SENDING)))
+            states = self._states()
+            return RuntimeStatus("BLOCKED", not self._active, unresolved,
+                sum(state.owned_quantity > 0 for state in states), QUALIFICATION_BLOCKERS)
+
+    def start(self) -> None:
+        with self._mutex:
+            self._guard()
+            self._require_qualification()
+            if (self.journal.list_commands((CommandState.UNKNOWN, CommandState.SENDING))
+                    or any(state.entries_blocked for state in self._states())):
+                raise RuntimeBlocked("UNRESOLVED_EXPOSURE_OR_COMMAND")
+            self._active = True
+
+    def pause_entries(self) -> None:
+        with self._mutex:
+            self._guard()
+            self._active = False
+
+    def shutdown(self) -> None:
+        with self._mutex:
+            self._guard()
+            self._active = False
+            self._closed = True
+
+    def transport_lost(self) -> None:
+        """A native disconnect/timeout holds every unacknowledged handoff."""
+        with self._mutex:
+            self._guard()
+            self._active = False
+            for record in self.journal.list_commands((CommandState.SENDING,)):
+                self.journal.mark_unknown(record.command_key, "NATIVE_TRANSPORT_LOST")
+
+    def _states(self) -> tuple[p.ProtectionProjection, ...]:
+        states: list[p.ProtectionProjection] = []
+        for record in self.store.list_positions():
+            cached = self._projections.get(record.position_id)
+            if cached is not None and cached[0] == record.revision:
+                states.append(cached[1])
+                continue
+            persisted = codec.decode(record.payload_json)
+            identities: dict[str, tuple[object, ...]] = {}
+            if type(persisted) is p.ProtectionProjection:
+                # Version-one projections already have independently committed inbox
+                # evidence. Their next write replaces the aggregate with a summary.
+                state = p.ProtectionProjection(persisted.scope, persisted.position_id,
+                                               persisted.instrument_id, persisted.entry_side)
+                for item in self.store.list_position_events(record.position_id):
+                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
+                # Older reducers did not flag changed price/fee identities. Preserve
+                # their quantities and original conflicts, and retain newly found conflicts.
+                if (replace(state, conflicts=persisted.conflicts) != persisted
+                        or any(item not in state.conflicts for item in persisted.conflicts)):
+                    raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
+            elif (type(persisted) is tuple and len(persisted) == 11
+                  and persisted[0] == "RUNTIME_POSITION_V1"):
+                state = p.ProtectionProjection(persisted[1], persisted[2],
+                                               persisted[3], persisted[4])
+                for item in self.store.list_position_events(record.position_id):
+                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
+                if self._summary(state) != persisted:
+                    raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
+            else:
+                raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
+            if (type(state) is not p.ProtectionProjection or state.scope != self.bridge.scope
+                    or state.position_id != record.position_id):
+                raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
+            self._projections[record.position_id] = (record.revision, state, identities)
+            states.append(state)
+        return tuple(states)
+
+    @staticmethod
+    def _summary(state: p.ProtectionProjection) -> tuple[object, ...]:
+        """Bounded current state; immutable event rows hold all historical evidence."""
+        return ("RUNTIME_POSITION_V1", state.scope, state.position_id, state.instrument_id,
+                state.entry_side, state.signed_quantity, state.latest_fill_at,
+                len(state.orders), len(state.executions), len(state.cancelled_order_ids),
+                len(state.conflicts))
+
+    @staticmethod
+    def _reduce_event(state: p.ProtectionProjection, event: object,
+                      identities: dict[str, tuple[object, ...]]) -> p.ProtectionProjection:
+        if type(event) is p.OwnedOrder:
+            return p.register_order(state, event)
+        if type(event) is not tuple:
+            raise RuntimeBlocked("INVALID_DURABLE_EVENT")
+        if len(event) == 3 and event[0] == "READBACK":
+            return state
+        if len(event) != 6:
+            raise RuntimeBlocked("INVALID_DURABLE_EVENT")
+        fill_identity = event[5]
+        if fill_identity is not None:
+            if (type(fill_identity) is not tuple or len(fill_identity) != 5
+                    or type(fill_identity[0]) is not p.FillEvent):
+                raise RuntimeBlocked("INVALID_DURABLE_EVENT")
+            fill = fill_identity[0]
+            previous = identities.get(fill.execution_id)
+            if previous is not None and previous != fill_identity:
+                conflict = p.ProjectionConflict("EXECUTION_ID_CONFLICT", event=fill)
+                return (state if conflict in state.conflicts else
+                        replace(state, conflicts=state.conflicts + (conflict,)))
+            identities.setdefault(fill.execution_id, fill_identity)
+            return p.apply_fill(state, fill)
+        if event[0] in ("CANCELED", "EXPIRED"):
+            return p.record_order_cancelled(state, event[1])
+        return state
+
+    def projection(self, position_id: str) -> p.ProtectionProjection:
+        with self._mutex:
+            self._guard()
+            for state in self._states():
+                if state.position_id == position_id:
+                    return state
+            raise RuntimeBlocked("UNKNOWN_OWNED_POSITION")
+
+    def _persist(self, event: object, state: p.ProtectionProjection) -> None:
+        self._guard()
+        encoded = codec.encode(event)
+        key = "native:" + hashlib.sha256(encoded.encode()).hexdigest()
+        current = self.store.get_position(state.position_id)
+        saved = self.store.apply_position_event(key, json.loads(encoded), state.position_id,
+            0 if current is None else current.revision, json.loads(codec.encode(self._summary(state))))
+        # Cache only after the atomic inbox/projection commit. A duplicate event
+        # returns the current revision, so cannot replace it with an older reduction.
+        if saved.revision == (0 if current is None else current.revision) + 1:
+            cached = self._projections.get(state.position_id)
+            identities = {} if cached is None else dict(cached[2])
+            self._reduce_event(state, event, identities)
+            self._projections[state.position_id] = (saved.revision, state, identities)
+
+    def _find_owned(self, client_id: str) -> p.ProtectionProjection | None:
+        return next((state for state in self._states()
+                     if any(order.client_order_id == client_id for order in state.orders)), None)
+
+    def _register(self, state: p.ProtectionProjection, order: p.OwnedOrder) -> None:
+        reduced = p.register_order(state, order)
+        self._persist(order, reduced)
+        if reduced.conflicts:
+            self._active = False
+            raise RuntimeBlocked("IMMUTABLE_OWNERSHIP_CONFLICT")
+
+    def _required(self, key: str) -> CommandRecord:
+        record = self.journal.get(key)
+        if record is None:
+            raise RuntimeBlocked("UNKNOWN_COMMAND")
+        return record
+
+    def _plan(self, record: CommandRecord) -> r.EntryDecision:
+        result = codec.decode(json.dumps(json.loads(record.payload_json)["plan"]))
+        if type(result) is not r.EntryDecision:
+            raise RuntimeBlocked("INVALID_DURABLE_PLAN")
+        return result
+
+    def _policy(self, record: CommandRecord) -> p.ProtectionPolicy:
+        result = codec.decode(json.dumps(json.loads(record.payload_json)["protection_policy"]))
+        if type(result) is not p.ProtectionPolicy:
+            raise RuntimeBlocked("INVALID_DURABLE_PROTECTION_POLICY")
+        return result
+
+    def _recover_entry_mapping(self, record: CommandRecord) -> None:
+        """Restore committed ownership under the lease; never renew selection authority."""
+        self._guard()
+        raw = json.loads(record.payload_json)
+        plan, policy = self._plan(record), self._policy(record)
+        if ((plan.scope.account_id, plan.scope.environment)
+                != (self.journal.scope.account_id, self.journal.scope.environment)
+                or _reassess(plan, plan.assessed_at) != plan
+                or policy.revision != plan.policy.revision
+                or policy.stop_price != plan.proposal.stop_price
+                or self.store.get_position(raw["position_id"]) is not None):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        order = p.OwnedOrder(record.client_order_id, raw["position_id"],
+            plan.scope.symbol + "-LINEAR.BYBIT", "BUY" if plan.proposal.side == "LONG" else "SELL",
+            "ENTRY", plan.quantity, False, policy.generation, policy.revision)
+        NativeOrderRequest(self.bridge.scope, order, "MARKET", plan.market.entry_price,
+            attached=AttachedProtection(policy.stop_price, policy.take_profit_price,
+                                        policy.trigger_source))
+        self._register(p.ProtectionProjection(self.bridge.scope, order.position_id,
+                                              order.instrument_id, order.side), order)
+
+    def _request(self, record: CommandRecord) -> NativeOrderRequest:
+        state = self._find_owned(record.client_order_id)
+        if state is None:
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        order = next(item for item in state.orders if item.client_order_id == record.client_order_id)
+        raw = json.loads(record.payload_json)
+        if record.kind is CommandKind.ENTRY:
+            plan, policy = self._plan(record), self._policy(record)
+            expected = p.OwnedOrder(record.client_order_id, raw["position_id"],
+                plan.scope.symbol + "-LINEAR.BYBIT", "BUY" if plan.proposal.side == "LONG" else "SELL",
+                "ENTRY", plan.quantity, False, policy.generation, policy.revision)
+            if order != expected:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            return NativeOrderRequest(state.scope, order, "MARKET", plan.market.entry_price,
+                attached=AttachedProtection(policy.stop_price, policy.take_profit_price,
+                                            policy.trigger_source))
+        if record.kind is not CommandKind.EXIT or order.role != "EXIT":
+            raise RuntimeBlocked("UNSUPPORTED_NATIVE_COMMAND")
+        if (order.position_id != raw["position_id"] or order.quantity != Decimal(raw["quantity"])
+                or order.policy_revision != raw["policy_revision"]):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        return NativeOrderRequest(state.scope, order, "MARKET", Decimal(raw["reference_price"]))
+
+    def reservation_totals(self, scope: r.RiskScope,
+                           exclude: str | None = None) -> r.ReservationTotals:
+        records = tuple(record for record in self.journal.list_commands()
+            if record.command_key != exclude and record.reservation is not None
+            and not record.terminal_confirmed)
+        amounts = tuple(record.reservation for record in records if record.reservation is not None)
+        identity = json.dumps([(item.command_key, item.state.value, item.payload_hash)
+                               for item in records], separators=(",", ":"))
+        return r.ReservationTotals(scope, "journal-" + hashlib.sha256(identity.encode()).hexdigest(),
+            self._now(), True, _sum(tuple(item.notional_amount for item in amounts)),
+            _sum(tuple(record.reservation.notional_amount for record in records
+                       if record.reservation is not None and self._plan(record).scope.symbol
+                       == scope.symbol)), _sum(tuple(item.risk_amount for item in amounts)),
+            _sum(tuple(item.margin_amount for item in amounts)), len(amounts))
+
+    def queue_entry(self, command_key: str, position_id: str, *, plan_id: str,
+                    plan: r.EntryDecision, protection_policy: p.ProtectionPolicy,
+                    mode: modes.AutomaticMode, selection_request: modes.SelectionRequest,
+                    ai_response: str | None = None,
+                    priority_candidate_ids: tuple[str, ...] | None = None) -> CommandRecord:
+        """Stage a server plan. Selection authorizes neither risk nor dispatch."""
+        with self._mutex:
+            self._guard()
+            now = self._now()
+            modes.public_candidate_request(selection_request, now=now)
+            if mode is modes.AutomaticMode.FULL_AUTO:
+                selected = modes.select_full_auto(scope=selection_request.scope,
+                    policy=selection_request.policy, snapshot=selection_request.snapshot,
+                    candidates=selection_request.candidates, limits=selection_request.limits,
+                    priority_candidate_ids=priority_candidate_ids, now=now)
+            elif mode is modes.AutomaticMode.ALL_IN_ONE:
+                selected = modes.select_all_in_one(request=selection_request,
+                                                   response=ai_response, now=now)
+            else:
+                raise RuntimeBlocked("EXPLICIT_AUTOMATIC_MODE_REQUIRED")
+            candidate = selected.candidate
+            if (candidate is None or selected.status != "SELECTED"
+                    or candidate.plan_id != plan_id
+                    or (candidate.account_id, candidate.environment, candidate.symbol,
+                        candidate.strategy.strategy_id, candidate.policy_revision)
+                    != (plan.scope.account_id, plan.scope.environment, plan.scope.symbol,
+                        plan.scope.strategy_id, plan.policy.revision)
+                    or (plan.scope.account_id, plan.scope.environment)
+                    != (self.journal.scope.account_id, self.journal.scope.environment)
+                    or _reassess(plan, plan.assessed_at) != plan
+                    or protection_policy.revision != plan.policy.revision
+                    or protection_policy.stop_price != plan.proposal.stop_price):
+                raise RuntimeBlocked("SELECTION_PLAN_POLICY_MISMATCH")
+            # Validate the native contract before committing any command.
+            dummy_order = p.OwnedOrder("ec_" + "0" * 32, position_id,
+                plan.scope.symbol + "-LINEAR.BYBIT", "BUY" if plan.proposal.side == "LONG" else "SELL",
+                "ENTRY", plan.quantity, False, protection_policy.generation, plan.policy.revision)
+            NativeOrderRequest(self.bridge.scope, dummy_order, "MARKET", plan.market.entry_price,
+                attached=AttachedProtection(protection_policy.stop_price,
+                    protection_policy.take_profit_price, protection_policy.trigger_source))
+            if self.journal.get(command_key) is None:
+                if self.store.get_position(position_id) is not None:
+                    raise RuntimeBlocked("POSITION_ID_ALREADY_OWNED")
+                if (not self._fresh(plan.assessed_at)
+                        or any(state.entries_blocked for state in self._states())
+                        or any(not record.terminal_confirmed
+                               for record in self.journal.list_commands())):
+                    raise RuntimeBlocked("STALE_PLAN_OR_UNRESOLVED_EXPOSURE")
+                totals = self.reservation_totals(plan.scope)
+                if (plan.reservations.notional_amount, plan.reservations.risk_amount,
+                    plan.reservations.margin_amount, plan.reservations.position_count) != (
+                        totals.notional_amount, totals.risk_amount,
+                        totals.margin_amount, totals.position_count):
+                    raise RuntimeBlocked("RESERVATION_SNAPSHOT_MISMATCH")
+            payload = {"position_id": position_id, "plan_id": plan_id,
+                "candidate_id": candidate.candidate_id, "strategy_revision": candidate.strategy.revision,
+                "mode": mode.value, "selection_expires": min(candidate.expires_at,
+                    selection_request.expires_at, selection_request.snapshot.expires_at).isoformat(),
+                "plan": json.loads(codec.encode(plan)),
+                "protection_policy": json.loads(codec.encode(protection_policy))}
+            policy, account = plan.policy, plan.account
+            record = self.journal.register(command_key, CommandKind.ENTRY, payload,
+                reservation=Reservation(plan.estimated_loss, plan.notional, _margin(plan.margin_amount)),
+                limits=ReservationLimits(policy.max_total_risk, policy.max_total_notional,
+                    policy.max_total_margin, policy.max_positions, account.total_risk,
+                    account.total_notional, account.total_margin, account.position_count))
+            state = self._find_owned(record.client_order_id)
+            if state is None:
+                state = p.ProtectionProjection(self.bridge.scope, position_id,
+                    dummy_order.instrument_id, dummy_order.side)
+            self._register(state, replace(dummy_order, client_order_id=record.client_order_id))
+            self.bridge.register_owned(self._request(record))
+            return record
+
+    def _entry_gate(self, record: CommandRecord, final: r.EntryDecision) -> None:
+        self._guard()
+        self._require_qualification()
+        if (not self._active or any(state.entries_blocked for state in self._states())
+                or any(item.command_key != record.command_key and not item.terminal_confirmed
+                       for item in self.journal.list_commands())
+                or self._now() >= datetime.fromisoformat(
+                    json.loads(record.payload_json)["selection_expires"])):
+            raise RuntimeBlocked("ENTRY_PAUSED_OR_UNRESOLVED_OR_SELECTION_EXPIRED")
+        now = self._now()
+        if _reassess(final, now) != replace(final, assessed_at=now):
+            raise RuntimeBlocked("CURRENT_RISK_REQUIRED")
+
+    def dispatch(self, command_key: str) -> CommandRecord:
+        with self._mutex:
+            self._guard()
+            record = self._required(command_key)
+            if record.state is not CommandState.PENDING:
+                return record  # In particular, UNKNOWN never resubmits.
+            self._require_qualification()
+            request = self._request(record)
+            if record.kind is CommandKind.ENTRY:
+                plan = self._plan(record)
+                reservations = self.reservation_totals(plan.scope, record.command_key)
+                try:
+                    final = self.entry_risk(plan, self._now(), reservations)
+                    if (type(final) is not r.EntryDecision or final.stage != "SUBMIT"
+                            or not final.submission_ready or final.blockers
+                            or final.reservations != reservations
+                            or _economic_identity(final) != _economic_identity(plan)):
+                        raise RuntimeBlocked("FRESH_IMMUTABLE_SUBMIT_RISK_REQUIRED")
+                    self._entry_gate(record, final)
+                except Exception:  # noqa: BLE001 - callback errors can carry secret text.
+                    raise RuntimeBlocked("FRESH_IMMUTABLE_SUBMIT_RISK_REQUIRED") from None
+            else:
+                self._exit_gate(record, request)
+            claimed = self.journal.claim(command_key)  # Durable before native effect.
+            if claimed is None:
+                return self._required(command_key)
+            self._guard()
+            try:
+                if record.kind is CommandKind.ENTRY:
+                    self._entry_gate(record, final)
+                else:
+                    self._exit_gate(record, request)
+            except Exception:  # noqa: BLE001 - fail closed before native effect.
+                self.journal.reject(command_key, "GATE_EXPIRED_BEFORE_NATIVE_EFFECT")
+                self._active = False
+                raise RuntimeBlocked("GATE_EXPIRED_BEFORE_NATIVE_EFFECT") from None
+            try:
+                result = self.bridge.submit(request)
+                if result.state == "UNKNOWN":
+                    self._unknown(command_key)
+            except Exception:  # noqa: BLE001 - uncertain invocation is never automatically retried.
+                self._unknown(command_key)
+            return self._required(command_key)
+
+    def _unknown(self, command_key: str) -> None:
+        record = self._required(command_key)
+        # A reentrant real fill/ACK may have committed before submit raised.
+        if record.state in (CommandState.SENDING, CommandState.UNKNOWN):
+            self.journal.mark_unknown(command_key, "NATIVE_HANDOFF_AMBIGUOUS")
+        self._active = False
+
+    def consume_native(self, event: object, context: NativeEventContext, *,
+                       decoder: NativeEventDecoder | None = None) -> NativeOrderEvidence:
+        with self._mutex:
+            self._guard()
+            evidence = self.bridge.consume(event, context, decoder=decoder)
+            record = next((item for item in self.journal.list_commands()
+                           if item.client_order_id == evidence.client_order_id), None)
+            state = self._find_owned(evidence.client_order_id)
+            if record is None or state is None:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            if record.state is CommandState.PENDING:
+                self._active = False
+                raise RuntimeBlocked("UNSENT_COMMAND_HAS_NATIVE_EVENT")
+            if evidence.fill is not None:
+                self._readbacks.pop(state.position_id, None)
+                self._active = False  # Every fill invalidates previous protection/readback.
+            # Receipt time varies on replay; retain source event time, execution fee/price
+            # identity and native status. Exact duplicate events do not rewind projections.
+            fill_identity = None if evidence.fill is None else (
+                evidence.fill.to_owned_fill(), evidence.fill.price, evidence.fill.commission,
+                evidence.fill.commission_currency, evidence.fill.ts_event_ns)
+            identity = (evidence.kind, evidence.client_order_id, evidence.venue_order_id,
+                        evidence.ts_event_ns, evidence.native_status, fill_identity)
+            reduced = self._reduce_event(state, identity,
+                dict(self._projections[state.position_id][2]))
+            self._persist(identity, reduced)
+            if reduced.conflicts:
+                self._active = False
+            accepted = evidence.kind in ("ACCEPTED", "FILL", "CANCELED", "EXPIRED") or (
+                evidence.kind == "STATUS" and evidence.native_status in (
+                    "ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"))
+            rejected = evidence.kind in ("DENIED", "REJECTED") or (
+                evidence.kind == "STATUS" and evidence.native_status in ("DENIED", "REJECTED"))
+            if accepted:
+                if record.state in (CommandState.SENDING, CommandState.UNKNOWN):
+                    self.journal.acknowledge(record.command_key, "SCOPED_NATIVE_EVENT")
+            elif rejected:
+                if record.state in (CommandState.SENDING, CommandState.UNKNOWN):
+                    self.journal.reject(record.command_key, "SCOPED_NATIVE_REJECTION")
+                self._active = False
+            # Terminal status is not full execution/flat proof; reservation stays held.
+            return evidence
+
+    def _exit_gate(self, record: CommandRecord, request: NativeOrderRequest) -> None:
+        state = self.projection(request.owned.position_id)
+        self._exclusive_readback(state)
+        if (record.kind is not CommandKind.EXIT or request.owned.role != "EXIT"
+                or not request.owned.reduce_only or state.conflicts
+                or request.owned.quantity > state.owned_quantity
+                or any(item.command_key != record.command_key and item.kind is CommandKind.EXIT
+                       and not item.terminal_confirmed for item in self.journal.list_commands())):
+            raise RuntimeBlocked("EXIT_EXCEEDS_EXCLUSIVE_OWNERSHIP")
+
+    def _exclusive_readback(self, state: p.ProtectionProjection) -> None:
+        snapshot = self._readbacks.get(state.position_id)
+        if (snapshot is None or not snapshot.complete or len(snapshot.positions) != 1
+                or snapshot.scope != state.scope
+                or snapshot.symbol != state.instrument_id.removesuffix("-LINEAR.BYBIT")
+                or not self._fresh(snapshot.observed_at)
+                or snapshot.server_observed_at is None
+                or not self._fresh(snapshot.server_observed_at)
+                or (state.latest_fill_at is not None
+                    and snapshot.server_observed_at < state.latest_fill_at)):
+            raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
+        row = snapshot.positions[0]
+        owned_ids = {order.client_order_id for order in state.orders}
+        if (row.position_idx != 0 or row.side != state.entry_side
+                or row.quantity != state.owned_quantity
+                or any(item.client_order_id not in owned_ids or not item.reduce_only
+                       for item in snapshot.orders)):
+            raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
+
+    def queue_exit(self, command_key: str, position_id: str, quantity: Decimal,
+                   reference_price: Decimal) -> CommandRecord:
+        with self._mutex:
+            self._guard()
+            state = self.projection(position_id)
+            self._exclusive_readback(state)
+            if (state.conflicts or quantity <= 0 or quantity > state.owned_quantity
+                    or any(item.kind is CommandKind.EXIT and not item.terminal_confirmed
+                           and item.command_key != command_key for item in self.journal.list_commands())):
+                raise RuntimeBlocked("EXIT_EXCEEDS_EXCLUSIVE_OWNERSHIP")
+            policy = state.orders[0].policy_revision
+            dummy = p.OwnedOrder("ec_" + "0" * 32, position_id, state.instrument_id,
+                "SELL" if state.entry_side == "BUY" else "BUY", "EXIT", quantity, True, 0, policy)
+            NativeOrderRequest(state.scope, dummy, "MARKET", reference_price)
+            record = self.journal.register(command_key, CommandKind.EXIT,
+                {"position_id": position_id, "quantity": str(quantity),
+                 "reference_price": str(reference_price), "policy_revision": policy})
+            order = replace(dummy, client_order_id=record.client_order_id)
+            self._register(state, order)
+            self.bridge.register_owned(self._request(record))
+            return record
+
+    async def poll_readback(self, adapter: BybitVenueReadback,
+                            position_id: str) -> p.ProtectionAssessment:
+        """Network occurs outside the state mutex; reduction reloads after await."""
+        with self._mutex:
+            self._guard()
+            state = self.projection(position_id)
+            if type(adapter) is not BybitVenueReadback or adapter.scope != state.scope:
+                raise RuntimeBlocked("MATCHING_READBACK_SCOPE_REQUIRED")
+            symbol = state.instrument_id.removesuffix("-LINEAR.BYBIT")
+        snapshot = await adapter.snapshot(symbol)
+        return self.consume_readback(position_id, snapshot)
+
+    def consume_readback(self, position_id: str, snapshot: VenueSnapshot) -> p.ProtectionAssessment:
+        with self._mutex:
+            self._guard()
+            state = self.projection(position_id)
+            record = next(item for item in self.journal.list_commands()
+                if item.kind is CommandKind.ENTRY and any(order.client_order_id == item.client_order_id
+                                                         for order in state.orders))
+            policy = self._policy(record)
+            position: p.PositionEvidence | None = None
+            reports: list[p.ProtectionEvidence] = []
+            valid = (type(snapshot) is VenueSnapshot and snapshot.scope == state.scope
+                and snapshot.symbol == state.instrument_id.removesuffix("-LINEAR.BYBIT")
+                and snapshot.complete and self._fresh(snapshot.observed_at)
+                and snapshot.server_observed_at is not None
+                and self._fresh(snapshot.server_observed_at))
+            if valid:
+                owned = {order.client_order_id: order for order in state.orders}
+                external = (any(item.client_order_id not in owned for item in snapshot.orders)
+                            or len(snapshot.positions) != 1)
+                if len(snapshot.positions) == 1:
+                    row = snapshot.positions[0]
+                    external = external or row.position_idx != 0
+                    observed = snapshot.server_observed_at
+                    assert observed is not None
+                    position = p.PositionEvidence(state.scope, state.position_id,
+                        state.instrument_id, row.side or state.entry_side, row.quantity,
+                        observed, snapshot.cycle_id, True, external)
+                    for order_report in snapshot.orders:
+                        order = owned.get(order_report.client_order_id)
+                        if (order is None or order.role not in ("STOP", "TAKE_PROFIT")
+                                or order_report.trigger_price is None
+                                or order_report.trigger_source is None):
+                            continue
+                        reports.append(p.ProtectionEvidence(state.scope, order.client_order_id,
+                            state.position_id, state.instrument_id, order_report.side, order.role,
+                            order_report.leaves_quantity, order_report.reduce_only, order.generation,
+                            order.policy_revision, order_report.trigger_price, order_report.trigger_source,
+                            "ACTIVE" if order_report.status == "Untriggered" else "UNKNOWN",
+                            observed, snapshot.cycle_id))
+            assessment = p.assess_protection(state, policy, tuple(reports), position,
+                                             now=self._now(), max_age=self._max_age)
+            # No current code authenticates UID or attached-child ownership. Even a
+            # mathematically matched readback cannot qualify production protection.
+            assessment = replace(assessment, entries_blocked=True,
+                status="ATTENTION" if assessment.status == "OPEN_PROTECTED" else assessment.status,
+                reasons=assessment.reasons + ("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",))
+            self._persist(("READBACK", snapshot.cycle_id, assessment), state)
+            self._readbacks.pop(position_id, None)
+            if valid:
+                self._readbacks[position_id] = snapshot
+            self._active = False
+            return assessment

@@ -8,6 +8,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from multi_exchange_trader.execution.settings_api import AUTOMATIC_BODY_LIMIT
+
 from .order_preview import OrderReviews
 from .store import PaperStore
 
@@ -84,7 +86,8 @@ def install(application: FastAPI) -> None:
         if request.url.path.startswith(
             ("/api/v1/paper", "/api/v1/research", "/api/v1/recommendations",
              "/api/v1/settings", "/api/v1/ai", "/api/v1/overview",
-             "/api/v1/diagnostics", "/api/v1/connections", "/api/v1/capabilities")
+             "/api/v1/diagnostics", "/api/v1/connections", "/api/v1/capabilities",
+             "/api/v1/automatic")
         ):
             try:
                 host = urlsplit("http://" + request.headers.get("host", ""))
@@ -112,8 +115,19 @@ def install(application: FastAPI) -> None:
                     size = int(request.headers.get("content-length", "0"))
                 except ValueError:
                     return JSONResponse(status_code=400, content={"reason": "paper_input"})
-                if size > 8192 or len(await request.body()) > 8192:
-                    return JSONResponse(status_code=413, content={"reason": "paper_input_limit"})
+                automatic = request.url.path.startswith("/api/v1/automatic")
+                limit = AUTOMATIC_BODY_LIMIT if automatic else 8192
+                reason = "automatic_body_limit" if automatic else "paper_input_limit"
+                if size > limit:
+                    return JSONResponse(status_code=413, content={"reason": reason})
+                body = bytearray()
+                async for chunk in request.stream():
+                    if len(body) + len(chunk) > limit:
+                        return JSONResponse(status_code=413, content={"reason": reason})
+                    body.extend(chunk)
+                # Starlette's cached middleware request replays _body to call_next.
+                # Cache only after enforcing the limit on the actual incoming stream.
+                request._body = bytes(body)
         return await call_next(request)
 
     @router.get("/scenarios")

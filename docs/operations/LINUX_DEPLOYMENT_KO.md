@@ -15,9 +15,9 @@
 | API | `127.0.0.1:8000`, 단일 worker |
 | 정적 웹·프록시 | nginx `127.0.0.1:5173` |
 
-템플릿은 LIVE, Bybit DEMO, TESTNET을 모두 끈다. `EnvironmentFile`은 `Environment=`보다 우선하므로 `ExecStart`의 `/usr/bin/env` 인수가 마지막으로 `LIVE_TRADING_ENABLED=false`, `BYBIT_DEMO=false`, `BYBIT_TESTNET=false`, `BYBIT_ENV_FILE=off`, `ANTHROPIC_ENV_FILE=off`를 강제한다. 다른 PC의 파일에 DEMO=true가 있어도 이 서비스는 이를 활성화하지 않는다. systemd가 root 권한으로 0600 파일을 읽고 프로세스 환경으로 전달하며, trader에게 비밀 파일 읽기 권한을 주지 않는다.
+템플릿은 LIVE, Bybit DEMO, TESTNET을 모두 끈다. `EnvironmentFile`은 `Environment=`보다 우선하므로 `ExecStart`의 `/usr/bin/env` 인수가 마지막으로 `LIVE_TRADING_ENABLED=false`, `BYBIT_DEMO=false`, `BYBIT_TESTNET=false`, `BYBIT_ENV_FILE=off`, `ANTHROPIC_ENV_FILE=off`, `AI_ENV_FILE=off`를 강제한다. 다른 PC의 파일에 DEMO=true가 있어도 이 서비스는 이를 활성화하지 않는다. systemd가 root 권한으로 0600 파일을 읽고 프로세스 환경으로 전달하며, trader에게 비밀 파일 읽기 권한을 주지 않는다. `LimitCORE=0`으로 키가 포함될 수 있는 core dump도 만들지 않는다.
 
-AI는 애플리케이션의 `OFFLINE_TEST`, `llm_enabled=false`, `external_calls=false` 계약을 유지한다. 해당 이름의 가상 환경 스위치를 새로 만들지 않는다. Anthropic 키·모델 등록은 `REGISTERED_UNVERIFIED`이며 인증 성공, 잔액, 유료 호출 승인, LLM 분석 실행을 의미하지 않는다. 기본 비밀 파일은 주석만 있다. 일반 공개 시세 호스트도 `runtime.env.example`에서 차단한다. Bybit 실제 DEMO 점검은 연습 계정에 **실제 주문**을 만들 수 있으므로 설치·건강 점검으로 사용하지 않는다.
+공개 설정 API는 `OFFLINE_TEST`, `llm_enabled=false`, `external_calls=false` 계약을 유지한다. 해당 이름의 가상 환경 스위치를 새로 만들지 않는다. Anthropic/OpenRouter 키·모델 등록은 `REGISTERED_UNVERIFIED`이며 인증 성공, 잔액, 유료 호출 승인, LLM 분석 실행을 의미하지 않는다. 기본 비밀 파일은 주석만 있다. 별도 명시 호출용 OpenRouter 생성 라이브러리가 있어도 이 서비스는 이를 자동 실행하는 worker를 연결하지 않는다. 일반 공개 시세 호스트도 `runtime.env.example`에서 차단한다. Bybit 실제 DEMO 점검은 연습 계정에 **실제 주문**을 만들 수 있으므로 설치·건강 점검으로 사용하지 않는다.
 
 ## 재현 가능한 소스·빌드 준비
 
@@ -103,7 +103,7 @@ curl --fail http://127.0.0.1:5173/api/v1/capabilities
 
 브라우저 주소는 `http://127.0.0.1:5173` 또는 `http://localhost:5173`이다. 원격 운영은 운영자가 승인한 SSH 터널을 쓰고 로컬 포트도 **5173 그대로** 유지한다. 프록시가 Host와 Origin을 로컬 값으로 바꾸는 편법, 임의 포트·도메인 허용, 외부 listener를 추가하지 않는다. 템플릿의 `$http_host`, `$http_origin`은 원래 요청을 그대로 전달하여 애플리케이션의 경계 검사가 유지된다.
 
-## 여섯 장부와 데이터셋의 한 세대 백업
+## 장부와 데이터셋의 한 세대 백업
 
 `scripts/operations/state_snapshot.py`는 Python 3.12 표준 라이브러리만 쓰는 실제 명령이다. 인수 없이 실행하면 도움말만 표시한다. `verify`는 원본 백업을 수정하지 않고 임시 복사본에서 SQLite를 검사한다. `snapshot`, `restore`만 명시적으로 새 디렉터리를 만든다. 서비스 정지·재개, 마이그레이션, 장부 초기화, 덮어쓰기 기능은 없다.
 
@@ -117,6 +117,7 @@ curl --fail http://127.0.0.1:5173/api/v1/capabilities
 | `ai.sqlite3` | `AI_DB_PATH` |
 | `recommendations.sqlite3` | `RECOMMENDATION_DB_PATH` |
 | `research.sqlite3` | `PHASE4_DB_PATH` |
+| `runtime-policy.sqlite3` (설정 초안이 있는 설치) | `RUNTIME_POLICY_DB_PATH` |
 | `datasets/*.json` | `PHASE4_DATA_ROOT` |
 
 기존 개발 환경의 `work/phase3-data`, `work/phase4-data`, `work/recommendations.sqlite3` 경로를 자동 추측하지 않는다. 기존 설치를 옮길 때는 **모든 writer를 먼저 정지**하고 실제 환경 변수에 따른 6개 DB, 각각의 존재하는 `-wal`/`-shm`, 전체 datasets를 하나의 새 private staging 구조로 보존해 넣은 뒤 이 도구를 실행한다. 원본을 이동·삭제하거나 DB 한 개만 최신으로 섞지 않는다. 여섯 DB가 없거나 구버전 스키마라면 실패하며 빈 DB를 대신 만들지 않는다.
@@ -149,8 +150,38 @@ POSIX 출력 디렉터리는 0700, 파일은 0600으로 만든다. 대상은 **�
 
 ## 복원 후 전환·롤백
 
-복원은 언제나 새 `/var/lib/trader/recovery-001`로만 한다. 운영자가 원본 정지 상태를 유지한 채 복원본 권한, 6개 DB 경로와 dataset 경로를 모두 함께 검토한다. 경로 전환이 필요하면 `runtime.env`의 7개 경로를 같은 세대로 변경하고 원래 설정과 원본 디렉터리는 보존한다. 소스 버전도 manifest와 별도로 보관한 정확한 Git SHA와 lock 파일에 맞춘다. 구버전 코드로 새 스키마를 열거나 자동 다운그레이드하지 않는다.
+복원은 언제나 새 `/var/lib/trader/recovery-001`로만 한다. 운영자가 원본 정지 상태를 유지한 채 복원본 권한, 기존 6개 장부와 runtime policy를 합친 7개 DB 경로와 dataset 경로를 모두 함께 검토한다. 경로 전환이 필요하면 `runtime.env`의 **8개 경로**(`PAPER_DB_PATH`, `PAPER_SPOT_DB_PATH`, `PAPER_REVIEW_DB_PATH`, `AI_DB_PATH`, `RECOMMENDATION_DB_PATH`, `PHASE4_DB_PATH`, `RUNTIME_POLICY_DB_PATH`, `PHASE4_DATA_ROOT`)를 같은 복원 디렉터리로 변경하고 원래 설정과 원본 디렉터리는 보존한다. policy 파일이 없는 기존 v1 백업은 설정 초안 복원을 보장하지 않으므로 이전 세대 policy 경로를 그대로 두고 완전 복구로 판정하지 않는다. 소스 버전도 manifest와 별도로 보관한 정확한 Git SHA와 lock 파일에 맞춘다. 구버전 코드로 새 스키마를 열거나 자동 다운그레이드하지 않는다.
 
 첫 앱 시작은 복원본에 애플리케이션 자체 대사·재생을 수행한다. 기존 research RUNNING/ENTRY_PAUSED 세션은 코드의 복구 정책에 따라 `PAUSED_RECOVERY`로 멈추며, 운영자가 상태·포지션·미확정 명령을 검토하고 **명시적으로 재개**하기 전 자동매매가 복구되었다고 표시하거나 재개하지 않는다. AI uncertain reservation, 검토 토큰, 추천의 미확정 명령은 그대로 보존한다. 앱이 fail-closed면 원본 장부를 고치거나 기록을 지우는 대신 멈춘 상태로 원인을 확인한다.
 
-롤백도 서비스를 정지하고 모든 writer를 확인한 뒤 이전 코드 SHA·설정·검증된 **하나의 전체 세대**를 새 디렉터리에 복원해 전환한다. 이미 생성된 현재 장부 위로 덮어쓰거나 서로 다른 DB 세대를 합치지 않는다. HTTP 응답, SSH 재접속, systemd active만으로 복원·계정·거래·LLM 연결을 완료 판정하지 않는다.
+롤백도 서비스를 정지하고 모든 writer를 확인한 뒤 이전 코드 SHA·설정·검증된 **하나의 전체 세대**를 새 디렉터리에 복원해 전환한다. `RUNTIME_POLICY_DB_PATH`를 포함한 위 8개 경로를 함께 바꾸고, worker를 별도로 구성했다면 아래 세 worker 파일 경로도 같은 롤백 디렉터리로 바꾼다. 이미 생성된 현재 장부 위로 덮어쓰거나 서로 다른 DB 세대를 합치지 않는다. HTTP 응답, SSH 재접속, systemd active만으로 복원·계정·거래·LLM 연결을 완료 판정하지 않는다.
+
+## 자동 운용 저장소와 v2 복구 계약
+
+기존 여섯 장부만 있는 소스와 format_version=1 백업은 계속 지원한다. 자동 운용 관련 파일이 있으면 format_version=2 manifest의 `runtime_files`에 정확한 목록을 보존한다. 초기 설정 화면만 사용해 `runtime-policy.sqlite3`만 생긴 비활성 설치도 백업할 수 있다. 알려진 파일을 일부 생략하는 자동 수집은 하지 않는다.
+
+| 추가 파일 | 역할·버전 |
+|---|---|
+| `execution.sqlite3` | CommandJournal의 명령, 예약, append-only audit, 기존 projection/inbox; user_version=0 |
+| `runtime-state.sqlite3` | RuntimeStateStore의 account/environment별 order·position·event 행; user_version=1 |
+| `runtime-policy.sqlite3` | RuntimePolicyBook의 단일 STOPPED 설정 초안; user_version=1; `RUNTIME_POLICY_DB_PATH` |
+| `ai-dispatch.sqlite3` | AIDispatcher의 유료 요청 단일 발송 이력; user_version=1 |
+
+명령 저널과 정규화 상태는 반드시 함께 있어야 한다. 하나만 있으면 백업·검증·복원이 실패한다. 실제 runtime 구성을 보존할 때는 다음처럼 **네 파일 전체를 요구하는 옵션**을 모든 단계에 붙인다. 여섯 장부만 있던 백업은 이 옵션을 통과하지 못한다. 활성 worker에 필요한 DB를 빈 파일로 만들어 누락을 숨기지 않는다. 위 8개 앱 설정 경로 전환과 별도로 worker 라이브러리에 명시적으로 공급하는 `execution.sqlite3`, `runtime-state.sqlite3`, `ai-dispatch.sqlite3`의 세 파일 경로도 모두 같은 복원 디렉터리(`/var/lib/trader/recovery-runtime-001`)로 지정해야 한다. 네 runtime 파일을 함께 복원해도 worker 기동 자격은 부여되지 않는다. 현재 API 서비스는 별도 거래 worker나 유료 AI worker를 생성하지 않으므로 사용하지 않는 worker용 환경 변수를 만들지 않는다.
+
+```sh
+sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py snapshot \
+  --source /var/lib/trader/data --target /var/backups/trader/runtime-001 \
+  --writers-stopped --require-runtime
+sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py verify \
+  --source /var/backups/trader/runtime-001 --require-runtime
+sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py restore \
+  --source /var/backups/trader/runtime-001 --target /var/lib/trader/recovery-runtime-001 \
+  --require-runtime
+```
+
+기존 writer 정지·private 경로·새 대상 제한은 그대로 적용된다. v2는 예상 table/column/version뿐 아니라 runtime의 scoped identity·client ID unique key, audit sequence 자동 생성 key, inbox foreign key 선언, 알 수 없는 view/trigger, 저널 audit 불변 trigger, JSON 경계, account/environment, 행 revision과 inbox 참조도 검사한다. AI 발송이 시작된 기록에는 예산 장부의 대응 liability가 있어야 하고 확정 과금은 결산 금액과 일치해야 한다. 발송 이력 없이 남은 `dispatch_<sha256>` 예산 예약도 거절한다. 복원한 이력은 호출 재승인 토큰이 아니다. `CLAIMED`/`DISPATCHING` 중 끊긴 요청과 미확정 요금은 다시 호출하지 않고 불확실 상태로 유지한다.
+
+RuntimeStateStore는 위치 전체를 하나의 JSON으로 저장하지 않고 주문·포지션별 독립 행과 행별 64 KiB 상한을 사용한다. event ID 중복 확인과 position revision 갱신은 같은 SQLite 트랜잭션이며 이전 이벤트 재생은 현재 상태를 되감지 않는다. 저장소를 여는 행위는 다른 worker 상태를 바꾸지 않는다. 외부 account OS lease를 얻은 worker가 명시적으로 복구하면 이전 position/order의 reconciliation_required를 세우고 revision을 올린다. 명령 저널의 SENDING은 별도 복구에서 UNKNOWN으로 바뀌며, 예약은 독립 체결·최종 종료 증거 없이 해제하지 않는다. 외부 수동 주문·포지션을 인수하거나 수정·청산하는 복구 기능은 없다.
+
+복원 후에도 설정은 STOPPED 초안이다. 서비스 재시작, 저장소 정상 여부, fake 테스트 통과는 실제 자동 운용 자격을 만들지 않는다. 현재 native runtime은 독립 네이티브 qualification, 인증된 계정 binding, 완전한 체결 이력, 레버리지 적용·readback, 부착 보호 주문 소유·감시와 읽기 증거가 미충족이면 시작을 차단한다. 미정 투자금·위험·레버리지·AI 예산이나 서버 월 비용을 추측하지 않는다. 새 서버 구입·생성·서비스 시작은 이 문서 작성·검증에 포함되지 않는다.
