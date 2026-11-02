@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .bybit_native import NativeBybitBridge, _require_native_version, load_native_bindings
+from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
 from .protection import ProtectionScope
 
 
@@ -37,6 +38,63 @@ class NativeNodeAssembly:
     bridge: NativeBybitBridge
     channel: NativeChannel
     order_subscription: NativeOrderSubscription | None = None
+
+    def _monitor_client(self) -> Any:
+        from .native_monitor_client import MonitoringBybitExecutionClient
+
+        if type(self.execution_client) is not MonitoringBybitExecutionClient:
+            raise MonitoringError("MONITORING_CLIENT_REQUIRED")
+        return self.execution_client
+
+    @property
+    def monitoring_fault(self) -> str | None:
+        value = self._monitor_client().monitoring_fault
+        return value if isinstance(value, str) else None
+
+    def monitoring_stamp(self) -> StreamStamp:
+        stamp: StreamStamp = self._monitor_client().monitoring_stamp()
+        return stamp
+
+    def arm_monitoring(self, target: MonitoringTarget) -> None:
+        self._monitor_client().arm_monitoring(target)
+
+    def require_monitoring_ready(self) -> None:
+        client, kernel = self._monitor_client(), self.node.kernel
+        client._event_guard()
+        if (not client.is_connected or not kernel.is_running()
+                or not kernel.data_engine.is_running or not kernel.risk_engine.is_running
+                or not kernel.exec_engine.is_running or not kernel.trader.is_running
+                or not self.strategy.is_running or not kernel.portfolio.initialized
+                or not kernel.data_engine.check_connected() or not kernel.exec_engine.check_connected()):
+            raise MonitoringError("MONITORING_NATIVE_LIFECYCLE_NOT_READY")
+        client._monitor_stream.require_ready()
+
+    async def wait_monitoring_ready(self) -> None:
+        await self._monitor_client().wait_monitoring_ready()
+        while True:
+            try:
+                self.require_monitoring_ready()
+                return
+            except MonitoringError as error:
+                if str(error) != "MONITORING_NATIVE_LIFECYCLE_NOT_READY":
+                    raise
+            await asyncio.sleep(0.01)
+
+    async def monitoring_barrier(self) -> StreamStamp:
+        await self.wait_monitoring_ready()
+        stamp: StreamStamp = await self._monitor_client().monitoring_barrier()
+        self.require_monitoring_ready()
+        return stamp
+
+    def acknowledge_monitoring(self, event: object, *, evidence: object) -> None:
+        self._monitor_client().acknowledge_monitoring(event, evidence=evidence)
+
+    def retire_monitoring(self, reason: str) -> None:
+        self._monitor_client().retire_monitoring(reason)
+
+    async def drain_monitoring(self) -> StreamStamp:
+        stamp: StreamStamp = await self._monitor_client().drain_monitoring()
+        return stamp
 
     def close_event_channel(self) -> None:
         if self.order_subscription is not None:
@@ -69,9 +127,11 @@ class NativeOrderSubscription:
 
     def __init__(self, *, msgbus: Any, strategy: Any, channel: NativeChannel,
                  event_types: tuple[type[object], ...],
-                 on_event: Callable[[NativeChannel, object], None]) -> None:
+                 on_event: Callable[[NativeChannel, object], None],
+                 on_native: Callable[[object], None] | None = None) -> None:
         self._bus, self._strategy, self._channel = msgbus, strategy, channel
         self._types, self._sink = event_types, on_event
+        self._on_native = on_native
         self._topic = f"events.order.{strategy.id}"
         self._closed = False
         msgbus.subscribe(topic=self._topic, handler=self.handle)
@@ -81,6 +141,8 @@ class NativeOrderSubscription:
                 or getattr(event, "trader_id", None) != self._strategy.trader_id
                 or getattr(event, "strategy_id", None) != self._strategy.id):
             return
+        if self._on_native is not None:
+            self._on_native(event)
         self._sink(self._channel, event)
 
     def close(self) -> None:
@@ -107,7 +169,8 @@ def _native_modules() -> dict[str, Any]:
 
 
 def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
-                      trader_id: str, restart_safe: bool = False) -> object:
+                      trader_id: str, restart_safe: bool = False,
+                      monitor_only: bool = False) -> object:
     """Build the actual pinned config without importing native modules on Windows."""
     if (type(symbols) is not tuple or not symbols or len(set(symbols)) != len(symbols)
             or any(type(s) is not str or re.fullmatch(r"[A-Z0-9]{2,48}", s) is None
@@ -130,14 +193,20 @@ def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
     instruments = [ids.InstrumentId.from_str(s + "-LINEAR.BYBIT") for s in symbols]
     provider = cfg.InstrumentProviderConfig(load_all=False, load_ids=frozenset(instruments))
     execution = modules["structs"].replace(exec_config, instrument_provider=provider)
+    settings = {"exec_engine": cfg.LiveExecEngineConfig(
+        load_cache=not restart_safe, reconciliation=not restart_safe,
+        reconciliation_instrument_ids=instruments,
+        filter_unclaimed_external_orders=True, filter_position_reports=True,
+        generate_missing_orders=False)}
+    if monitor_only:
+        from .native_monitor_client import passive_node_settings, validate_passive_config
+
+        validate_passive_config(execution)
+        settings = passive_node_settings(instruments)
     return cfg.TradingNodeConfig(
         trader_id=trader_id,
         logging=cfg.LoggingConfig(log_level="ERROR"),
-        exec_engine=cfg.LiveExecEngineConfig(
-            load_cache=not restart_safe, reconciliation=not restart_safe,
-            reconciliation_instrument_ids=instruments,
-            filter_unclaimed_external_orders=True, filter_position_reports=True,
-            generate_missing_orders=False),
+        **settings,
         data_clients={}, exec_clients={"BYBIT": execution},
     )
 
@@ -146,7 +215,8 @@ def build_native_node(*, session: BybitDemoAccountSession,
                       binding: AuthenticatedAccountBinding, scope: ProtectionScope,
                       symbols: tuple[str, ...], trader_id: str,
                       on_event: Callable[[NativeChannel, object], None],
-                      restart_safe: bool = False) -> NativeNodeAssembly:
+                      restart_safe: bool = False,
+                      monitor_only: bool = False) -> NativeNodeAssembly:
     """Register real Strategy/factory/client on the current worker loop, without run.
 
     Only session.configure_native_execution delivers credentials into the builder.
@@ -158,14 +228,20 @@ def build_native_node(*, session: BybitDemoAccountSession,
 
     def install(config: object) -> None:
         node_config = build_node_config(config, symbols=symbols, trader_id=trader_id,
-                                        restart_safe=restart_safe)
+                                        restart_safe=restart_safe, monitor_only=monitor_only)
         native_node = modules["node"].TradingNode(config=node_config, loop=loop)
         try:
             captured: list[Any] = []
             channel = NativeChannel(scope, "BYBIT-UNIFIED")
 
             def create(**kwargs: Any) -> Any:
-                client = modules["factories"].BybitLiveExecClientFactory.create(**kwargs)
+                if monitor_only:
+                    from .native_monitor_client import create_monitor_client
+
+                    client = create_monitor_client(session=session, binding=binding, scope=scope,
+                                                   symbols=symbols, **kwargs)
+                else:
+                    client = modules["factories"].BybitLiveExecClientFactory.create(**kwargs)
                 captured.append(client)
                 return client
 
@@ -187,7 +263,8 @@ def build_native_node(*, session: BybitDemoAccountSession,
                 strategy=strategy, channel=channel, on_event=on_event,
                 event_types=tuple(getattr(modules["events"], name) for name in (
                     "OrderSubmitted", "OrderAccepted", "OrderDenied", "OrderRejected",
-                    "OrderCanceled", "OrderExpired", "OrderFilled")))
+                    "OrderCanceled", "OrderExpired", "OrderFilled")),
+                on_native=captured[0].note_monitoring_native if monitor_only else None)
             result.append(NativeNodeAssembly(native_node, strategy, captured[0], bridge, channel,
                                              subscription))
         except BaseException:
@@ -196,7 +273,8 @@ def build_native_node(*, session: BybitDemoAccountSession,
                 native_node.kernel.executor.shutdown(wait=True, cancel_futures=True)
             raise
 
-    session.configure_native_execution(binding, scope=scope, install=install)
+    installer = session.configure_native_monitoring if monitor_only else session.configure_native_execution
+    installer(binding, scope=scope, install=install)
     if len(result) != 1:
         raise ValueError("SESSION_NATIVE_INSTALLATION_REQUIRED")
     return result[0]
