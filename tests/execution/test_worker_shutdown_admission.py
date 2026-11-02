@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from test_native_controls import controls
 from test_runtime import queue, risk_check
-from test_worker import fill, harness
+from test_worker import fill, harness, quarantines
 
 from multi_exchange_trader.execution import worker as worker_module
 from multi_exchange_trader.execution.journal import CommandState
@@ -159,7 +159,8 @@ async def test_busy_selection_stop_retains_callback_owner_until_paid_accounting_
         h.worker.post_native(h.assembly.channel, fill(prior.client_order_id))
         await asyncio.sleep(0)
         assert h.worker.callback_failures == 0
-        assert str(h.worker.runtime.projection("position-1").owned_quantity) == "0.4"
+        assert h.worker.runtime.projection("position-1").owned_quantity == 0
+        assert len(quarantines(h.worker)) == 1
         with pytest.raises(RuntimeBlocked, match="INFLIGHT_SELECTION"):
             await h.worker.stop()
     finally:

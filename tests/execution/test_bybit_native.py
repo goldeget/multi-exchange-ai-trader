@@ -101,12 +101,46 @@ def native_event(name: str, **changes: object) -> object:
     fields: dict[str, object] = {"account_id": "BYBIT-UNIFIED", "client_order_id": CLIENT_ID,
         "instrument_id": INSTRUMENT, "ts_event": 1700000000000000100,
         "ts_init": 1700000000000000200, "venue_order_id": "venue-1"}
+    if name == "OrderFilled":
+        fields["reconciliation"] = False
     fields.update(changes)
     return SimpleNamespace(**fields)
 
 
 def decoder() -> Any:
     return events_api().NativeEventDecoder(event_types={SimpleNamespace: "OrderFilled"})
+
+
+@pytest.mark.parametrize("name,reconciliation,want", [
+    ("OrderFilled", False, "NATIVE_ORDER_FILLED"),
+    ("OrderFilled", True, "NATIVE_ORDER_FILLED"),
+    ("FillReport", None, "NATIVE_FILL_REPORT"),
+])
+def test_decoder_preserves_untrusted_source_metadata(
+    name: str, reconciliation: bool | None, want: str,
+) -> None:
+    event = native_event(name, trade_id="exec-1", order_side="BUY", last_qty=Decimal("0.004"),
+        last_px=Decimal(50000), commission=SimpleNamespace(
+            as_decimal=lambda: Decimal("-0.01"), currency="USDT"))
+    if name == "OrderFilled":
+        event.reconciliation = reconciliation  # type: ignore[attr-defined]
+    result = events_api().NativeEventDecoder(event_types={SimpleNamespace: name}).decode(
+        event, context(), request().owned)
+    assert result.fill.source_kind == want
+    assert result.fill.native_reconciliation is reconciliation
+    assert result.fill.commission == Decimal("-0.01")
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "False", "True"])
+def test_decoder_rejects_non_boolean_orderfilled_reconciliation(value: object) -> None:
+    event = native_event("OrderFilled", trade_id="exec-1", order_side="BUY",
+        last_qty=Decimal("0.004"), last_px=Decimal(50000), reconciliation=value,
+        commission=SimpleNamespace(as_decimal=lambda: Decimal("0.1"), currency="USDT"))
+    with pytest.raises(ValueError, match="^NATIVE_EVENT_INVALID_OR_UNOWNED$"):
+        decoder().decode(event, context(), request().owned)
+    del event.reconciliation  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="^NATIVE_EVENT_INVALID_OR_UNOWNED$"):
+        decoder().decode(event, context(), request().owned)
 
 
 def test_factory_and_strategy_keep_exact_durable_identity_and_tp_sl_placement(tmp_path: Path) -> None:

@@ -5,11 +5,10 @@ import json
 import runpy
 import shutil
 from datetime import timedelta
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from test_worker import fill, harness, stage
+from test_worker import fill, harness, quarantines, stage
 from test_worker_history import observation
 
 from multi_exchange_trader.execution import worker_cli
@@ -91,9 +90,10 @@ async def test_restored_canonical_journal_and_state_reuse_ownership_without_repl
     try:
         recovered = worker.runtime.journal.get("entry")
         assert recovered.client_order_id == record.client_order_id
-        assert recovered.state is (CommandState.ACKNOWLEDGED if filled else CommandState.UNKNOWN)
-        assert worker.runtime.projection("position-1").owned_quantity == (
-            Decimal("0.4") if filled else Decimal(0))
+        assert recovered.state is CommandState.UNKNOWN
+        assert worker.runtime.projection("position-1").owned_quantity == 0
+        assert len(quarantines(worker)) == int(filled)
+        assert worker.runtime.projection("position-1").entries_blocked is filled
         assert worker.runtime.bridge._requests[record.client_order_id].owned.position_id == "position-1"
         assert not worker.runtime.bridge._submissions
         assert worker.runtime.status.entries_paused
@@ -183,9 +183,10 @@ async def test_real_worker_common_root_snapshot_verify_restore(
     try:
         recovered = fresh.worker.runtime.journal.get("entry")
         assert recovered.client_order_id == record.client_order_id
-        assert recovered.state is (CommandState.ACKNOWLEDGED if filled else CommandState.UNKNOWN)
-        assert fresh.worker.runtime.projection("position-1").owned_quantity == (
-            Decimal("0.4") if filled else Decimal(0))
+        assert recovered.state is CommandState.UNKNOWN
+        assert fresh.worker.runtime.projection("position-1").owned_quantity == 0
+        assert len(quarantines(fresh.worker)) == int(filled)
+        assert fresh.worker.runtime.projection("position-1").entries_blocked is filled
         assert record.client_order_id in fresh.assembly.bridge._requests
         assert not fresh.assembly.bridge._submissions
         assert fresh.worker.runtime.status.entries_paused

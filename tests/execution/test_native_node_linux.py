@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from test_bybit_native_linux import isolated_native_runtime, module  # noqa: F401
 from test_risk import NOW
-from test_worker import harness, harness_existing, stage
+from test_worker import harness, harness_existing, quarantines, stage
 
 from multi_exchange_trader.execution import worker_cli
 from multi_exchange_trader.execution.account_binding import BybitDemoAccountSession
@@ -222,7 +222,12 @@ async def test_actual_bus_delivers_owned_fill_during_strategy_stop_and_disconnec
         h.assembly.require_quiesced()
         restarted = harness_existing(tmp_path, h)
         await restarted.start_passive()
-        assert restarted.runtime.projection("position-1").owned_quantity == Decimal("0.6")
+        assert restarted.runtime.projection("position-1").owned_quantity == 0
+        assert restarted.runtime.projection("position-1").executions == ()
+        assert restarted.runtime.projection("position-1").entries_blocked
+        assert {row.candidate.fill.execution_id for row in quarantines(restarted)} == {
+            "fill-0", "fill-1", "fill-2"}
+        assert sum(row.candidate.fill.quantity for row in quarantines(restarted)) == Decimal("0.6")
         await restarted.stop()
     finally:
         h.assembly.dispose_local()

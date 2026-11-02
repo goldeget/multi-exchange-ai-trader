@@ -16,6 +16,8 @@ from test_runtime import (
 )
 from test_runtime import setup as setup  # noqa: PLC0414 - export shared pytest fixture
 
+from multi_exchange_trader.execution import codec
+from multi_exchange_trader.execution.execution_provenance import FillQuarantineRecord
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.native_controls import NativeLeverageControl
@@ -174,7 +176,14 @@ def test_cancel_claim_actual_cached_target_then_cancel_fill_race_preserves_reser
     assert worker.dispatch_cancel("cancel").state is CommandState.ACKNOWLEDGED
     worker.dispatch_cancel("cancel")
     assert len(calls) == 1
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
+    assert worker.projection("position-1").owned_quantity == 0
+    assert worker.projection("position-1").executions == ()
+    assert worker.projection("position-1").entries_blocked
+    quarantined = [value for row in worker.store.list_position_events("position-1")
+                   if type(value := codec.decode(row.payload_json)) is FillQuarantineRecord]
+    assert len(quarantined) == 1
+    assert quarantined[0].candidate.fill.quantity == Decimal("0.4")
+    assert quarantined[0].candidate.fill.client_order_id == entry.client_order_id
     assert journal.get("entry").reservation == entry.reservation
     assert not journal.get("entry").terminal_confirmed
     assert not journal.get("cancel").terminal_confirmed
@@ -232,9 +241,16 @@ def test_cancel_requires_durable_venue_identity_and_keeps_racing_owned_fills(
     with pytest.raises(RuntimeBlocked, match="CANCEL_ALREADY_UNRESOLVED"):
         worker.queue_cancel("cancel-2", entry.client_order_id)
     assert journal.get("cancel-2") is None
-    # Identity uncertainty must never discard a legitimate execution racing cancellation.
+    # Identity uncertainty must never discard a fill candidate racing cancellation.
     consume(worker, entry.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
+    assert worker.projection("position-1").owned_quantity == 0
+    assert worker.projection("position-1").executions == ()
+    assert worker.projection("position-1").entries_blocked
+    quarantined = [value for row in worker.store.list_position_events("position-1")
+                   if type(value := codec.decode(row.payload_json)) is FillQuarantineRecord]
+    assert len(quarantined) == 1
+    assert quarantined[0].candidate.fill.quantity == Decimal("0.4")
+    assert quarantined[0].candidate.fill.client_order_id == entry.client_order_id
     assert journal.get("entry").reservation == entry.reservation
     assert not journal.get("entry").terminal_confirmed
     assert not journal.get("cancel").terminal_confirmed
@@ -264,7 +280,14 @@ def test_valid_owned_expiry_keeps_cancel_unconfirmed_and_racing_fill_reservation
     assert not state.conflicts
     assert journal.get("cancel").state is CommandState.SENDING
     consume(worker, entry.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
+    assert worker.projection("position-1").owned_quantity == 0
+    assert worker.projection("position-1").executions == ()
+    assert worker.projection("position-1").entries_blocked
+    quarantined = [value for row in worker.store.list_position_events("position-1")
+                   if type(value := codec.decode(row.payload_json)) is FillQuarantineRecord]
+    assert len(quarantined) == 1
+    assert quarantined[0].candidate.fill.quantity == Decimal("0.4")
+    assert quarantined[0].candidate.fill.client_order_id == entry.client_order_id
     assert journal.get("entry").reservation == entry.reservation
     assert not journal.get("entry").terminal_confirmed
     assert not journal.get("cancel").terminal_confirmed

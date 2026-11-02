@@ -1,8 +1,9 @@
 """Scoped native evidence, separate from transport and owned-state reduction.
 
-The caller binds a trusted native event channel to an already verified account
-scope. ``BYBIT-UNIFIED`` is an adapter label, never an authenticated Bybit UID.
-These objects prove neither protection nor complete account reconciliation.
+The caller supplies an account scope; this data does not authenticate the native
+event channel. ``BYBIT-UNIFIED`` is an adapter label, never an authenticated Bybit
+UID. These objects prove neither actual venue execution, protection nor complete
+account reconciliation.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ def _side(value: object) -> Side:
 
 @dataclass(frozen=True)
 class NativeEventContext:
-    """Provenance supplied by an isolated caller, not inferred from label text."""
+    """Caller-supplied context, never transport authentication or fill authority."""
 
     scope: ProtectionScope
     native_account_id: str
@@ -113,6 +114,35 @@ class NativeFillEvidence:
     ts_event_ns: int
     ts_init_ns: int
     received_at_ns: int
+    source_kind: Literal["NATIVE_ORDER_FILLED", "NATIVE_FILL_REPORT"]
+    native_reconciliation: bool | None
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not ProtectionScope or self.scope.environment != "DEMO":
+            raise ValueError("NATIVE_EVENT_DEMO_SCOPE_REQUIRED")
+        for value in (self.scope.account_id, self.execution_id, self.client_order_id,
+                      self.position_id, self.instrument_id):
+            _text(value)
+        if type(self.side) is not str or self.side not in ("BUY", "SELL"):
+            raise ValueError("NATIVE_EVENT_SIDE_REQUIRED")
+        for value, positive in ((self.quantity, True), (self.price, True),
+                                (self.commission, False)):
+            if type(value) is not Decimal:
+                raise ValueError("NATIVE_EVENT_DECIMAL_REQUIRED")
+            bounded_decimal(value, positive=positive)
+        if (type(self.commission_currency) is not str
+                or re.fullmatch(r"[A-Za-z0-9]{1,32}", self.commission_currency) is None):
+            raise ValueError("NATIVE_EVENT_CURRENCY_REQUIRED")
+        for instant in (self.ts_event_ns, self.ts_init_ns, self.received_at_ns):
+            _ns(instant)
+        if self.source_kind == "NATIVE_ORDER_FILLED":
+            if type(self.native_reconciliation) is not bool:
+                raise ValueError("NATIVE_EVENT_RECONCILIATION_REQUIRED")
+        elif self.source_kind == "NATIVE_FILL_REPORT":
+            if self.native_reconciliation is not None:
+                raise ValueError("NATIVE_EVENT_RECONCILIATION_ABSENT")
+        else:
+            raise ValueError("NATIVE_EVENT_FILL_SOURCE_REQUIRED")
 
     def to_owned_fill(self) -> FillEvent:
         # Owned projection uses microseconds; the full native ns remain above.
@@ -201,7 +231,9 @@ class NativeEventDecoder:
                 instrument, owned.side, _decimal_object(getattr(event, "last_qty", None)),
                 _decimal_object(getattr(event, "last_px", None)),
                 _decimal_object(commission, positive=False), currency_text, event_ns,
-                init_ns, context.received_at_ns)
+                init_ns, context.received_at_ns,
+                "NATIVE_ORDER_FILLED" if name == "OrderFilled" else "NATIVE_FILL_REPORT",
+                getattr(event, "reconciliation", None) if name == "OrderFilled" else None)
         elif kind == "STATUS":
             value = getattr(event, "order_status", None)
             status = _native_text(getattr(value, "name", value))

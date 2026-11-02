@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from test_risk import NOW
 from test_runtime import SCOPE
-from test_worker import fill, harness, harness_existing, stage
+from test_worker import fill, harness, harness_existing, quarantines, stage
 
 from multi_exchange_trader.execution import worker as worker_module
 from multi_exchange_trader.execution.history import (
@@ -266,7 +266,9 @@ async def test_native_fill_progresses_during_slow_history_read(
     await asyncio.wait_for(started.wait(), 1)
     h.worker.post_native(h.assembly.channel, fill(record.client_order_id))
     await asyncio.sleep(0)
-    assert h.worker.runtime.projection("position-1").owned_quantity > 0
+    assert h.worker.runtime.projection("position-1").owned_quantity == 0
+    assert len(quarantines(h.worker)) == 1
+    assert h.worker.runtime.projection("position-1").entries_blocked
     assert h.worker.callback_failures == 0 and not task.done()
     release.set()
     await task
