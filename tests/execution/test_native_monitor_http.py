@@ -178,6 +178,11 @@ def test_real_wallet_conversion_preserves_borrow_lock_and_margin():
         ("locked", "101"),
         ("walletBalance", "1.000000001"),
         ("totalPositionIM", ""),
+        ("walletBalance", "100.00000000000000000000000000001"),
+        ("totalPositionIM", "100.00000000000000000000000000001"),
+        ("spotBorrow", "2.00000000000000000000000000001"),
+        ("locked", "3.00000000000000000000000000001"),
+        ("totalOrderIM", "5.00000000000000000000000000001"),
     ],
 )
 def test_wallet_missing_currency_or_economics_never_fabricate_balance(field, value):
@@ -188,6 +193,27 @@ def test_wallet_missing_currency_or_economics_never_fabricate_balance(field, val
     row["coin"][0][field] = value
     with pytest.raises(ValueError):
         mod.convert_account(row, p.AccountId("BYBIT-UNIFIED"), 1000)
+
+
+def test_wallet_supported_amounts_remain_exact_under_smaller_ambient_precision():
+    from decimal import localcontext
+
+    from nautilus_trader.core import nautilus_pyo3 as p
+
+    row = wallet_row()
+    row["coin"][0].update(
+        walletBalance="100.12345678",
+        spotBorrow="2.01234567",
+        locked="3.00000001",
+        totalPositionIM="4.12345678",
+        totalOrderIM="5.12345678",
+    )
+    with localcontext() as context:
+        context.prec = 8
+        state = module().convert_account(row, p.AccountId("BYBIT-UNIFIED"), 1000)
+    assert state.balances[0].total.as_decimal() == Decimal("98.11111111")
+    assert state.balances[0].free.as_decimal() == Decimal("95.11111110")
+    assert state.margins[0].initial.as_decimal() == Decimal("9.24691356")
 
 
 async def test_real_session_native_reads_share_physical_budget_and_reject_unknown(
@@ -252,3 +278,93 @@ async def test_final_http_boundary_checks_exact_scope_before_send(session, path,
     ):
         await adapter._get(path, params, signed=signed)
     assert len(requests) == before
+
+
+@pytest.mark.parametrize("boundary", ["transport", "instrument", "wallet"])
+async def test_http_failures_escape_only_as_fixed_codes_without_payload_context(
+    session, monkeypatch, boundary
+):
+    import traceback
+
+    from nautilus_trader.core import nautilus_pyo3 as p
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    mod = module()
+    owner, binding, wall, _, _ = session
+    faults = []
+    adapter = mod.MonitoringHttpAdapter(
+        session=owner, binding=binding, scope=SCOPE, symbols=("BTCUSDT",), fault=faults.append
+    )
+    adapter.cache_instrument(mod.convert_instrument(instrument_row(), fee_row(), "BTCUSDT", 1000))
+    private_payload = "99999999999999999999999999999999999999999"
+
+    async def send(client, request, **kwargs):
+        if boundary == "transport":
+            raise ValueError(private_payload)
+        instrument, wallet = instrument_row(), wallet_row()
+        instrument["priceFilter"]["maxPrice"] = private_payload
+        wallet["coin"][0]["walletBalance"] = private_payload
+        row = (
+            fee_row()
+            if request.url.path.endswith("fee-rate")
+            else wallet
+            if request.url.path.endswith("wallet-balance")
+            else instrument
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "retCode": 0,
+                "time": int(wall[0].timestamp() * 1000),
+                "result": {"list": [row], "category": "linear", "nextPageCursor": ""},
+            },
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    with (
+        owner._monitoring_operation(MonitoringReadBudget(guard=lambda: None)),
+        pytest.raises(MonitoringError) as caught,
+    ):
+        if boundary == "wallet":
+            await adapter.request_account_state(
+                account_type=p.BybitAccountType.UNIFIED, account_id=p.AccountId("BYBIT-UNIFIED")
+            )
+        else:
+            await adapter.request_instruments(p.BybitProductType.LINEAR, "BTCUSDT")
+    code = {
+        "transport": "MONITORING_HTTP_FAILED",
+        "instrument": "MONITORING_METADATA_INVALID",
+        "wallet": "MONITORING_WALLET_INVALID",
+    }[boundary]
+    assert str(caught.value) == code and faults[-1] == code
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert private_payload not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_http_cancellation_remains_cancellation_and_records_fault(session, monkeypatch):
+    import asyncio
+
+    from nautilus_trader.core import nautilus_pyo3 as p
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+
+    owner, binding, *_ = session
+    faults = []
+    adapter = module().MonitoringHttpAdapter(
+        session=owner, binding=binding, scope=SCOPE, symbols=("BTCUSDT",), fault=faults.append
+    )
+    cancelled = asyncio.CancelledError()
+
+    async def send(*args, **kwargs):
+        raise cancelled
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    with (
+        owner._monitoring_operation(MonitoringReadBudget(guard=lambda: None)),
+        pytest.raises(asyncio.CancelledError) as caught,
+    ):
+        await adapter.request_instruments(p.BybitProductType.LINEAR, "BTCUSDT")
+    assert caught.value is cancelled and faults[-1] == "MONITORING_HTTP_FAILED"

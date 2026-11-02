@@ -77,6 +77,8 @@ def test_original_execution_retains_seq_before_real_report_conversion():
         ("stopOrderType", "StopLoss"),
         ("leavesQty", "-1"),
         ("leavesQty", "11"),
+        ("leavesQty", "10"),
+        ("leavesQty", "8.00000000000000000000000000001"),
         ("createType", "CreateByTakeProfit"),
         ("extraFees", [{"fee": "1", "feeCoin": "USDT"}]),
     ],

@@ -6,10 +6,11 @@ constants, never venue margin/leverage evidence. No Rust HTTP client is created.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Callable
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Context, Decimal, Inexact, Rounded, localcontext
 from typing import Any, NoReturn
 
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
@@ -146,8 +147,10 @@ def convert_account(row: dict[str, Any], account_id: Any, stamp_ms: int) -> Any:
             raise MonitoringError("MONITORING_WALLET_CURRENCY_DUPLICATE")
         currency = _currency(coin.get("coin"))
         seen.add(coin["coin"])
-        wallet, borrowed, locked, position_im, order_im, maintenance = (
-            _number(coin.get(key))
+        # Validate each original amount before arithmetic can erase unsupported
+        # digits. Use the verified currency scale and a sufficient exact context.
+        wallet, borrowed, locked, position_im, order_im, maintenance = values = tuple(
+            _money(_number(coin.get(key)), currency).as_decimal()
             for key in (
                 "walletBalance",
                 "spotBorrow",
@@ -157,12 +160,18 @@ def convert_account(row: dict[str, Any], account_id: Any, stamp_ms: int) -> Any:
                 "totalPositionMM",
             )
         )
-        total, initial = wallet - borrowed, position_im + order_im
+        precision = max(1, *(value.adjusted() + 1 for value in values)) + currency.precision + 2
+        with localcontext(Context(prec=precision, traps=[Inexact, Rounded])):
+            total, initial, free = (
+                wallet - borrowed,
+                position_im + order_im,
+                wallet - borrowed - locked,
+            )
         if min(total, borrowed, locked, position_im, order_im, maintenance) < 0 or locked > total:
             raise MonitoringError("MONITORING_WALLET_ECONOMICS")
         balances.append(
             p.AccountBalance(
-                _money(total, currency), _money(locked, currency), _money(total - locked, currency)
+                _money(total, currency), _money(locked, currency), _money(free, currency)
             )
         )
         if initial != 0 or maintenance != 0:
@@ -266,9 +275,13 @@ class MonitoringHttpAdapter:
             ):
                 self._deny()
             return result, stamp
-        except BaseException:
+        except asyncio.CancelledError:
             self._fault("MONITORING_HTTP_FAILED")
             raise
+        except Exception:  # noqa: BLE001 - transport diagnostics must not escape.
+            self._fault("MONITORING_HTTP_FAILED")
+        # Outside the handler: do not retain the original exception context.
+        raise MonitoringError("MONITORING_HTTP_FAILED") from None
 
     async def request_instruments(
         self, product_type: Any, symbol: str | None, base_coin: str | None = None
@@ -300,9 +313,12 @@ class MonitoringHttpAdapter:
             self._deny()
         try:
             return [convert_instrument(rows[0], fee_rows[0], symbol, stamp)]
-        except BaseException:
+        except asyncio.CancelledError:
             self._fault("MONITORING_METADATA_INVALID")
             raise
+        except Exception:  # noqa: BLE001 - SDK errors may contain original payloads.
+            self._fault("MONITORING_METADATA_INVALID")
+        raise MonitoringError("MONITORING_METADATA_INVALID") from None
 
     async def request_account_state(self, *, account_type: Any, account_id: Any) -> Any:
         from nautilus_trader.core import nautilus_pyo3 as p
@@ -325,6 +341,9 @@ class MonitoringHttpAdapter:
             ):
                 self._deny()
             return convert_account(rows[0], account_id, stamp)
-        except BaseException:
+        except asyncio.CancelledError:
             self._fault("MONITORING_WALLET_INVALID")
             raise
+        except Exception:  # noqa: BLE001 - SDK errors may contain original payloads.
+            self._fault("MONITORING_WALLET_INVALID")
+        raise MonitoringError("MONITORING_WALLET_INVALID") from None

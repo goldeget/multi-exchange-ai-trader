@@ -214,3 +214,31 @@ async def test_original_session_provenance_survives_read_expiry_but_not_reauthen
     )
     with pytest.raises(ValueError):
         client._require_event_session()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_connect_error_boundary_redacts_context_and_preserves_cancellation(client, cancelled):
+    import traceback
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    private_payload = "synthetic-private-startup-diagnostic"
+    error = asyncio.CancelledError() if cancelled else ValueError(private_payload)
+
+    class InvalidTarget:
+        @property
+        def _witness(self):
+            raise error
+
+    # Negative boundary only: never arms, bypasses a guard, or reaches provider I/O.
+    client._monitor_target = InvalidTarget()
+    with pytest.raises(asyncio.CancelledError if cancelled else MonitoringError) as caught:
+        await client._connect()
+    assert client.monitoring_fault == "MONITORING_NATIVE_CONNECT_FAILED"
+    assert not client.is_connected and client._monitor_account_event is None
+    if cancelled:
+        assert caught.value is error
+    else:
+        assert str(caught.value) == "MONITORING_NATIVE_CONNECT_FAILED"
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+        assert private_payload not in "".join(traceback.format_exception(caught.value))

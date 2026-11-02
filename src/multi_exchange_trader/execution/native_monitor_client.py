@@ -255,9 +255,13 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             import time
 
             await self._monitor_stream.connect(timeout=min(10, budget.deadline - time.monotonic()))
-        except BaseException:
+            return
+        except asyncio.CancelledError:
             self._fault("MONITORING_NATIVE_CONNECT_FAILED")
             raise
+        except Exception:  # noqa: BLE001 - inherited task logging must see fixed codes only.
+            self._fault("MONITORING_NATIVE_CONNECT_FAILED")
+        raise MonitoringError("MONITORING_NATIVE_CONNECT_FAILED") from None
 
     async def _apply_account_configuration(self) -> None:
         if not self._monitor_account_emit:

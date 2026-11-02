@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import json
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 
 from .history import HistoryWindow, amount
@@ -54,7 +55,10 @@ def validate_execution(
         or kind == "Limit"
         and price != order.price.as_decimal()
         or execution.quantity > order.quantity.as_decimal()
-        or amount(row.get("leavesQty"), nonnegative=True) > order.quantity.as_decimal()
+        # Fractions preserve the exact relationship even beyond Decimal's
+        # ambient precision. Earlier fills may account for the remaining gap.
+        or Fraction(execution.quantity) + Fraction(amount(row.get("leavesQty"), nonnegative=True))
+        > Fraction(order.quantity.as_decimal())
         or execution.fee_currency != str(instrument.quote_currency)
         or execution.ts_event_ns < order.ts_init
         or execution.quantity % instrument.size_increment.as_decimal() != 0
