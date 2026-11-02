@@ -3,7 +3,7 @@
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -142,12 +142,26 @@ def blank_view(
     )
 
 
+def _publication_strings(value: object) -> Iterator[str]:
+    """Inspect decoded strings and property names, preserving scalar JSON spelling."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for name, item in value.items():
+            yield from _publication_strings(name)
+            yield from _publication_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _publication_strings(item)
+    else:
+        yield json.dumps(value, ensure_ascii=False)
+
+
 def publish(view: AccountView, *, credential_check: Callable[[str], bool] | None = None) -> AccountView:
-    """Hide the whole view if a credential slipped into the JSON."""
-    rendered = json.dumps(view.model_dump(by_alias=True, mode="json"), ensure_ascii=False)
-    if not text_contains_credential(rendered) and not (
-        credential_check is not None and credential_check(rendered)
-    ):
+    """Hide the whole view if a credential slipped into a public DTO value/name."""
+    if not any(text_contains_credential(text) or (
+        credential_check is not None and credential_check(text)
+    ) for text in _publication_strings(view.model_dump(by_alias=True, mode="json"))):
         return view
     return blank_view("credential_leak", view.환경코드, live_trading=view.실거래켜짐)
 

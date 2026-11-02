@@ -1,7 +1,7 @@
 """Private, immutable startup selection; never activates clients or exports secrets."""
 
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
@@ -154,6 +154,17 @@ class CredentialResolver:
         self._resolve_bybit()
         assert self._bybit is not None
         return self._bybit[environment]
+
+    def _bybit_publication_check(self) -> Callable[[str], bool]:
+        """Capture all selected namespaces without exposing their values or resolver."""
+        self._resolve_bybit()
+        assert self._bybit is not None
+        values = frozenset(value for pair in self._bybit.values() for value in pair if value)
+
+        def contains(text: str) -> bool:
+            return any(value in text for value in values)
+
+        return contains
 
     def bybit_flag(self, name: Literal["BYBIT_DEMO", "BYBIT_TESTNET"]) -> bool:
         self._resolve_bybit()

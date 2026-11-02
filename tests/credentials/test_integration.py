@@ -22,7 +22,7 @@ AI = {"AI_PROVIDER": "OPENROUTER", "OPENROUTER_API_KEY": "sk-or-v1-synthetic-onl
 
 
 def resolver(store: CredentialStore | None, environ: dict[str, str]) -> CredentialResolver:
-    return CredentialResolver(store=store, environ=environ)
+    return CredentialResolver(store=store, environ={"BYBIT_ENV_FILE": "off"} | environ)
 
 
 def saved(tmp_path: Path, values: dict[str, str]) -> CredentialStore:
@@ -306,6 +306,96 @@ async def test_stored_credentials_guard_existing_account_publication(tmp_path: P
         assert published.오류코드 == "credential_leak"
     finally:
         await client.aclose()
+
+
+@pytest.mark.parametrize("active_environment", ["mainnet", "demo"])
+@pytest.mark.parametrize("other_field", ["key", "secret"])
+async def test_publication_guards_other_saved_bybit_namespace(
+    tmp_path: Path, active_environment: str, other_field: str,
+) -> None:
+    from multi_exchange_trader.account.bybit_readonly import BybitReadOnlyClient
+    from multi_exchange_trader.account.service import blank_view, publish
+
+    values = {"BYBIT_API_KEY": "100000000000000001", "BYBIT_API_SECRET": "100000000000000002",
+              "BYBIT_DEMO_API_KEY": "200000000000000001",
+              "BYBIT_DEMO_API_SECRET": "200000000000000002"}
+    context = resolver(saved(tmp_path, values), {"BYBIT_DEMO": "true", "BYBIT_ENV_FILE": "off"})
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        pytest.fail("Publication must not contact Bybit")
+
+    transport = httpx.MockTransport(refuse)
+    client = (BybitReadOnlyClient.from_environment(transport, resolver=context)
+              if active_environment == "mainnet" else
+              BybitReadOnlyClient.for_demo(transport, resolver=context))
+    other_prefix = "BYBIT_DEMO" if active_environment == "mainnet" else "BYBIT"
+    leaked = values[other_prefix + ("_API_KEY" if other_field == "key" else "_API_SECRET")]
+    view = blank_view("ok", client.environment, live_trading=False).model_copy(
+        update={"메시지": leaked})
+    try:
+        published = publish(view, credential_check=client._contains_credential)
+        assert published.메시지 != leaked
+        assert published.오류코드 == "credential_leak"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("secret", ['synthetic"quote-secret', r"synthetic\backslash-secret",
+                                   '합성"비밀\\문자', "합성유니코드비밀"])
+@pytest.mark.parametrize("field", ["메시지", "구분"])
+async def test_publication_compares_decoded_saved_secret_values(
+    tmp_path: Path, secret: str, field: str,
+) -> None:
+    from multi_exchange_trader.account.bybit_readonly import BybitReadOnlyClient
+    from multi_exchange_trader.account.service import blank_view, publish
+
+    context = resolver(saved(tmp_path, LIVE | {"BYBIT_API_SECRET": secret}), {})
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        pytest.fail("Publication must not contact Bybit")
+
+    client = BybitReadOnlyClient.from_environment(httpx.MockTransport(refuse), resolver=context)
+    view = blank_view("ok", "mainnet", live_trading=False).model_copy(
+        update={field: secret if field == "메시지" else [secret]})
+    try:
+        published = publish(view, credential_check=client._contains_credential)
+        decoded = published.model_dump(mode="json")
+        if field == "메시지":
+            assert decoded[field] != secret
+        else:
+            assert secret not in decoded[field]
+        assert published.오류코드 == "credential_leak"
+    finally:
+        await client.aclose()
+
+
+async def test_publication_still_checks_decoded_property_names(tmp_path: Path) -> None:
+    from multi_exchange_trader.account.bybit_readonly import BybitReadOnlyClient
+    from multi_exchange_trader.account.service import blank_view, publish
+
+    field_name_secret = "계좌마진설명"
+    context = resolver(saved(tmp_path, LIVE | {"BYBIT_API_SECRET": field_name_secret}), {})
+    client = BybitReadOnlyClient.from_environment(resolver=context)
+    view = blank_view("ok", "mainnet", live_trading=False)
+    assert field_name_secret in view.model_dump(mode="json")
+    try:
+        published = publish(view, credential_check=client._contains_credential)
+        assert published.오류코드 == "credential_leak"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("secret", ['legacy"quote-secret', '합성\\legacy-backslash-secret'])
+def test_publication_compares_decoded_legacy_secret_values(
+    monkeypatch: pytest.MonkeyPatch, secret: str,
+) -> None:
+    from multi_exchange_trader.account.service import blank_view, publish
+
+    monkeypatch.setenv("BYBIT_API_SECRET", secret)
+    view = blank_view("ok", "mainnet", live_trading=False).model_copy(update={"메시지": secret})
+    published = publish(view)
+    assert published.model_dump(mode="json")["메시지"] != secret
+    assert published.오류코드 == "credential_leak"
 
 
 def test_pair_sources_are_atomic_and_stored_namespace_wins(tmp_path: Path) -> None:
