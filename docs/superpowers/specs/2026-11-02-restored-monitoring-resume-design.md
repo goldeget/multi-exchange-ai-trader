@@ -137,5 +137,3 @@ Shared-loop ownership correction: pinned kernel construction installs its own Th
 Exactly four implementation tasks; separate new `tests/execution/test_restored_monitoring_linux.py` with12 nonparametrized tests, exact collection/pass12, zero skip/error/failure and exact module identity. Keep prior36 and restart6 gates separate. Real builder/node/kernel/engines/provider/session/client/portfolio/strategy/cache/run/stop; fake ONLY HTTP/genericWS I/O, not lifecycle/authority methods or flags. Positive tests intercept network boundary without setting transport_injected=False or monkeypatching require; separately prove public injected transport rejected. No assembly_factory/decoder bypass.
 
 Focused checks + strict36 + restart6 + new12 + required CI on exact reviewed SHA, evidence commands/XML/module counts and independent review. Windows skip/local partial/hosted one-job/fullCI/provider acceptance are distinct. No whole-account, event-complete, valuation or production/trading readiness claim.
-
-

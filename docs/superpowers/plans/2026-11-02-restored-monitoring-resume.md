@@ -163,4 +163,3 @@ sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 ## Completion report
 
 Root receives exact final SHA/files, tests and XML counts36+6+12 separately, independent review fixes, required CI status and any unresolved blocker. Merge only the reviewed passing authorized change; preserve backup/restore/history work and STOPPED/execution flags. No observed no-network result is promoted to live account or financial qualification.
-
