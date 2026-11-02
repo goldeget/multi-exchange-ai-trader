@@ -14,7 +14,7 @@ import pytest
 
 from multi_exchange_trader.ai import generation
 from multi_exchange_trader.ai.budget import BudgetBook
-from multi_exchange_trader.ai.dispatch import AIDispatcher
+from multi_exchange_trader.ai.dispatch import AIDispatcher, DispatchResult
 from multi_exchange_trader.ai.generation import (
     GenerationResult,
     OpenRouterGenerationClient,
@@ -103,6 +103,26 @@ def dispatch(dispatcher, **changes):
 
 class StatusSubclass(int):
     pass
+
+
+def test_dispatch_result_preserves_positional_arguments_and_validates_status():
+    selection = object()
+    legacy = DispatchResult("request-1", "SETTLED", None, "settled", "0.0012", selection)
+    assert legacy.selection is selection and legacy.http_status is None
+    for valid in (None, 100, 200, 599):
+        assert DispatchResult("r", "UNCERTAIN", http_status=valid).http_status is valid
+    for invalid in (True, False, 99, 600, "402", 402.0, Decimal(402), StatusSubclass(402)):
+        with pytest.raises(ValueError, match="^Invalid HTTP status$"):
+            DispatchResult("r", "UNCERTAIN", http_status=invalid)
+
+
+def assert_durable_status(dispatcher, expected):
+    current = dispatcher.status("request-1")
+    assert current.http_status == expected and current.selection is None
+    restarted = AIDispatcher(dispatcher.path, dispatcher.budget, dispatcher.client, clock=lambda: NOW)
+    assert restarted.status("request-1").http_status == expected
+    with sqlite3.connect(dispatcher.path) as db:
+        assert db.execute("SELECT http_status FROM ai_dispatches").fetchone()[0] == expected
 
 
 @pytest.mark.parametrize("value", [None, 100, 200, 599])
@@ -275,6 +295,8 @@ def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     assert dispatch(dispatcher, enabled=False).failure == "GENERATION_DISABLED"
     assert calls == []
     result = dispatch(dispatcher)
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert result.status == "SETTLED" and result.failure is None
     assert result.selection.candidate.plan_id == "private-plan"
     assert result.exact_cost_usd == "0.0012"
@@ -299,7 +321,7 @@ def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     assert restarted.status("request-1").selection is None
     assert len(calls) == 1
     with sqlite3.connect(dispatcher.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
         persisted = repr(db.execute("SELECT * FROM ai_dispatches").fetchall())
     for secret in (KEY, "private-account", "private-plan", "allowed candidate"):
         assert secret not in persisted
@@ -342,6 +364,8 @@ def test_exact_charge_settles_even_when_model_or_selection_is_rejected(tmp_path,
     result = dispatch(dispatcher)
     assert result.status == "SETTLED" and result.failure is not None
     assert result.selection is None and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["used"] == "0.00120000"
     assert len(calls) == 1 and KEY not in repr(result)
 
@@ -353,19 +377,48 @@ def test_unknown_cost_retains_full_maximum_and_no_selection(tmp_path, usage):
         tmp_path, lambda _: httpx.Response(200, json=completion(usage=usage)))
     result = dispatch(dispatcher)
     assert result.status == "UNCERTAIN" and result.selection is None
+    assert result.http_status == 200 and result.exact_cost_usd is None
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
 
-@pytest.mark.parametrize("status", [302, 401, 429, 503])
+@pytest.mark.parametrize("status", [302, 401, 402, 404, 429, 503])
 def test_errors_never_follow_redirect_or_retry_and_never_infer_free(tmp_path, status):
+    private_values = (KEY, "fake provider prose", "fake billing detail", "flagged input",
+                      "candidate reason", "provider-response-id")
     dispatcher, budget, calls = setup_dispatch(
         tmp_path, lambda _: httpx.Response(status, headers={"location": "https://evil.invalid"},
-                                          json={"error": {"message": KEY}}))
+                                          json={"error": {"code": 499, "message": private_values},
+                                                "billing": "fake billing detail",
+                                                "id": "provider-response-id"}))
     result = dispatch(dispatcher)
     assert result.status == "UNCERTAIN" and KEY not in repr(result)
+    assert result.http_status == status and result.exact_cost_usd is None
+    assert_durable_status(dispatcher, status)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
+    with sqlite3.connect(dispatcher.path) as db:
+        persisted = repr(db.execute("SELECT * FROM ai_dispatches").fetchall())
+    for private in private_values:
+        assert private not in repr(result) and private not in persisted
+
+
+@pytest.mark.parametrize("legacy_state", ["UNCERTAIN", "CHARGED"])
+def test_migrated_consumed_dispatch_never_infers_status_or_replays(tmp_path, legacy_state):
+    dispatcher, budget, calls = setup_dispatch(tmp_path)
+    assert dispatch(dispatcher).http_status == 200
+    with sqlite3.connect(dispatcher.path) as db:
+        db.execute("ALTER TABLE ai_dispatches DROP COLUMN http_status")
+        db.execute("UPDATE ai_dispatches SET status=?", (legacy_state,))
+        db.execute("PRAGMA user_version=1")
+    restarted = AIDispatcher(dispatcher.path, budget, dispatcher.client, clock=lambda: NOW)
+    assert restarted.status("request-1").http_status is None
+    duplicate = dispatch(restarted)
+    assert duplicate.failure == "ALREADY_DISPATCHED" and duplicate.http_status is None
+    reconciled = restarted.reconcile_charge("request-1")
+    assert reconciled.http_status is None and reconciled.selection is None
+    assert len(calls) == 1
 
 
 def test_timeout_exception_secrets_are_not_exposed_and_no_retry(tmp_path):
@@ -375,6 +428,8 @@ def test_timeout_exception_secrets_are_not_exposed_and_no_retry(tmp_path):
     dispatcher, budget, calls = setup_dispatch(tmp_path, timeout)
     result = dispatch(dispatcher)
     assert result.failure == "TIMEOUT" and KEY not in repr(result)
+    assert result.http_status is None
+    assert_durable_status(dispatcher, None)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
@@ -392,6 +447,7 @@ def test_crash_during_paid_call_preserves_liability_across_restart(tmp_path):
     restarted = AIDispatcher(dispatcher.path, BudgetBook(budget.path), dispatcher.client,
                              clock=lambda: NOW)
     assert restarted.status("request-1").status == "UNCERTAIN"
+    assert restarted.status("request-1").http_status is None
     assert dispatch(restarted).failure == "ALREADY_DISPATCHED"
     assert budget.summary()["uncertain"] == "0.01000000" and len(calls) == 1
 
@@ -418,11 +474,15 @@ def test_exact_overrun_is_liability_and_blocks_selected_candidate(tmp_path):
         tmp_path, lambda _: httpx.Response(200, json=completion(usage={"cost": 150.125})))
     result = dispatch(dispatcher)
     assert result.failure == "BUDGET_OVERRUN_HOLD" and result.selection is None
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["overrun_liability"] == "150.12500000" and len(calls) == 1
 
 
 def test_charge_persists_before_settlement_failure_then_local_reconcile(tmp_path):
-    dispatcher, budget, calls = setup_dispatch(tmp_path)
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(429, json={"error": {"code": 402},
+                                                    "usage": {"cost": 0.0012}}))
     with budget.connect() as db:
         db.execute("""CREATE TRIGGER reject_settlement BEFORE UPDATE OF actual ON reservations
                       BEGIN SELECT RAISE(ABORT, 'fake storage failure'); END""")
@@ -431,12 +491,18 @@ def test_charge_persists_before_settlement_failure_then_local_reconcile(tmp_path
         dispatch(dispatcher)
     status = dispatcher.status("request-1")
     assert status.status == "CHARGED" and status.exact_cost_usd == "0.0012"
+    assert status.http_status == 429
+    assert_durable_status(dispatcher, 429)
     assert budget.summary()["uncertain"] == "0.01000000"
     with budget.connect() as db:
         db.execute("DROP TRIGGER reject_settlement")
         db.commit()
-    reconciled = dispatcher.reconcile_charge("request-1")
+    restarted = AIDispatcher(dispatcher.path, BudgetBook(budget.path), dispatcher.client,
+                             clock=lambda: NOW)
+    reconciled = restarted.reconcile_charge("request-1")
     assert reconciled.reservation_status == "settled" and reconciled.selection is None
+    assert reconciled.http_status == 429 and reconciled.exact_cost_usd == "0.0012"
+    assert_durable_status(restarted, 429)
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
 
@@ -469,6 +535,7 @@ def test_restart_applies_pending_overrun_before_different_request(tmp_path, monk
     assert summary["used"] == "150.12500000" and summary["overrun_count"] == 1
     assert summary["overrun_hold"] and summary["reserved"] == "0.00000000"
     assert restarted.status("request-1").status == "SETTLED"
+    assert restarted.status("request-1").http_status == 200
     assert restarted.reconcile_charge("request-1").selection is None
     assert fresh_budget.summary()["used"] == "150.12500000"
 
@@ -489,6 +556,7 @@ def test_unapplied_charge_blocks_new_reservation_when_repair_still_fails(tmp_pat
     assert result.failure == "PENDING_CHARGE_RECONCILIATION" and result.selection is None
     assert len(calls) == 1 and budget.summary()["reserved"] == "0.01000000"
     assert restarted.status("request-1").status == "CHARGED"
+    assert restarted.status("request-1").http_status == 200
     with budget.connect() as db:
         db.execute("DROP TRIGGER reject_settlement")
         db.commit()
@@ -548,6 +616,7 @@ def test_concurrent_workers_wait_for_pending_charge_repair(tmp_path, monkeypatch
     assert len(calls) == 1
     assert fresh_budget.summary()["used"] == "150.12500000"
     assert third.status("request-1").status == "SETTLED"
+    assert third.status("request-1").http_status == 200
 
 
 def test_dispatch_lock_timeout_fails_closed_without_reservation(tmp_path, monkeypatch):
