@@ -17,6 +17,8 @@ from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
 from .ai.budget import BudgetBook
 from .controls import install as install_controls
+from .execution.runtime_policy import RuntimePolicyBook
+from .execution.settings_api import install as install_automatic_settings
 from .market_data.adapters.base import MarketDataUnavailable
 from .market_data.adapters.binance import BinanceAdapter
 from .market_data.adapters.bybit import BybitAdapter
@@ -59,6 +61,13 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         sidecar_root = application.state.paper_store.path.parent
         application.state.order_reviews = None
         application.state.ai_budget = None
+        application.state.runtime_policy = None
+        try:
+            application.state.runtime_policy = RuntimePolicyBook(
+                Path(os.environ.get("RUNTIME_POLICY_DB_PATH", str(sidecar_root / "runtime-policy.sqlite3")))
+            )
+        except (ValueError, sqlite3.Error, OSError):
+            pass
         application.state.spot_paper_store = None
         application.state.spot_paper_qualified = SPOT_QUALIFIED
         try:
@@ -212,6 +221,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
     install_recommendations(application)
     install_account(application)
     install_controls(application)
+    install_automatic_settings(application)
     install_spot(application)
     return application
 

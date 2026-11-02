@@ -1,0 +1,46 @@
+import {test,expect} from '@playwright/test';
+import {openOffline} from './helpers';
+
+const keys='capital_usdt leverage_min leverage_max per_trade_loss max_daily_loss max_drawdown max_total_notional max_total_risk max_total_margin margin_allocation liquidation_buffer_fraction max_quote_age_seconds max_evidence_age_seconds max_consecutive_losses max_positions mode environment sizing_rule margin_mode position_mode allowed_symbols allowed_strategies selected_symbols selected_strategies'.split(' ');
+
+test('operator can save an unset partial policy without activating orders',async({page,context,baseURL},testInfo)=>{
+ if(!baseURL||new URL(baseURL).hostname!=='127.0.0.1')throw new Error('Local test server required');
+ const origin=new URL(baseURL).origin;const blocked:string[]=[];const writes:unknown[]=[];
+ let backgroundRead=false;let releaseRead!:()=>void;
+ const readGate=new Promise<void>(resolve=>{releaseRead=resolve});
+ let snapshot={schema_version:1,revision:0,policy:Object.fromEntries(keys.map(key=>[key,null])) as Record<string,unknown>,missing_fields:keys,desired_state:'STOPPED',live_order_enabled:false,worker_running:false,blockers:['NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED']};
+ await context.route('**/*',async route=>{
+  const request=route.request(),url=new URL(request.url());
+  if(url.origin!==origin){blocked.push(url.origin);await route.abort();return}
+  if(url.pathname==='/api/v1/automatic/settings'){
+   if(request.method()==='PUT'){
+    const body=request.postDataJSON();writes.push(body);snapshot={...snapshot,revision:snapshot.revision+1,policy:body.policy};
+   }else if(request.method()!=='GET'){blocked.push(request.method());await route.abort();return}
+   else if(writes.length===1){backgroundRead=true;await readGate}
+   await route.fulfill({contentType:'application/json',body:JSON.stringify(snapshot)});return;
+  }
+  if(request.method()!=='GET'){blocked.push(`${request.method()} ${url.pathname}`);await route.abort();return}
+  if(url.pathname.startsWith('/api/')){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
+  await route.continue();
+ });
+ await openOffline(page,'view=settings&tab=connections');
+ await page.getByRole('button',{name:'운용 한도 설정 열기'}).click();
+ const capital=page.getByLabel('자동매매에 맡길 최대 자금 (USDT)');await expect(capital).toHaveValue('');
+ await capital.fill('100');await page.getByLabel('자동매매 모드').selectOption('FULL_AUTO');
+ await page.getByRole('button',{name:'운용 한도 저장',exact:true}).click();
+ await expect(page.getByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.')).toBeVisible();
+ expect(writes).toHaveLength(1);expect(writes[0]).toMatchObject({revision:0,policy:{capital_usdt:'100',mode:'FULL_AUTO',leverage_max:null}});
+ await expect(capital).toHaveValue('100');
+ await expect.poll(()=>backgroundRead).toBe(true);
+ await page.getByLabel('일일 최대 손실 (USDT)').fill('5');
+ await page.getByRole('button',{name:'운용 한도 저장',exact:true}).click();
+ await expect.poll(()=>writes.length).toBe(2);
+ expect(writes[1]).toMatchObject({revision:1,policy:{capital_usdt:'100',max_daily_loss:'5'}});
+ releaseRead();
+ await expect(capital).toHaveValue('100');
+ await expect(page.getByLabel('일일 최대 손실 (USDT)')).toHaveValue('5');
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+ expect(blocked).toEqual([]);
+ await testInfo.attach('automatic-settings',{body:await page.screenshot({fullPage:true,animations:'disabled'}),contentType:'image/png'});
+ await testInfo.attach('automatic-settings-network-audit',{body:Buffer.from(JSON.stringify({blocked,writes:writes.length})),contentType:'application/json'});
+});

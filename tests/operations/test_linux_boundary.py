@@ -29,7 +29,7 @@ def test_executed_service_gates_override_incoming_credential_file_flags() -> Non
     interpreter = command.index("/opt/trader/app/.venv/bin/python")
     enforced = command[1:interpreter]
     keys = ["LIVE_TRADING_ENABLED", "BYBIT_DEMO", "BYBIT_TESTNET",
-            "BYBIT_ENV_FILE", "ANTHROPIC_ENV_FILE"]
+            "BYBIT_ENV_FILE", "ANTHROPIC_ENV_FILE", "AI_ENV_FILE"]
     incoming = {**os.environ, **dict.fromkeys(keys, "true")}
     program = "import json,os; print(json.dumps({k:os.environ[k] for k in " + repr(keys) + "}))"
     if os.name == "posix":
@@ -40,7 +40,7 @@ def test_executed_service_gates_override_incoming_credential_file_flags() -> Non
         pytest.skip("ExecStart /usr/bin/env enforcement requires Linux CI")
     assert json.loads(result.stdout) == {
         "LIVE_TRADING_ENABLED": "false", "BYBIT_DEMO": "false", "BYBIT_TESTNET": "false",
-        "BYBIT_ENV_FILE": "off", "ANTHROPIC_ENV_FILE": "off",
+        "BYBIT_ENV_FILE": "off", "ANTHROPIC_ENV_FILE": "off", "AI_ENV_FILE": "off",
     }
 
 
