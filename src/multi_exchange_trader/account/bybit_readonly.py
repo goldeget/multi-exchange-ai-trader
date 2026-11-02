@@ -169,6 +169,7 @@ class _ReadOperation(Protocol):
     def begin_read(self) -> float: ...
     def before_attempt(self, attempt: int) -> None: ...
     def response(self, status: int, headers: Mapping[str, str]) -> None: ...
+    def read_failed(self) -> None: ...
 
 
 class BybitReadOnlyClient:
@@ -355,7 +356,15 @@ class BybitReadOnlyClient:
                 continue
             # Account info can return retCode 0 with no envelope time.
             # Wallet, positions, and orders still require a positive server time.
-            return self._accepted(response, require_time=path != "/v5/account/info")
+            try:
+                accepted = self._accepted(response, require_time=path != "/v5/account/info")
+            except (BybitReadError, BybitBlocked):
+                if operation is not None:
+                    operation.read_failed()
+                raise
+            if operation is not None:
+                operation.check()
+            return accepted
 
     async def _bounded_response(self, request: httpx.Request) -> httpx.Response:
         response = await self._client.send(request, stream=True)

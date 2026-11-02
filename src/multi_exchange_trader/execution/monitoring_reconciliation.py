@@ -19,6 +19,7 @@ from .monitoring_models import (
     MonitoringWitness,
     NativeMonitoringSummary,
     StreamStamp,
+    _MonitoringTargetInvalidated,
 )
 
 if TYPE_CHECKING:
@@ -338,11 +339,12 @@ def capture_monitoring_target(
         or assembly is not witness._assembly
         or restore_generation_id != witness._generation
         or policy_revision != witness._policy
-        or stream_stamp != witness._stamp()
         or not 1 <= len(witness._symbols) <= 4
         or len(set(witness._symbols)) != len(witness._symbols)
     ):
         raise MonitoringError("MONITORING_TARGET_SCOPE_REQUIRED")
+    if stream_stamp != witness._stamp():
+        raise _MonitoringTargetInvalidated("MONITORING_TARGET_CHANGED")
     identity = NativeRestartIdentity(
         assembly.channel.scope,
         assembly.channel.native_account_id,
@@ -425,4 +427,4 @@ def require_current_target(target: MonitoringTarget, session: object, phase: str
         or current.native != target.native
         or current.application != target.application
     ):
-        raise MonitoringError("MONITORING_TARGET_CHANGED")
+        raise _MonitoringTargetInvalidated("MONITORING_TARGET_CHANGED")

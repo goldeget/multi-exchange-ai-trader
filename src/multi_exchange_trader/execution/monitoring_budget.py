@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import NoReturn
 
 
 class MonitoringBudgetError(ValueError):
@@ -29,15 +30,19 @@ class MonitoringReadBudget:
         self._last = time.monotonic()
         self.deadline = self._last + 60.0
         self.physical_attempts = 0
+        self._terminal_failure: str | None = None
         self._receipt: ContextVar[_ReceiptBudget | None] = ContextVar(
             "monitoring_receipt", default=None
         )
 
-    def check(self) -> None:
-        self._guard()
+    def _fail(self, code: str) -> NoReturn:
+        self._terminal_failure = self._terminal_failure or code
+        raise MonitoringBudgetError(self._terminal_failure)
+
+    def _check_limits(self) -> None:
+        if self._terminal_failure is not None:
+            self._fail(self._terminal_failure)
         receipt = self._receipt.get()
-        if receipt is not None:
-            receipt.guard()
         now = time.monotonic()
         if (
             not math.isfinite(now)
@@ -45,8 +50,18 @@ class MonitoringReadBudget:
             or now >= self.deadline
             or (receipt is not None and now >= receipt.deadline)
         ):
-            raise MonitoringBudgetError("MONITORING_DEADLINE_OR_CLOCK")
+            self._fail("MONITORING_DEADLINE_OR_CLOCK")
         self._last = now
+
+    def check(self) -> None:
+        self._check_limits()
+        self._guard()
+        receipt = self._receipt.get()
+        if receipt is not None:
+            receipt.guard()
+
+    def read_failed(self) -> NoReturn:
+        self._fail("MONITORING_READ_FAILED")
 
     @contextmanager
     def receipt(self, *, guard: Callable[[], None] = lambda: None) -> Iterator[None]:
@@ -58,24 +73,28 @@ class MonitoringReadBudget:
             self._receipt.reset(token)
 
     def begin_read(self) -> float:
-        self.check()
         receipt = self._receipt.get()
+        if receipt is not None and receipt.logical >= 32:
+            self._fail("MONITORING_LOGICAL_GET_LIMIT")
+        self.check()
         if receipt is not None:
-            if receipt.logical >= 32:
-                raise MonitoringBudgetError("MONITORING_LOGICAL_GET_LIMIT")
             receipt.logical += 1
         return self.deadline if receipt is None else min(self.deadline, receipt.deadline)
 
     def before_attempt(self, attempt: int) -> None:
-        self.check()
         if attempt >= 3 or self.physical_attempts >= 200:
-            raise MonitoringBudgetError("MONITORING_PHYSICAL_ATTEMPTS")
+            self._fail("MONITORING_PHYSICAL_ATTEMPTS")
+        self.check()
         self.physical_attempts += 1
 
     def response(self, status: int, headers: Mapping[str, str]) -> None:
-        self.check()
+        # A simultaneous target delta must not hide a terminal response.
         if status in (403, 429, 451):
-            raise MonitoringBudgetError("MONITORING_QUOTA_OR_BAN")
+            self._fail("MONITORING_QUOTA_OR_BAN")
         remaining = headers.get("x-bapi-limit-status")
         if remaining is not None and (not remaining.isdigit() or int(remaining) <= 0):
-            raise MonitoringBudgetError("MONITORING_QUOTA_OR_BAN")
+            self._fail("MONITORING_QUOTA_OR_BAN")
+        # Bounds/owner checks still run immediately after I/O. Defer only
+        # target comparison until the accepted response envelope is validated.
+        self._check_limits()
+        self._guard()

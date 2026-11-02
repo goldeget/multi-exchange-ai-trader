@@ -411,3 +411,27 @@ async def test_full_original_filled_readback_and_exact_execution_value(reader_co
             compare_restored_state(core[2], result).status.value
             == "MATCHED_NATIVE_WITH_UNCREDITED_FILLS"
         )
+
+@pytest.mark.parametrize('failure', ['physical', 'logical', 'quota', 'deadline'])
+def test_terminal_budget_fault_survives_target_change_and_new_receipt(failure, monkeypatch):
+    import multi_exchange_trader.execution.monitoring_budget as module
+
+    now = [100.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
+    budget = module.MonitoringReadBudget()
+    with pytest.raises(ValueError):
+        if failure == 'physical':
+            budget.before_attempt(3)
+        elif failure == 'logical':
+            with budget.receipt():
+                for _ in range(33):
+                    budget.begin_read()
+        elif failure == 'quota':
+            budget.response(429, {})
+        else:
+            now[0] = 161.0
+            budget.check()
+    now[0] = 100.0
+    with pytest.raises(ValueError):
+        budget.before_attempt(0)
+    assert budget.physical_attempts == 0

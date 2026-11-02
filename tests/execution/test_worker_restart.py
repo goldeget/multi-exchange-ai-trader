@@ -127,7 +127,7 @@ async def test_stop_drains_posted_callbacks_and_transport_loss_before_capture(
     original = restart.capture_native_cache
 
     def capture(*args: Any, **kwargs: Any) -> Any:
-        assert h.trace == ["quiesced", "closed", "callback"]
+        assert h.trace == ["quiesced", "callback", "closed"]
         assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
         assert h.worker._lock.acquired and h.worker._stopping
         return original(*args, **kwargs)

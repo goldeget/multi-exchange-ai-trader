@@ -249,3 +249,60 @@ async def test_incomplete_client_task_prevents_monitor_quiescence(prepared):
         release.set()
         await task
     assembly.require_monitoring_tasks_quiesced()
+
+@pytest.mark.parametrize('replacement', ['store', 'assembly', 'lease', 'runtime', 'controller'])
+async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
+    prepared, monkeypatch, replacement
+):
+    # This unit isolates the final continuation after quiescence; the boundary
+    # below is not evidence that a Linux native producer has really stopped.
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+
+    worker = prepared[2]
+    original_assembly, original_store = worker._assembly, worker._store
+    original_runtime = worker._runtime
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    controller.in_progress = False
+    traces = []
+    worker._restart = SimpleNamespace(seal=lambda _: traces.append('seal'))
+    monkeypatch.setattr(original_assembly, 'dispose_local', lambda: traces.append('original-dispose'))
+    monkeypatch.setattr(original_assembly, 'close_event_channel', lambda: traces.append('channel-close'))
+    for store in (worker._store, worker._journal):
+        monkeypatch.setattr(store, 'close', lambda: traces.append('original-store-close'))
+    original_lease = worker._lock.acquisition_id
+    def mutate():
+        if replacement == 'store':
+            worker._store = SimpleNamespace(close=lambda: traces.append('replacement-store-close'))
+        elif replacement == 'runtime':
+            worker._runtime = object()
+        elif replacement == 'controller':
+            worker._monitoring = None
+        elif replacement == 'assembly':
+            worker._assembly = replace(original_assembly)
+            worker._assembly.dispose_local = lambda: traces.append('replacement-dispose')
+        else:
+            worker._lock.release()
+            worker._lock.acquire()
+    async def quiesced_boundary():
+        controller.require_cleanup_owner()
+        asyncio.get_running_loop().call_soon(mutate)
+    monkeypatch.setattr(worker, '_quiesce', quiesced_boundary)
+    try:
+        with pytest.raises((ValueError, RuntimeBlocked)):
+            await worker.stop()
+        assert traces == []
+        assert not worker._channel_closed and not worker._stopped
+        assert controller.state.phase == 'ATTENTION'
+        assert controller.state.resources_retained
+        assert worker._lock.acquired
+        if replacement == 'lease':
+            assert worker._lock.acquisition_id != original_lease
+    finally:
+        worker._assembly, worker._store = original_assembly, original_store
+        worker._runtime, worker._monitoring = original_runtime, controller
+        if replacement == 'lease':
+            worker._lock.release()

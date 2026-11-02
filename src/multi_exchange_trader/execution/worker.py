@@ -592,22 +592,29 @@ class ExecutionWorker:
             self._assembly.require_quiesced()
 
     async def _finish_stop(self, runtime: NativeExecutionRuntime) -> None:
+        monitoring = self._monitoring
         try:
             async with asyncio.timeout(10):
                 await self._quiesce()
+            # Yield before closing the sink. A queued owner/lease replacement
+            # must retain every resource, even after successful producer quiescence.
+            await asyncio.sleep(0)
+            if self._monitoring is not monitoring:
+                raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
+            if monitoring is not None:
+                monitoring.require_cleanup_owner()
             assert self._assembly is not None
             self._assembly.close_event_channel()
             self._channel_closed = True
-            # Already accepted owner-loop callbacks settle before SQLite closes.
-            await asyncio.sleep(0)
+            # No await from this final exact-owner check through seal/dispose/close.
         except BaseException:
             # Stop tasks remain owned even when a bounded attempt times out.
             # Never close the callback sink or stores without producer proof.
             with suppress(RuntimeBlocked):
                 runtime.transport_lost()
-            if self._monitoring is not None:
-                self._monitoring.state = replace(self._monitoring.state,
-                    resources_retained=True, stream_stamp=self._monitoring.client.monitoring_stamp())
+            if monitoring is not None:
+                monitoring.state = replace(monitoring.state,
+                    resources_retained=True, stream_stamp=monitoring.client.monitoring_stamp())
             raise
         try:
             runtime.transport_lost()

@@ -534,3 +534,146 @@ async def test_fresh_acquisition_rejects_public_target_replacements(
     fresh = await owner.read_monitoring_receipt(binding, target=recaptured, phase=phase)
     owner.discard_monitoring_receipt(fresh)
     assert owner._monitoring_receipts == {}
+
+@pytest.mark.parametrize('status,headers', [(403, {}), (429, {}), (451, {}),
+                                          (200, {'x-bapi-limit-status': '0'})])
+async def test_terminal_post_response_with_real_pong_cannot_send_again(
+    target_core, monkeypatch, status, headers
+):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    worker, stamps = core[2], core[3]
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    budget = MonitoringReadBudget()
+    requests = []
+    def capture():
+        stamps[0] = stream.stamp()
+        return capture_monitoring_target(worker.runtime, worker._assembly,
+            restore_generation_id='restore-1', policy_revision='0',
+            witness=core[1]._witness, stream_stamp=stamps[0])
+    target = capture()
+    async def terminal(client, request, **kwargs):
+        requests.append(request)
+        await stream._ping()
+        await stream.barrier()
+        stamps[0] = stream.stamp()
+        return httpx.Response(status, headers=headers,
+            json={'retCode': 0, 'time': MS, 'result': {}}, request=request)
+    monkeypatch.setattr(httpx.AsyncClient, 'send', terminal)
+    try:
+        with owner._monitoring_operation(budget):
+            with pytest.raises(ValueError):
+                await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+            current = capture()
+            assert current.stream_stamp.received > target.stream_stamp.received
+            # A new exact current target cannot reset a terminal operation fault.
+            with pytest.raises(ValueError):
+                await owner.read_monitoring_receipt(binding, target=current, phase='POST')
+        assert len(requests) == 1
+        assert budget.physical_attempts == 1
+        assert not owner._monitoring_receipts
+    finally:
+        await stream.close()
+
+async def test_post_target_invalidation_has_distinct_fixed_classification(target_core, monkeypatch):
+    from dataclasses import replace
+
+    from multi_exchange_trader.execution.monitoring_models import StreamStamp
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    core[3][0] = StreamStamp(1, 'unit-connection', 3, 3)
+    target = capture_monitoring_target(core[2].runtime, core[2]._assembly,
+        restore_generation_id='restore-1', policy_revision='0',
+        witness=core[1]._witness, stream_stamp=core[3][0])
+    original = httpx.AsyncClient.send
+    async def advance(client, request, **kwargs):
+        response = await original(client, request, **kwargs)
+        core[3][0] = replace(core[3][0], received=4, delivered=4)
+        return response
+    monkeypatch.setattr(httpx.AsyncClient, 'send', advance)
+    with pytest.raises(ValueError) as failure:
+        await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+    assert type(failure.value).__name__ == '_MonitoringTargetInvalidated'
+    assert str(failure.value) == 'MONITORING_TARGET_CHANGED'
+    assert failure.value.__context__ is None
+    assert not owner._monitoring_receipts
+
+async def test_generic_read_failure_with_target_error_text_is_not_retargetable(target_core, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import _MonitoringTargetInvalidated
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    core[3][0] = stream.stamp()
+    target = capture_monitoring_target(core[2].runtime, core[2]._assembly,
+        restore_generation_id='restore-1', policy_revision='0', witness=core[1]._witness,
+        stream_stamp=core[3][0])
+    async def failed(client, request, **kwargs):
+        await stream._ping()
+        await stream.barrier()
+        core[3][0] = stream.stamp()
+        raise ValueError('MONITORING_TARGET_CHANGED private provider details')
+    monkeypatch.setattr(httpx.AsyncClient, 'send', failed)
+    try:
+        with pytest.raises(ValueError) as failure:
+            await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+        assert not isinstance(failure.value, _MonitoringTargetInvalidated)
+        assert str(failure.value) == 'MONITORING_READ_FAILED'
+        assert failure.value.__context__ is None
+        assert core[3][0].received > target.stream_stamp.received
+    finally:
+        await stream.close()
+
+@pytest.mark.parametrize('body', [
+    {'retCode': 10006, 'retMsg': 'Too many visits', 'result': {}},
+    {'retCode': 0, 'retMsg': 'restricted location', 'result': {}},
+    {'retCode': 'invalid', 'result': {}},
+])
+async def test_terminal_post_body_with_real_pong_is_not_target_invalidation(
+    target_core, monkeypatch, body
+):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.execution.monitoring_models import _MonitoringTargetInvalidated
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    budget, requests = MonitoringReadBudget(), []
+    def capture():
+        core[3][0] = stream.stamp()
+        return capture_monitoring_target(core[2].runtime, core[2]._assembly,
+            restore_generation_id='restore-1', policy_revision='0', witness=core[1]._witness,
+            stream_stamp=core[3][0])
+    target = capture()
+    async def terminal(client, request, **kwargs):
+        requests.append(request)
+        await stream._ping()
+        await stream.barrier()
+        core[3][0] = stream.stamp()
+        return httpx.Response(200, json={**body, 'time': MS}, request=request)
+    monkeypatch.setattr(httpx.AsyncClient, 'send', terminal)
+    try:
+        with owner._monitoring_operation(budget):
+            with pytest.raises(ValueError) as failure:
+                await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+            assert not isinstance(failure.value, _MonitoringTargetInvalidated)
+            assert str(failure.value) == 'MONITORING_READ_FAILED'
+            with pytest.raises(ValueError):
+                await owner.read_monitoring_receipt(binding, target=capture(), phase='POST')
+        assert len(requests) == 1 and budget.physical_attempts == 1
+        assert not owner._monitoring_receipts
+    finally:
+        await stream.close()

@@ -31,7 +31,12 @@ from ..account.config import allowed_host
 from .bybit_native import build_demo_exec_config
 from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
 from .monitoring_budget import MonitoringReadBudget
-from .monitoring_models import MonitoringReceiptView, MonitoringStatus, MonitoringTarget
+from .monitoring_models import (
+    MonitoringReceiptView,
+    MonitoringStatus,
+    MonitoringTarget,
+    _MonitoringTargetInvalidated,
+)
 from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
 
@@ -414,6 +419,7 @@ class BybitDemoAccountSession:
                     or slot.generation is not self._monitoring_generation):
                 raise AccountBindingError("MONITORING_RECEIPT_REVOKED")
 
+        failure: ValueError
         try:
             observation = await BybitMonitoringReader(self, binding, target=target, guard=guard).read()
             guard()
@@ -427,12 +433,15 @@ class BybitDemoAccountSession:
                 phase, slot.generation, now, mono, view)
             self.require_monitoring_receipt(receipt, binding=binding, target=target, phase=phase)
             return receipt
+        except _MonitoringTargetInvalidated:
+            failure = _MonitoringTargetInvalidated("MONITORING_TARGET_CHANGED")
         except Exception:  # noqa: BLE001 - fixed codes prevent credential/provider disclosure.
-            if receipt is not None:
-                self._monitoring_receipts.pop(receipt, None)
+            failure = AccountBindingError("MONITORING_READ_FAILED")
         finally:
             self._monitoring_receipts.pop(pending, None)
-        raise AccountBindingError("MONITORING_READ_FAILED") from None
+        if receipt is not None:
+            self._monitoring_receipts.pop(receipt, None)
+        raise failure from None
 
     def require_monitoring_receipt(self, receipt: AuthenticatedMonitoringReceipt, *,
                                    binding: AuthenticatedAccountBinding, target: MonitoringTarget,

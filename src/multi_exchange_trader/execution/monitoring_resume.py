@@ -18,6 +18,7 @@ from .monitoring_models import (
     MonitoringWitness,
     WorkerMonitoringStatus,
     _issue_monitoring_witness,
+    _MonitoringTargetInvalidated,
 )
 from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .monitoring_reconciliation import capture_monitoring_target, compare_restored_state
@@ -206,9 +207,9 @@ class MonitoringResume:
                             try:
                                 receipt = await self.session.read_monitoring_receipt(
                                     self.binding, target=target, phase="POST")
-                            except ValueError:
-                                # Issuer deliberately redacts read errors. Retarget only
-                                # if a real accepted event (or stamp) changed this target.
+                            except _MonitoringTargetInvalidated:
+                                # Only the issuer's fixed capture-invalidation class
+                                # can retarget. Terminal/malformed/read errors abort.
                                 await self.assembly.monitoring_barrier()
                                 self.fresh_guard()
                                 current = self.capture()

@@ -30,6 +30,10 @@ class MonitoringError(ValueError):
     """Fixed local reconciliation blocker."""
 
 
+class _MonitoringTargetInvalidated(MonitoringError):
+    """Internal capture invalidation, distinct from a failed venue read."""
+
+
 class MonitoringStatus(str, Enum):
     MATCHED = "MATCHED"
     MATCHED_NATIVE_WITH_UNCREDITED_FILLS = "MATCHED_NATIVE_WITH_UNCREDITED_FILLS"
