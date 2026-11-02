@@ -8,7 +8,7 @@ export type Ledger={id:string;product?:string;source:'SYNTHETIC';execution:'PAPE
 export type Run={run_id:string;status:string;native:{equity:string;closed_net_pnl:string;positions:unknown[]};config:Record<string,string|number>};
 export type Overview={schema_version:1;ledgers:Ledger[];automation:{runs:Run[];scheduler?:{state:string;message:string}};errors:Array<{component:string;code:string}>};
 export type DemoConnection={registered:boolean;status:string;order_submission_possible:boolean;blocked_by_unresolved_attempt:boolean};
-export type Connection={schema_version:1;bybit:{registered:boolean;status:string};bybit_demo?:DemoConnection;ai:{registered:boolean;status:string;mode:string;external_calls:false}};
+export type Connection={schema_version:1;bybit:{registered:boolean;status:string};bybit_demo?:DemoConnection;ai:{registered:boolean;status:string;mode:'OFFLINE_TEST';external_calls:false;provider?:'ANTHROPIC'|'OPENROUTER';model_id?:string|null;verified_at?:null}};
 export type Settings={revision:number;monthly_limit:string;mode:'OFFLINE_TEST';llm_enabled:false};
 export type Budget={currency:'USD';monthly_limit:string;used:string;reserved:string;uncertain:string;remaining:string;provider_balance:string|null};
 export type Diagnostics={schema_version:1;components:{server:{state:string};automation:{state:string;message?:string;last_progress_at?:string};manual_paper:{state:string;unresolved_confirmations:number|null};account:{status:string};ai:{mode:string;external_calls:boolean};bybit_demo?:{uncertain_count:number|null;close_failed_count:number|null}};errors:Array<{component:string;code:string}>};
@@ -17,6 +17,15 @@ export const decimal=(v:unknown):v is string=>typeof v==='string'&&/^-?\d+(?:\.\
 const booleans=(v:unknown,fields:string[])=>record(v)&&fields.every(k=>typeof v[k]==='boolean');
 const counts=(v:unknown,fields:string[])=>record(v)&&fields.every(k=>v[k]===null||(typeof v[k]==='number'&&Number.isInteger(v[k])&&v[k]>=0));
 const errors=(v:unknown)=>Array.isArray(v)&&v.every(e=>record(e)&&typeof e.component==='string'&&typeof e.code==='string');
+function validAIProvider(v:Record<string,unknown>){
+ if(!Object.keys(v).every(key=>['registered','status','mode','external_calls','provider','model_id','verified_at'].includes(key)))return false;
+ if(v.provider!==undefined&&v.provider!=='ANTHROPIC'&&v.provider!=='OPENROUTER')return false;
+ if(v.verified_at!==undefined&&v.verified_at!==null)return false;
+ if(v.model_id===undefined||v.model_id===null)return true;
+ if(typeof v.model_id!=='string'||v.model_id.length>200||v.model_id.includes('..')||/[^a-zA-Z0-9._:/-]|sk-/i.test(v.model_id))return false;
+ return v.provider==='OPENROUTER'?/^[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9._-]{0,127}$/.test(v.model_id):
+  v.provider==='ANTHROPIC'&&/^claude-[a-z0-9][a-z0-9.-]{0,119}$/.test(v.model_id);
+}
 export const validCapabilities=(v:unknown):v is Capabilities=>record(v)&&v.schema_version===1&&v.live_order_enabled===false&&
  record(v.manual_paper)&&typeof v.manual_paper.available==='boolean'&&booleans(v.manual_paper.synthetic_perpetual,['enter','close','protect','order_preview'])&&
  booleans(v.manual_paper.spot_limit,['supported'])&&booleans(v.manual_paper.spot_market,['supported'])&&
@@ -29,7 +38,7 @@ export const validOverview=(v:unknown):v is Overview=>record(v)&&v.schema_versio
  record(x.native)&&decimal(x.native.equity)&&decimal(x.native.closed_net_pnl)&&Array.isArray(x.native.positions)&&record(x.config))&&
  (v.automation.scheduler===undefined||(record(v.automation.scheduler)&&typeof v.automation.scheduler.state==='string'&&typeof v.automation.scheduler.message==='string'))&&errors(v.errors);
 export const validConnection=(v:unknown):v is Connection=>record(v)&&v.schema_version===1&&record(v.bybit)&&typeof v.bybit.registered==='boolean'&&typeof v.bybit.status==='string'&&
- record(v.ai)&&typeof v.ai.registered==='boolean'&&typeof v.ai.status==='string'&&v.ai.external_calls===false&&v.ai.mode==='OFFLINE_TEST'&&
+ record(v.ai)&&typeof v.ai.registered==='boolean'&&typeof v.ai.status==='string'&&v.ai.external_calls===false&&v.ai.mode==='OFFLINE_TEST'&&validAIProvider(v.ai)&&
  (v.bybit_demo===undefined||(record(v.bybit_demo)&&typeof v.bybit_demo.registered==='boolean'&&typeof v.bybit_demo.status==='string'&&
  typeof v.bybit_demo.order_submission_possible==='boolean'&&typeof v.bybit_demo.blocked_by_unresolved_attempt==='boolean'));
 export const validSettings=(v:unknown):v is Settings=>record(v)&&Number.isInteger(v.revision)&&typeof v.revision==='number'&&v.revision>=0&&decimal(v.monthly_limit)&&v.mode==='OFFLINE_TEST'&&v.llm_enabled===false;

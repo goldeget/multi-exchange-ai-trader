@@ -24,3 +24,7 @@ def isolated_api_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_ENV_FILE", "off")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.delenv("AI_ENV_FILE", raising=False)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
