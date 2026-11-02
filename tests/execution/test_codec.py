@@ -44,7 +44,7 @@ def test_invalid_restored_state_fails_closed(payload: str) -> None:
 
 
 def test_untrusted_execution_records_roundtrip_with_rebate_and_provenance() -> None:
-    from tests.execution.test_execution_provenance import api, candidate, observation
+    from test_execution_provenance import api, candidate, observation
 
     original = candidate()
     records = (original.fill, original, observation(),
@@ -62,7 +62,7 @@ def test_untrusted_execution_records_roundtrip_with_rebate_and_provenance() -> N
 
 
 def test_codec_cannot_restore_authorizing_comparison_or_invalid_metadata() -> None:
-    from tests.execution.test_execution_provenance import api, candidate, observation
+    from test_execution_provenance import api, candidate, observation
 
     comparison = json.loads(encode(api().compare_execution_candidate(candidate(), observation())))
     comparison["fields"]["credit_authorized"] = True
