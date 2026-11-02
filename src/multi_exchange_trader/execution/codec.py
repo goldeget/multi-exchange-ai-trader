@@ -29,7 +29,7 @@ _RECORDS: tuple[type[object], ...] = (
     NativeFillEvidence, e.NativeExecutionCandidate, e.VenueExecutionObservation,
     e.ExecutionComparison, e.FillQuarantineRecord,
     c.ExecutionObservationReference, c.CorroboratedExecutionCredit,
-    c.ExecutionCorroborationConflict,
+    c.ExecutionCorroborationConflict, c.HistoricalOrderEvidence,
 )
 _REGISTRY = {cls.__name__: cls for cls in _RECORDS}
 

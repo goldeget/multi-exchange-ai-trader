@@ -38,6 +38,53 @@ def conflict() -> Any:
         ("d" * 64,), ("PRICE_MISMATCH",), None)
 
 
+def historical_order() -> Any:
+    return api().HistoricalOrderEvidence(reference().scope, "a" * 64, "original-order", "BTCUSDT",
+        1, 2, reference().observed_at, reference().server_observed_at, True,
+        "e" * 64, "venue-1", "", "Buy", 1, True)
+
+
+def test_historical_order_sources_roundtrip_and_affect_full_decision_digest() -> None:
+    from multi_exchange_trader.execution import codec
+    from multi_exchange_trader.execution.runtime import _record_digest
+
+    original = replace(conflict(), client_order_id="", venue_order_id="", order_sources=(historical_order(),))
+    assert codec.decode(codec.encode(original)) == original
+    assert not hasattr(original.order_sources[0], "binding_reference")
+    assert not hasattr(original.order_sources[0], "credit_authorized")
+    changed = replace(original, order_sources=(replace(historical_order(), reduce_only=False),))
+    assert api().decision_event_id(changed) != api().decision_event_id(original)
+    assert _record_digest((changed,)) != _record_digest((original,))
+    # The extended schema stays closed; no implicit default on codec restore.
+    import json
+
+    payload = json.loads(codec.encode(original))
+    del payload["fields"]["order_sources"]
+    with pytest.raises(ValueError, match="missing or extra record fields"):
+        codec.decode(json.dumps(payload))
+
+
+@pytest.mark.parametrize("changes", [
+    {"observation_key": "bad"}, {"variant_hash": "bad"}, {"venue_order_id": ""},
+    {"client_order_id": None}, {"side": "BUY"}, {"position_idx": True},
+    {"position_idx": 3}, {"transport_injected": 1}, {"reduce_only": 1},
+    {"server_observed_at": datetime(2026, 11, 3, tzinfo=UTC)},
+])
+def test_historical_order_evidence_is_bounded_typed_data(changes: Any) -> None:
+    with pytest.raises(ValueError):
+        replace(historical_order(), **changes)
+
+
+def test_conflict_order_sources_are_unique_scoped_and_bounded() -> None:
+    with pytest.raises(ValueError):
+        replace(conflict(), order_sources=(historical_order(),) * 2)
+    with pytest.raises(ValueError):
+        replace(conflict(), order_sources=(replace(historical_order(), scope=ProtectionScope("other", "DEMO")),))
+    with pytest.raises(ValueError):
+        replace(conflict(), order_sources=tuple(replace(historical_order(), snapshot_id=str(index))
+                                               for index in range(129)))
+
+
 def test_durable_records_are_frozen_original_data_with_no_authority() -> None:
     for record in (reference(), credit(), conflict(),
                    api().ExecutionCreditResult("c" * 64, "CREDITED", ())):

@@ -31,6 +31,7 @@ from .execution_credit import (
     ExecutionCorroborationConflict,
     ExecutionCreditResult,
     ExecutionObservationReference,
+    HistoricalOrderEvidence,
     candidate_identity,
     decision_event_id,
     execution_guard,
@@ -493,47 +494,8 @@ class NativeExecutionRuntime:
             if candidate is None:
                 return missing
             fill = candidate.fill
-            record = next((item for item in self.journal.list_commands()
-                           if item.client_order_id == fill.client_order_id), None)
-            if (record is None or record.state in (CommandState.PENDING, CommandState.REJECTED)
-                    or record.terminal_confirmed):
-                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("OWNED_COMMAND_INELIGIBLE",))
-            request = self._request(record)
-            try:
-                evidence = history.execution_evidence(observation_key, fill.execution_id)
-            except HistoryError as error:
-                if str(error) != "HISTORY_EXECUTION_NOT_FOUND":
-                    raise
-                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_EXECUTION_REQUIRED",))
-            row, snapshot = evidence.record, view.snapshot
-            if row.execution_type != "Trade":
-                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_TRADE_REQUIRED",))
-            if not row.client_order_id:
-                return ExecutionCreditResult(candidate_id, "UNRESOLVED",
-                                             ("HISTORY_CLIENT_ORDER_ID_REQUIRED",))
-            source = ExecutionObservationReference(snapshot.scope, view.binding_reference,
-                observation_key, snapshot.snapshot_id, snapshot.symbol, snapshot.window.start_ms,
-                snapshot.window.end_ms, snapshot.observed_at, snapshot.server_observed_at)
-            observation = VenueExecutionObservation(snapshot.scope, view.binding_reference,
-                snapshot.snapshot_id, row.execution_id, row.client_order_id, row.venue_order_id,
-                request.owned.instrument_id, "BUY" if row.side == "Buy" else "SELL",
-                row.quantity, row.price, row.fee, row.fee_currency, row.time_ms * 1_000_000)
-            codes: list[str] = list(compare_execution_candidate(candidate, observation).mismatch_codes)
-            if (request.owned.instrument_id != row.symbol + "-LINEAR.BYBIT"
-                    or row.symbol != snapshot.symbol):
-                codes.append("INSTRUMENT_ID_MISMATCH")
-            if evidence.conflict_keys:
-                codes.append("HISTORY_EXECUTION_CONFLICT")
-            for order in snapshot.orders:
-                if ((order.client_order_id == fill.client_order_id
-                        or order.venue_order_id == candidate.venue_order_id
-                        or order.venue_order_id == row.venue_order_id)
-                        and (order.client_order_id != fill.client_order_id
-                            or order.venue_order_id != candidate.venue_order_id
-                            or order.symbol != row.symbol or order.side != row.side
-                            or order.position_idx != 0
-                            or order.reduce_only != request.owned.reduce_only)):
-                    codes.append("HISTORY_ORDER_CONFLICT")
+            # New-credit exclusions cannot suppress contradiction of a credit
+            # already recorded under this account-wide execution guard.
             guard = execution_guard(fill.scope, fill.instrument_id, fill.execution_id)
             previous_row = self.store.get_inbox_event(guard)
             previous: CorroboratedExecutionCredit | None = None
@@ -544,6 +506,66 @@ class NativeExecutionRuntime:
                             decoded.candidate.fill.instrument_id, decoded.candidate.fill.execution_id) != guard):
                     raise RuntimeBlocked("INVALID_DURABLE_CREDIT_GUARD")
                 previous = decoded
+            record = next((item for item in self.journal.list_commands()
+                           if item.client_order_id == fill.client_order_id), None)
+            if record is None or (previous is None and (
+                    record.state in (CommandState.PENDING, CommandState.REJECTED) or record.terminal_confirmed)):
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("OWNED_COMMAND_INELIGIBLE",))
+            request = self._request(record)
+            try:
+                evidence = history.execution_evidence(observation_key, fill.execution_id)
+            except HistoryError as error:
+                if str(error) != "HISTORY_EXECUTION_NOT_FOUND":
+                    raise
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_EXECUTION_REQUIRED",))
+            row, snapshot = evidence.record, view.snapshot
+            if previous is None and row.execution_type != "Trade":
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_TRADE_REQUIRED",))
+            if previous is None and not row.client_order_id:
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED",
+                                             ("HISTORY_CLIENT_ORDER_ID_REQUIRED",))
+            source = ExecutionObservationReference(snapshot.scope, view.binding_reference,
+                observation_key, snapshot.snapshot_id, snapshot.symbol, snapshot.window.start_ms,
+                snapshot.window.end_ms, snapshot.observed_at, snapshot.server_observed_at)
+            observation: VenueExecutionObservation | None = None
+            codes: list[str] = []
+            if row.execution_type != "Trade":
+                codes.append("HISTORY_TRADE_REQUIRED")
+            if not row.client_order_id:
+                codes.extend(("HISTORY_CLIENT_ORDER_ID_REQUIRED", "CLIENT_ORDER_ID_MISMATCH"))
+            if not row.venue_order_id:
+                codes.append("VENUE_ORDER_ID_MISMATCH")
+            if not codes:
+                observation = VenueExecutionObservation(snapshot.scope, view.binding_reference,
+                    snapshot.snapshot_id, row.execution_id, row.client_order_id, row.venue_order_id,
+                    request.owned.instrument_id, "BUY" if row.side == "Buy" else "SELL",
+                    row.quantity, row.price, row.fee, row.fee_currency, row.time_ms * 1_000_000)
+                codes.extend(compare_execution_candidate(candidate, observation).mismatch_codes)
+            if (request.owned.instrument_id != row.symbol + "-LINEAR.BYBIT"
+                    or row.symbol != snapshot.symbol):
+                codes.append("INSTRUMENT_ID_MISMATCH")
+            if evidence.conflict_keys:
+                codes.append("HISTORY_EXECUTION_CONFLICT")
+            order_sources: list[HistoricalOrderEvidence] = []
+            conflict_keys = set(evidence.conflict_keys)
+            venue_ids = tuple(sorted({candidate.venue_order_id, row.venue_order_id} - {""}))
+            for stored in history.order_evidence(client_order_id=fill.client_order_id,
+                                                  venue_order_ids=venue_ids):
+                order = stored.record
+                if (stored.conflict_keys or order.client_order_id != fill.client_order_id
+                        or order.venue_order_id != candidate.venue_order_id
+                        or request.owned.instrument_id != order.symbol + "-LINEAR.BYBIT"
+                        or order.side != ("Buy" if request.owned.side == "BUY" else "Sell")
+                        or order.position_idx != 0 or order.reduce_only != request.owned.reduce_only):
+                    codes.append("HISTORY_ORDER_CONFLICT")
+                    conflict_keys.update(stored.conflict_keys)
+                    for original in stored.observations:
+                        order_sources.append(HistoricalOrderEvidence(fill.scope,
+                            original.observation_key, original.snapshot_id, original.symbol,
+                            original.window.start_ms, original.window.end_ms,
+                            original.observed_at, original.server_observed_at, original.transport_injected,
+                            stored.variant_hash, order.venue_order_id, order.client_order_id,
+                            "Buy" if order.side == "Buy" else "Sell", order.position_idx, order.reduce_only))
             variants = {candidate_identity(item) for item in candidates
                         if execution_guard(item.fill.scope, item.fill.instrument_id,
                                            item.fill.execution_id) == guard}
@@ -570,6 +592,7 @@ class NativeExecutionRuntime:
                 codes.append("EXECUTION_DECISION_CONFLICT")
             proposed: CorroboratedExecutionCredit | None = None
             if not codes:
+                assert observation is not None
                 proposed = CorroboratedExecutionCredit(candidate_id, candidate, observation,
                     source, evidence.variant_hash, record.command_key)
                 if previous is not None:
@@ -583,8 +606,9 @@ class NativeExecutionRuntime:
             if codes:
                 decision = ExecutionCorroborationConflict(candidate_id, fill.scope,
                     fill.instrument_id, fill.execution_id, row.venue_order_id, row.client_order_id,
-                    source, evidence.variant_hash, evidence.conflict_keys,
-                    tuple(dict.fromkeys(codes)), guard if previous is not None else None)
+                    source, evidence.variant_hash, tuple(sorted(conflict_keys)),
+                    tuple(dict.fromkeys(codes)), guard if previous is not None else None,
+                    tuple(order_sources))
                 return self._commit_corroboration(decision, candidate, receipt, binding)
             assert proposed is not None
             return self._commit_corroboration(proposed, candidate, receipt, binding)

@@ -100,6 +100,51 @@ class CorroboratedExecutionCredit:
 
 
 @dataclass(frozen=True)
+class HistoricalOrderEvidence:
+    """Original stored order provenance/immutable fields, never live read authority.
+
+    Variant hash binds the complete normalized row, including mutable status and
+    quantities. Observation key binds its entire original snapshot. No current
+    receipt binding or transport claim is borrowed for this historical source.
+    """
+
+    scope: ProtectionScope
+    observation_key: str
+    snapshot_id: str
+    symbol: str
+    start_ms: int
+    end_ms: int
+    observed_at: datetime
+    server_observed_at: datetime
+    transport_injected: bool
+    variant_hash: str
+    venue_order_id: str
+    client_order_id: str
+    side: Literal["Buy", "Sell"]
+    position_idx: int
+    reduce_only: bool
+
+    def __post_init__(self) -> None:
+        validate_history_scope(self.scope)
+        _digest(self.observation_key)
+        _digest(self.variant_hash)
+        _text(self.snapshot_id)
+        _text(self.venue_order_id)
+        if self.client_order_id != "":
+            _text(self.client_order_id)
+        _symbol(self.symbol)
+        HistoryWindow(self.start_ms, self.end_ms)
+        utc(self.observed_at)
+        utc(self.server_observed_at)
+        if (self.server_observed_at > self.observed_at
+                or type(self.transport_injected) is not bool
+                or type(self.side) is not str or self.side not in ("Buy", "Sell")
+                or type(self.position_idx) is not int or self.position_idx not in (0, 1, 2)
+                or type(self.reduce_only) is not bool):
+            raise ValueError("HISTORICAL_ORDER_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True)
 class ExecutionCorroborationConflict:
     candidate_id: str
     scope: ProtectionScope
@@ -112,14 +157,19 @@ class ExecutionCorroborationConflict:
     history_conflict_keys: tuple[str, ...]
     mismatch_codes: tuple[str, ...]
     prior_credit_event_id: str | None
+    order_sources: tuple[HistoricalOrderEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         _digest(self.candidate_id)
         _digest(self.history_variant_hash)
         validate_history_scope(self.scope)
-        for value in (self.instrument_id, self.execution_id, self.venue_order_id,
-                      self.client_order_id):
+        for value in (self.instrument_id, self.execution_id):
             _text(value)
+        # Observation-only conflicts faithfully retain missing provider IDs.
+        # Owned requests/candidates/new credits still require strict nonempty IDs.
+        for value in (self.venue_order_id, self.client_order_id):
+            if value != "":
+                _text(value)
         if (type(self.source) is not ExecutionObservationReference
                 or self.source.scope != self.scope):
             raise ValueError("EXECUTION_CORROBORATION_CONFLICT_INVALID")
@@ -130,6 +180,13 @@ class ExecutionCorroborationConflict:
             raise ValueError("EXECUTION_CORROBORATION_CONFLICT_INVALID")
         for key in self.history_conflict_keys:
             _digest(key)
+        if (type(self.order_sources) is not tuple or len(self.order_sources) > 128
+                or any(type(item) is not HistoricalOrderEvidence or item.scope != self.scope
+                       for item in self.order_sources)
+                or len(set(self.order_sources)) != len(self.order_sources)):
+            raise ValueError("EXECUTION_CORROBORATION_CONFLICT_INVALID")
+        for item in self.order_sources:
+            item.__post_init__()
         _codes(self.mismatch_codes, nonempty=True)
         if (self.prior_credit_event_id is not None
                 and self.prior_credit_event_id != execution_guard(

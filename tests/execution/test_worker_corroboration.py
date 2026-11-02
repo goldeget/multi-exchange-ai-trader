@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from contextlib import closing
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -221,6 +222,161 @@ async def test_credited_candidate_checked_for_later_history_conflict(tmp_path: P
         assert credits(h) == first and len(decisions(h)) == 1
         assert h.worker._history_store._db.execute("SELECT count(*) FROM history_conflicts").fetchone() == (1,)
         assert h.worker.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+        no_effects(h)
+    finally:
+        await h.worker.stop()
+
+
+@pytest.mark.parametrize("change", ["non_trade", "empty_client", "terminal_fee", "funding_empty_ids"])
+async def test_late_ineligible_rows_preserve_sourced_conflicts(tmp_path: Path, change: str) -> None:
+    h = await prepared(tmp_path)
+    try:
+        assert (await corroborate(h))[0].status == "CREDITED"
+        first = credits(h)
+        runtime = h.worker.runtime
+        if change == "non_trade":
+            h.core.rows[0]["execType"] = "AdlTrade"
+        elif change == "empty_client":
+            h.core.rows[0]["orderLinkId"] = ""
+        elif change == "terminal_fee":
+            runtime.journal.acknowledge("entry", "synthetic-ack")
+            runtime.journal.release_reservation("entry", confirmed_terminal=True,
+                                                terminal_evidence="synthetic-terminal")
+            h.core.rows[0]["execFee"] = "0.02"
+        else:
+            h.core.rows[0].update(execType="Funding", orderLinkId="", orderId="",
+                                  execQty="0", execPrice="0", execValue="0")
+        before, audit = runtime.journal.list_commands(), runtime.journal.audit_events()
+        runtime._readbacks["position-1"] = object()
+        runtime._leverage_readbacks["BTCUSDT"] = object()
+        result = await corroborate(h)
+        assert result[0].status == "CONFLICT"
+        decision = codec.decode(decisions(h)[0].payload_json)
+        assert decision.prior_credit_event_id == first[0].event_id
+        assert decision.history_conflict_keys
+        assert decision.client_order_id == h.core.rows[0]["orderLinkId"]
+        assert decision.venue_order_id == h.core.rows[0]["orderId"]
+        assert credits(h) == first
+        assert runtime.projection("position-1").owned_quantity == Decimal("0.4")
+        assert runtime.projection("position-1").conflicts
+        assert not runtime._readbacks and not runtime._leverage_readbacks
+        assert runtime.journal.list_commands() == before and runtime.journal.audit_events() == audit
+        runtime._projections.clear()
+        assert runtime.projection("position-1").owned_quantity == Decimal("0.4")
+        assert runtime.projection("position-1").conflicts
+        no_effects(h)
+    finally:
+        await h.worker.stop()
+
+
+async def test_terminal_exact_requery_does_not_invent_a_contradiction(tmp_path: Path) -> None:
+    h = await prepared(tmp_path)
+    try:
+        assert (await corroborate(h))[0].status == "CREDITED"
+        runtime = h.worker.runtime
+        runtime.journal.acknowledge("entry", "synthetic-ack")
+        runtime.journal.release_reservation("entry", confirmed_terminal=True,
+                                            terminal_evidence="synthetic-terminal")
+        first, saved = credits(h), runtime.store.get_position("position-1")
+        commands, audit = runtime.journal.list_commands(), runtime.journal.audit_events()
+        assert (await corroborate(h))[0].status == "DUPLICATE"
+        assert credits(h) == first and not decisions(h)
+        assert runtime.store.get_position("position-1") == saved
+        assert runtime.projection("position-1").owned_quantity == Decimal("0.4")
+        assert runtime.journal.list_commands() == commands and runtime.journal.audit_events() == audit
+        no_effects(h)
+    finally:
+        await h.worker.stop()
+
+
+def stored_order_observation(candidate: Any, snapshot_id: str, **changes: Any) -> Any:
+    from test_runtime_credit import order_member, snapshot
+
+    from multi_exchange_trader.execution.history import HistoryWindow
+
+    row = order_member(candidate, **({"created_ms": MS - 5000, "updated_ms": MS - 5000} | changes))
+    return replace(snapshot(candidate), snapshot_id=snapshot_id, executions=(), orders=(row,),
+        window=HistoryWindow(MS - 6000, MS - 5000), observed_at=NOW - timedelta(seconds=1),
+        server_observed_at=NOW - timedelta(seconds=1), transport_injected=True)
+
+
+@pytest.mark.parametrize("already_credited", [False, True])
+async def test_stored_order_only_conflict_constrains_execution_only_receipt(
+    tmp_path: Path, already_credited: bool,
+) -> None:
+    h = await prepared(tmp_path)
+    try:
+        if already_credited:
+            assert (await corroborate(h))[0].status == "CREDITED"
+        first = credits(h)
+        candidate = h.worker.runtime.persisted_candidates()[0]
+        history = h.worker._history_store
+        left = history.ingest(stored_order_observation(candidate, "order-left"))
+        right = history.ingest(stored_order_observation(candidate, "order-right", reduce_only=True))
+        assert right.conflict_keys
+        result = await corroborate(h)
+        assert result[0].status == "CONFLICT"
+        decision = codec.decode(decisions(h)[0].payload_json)
+        assert set(right.conflict_keys) <= set(decision.history_conflict_keys)
+        assert {item.observation_key for item in decision.order_sources} == {
+            left.observation_key, right.observation_key}
+        assert all(item.transport_injected for item in decision.order_sources)
+        assert credits(h) == first
+        assert h.worker.runtime.projection("position-1").owned_quantity == (
+            Decimal("0.4") if already_credited else 0)
+        no_effects(h)
+    finally:
+        await h.worker.stop()
+
+
+@pytest.mark.parametrize("changes", [
+    {"reduce_only": True}, {"position_idx": 1}, {"side": "Sell"},
+    {"client_order_id": ""}, {"venue_order_id": "other-owned-venue"},
+])
+async def test_single_stored_order_contradiction_retains_its_original_source(tmp_path: Path, changes: Any) -> None:
+    h = await prepared(tmp_path)
+    try:
+        candidate = h.worker.runtime.persisted_candidates()[0]
+        stored = stored_order_observation(candidate, "single-contradiction", **changes)
+        ingested = h.worker._history_store.ingest(stored)
+        assert not ingested.conflict_keys
+        assert (await corroborate(h))[0].status == "CONFLICT"
+        decision = codec.decode(decisions(h)[0].payload_json)
+        assert not decision.history_conflict_keys
+        source, = decision.order_sources
+        assert source.observation_key == ingested.observation_key
+        assert source.snapshot_id == stored.snapshot_id
+        assert source.observed_at == source.server_observed_at == NOW - timedelta(seconds=1)
+        assert source.start_ms == stored.window.start_ms and source.end_ms == stored.window.end_ms
+        assert source.transport_injected is True and not hasattr(source, "binding_reference")
+        for name in ("venue_order_id", "client_order_id", "symbol", "side", "position_idx", "reduce_only"):
+            assert getattr(source, name) == getattr(stored.orders[0], name)
+        assert not credits(h)
+        h.worker.runtime._projections.clear()
+        assert h.worker.runtime.projection("position-1").conflicts
+        no_effects(h)
+    finally:
+        await h.worker.stop()
+
+
+@pytest.mark.parametrize("kind", ["unrelated_conflict", "mutable_update"])
+async def test_unrelated_orders_and_legitimate_mutable_updates_do_not_block(tmp_path: Path, kind: str) -> None:
+    h = await prepared(tmp_path)
+    try:
+        candidate = h.worker.runtime.persisted_candidates()[0]
+        changes = {"venue_order_id": "unrelated", "client_order_id": "unrelated"} if kind == "unrelated_conflict" else {}
+        first = stored_order_observation(candidate, "control-first", **changes)
+        h.worker._history_store.ingest(first)
+        if kind == "unrelated_conflict":
+            second = replace(first, snapshot_id="control-second", orders=(replace(first.orders[0], reduce_only=True),))
+        else:
+            second = replace(first, snapshot_id="control-second", orders=(replace(first.orders[0],
+                updated_ms=MS - 4000, cumulative_filled=Decimal("0.5"), leaves_quantity=Decimal("0.5")),))
+        result = h.worker._history_store.ingest(second)
+        assert bool(result.conflict_keys) == (kind == "unrelated_conflict")
+        assert (await corroborate(h))[0].status == "CREDITED"
+        assert (await corroborate(h))[0].status == "DUPLICATE"
+        assert not decisions(h)
         no_effects(h)
     finally:
         await h.worker.stop()
@@ -451,10 +607,17 @@ async def test_backup_restore_credit_next_day_keeps_original_times_and_blockers(
         first_credit = credits(h)
         credit = codec.decode(first_credit[0].payload_json)
         assert credit.source.observed_at == credit.source.server_observed_at == NOW
+        candidate = runtime.persisted_candidates()[0]
+        original_order = stored_order_observation(candidate, "restore-order-source", reduce_only=True)
+        h.worker._history_store.ingest(original_order)
         h.core.rows[0]["execFee"] = "0.02"
         assert (await corroborate(h))[0].status == "CONFLICT"
         first_decisions = decisions(h)
         assert first_decisions and codec.decode(first_decisions[0].payload_json).history_conflict_keys
+        order_sources = codec.decode(first_decisions[0].payload_json).order_sources
+        assert order_sources and order_sources[0].snapshot_id == "restore-order-source"
+        assert order_sources[0].observed_at == NOW - timedelta(seconds=1)
+        assert order_sources[0].reduce_only and order_sources[0].transport_injected
         history_view = h.worker._history_store.load_window("BTCUSDT", start_ms=MS - 1000, end_ms=MS)
         original_summary = runtime.store.get_position("position-1").payload_json
         original_events = runtime.store.list_position_events("position-1")
@@ -503,6 +666,10 @@ async def test_backup_restore_credit_next_day_keeps_original_times_and_blockers(
             if type(codec.decode(item.payload_json)) is CorroboratedExecutionCredit) == first_credit
         assert tuple(item for item in fresh.store.list_position_events("position-1")
             if type(codec.decode(item.payload_json)) is ExecutionCorroborationConflict) == first_decisions
+        restored_decision = next(codec.decode(item.payload_json) for item in fresh.store.list_position_events("position-1")
+            if type(codec.decode(item.payload_json)) is ExecutionCorroborationConflict)
+        assert restored_decision.order_sources == order_sources
+        assert len(codec.decode(original_summary)) == 17
         assert len(quarantines(worker)) == 1
         assert worker._history_store.load_window("BTCUSDT", start_ms=MS - 1000, end_ms=MS) == history_view
         recovered = fresh.journal.get("entry")
@@ -515,7 +682,7 @@ async def test_backup_restore_credit_next_day_keeps_original_times_and_blockers(
             with pytest.raises(ValueError):
                 owner.require_history_receipt(old_handle, binding=binding, scope=SCOPE)
         events = fresh.store.list_position_events("position-1")
-        for invalid in (old_handle, old_view, credit, credit.source, credit.observation):
+        for invalid in (old_handle, old_view, credit, credit.source, credit.observation, order_sources[0]):
             with pytest.raises(ValueError):
                 fresh.corroborate_execution(receipt=invalid, binding=core.binding,
                     observation_key=credit.source.observation_key, candidate_id=credit.candidate_id)

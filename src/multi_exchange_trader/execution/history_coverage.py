@@ -30,6 +30,14 @@ class QueryProvenance:
 
 
 @dataclass(frozen=True)
+class StoredOrderEvidence:
+    record: OrderHistoryRecord
+    variant_hash: str
+    observations: tuple[QueryProvenance, ...]
+    conflict_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class HistoryConflict:
     conflict_key: str
     kind: Literal["EXECUTION", "TRANSACTION", "ORDER", "SNAPSHOT"]
