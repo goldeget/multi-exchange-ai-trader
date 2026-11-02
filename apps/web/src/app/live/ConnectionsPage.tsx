@@ -39,7 +39,7 @@ export function ConnectionsPage({demo=false}:{demo?:boolean}){
  const displayExposure=Number(budget.data?.used??'0')+Number(budget.data?.reserved??'0');
  const percent=displayLimit>0?Math.min(100,Math.max(0,displayExposure/displayLimit*100)):displayExposure>0?100:0;
  return <div className="grid settings-grid live-settings" data-source={demo?'FIXTURE':'LOCAL_READ_MODEL'}>
-  {!demo&&<AutomaticSettings/>}
+  {!demo&&connections.data&&!connections.error&&<AutomaticSettings/>}
   <Panel title="연결 상태"><p className="helper">등록은 실제 조회·주문 권한의 검증과 다릅니다.</p>
    {connections.loading&&!connections.data?<p role="status">연결 설정을 확인하는 중입니다.</p>:connections.error?<p role="alert" className="warning">연결 상태를 확인하지 못했습니다.</p>:<>
     <div className="provider"><span className="provider-logo">B</span><div><h3>Bybit</h3><p>실계좌 읽기 전용</p><small>{connections.data?.bybit.registered?'등록됨 · 권한 미검증':'미등록'}</small></div><Badge>조회 전용</Badge></div>

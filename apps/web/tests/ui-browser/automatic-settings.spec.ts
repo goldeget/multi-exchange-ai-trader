@@ -20,6 +20,9 @@ test('operator can save an unset partial policy without activating orders',async
    await route.fulfill({contentType:'application/json',body:JSON.stringify(snapshot)});return;
   }
   if(request.method()!=='GET'){blocked.push(`${request.method()} ${url.pathname}`);await route.abort();return}
+  if(url.pathname==='/api/v1/connections/status'){
+   await route.fulfill({contentType:'application/json',body:JSON.stringify({schema_version:1,bybit:{registered:false,status:'NOT_CONFIGURED'},bybit_demo:{registered:false,status:'NOT_CONFIGURED',order_submission_possible:false,blocked_by_unresolved_attempt:false},ai:{registered:false,status:'NOT_CONFIGURED',mode:'OFFLINE_TEST',external_calls:false}})});return;
+  }
   if(url.pathname.startsWith('/api/')){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
   await route.continue();
  });
