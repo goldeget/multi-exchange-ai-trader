@@ -15,9 +15,11 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import NoReturn
 
 from ..account.config import require_demo_credentials
 from ..credential_resolution import CredentialResolver
+from ..worker_account_selection import resolve_worker_expectations
 from .account_binding import BybitDemoAccountSession
 from .protection import ProtectionScope
 from .risk import EntryDecision, ReservationTotals
@@ -73,25 +75,30 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
 
 
 async def _run(args: argparse.Namespace) -> None:
-    # Explicit monitor only: one saved snapshot; no flags or identity are inferred.
+    # Resolve and freeze provenance before credentials. This private immutable
+    # context stays alive for the worker and every refresh; files never hot-switch it.
+    expectations = resolve_worker_expectations(uid=args.uid, parent_uid=args.parent_uid,
+        is_master=args.is_master, account_profile=getattr(args, "account_profile", None),
+        profile_store=getattr(args, "profile_store", None), environ=os.environ)
     context = CredentialResolver.from_environment(environ=os.environ)
     key, secret = require_demo_credentials(resolver=context)
     session = BybitDemoAccountSession(api_key=key, api_secret=secret)
     try:
         # Authenticate directly for the typed opaque binding; no caller flags can create it.
-        binding = await session.authenticate(expected_uid=args.uid,
-            expected_parent_uid=args.parent_uid, expected_is_master=args.is_master == "true")
+        binding = await session.authenticate(expected_uid=expectations._uid,
+            expected_parent_uid=expectations._parent_uid, expected_is_master=expectations._is_master)
         worker = ExecutionWorker(directory=Path(args.directory),
             lock_directory=Path(args.lock_directory) if args.lock_directory is not None else None,
-            scope=ProtectionScope(args.uid, "DEMO"), session=session, binding=binding,
+            scope=ProtectionScope(expectations._uid, "DEMO"), session=session, binding=binding,
             symbols=tuple(args.symbol), trader_id="MONITOR-001",
             policy_book=RuntimePolicyBook(Path(args.policy_db)), registry=TrustedPlanRegistry(()),
             entry_risk=_no_entry_risk, clock=lambda: datetime.now(UTC),
             max_age=timedelta(seconds=30))
 
         async def refresh() -> None:
-            worker.binding = await session.authenticate(expected_uid=args.uid,
-                expected_parent_uid=args.parent_uid, expected_is_master=args.is_master == "true")
+            worker.binding = await session.authenticate(expected_uid=expectations._uid,
+                expected_parent_uid=expectations._parent_uid,
+                expected_is_master=expectations._is_master)
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -106,13 +113,21 @@ async def _run(args: argparse.Namespace) -> None:
         await session.aclose()
 
 
+class _SafeParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        # argparse otherwise includes raw values/paths in unknown-option/choice errors.
+        super().error("INVALID_ARGUMENTS")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DEMO monitor only; native trading stays blocked")
+    parser = _SafeParser(description="DEMO monitor only; native trading stays blocked")
     parser.add_argument("--run-monitor", action="store_true")
     parser.add_argument("--connect-monitoring", action="store_true")
     parser.add_argument("--uid")
     parser.add_argument("--parent-uid")
     parser.add_argument("--is-master", choices=("true", "false"))
+    parser.add_argument("--account-profile", metavar="UUID")
+    parser.add_argument("--profile-store", metavar="ABSOLUTE_PATH")
     parser.add_argument("--symbol", action="append")
     parser.add_argument("--directory")
     parser.add_argument("--lock-directory",
@@ -128,8 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if sys.platform != "linux":
         parser.error("monitor requires the pinned Linux runtime")
     if any(getattr(args, name) is None for name in (
-        "uid", "parent_uid", "is_master", "symbol", "directory", "policy_db")):
-        parser.error("explicit account identity, symbols, directory and policy-db are required")
+        "symbol", "directory", "policy_db")):
+        parser.error("explicit symbols, directory and policy-db are required")
     try:
         asyncio.run(_run(args))
     except Exception as exc:  # noqa: BLE001 - output only allowlisted fixed diagnostics.

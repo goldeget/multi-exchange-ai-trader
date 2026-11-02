@@ -6,6 +6,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolated_api_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("TRADER_CREDENTIAL_FILE", "off")
+    monkeypatch.setenv("TRADER_ACCOUNT_PROFILE_FILE", "off")
     monkeypatch.setenv("PAPER_DB_PATH", str(tmp_path / "manual-paper.sqlite3"))
     monkeypatch.setenv("PHASE4_DB_PATH", str(tmp_path / "research.sqlite3"))
     monkeypatch.setenv("PHASE4_DATA_ROOT", str(tmp_path / "datasets"))

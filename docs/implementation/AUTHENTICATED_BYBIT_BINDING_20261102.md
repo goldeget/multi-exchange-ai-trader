@@ -9,13 +9,25 @@ submit any venue mutation.
 
 1. Construct `BybitDemoAccountSession` from explicitly supplied DEMO credentials.
 2. Await `authenticate(expected_uid=..., expected_parent_uid=...,
-   expected_is_master=...)`. Attest all three fields independently against trusted
-   expected account metadata: the actual positive UID, exact parent UID string
+   expected_is_master=...)`. Compare all three fields separately against trusted
+   expected account configuration: the actual positive UID, exact parent UID string
    (including `"0"`), and an explicit boolean master flag. DEMO may return
    `isMaster=False` with `parentUid="0"`; neither field determines the other.
    Do not use the response being verified as its own expectation. A native adapter
    label is never accepted as the UID. Existing callers must supply the new
    required `expected_is_master` keyword; it has no inferred/default value.
+   High-level callers retain their immutable expectation/provenance context for
+   the complete worker lifetime and refresh. Legacy explicit fields make no
+   programmatically verified claim about source provenance. Saved profiles carry
+   either `independent-v1` or explicitly supported `uid-anchored-adoption-v1`.
+   The latter fixes an operator-selected UID before a separate fresh GET-only
+   enrollment observation, then explicitly adopts the provider's parent/master
+   claims in the same living session. Its basis is
+   `PROVIDER_OBSERVED_OPERATOR_ADOPTED`, never `INDEPENDENT_CONFIRMED`.
+   It cannot independently detect an incorrect first provider relationship claim.
+   Every subsequent startup/refresh still compares the fresh response against the
+   saved three-field tuple; a mismatch revokes old authority and blocks. Enrollment
+   itself never calls authenticate or creates a binding, receipt or native authority.
 3. Keep the returned opaque handle with its issuing session. The handle cannot
    be reconstructed from a public identity, serialized state, or another session.
 4. `require_binding(handle, scope=...)` validates exact DEMO/UID scope, unchanged

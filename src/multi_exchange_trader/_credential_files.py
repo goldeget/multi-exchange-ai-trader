@@ -4,11 +4,12 @@ import ctypes
 import importlib
 import os
 import stat
+import tempfile
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 
 class CredentialStoreError(RuntimeError):
@@ -184,9 +185,13 @@ LOCK_TIMEOUT_SECONDS = 5.0
 
 
 @contextmanager
-def private_lock(path: Path) -> Iterator[Callable[[], None]]:
+def private_lock(path: Path, *, lock_name: Literal[
+    ".credentials.lock", ".account-profiles.lock",
+] = ".credentials.lock") -> Iterator[Callable[[], None]]:
     """Fixed persistent OS lock; never unlink it or silently break another lock."""
-    lock = path.parent / ".credentials.lock"
+    if lock_name not in {".credentials.lock", ".account-profiles.lock"}:
+        raise CredentialStoreError("UNSAFE_PATH")
+    lock = path.parent / lock_name
     check_path(lock)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(lock, flags, 0o600)
@@ -245,3 +250,49 @@ def sync_directory(path: Path) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+def publish_private(
+    path: Path, content: bytes, original: tuple[int, int, int, int] | None,
+    verify_lock: Callable[[], None], *,
+    prefix: Literal[".credentials-", ".account-profiles-"],
+    identify: Callable[[Path], tuple[int, int, int, int] | None] = current_identity,
+    sync: Callable[[Path], None] = sync_directory,
+    before_replace: Callable[[], None] = lambda: None,
+    publication_section: Callable[[], AbstractContextManager[None]] = nullcontext,
+) -> None:
+    """Shared private publication; callers own CAS, confirmation and safe errors.
+
+    Credential defaults and its existing filesystem seams remain unchanged.
+    The profile issuer's final freshness check executes after file fsync, while
+    the fixed lock is held, immediately before target verification/replacement.
+    An opt-in owner section can order final checked publication against close.
+    It starts only after temporary-file preparation, never during a lock wait.
+    Credentials retain the default null section and original publication seams.
+    """
+    if prefix not in {".credentials-", ".account-profiles-"}:
+        raise CredentialStoreError("UNSAFE_PATH")
+    temporary: Path | None = None
+    try:
+        descriptor, name = tempfile.mkstemp(prefix=prefix, dir=path.parent)
+        temporary = Path(name)
+        with os.fdopen(descriptor, "wb") as stream:
+            if identify(temporary) != identity(os.fstat(stream.fileno())):
+                raise CredentialStoreError("UNSAFE_PATH")
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+            temporary_identity = identity(os.fstat(stream.fileno()))
+        with publication_section():
+            before_replace()
+            if identify(path) != original:
+                raise CredentialStoreError("REVISION_CONFLICT")
+            verify_lock()
+            if identify(temporary) != temporary_identity:
+                raise CredentialStoreError("UNSAFE_PATH")
+            os.replace(temporary, path)
+            temporary = None
+            sync(path.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
