@@ -5,6 +5,7 @@ import copy
 import hashlib
 import hmac
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -410,16 +411,15 @@ async def test_consume_precedes_store_publication_and_prevents_reentrant_replay(
         original = store._adopt_initial
 
         def publication(**kwargs: Any) -> Any:
-            # The nested invocation must retire the outer operation rather than
-            # allowing either to publish twice. Keep the actual guarded store.
+            # Rejected contention cannot retire the active owner. Keep the
+            # actual guarded store and require exactly one complete publication.
             with pytest.raises(enrollment.AccountEnrollmentError):
                 adopt(owner, candidate)
             return original(**kwargs)
 
         monkeypatch.setattr(store, "_adopt_initial", publication)
-        with pytest.raises(profiles.AccountProfileError):
-            adopt(owner, candidate)
-        assert store.load().state == "PENDING"
+        assert adopt(owner, candidate).state == "COMPLETE"
+        assert store.load().revision == 2
         with pytest.raises(enrollment.AccountEnrollmentError):
             adopt(owner, candidate)
     finally:
@@ -517,3 +517,158 @@ async def test_guard_clock_watermarks_never_extend_request_start_expiry(
         assert store.load().state == "PENDING"
     finally:
         await owner.aclose()
+
+
+def test_thread_contention_before_retirement_allows_only_one_get_sequence(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, state, create = setup
+    owner = create()
+    paused, release, contender_started, contender_done = (threading.Event() for _ in range(4))
+    schedule_lock = threading.Lock()
+    original_retire = owner._retire
+    original_send = httpx.AsyncHTTPTransport.handle_async_request
+    first_thread: list[int] = []
+
+    def paused_retirement() -> None:
+        # Pause the first entry before it mutates any candidate/generation state.
+        # The competing thread reaches the public operation while this is paused.
+        with schedule_lock:
+            first = not first_thread
+            if first:
+                first_thread.append(threading.get_ident())
+        if first:
+            paused.set()
+            assert release.wait(3)
+        original_retire()
+
+    async def send(transport: Any, request: httpx.Request) -> httpx.Response:
+        if threading.get_ident() == first_thread[0]:
+            assert await asyncio.to_thread(contender_done.wait, 3)
+        return await original_send(transport, request)
+
+    def run(*, contender: bool = False) -> Any:
+        if contender:
+            contender_started.set()
+        try:
+            return asyncio.run(owner.observe())
+        except enrollment.AccountEnrollmentError as error:
+            return str(error)
+        finally:
+            if contender:
+                contender_done.set()
+
+    monkeypatch.setattr(owner, "_retire", paused_retirement)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", send)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            winner = pool.submit(run)
+            assert paused.wait(3)
+            loser = pool.submit(run, contender=True)
+            assert contender_started.wait(3)
+            rejected = loser.result(timeout=3)
+            release.set()
+            assert rejected == "ENROLLMENT_OPERATION_IN_PROGRESS"
+            candidate = winner.result(timeout=6)
+        assert type(candidate) is enrollment.EnrollmentCandidate
+        assert [request.url.path for request in state["requests"]] == [
+            "/v5/market/time", "/v5/user/query-api"]
+        assert adopt(owner, candidate).state == "COMPLETE"
+        assert store.load().revision == 2
+    finally:
+        release.set()
+        asyncio.run(owner.aclose())
+
+
+async def test_close_revokes_observation_without_holding_mutex_across_get(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _, create = setup
+    owner = create()
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def blocked(transport: Any, request: httpx.Request) -> httpx.Response:
+        entered.set()
+        await release.wait()
+        return await original(transport, request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blocked)
+    pending = asyncio.create_task(owner.observe())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(owner.aclose(), 2)
+        release.set()
+        with pytest.raises(enrollment.AccountEnrollmentError):
+            await asyncio.wait_for(pending, 2)
+        with pytest.raises(enrollment.AccountEnrollmentError, match="CLOSED"):
+            await owner.observe()
+        assert store.load().state == "PENDING"
+    finally:
+        release.set()
+        await owner.aclose()
+
+
+async def test_close_revokes_adoption_without_mutex_store_lock_deadlock(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _, create = setup
+    owner = create()
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    original = store._adopt_initial
+
+    def blocked(**kwargs: Any) -> Any:
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(3)
+        return original(**kwargs)
+
+    monkeypatch.setattr(store, "_adopt_initial", blocked)
+    candidate = await owner.observe()
+    pending = asyncio.create_task(asyncio.to_thread(adopt, owner, candidate))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(owner.aclose(), 2)
+        release.set()
+        with pytest.raises(profiles.AccountProfileError):
+            await asyncio.wait_for(pending, 2)
+        with pytest.raises(enrollment.AccountEnrollmentError, match="CLOSED"):
+            adopt(owner, candidate)
+        assert store.load().state == "PENDING"
+    finally:
+        release.set()
+        await owner.aclose()
+
+
+def test_late_finalizer_cannot_retire_a_newer_operations_candidate(
+    setup: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, create = setup
+    owner = create()
+    entered, release = threading.Event(), threading.Event()
+    schedule_lock = threading.Lock()
+    original = owner._finish
+    first = [True]
+
+    def delayed(operation: object) -> None:
+        with schedule_lock:
+            pause = first[0]
+            first[0] = False
+        if pause:
+            entered.set()
+            assert release.wait(3)
+        original(operation)
+
+    monkeypatch.setattr(owner, "_finish", delayed)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            prior = pool.submit(asyncio.run, owner.observe())
+            assert entered.wait(3)
+            current = pool.submit(asyncio.run, owner.observe())
+            candidate = current.result(timeout=3)
+            release.set()
+            prior.result(timeout=3)
+        assert adopt(owner, candidate).state == "COMPLETE"
+    finally:
+        release.set()
+        asyncio.run(owner.aclose())

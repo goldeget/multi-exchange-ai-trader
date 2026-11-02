@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -93,7 +94,9 @@ class BybitDemoEnrollmentSession:
         self._observation: _Observation | None = None
         self._adopting: object | None = None
         self._last_clock: tuple[datetime, float] | None = None
-        self._closed, self._busy = False, False
+        self._closed = False
+        self._state_lock = threading.Lock()
+        self._operation: object | None = None
 
     @classmethod
     def from_environment(cls, *, store: AccountProfileStore,
@@ -109,9 +112,37 @@ class BybitDemoEnrollmentSession:
         return "BybitDemoEnrollmentSession(<private>)"
 
     def _retire(self) -> None:
+        """Retire state while the caller holds the lifecycle mutex."""
         self._candidate, self._observation, self._adopting = None, None, None
         self._generation = object()
         self._last_clock = None
+
+    def _reserve(self) -> object:
+        # Contention itself rejects. Never wait for network or a store lock while
+        # holding this mutex, and never let a rejected caller retire another owner.
+        if not self._state_lock.acquire(blocking=False):
+            raise AccountEnrollmentError("ENROLLMENT_OPERATION_IN_PROGRESS")
+        try:
+            if self._operation is not None:
+                raise AccountEnrollmentError("ENROLLMENT_OPERATION_IN_PROGRESS")
+            if self._closed:
+                raise AccountEnrollmentError("ENROLLMENT_SESSION_CHANGED_OR_CLOSED")
+            operation = object()
+            self._operation = operation
+            return operation
+        finally:
+            self._state_lock.release()
+
+    def _require_operation(self, operation: object) -> None:
+        if self._operation is not operation:
+            raise AccountEnrollmentError("ENROLLMENT_OPERATION_RETIRED")
+        self._guard()
+
+    def _finish(self, operation: object) -> None:
+        with self._state_lock:
+            if self._operation is operation:
+                self._retire()
+                self._operation = None
 
     def _guard(self) -> None:
         if (self._closed or self._client is not self._credential_client
@@ -152,78 +183,81 @@ class BybitDemoEnrollmentSession:
             raise AccountEnrollmentError("ENROLLMENT_STALE")
 
     async def observe(self) -> EnrollmentCandidate:
-        if self._busy or self._adopting is not None:
-            raise AccountEnrollmentError("ENROLLMENT_OPERATION_IN_PROGRESS")
-        self._retire()
-        self._busy = True
+        operation = self._reserve()
         try:
-            self._guard()
-            start, start_mono = self._now()
-            generation = self._generation
+            with self._state_lock:
+                self._require_operation(operation)
+                self._retire()
+                start, start_mono = self._now()
+                generation = self._generation
             deadline = time.monotonic() + 30
             # Overall timeout bounds retries and both GETs as a single observation.
             async with asyncio.timeout(30):
                 _, stamp = await self._client.read("/v5/market/time", [], signed=False,
                                                    deadline=deadline)
-                self._guard()
-                now, mono = self._now()
-                first_server = _server_time(stamp)
-                self._fresh(start, start_mono, now, mono, (first_server,))
-                assert stamp is not None
-                self._client.anchor_server_time(stamp)
+                with self._state_lock:
+                    self._require_operation(operation)
+                    now, mono = self._now()
+                    first_server = _server_time(stamp)
+                    self._fresh(start, start_mono, now, mono, (first_server,))
+                    assert stamp is not None
+                    self._client.anchor_server_time(stamp)
                 result, stamp = await self._client.read("/v5/user/query-api", [], signed=True,
                                                        deadline=deadline)
-            self._guard()
-            observed, observed_mono = self._now()
-            servers = first_server, _server_time(stamp)
-            self._fresh(start, start_mono, observed, observed_mono, servers)
-            if observed < now or observed_mono < mono or generation is not self._generation:
-                raise AccountEnrollmentError("ENROLLMENT_CLOCK_OR_GENERATION_CHANGED")
-            identity = _parse_account_metadata(result, api_key=self._api_key,
-                api_secret=self._api_secret, expected_uid=self._snapshot._uid,
-                observed_at=observed, server_observed_at=servers[-1],
-                transport_injected=self._transport_injected)
-            self._observation = _Observation(generation, start, start_mono, observed,
-                observed_mono, servers, identity.parent_uid, identity.is_master)
-            self._candidate = object.__new__(EnrollmentCandidate)
-            return self._candidate
+            with self._state_lock:
+                self._require_operation(operation)
+                observed, observed_mono = self._now()
+                servers = first_server, _server_time(stamp)
+                self._fresh(start, start_mono, observed, observed_mono, servers)
+                if observed < now or observed_mono < mono or generation is not self._generation:
+                    raise AccountEnrollmentError("ENROLLMENT_CLOCK_OR_GENERATION_CHANGED")
+                identity = _parse_account_metadata(result, api_key=self._api_key,
+                    api_secret=self._api_secret, expected_uid=self._snapshot._uid,
+                    observed_at=observed, server_observed_at=servers[-1],
+                    transport_injected=self._transport_injected)
+                self._observation = _Observation(generation, start, start_mono, observed,
+                    observed_mono, servers, identity.parent_uid, identity.is_master)
+                candidate = object.__new__(EnrollmentCandidate)
+                self._candidate = candidate
+                # Release and publish the candidate in one state transition. A
+                # late finally from this owner cannot retire a subsequent owner.
+                self._operation = None
+                return candidate
         except Exception:  # noqa: BLE001 - provider/clock diagnostics cannot cross boundary.
             failure = AccountEnrollmentError("ENROLLMENT_OBSERVATION_FAILED")
-        except BaseException:
-            self._retire()
-            raise
         finally:
-            self._busy = False
-        self._retire()
+            self._finish(operation)
         raise failure from None
 
     def adopt(self, candidate: EnrollmentCandidate, *, policy: str,
               adopt_observed_relationship: bool) -> AccountProfileResult:
         """Consume VALID -> ADOPTING before any publication, retire on every outcome."""
-        operation = object()
-        observation = self._observation
+        operation = self._reserve()
         try:
-            self._guard()
-            if (self._busy or type(candidate) is not EnrollmentCandidate
-                    or candidate is not self._candidate or observation is None
-                    or policy != ADOPTION_POLICY or adopt_observed_relationship is not True
-                    or self._transport_injected):
-                raise AccountEnrollmentError("ENROLLMENT_EXPLICIT_VALID_CANDIDATE_REQUIRED")
-            adopt_at, adopt_mono = self._now()
-            # Only this exact ongoing operation can pass the store's repeated guards.
-            self._candidate = None
-            self._adopting = operation
+            with self._state_lock:
+                self._require_operation(operation)
+                observation = self._observation
+                if (type(candidate) is not EnrollmentCandidate
+                        or candidate is not self._candidate or observation is None
+                        or policy != ADOPTION_POLICY or adopt_observed_relationship is not True
+                        or self._transport_injected):
+                    raise AccountEnrollmentError("ENROLLMENT_EXPLICIT_VALID_CANDIDATE_REQUIRED")
+                adopt_at, adopt_mono = self._now()
+                # Only this exact ongoing operation can pass the store's repeated guards.
+                self._candidate = None
+                self._adopting = operation
 
             def guard() -> None:
-                self._guard()
-                now, mono = self._now()
-                if (self._adopting is not operation or self._observation is not observation
-                        or observation.generation is not self._generation
-                        or now < observation.observed_at or mono < observation.observed_mono
-                        or now < adopt_at or mono < adopt_mono):
-                    raise AccountEnrollmentError("ENROLLMENT_CANDIDATE_RETIRED")
-                self._fresh(observation.started_at, observation.started_mono,
-                            now, mono, observation.server_times)
+                with self._state_lock:
+                    self._require_operation(operation)
+                    now, mono = self._now()
+                    if (self._adopting is not operation or self._observation is not observation
+                            or observation.generation is not self._generation
+                            or now < observation.observed_at or mono < observation.observed_mono
+                            or now < adopt_at or mono < adopt_mono):
+                        raise AccountEnrollmentError("ENROLLMENT_CANDIDATE_RETIRED")
+                    self._fresh(observation.started_at, observation.started_mono,
+                                now, mono, observation.server_times)
 
             guard()
             stamp = observation.observed_at.isoformat().replace("+00:00", "Z")
@@ -242,11 +276,15 @@ class BybitDemoEnrollmentSession:
                 expected_uid=self._snapshot._uid, expected_revision=self._snapshot.revision,
                 relationship=relationship, last_observation=last_observation, guard=guard)
         finally:
-            self._retire()
+            self._finish(operation)
 
     async def aclose(self) -> None:
-        self._closed = True
-        self._retire()
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._retire()
+            self._operation = None
         try:
             await self._credential_client.aclose()
         except Exception:  # noqa: BLE001 - transport diagnostics may contain credentials.
