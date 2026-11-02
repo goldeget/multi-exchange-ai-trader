@@ -9,9 +9,23 @@ import sqlite3
 import subprocess
 import sys
 from contextlib import closing
+from dataclasses import replace
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 
 import pytest
+
+from multi_exchange_trader.execution.history import (
+    ExecutionRecord,
+    HistoryError,
+    HistorySnapshot,
+    HistoryWindow,
+    OrderHistoryRecord,
+    TransactionRecord,
+)
+from multi_exchange_trader.execution.history_store import HistoryStore, validate_history_database
+from multi_exchange_trader.execution.protection import ProtectionScope
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "scripts/operations/state_snapshot.py"
@@ -767,3 +781,438 @@ def test_restored_interrupted_command_keeps_reservation_until_independent_termin
         assert journal.claim("entry") is None
         with pytest.raises(JournalConflict):
             journal.release_reservation("entry", confirmed_terminal=True, terminal_evidence="no final readback")
+
+
+HISTORY_SCOPE = ProtectionScope("backup-fixture", "DEMO")
+
+
+def history_observation() -> HistorySnapshot:
+    now = datetime(2026, 11, 2, tzinfo=UTC)
+    transfer = TransactionRecord("transfer", "", "", "", "", "USDT", "TRANSFER_IN", 2000,
+        Decimal("1.25"), Decimal(0), Decimal(0), Decimal("1.25"), Decimal(100))
+    execution = ExecutionRecord("execution", "order", "client", "BTCUSDT", "Buy", "Trade", 2000,
+        Decimal("0.4"), Decimal(100), Decimal(40), Decimal("0.01"), "USDT", Decimal("0.001"), Decimal(0))
+    order = OrderHistoryRecord("order", "client", "BTCUSDT", "Buy", 0, "PartiallyFilled",
+        Decimal(1), Decimal("0.4"), Decimal("0.6"), False, 1000, 2000)
+    return HistorySnapshot(HISTORY_SCOPE, "BTCUSDT", "original", HistoryWindow(1000, 3000),
+                           now, now, (execution,), (order,), (transfer,), True)
+
+
+@pytest.fixture
+def history_state(runtime_state: Path) -> Path:
+    observation = history_observation()
+    with HistoryStore(runtime_state / "history.sqlite3", HISTORY_SCOPE) as store:
+        store.ingest(observation)
+        store.ingest(replace(observation, snapshot_id="other", symbol="ETHUSDT", executions=(), orders=()))
+        store.ingest(replace(observation, snapshot_id="contradiction", transactions=(
+            replace(observation.transactions[0], cash_balance=Decimal(101)),)))
+        store.ingest(replace(observation, snapshot_id="original", executions=(), orders=(
+            replace(observation.orders[0], cumulative_filled=Decimal("0.3"), updated_ms=3000),)))
+        store.ingest(replace(observation, snapshot_id="order-collision", executions=(), orders=(
+            replace(observation.orders[0], side="Sell", leaves_quantity=Decimal("0.5")),)))
+    return runtime_state
+
+
+def state_bytes(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def rehash_manifest(backup: Path) -> None:
+    path = backup / "manifest.json"
+    manifest = json.loads(path.read_text())
+    for entry in manifest["files"]:
+        content = (backup / "data" / entry["path"]).read_bytes()
+        entry.update(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_history_monitor_generation_round_trip_preserves_conflicts_and_coverage(
+    history_state: Path, tmp_path: Path,
+) -> None:
+    before = state_bytes(history_state)
+    backup, restored = tmp_path / "backup", tmp_path / "restored"
+    result = command("snapshot", "--source", history_state, "--target", backup,
+                     "--writers-stopped", "--require-history")
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((backup / "manifest.json").read_text())
+    assert manifest["format_version"] == 3
+    assert manifest["history_files"] == ["history.sqlite3"]
+    assert len(manifest["runtime_files"]) == 4
+    assert command("verify", "--source", backup, "--require-history").returncode == 0
+    assert command("verify", "--source", backup, "--require-history", "--require-runtime").returncode == 0
+    result = command("restore", "--source", backup, "--target", restored, "--require-history")
+    assert result.returncode == 0, result.stderr
+    assert state_bytes(history_state) == before
+    assert state_bytes(restored) == before
+    with (HistoryStore(history_state / "history.sqlite3", HISTORY_SCOPE) as source,
+          HistoryStore(restored / "history.sqlite3", HISTORY_SCOPE) as target):
+        assert source.load_window("BTCUSDT", start_ms=1000, end_ms=4000) == target.load_window(
+            "BTCUSDT", start_ms=1000, end_ms=4000)
+        coverage = target.coverage("ETHUSDT", start_ms=1000, end_ms=3000)
+        assert coverage.query_complete and not coverage.conflict_free
+        assert not coverage.venue_event_complete and not coverage.flat_verified
+
+
+@pytest.mark.parametrize("missing", ["execution.sqlite3", "runtime-state.sqlite3", "both"])
+def test_history_requires_execution_and_runtime_state_pair(
+    history_state: Path, tmp_path: Path, missing: str,
+) -> None:
+    for name in (("execution.sqlite3", "runtime-state.sqlite3") if missing == "both" else (missing,)):
+        (history_state / name).unlink()
+    before = state_bytes(history_state)
+    assert snapshot(history_state, tmp_path / "backup").returncode != 0
+    assert not (tmp_path / "backup").exists()
+    assert state_bytes(history_state) == before
+
+
+def test_history_requirement_does_not_require_ai_or_change_require_runtime(
+    history_state: Path, tmp_path: Path,
+) -> None:
+    for name in ("ai-dispatch.sqlite3", "runtime-policy.sqlite3"):
+        (history_state / name).unlink()
+    backup = tmp_path / "backup"
+    result = command("snapshot", "--source", history_state, "--target", backup,
+                     "--writers-stopped", "--require-history")
+    assert result.returncode == 0, result.stderr
+    assert command("verify", "--source", backup, "--require-runtime").returncode != 0
+    assert command("verify", "--source", backup, "--require-history", "--require-runtime").returncode != 0
+    result = command("restore", "--source", backup, "--target", tmp_path / "restored", "--require-history")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("damage", ["missing", "downgrade1", "downgrade2", "unclaimed", "extra_field"])
+def test_history_manifest_missing_file_or_downgrade_refused(
+    history_state: Path, tmp_path: Path, damage: str,
+) -> None:
+    backup = tmp_path / "backup"
+    assert snapshot(history_state, backup).returncode == 0
+    path = backup / "manifest.json"
+    manifest = json.loads(path.read_text())
+    if damage == "missing":
+        (backup / "data/history.sqlite3").unlink()
+        manifest["files"] = [x for x in manifest["files"] if x["path"] != "history.sqlite3"]
+    elif damage.startswith("downgrade"):
+        manifest["format_version"] = int(damage[-1])
+        del manifest["history_files"]
+        if damage == "downgrade1":
+            del manifest["runtime_files"]
+    elif damage == "unclaimed":
+        manifest["history_files"] = []
+    else:
+        manifest["anything"] = True
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert command("restore", "--source", backup, "--target", tmp_path / "restored").returncode != 0
+    assert not (tmp_path / "restored").exists()
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_versions_one_two_restore_without_history(runtime_state: Path, tmp_path: Path, version: int) -> None:
+    if version == 1:
+        for name in ("execution.sqlite3", "runtime-state.sqlite3", "runtime-policy.sqlite3", "ai-dispatch.sqlite3"):
+            (runtime_state / name).unlink()
+    backup = tmp_path / "backup"
+    assert snapshot(runtime_state, backup).returncode == 0
+    assert json.loads((backup / "manifest.json").read_text())["format_version"] == version
+    assert command("restore", "--source", backup, "--target", tmp_path / "restored").returncode == 0
+    assert command("restore", "--source", backup, "--target", tmp_path / "required", "--require-history").returncode != 0
+    assert not (tmp_path / "required").exists()
+
+
+@pytest.mark.parametrize("scope", [ProtectionScope("other", "DEMO"), ProtectionScope("backup-fixture", "LIVE")])
+def test_history_other_account_or_environment_refused(
+    runtime_state: Path, tmp_path: Path, scope: ProtectionScope,
+) -> None:
+    with HistoryStore(runtime_state / "history.sqlite3", scope):
+        pass
+    before = state_bytes(runtime_state)
+    assert snapshot(runtime_state, tmp_path / "backup").returncode != 0
+    assert not (tmp_path / "backup").exists()
+    assert state_bytes(runtime_state) == before
+
+
+def damage_history(path: Path, damage: str) -> None:
+    """Damage only temporary test databases; retain canonical objects except the target."""
+    with closing(sqlite3.connect(path)) as db:
+        triggers = db.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+        for name, _ in triggers:
+            db.execute(f'DROP TRIGGER "{name}"')
+        if damage == "missing_conflict":
+            db.execute("DELETE FROM history_conflicts WHERE conflict_key=(SELECT min(conflict_key) FROM history_conflicts)")
+        elif damage == "invented_conflict":
+            db.execute("UPDATE history_conflicts SET reason='INVENTED'")
+        elif damage == "payload":
+            db.execute("UPDATE history_variants SET payload=replace(payload,'1.25','1.26')")
+        elif damage == "invalid_decimal":
+            db.execute("UPDATE history_variants SET payload=replace(payload,'\"quantity\":\"0.4\"',"
+                       "'\"quantity\":\"invalid\"') WHERE kind='EXECUTION'")
+        elif damage == "index_field":
+            db.execute("UPDATE history_variants SET event_ms=2001")
+        elif damage == "observation":
+            db.execute("UPDATE history_snapshots SET observed_at='2026-11-03T00:00:00+00:00'")
+        elif damage == "version":
+            db.execute("PRAGMA user_version=2")
+        elif damage in {"extra_table", "extra_view", "extra_trigger"}:
+            statements = {
+                "extra_table": "CREATE TABLE sqliteXsecret(value TEXT)",
+                "extra_view": "CREATE VIEW sqliteXview AS SELECT * FROM history_scope",
+                "extra_trigger": "CREATE TRIGGER sqliteXtrigger AFTER INSERT ON history_scope BEGIN SELECT 1; END",
+            }
+            db.execute(statements[damage])
+        elif damage.startswith("scope_check"):
+            sql = db.execute("SELECT sql FROM sqlite_master WHERE name='history_scope'").fetchone()[0]
+            replacement = {"scope_check": "", "scope_check_comment": "/* CHECK(id=1) */",
+                "scope_check_quoted": ('CONSTRAINT "/*" CHECK(id>=0) /* harmless */ '
+                                       'CONSTRAINT "CHECK(id=1)" CHECK(id>=0)')}[damage]
+            rows = db.execute("SELECT * FROM history_scope").fetchall()
+            db.execute("DROP TABLE history_scope")
+            db.execute(sql.replace("CHECK(id=1)", replacement))
+            db.executemany("INSERT INTO history_scope VALUES(?,?,?)", rows)
+        elif damage.startswith("key_") or damage in {"foreign_key", "not_null", "column_type"}:
+            table = "history_members"
+            sql = db.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+            rows = db.execute(f"SELECT * FROM {table}").fetchall()
+            if damage == "foreign_key":
+                changed = sql.replace("REFERENCES history_snapshots(observation_key)",
+                                      "REFERENCES history_snapshots(observation_key) ON DELETE CASCADE")
+            elif damage == "not_null":
+                changed = sql.replace("kind TEXT NOT NULL", "kind TEXT")
+            elif damage == "column_type":
+                changed = sql.replace("kind TEXT", "kind BLOB")
+            else:
+                changed = sql.replace("PRIMARY KEY(observation_key,kind,record_id), ", "")
+            assert changed != sql
+            db.execute(f"DROP TABLE {table}")
+            db.execute(changed)
+            parts = {
+                "key_partial": "observation_key,kind,record_id) WHERE kind='ORDER'",
+                "key_expression": "observation_key,kind,lower(record_id))",
+                "key_nocase": "observation_key,kind,record_id COLLATE NOCASE)",
+                "key_duplicate": "observation_key,kind,record_id,record_id)",
+            }
+            if damage in parts:
+                db.execute("CREATE UNIQUE INDEX damaged_key ON history_members(" + parts[damage])
+            db.executemany("INSERT INTO history_members VALUES(?,?,?,?)", rows)
+        for name, sql in triggers:
+            if damage == "missing_trigger" and name == "history_variants_no_update":
+                continue
+            if damage == "trigger_literal" and name == "history_variants_no_update":
+                sql = sql.replace("history is append-only", "history  is append-only")
+            db.execute(sql)
+        db.commit()
+
+
+@pytest.mark.parametrize("damage", [
+    "missing_conflict", "invented_conflict", "payload", "invalid_decimal", "index_field", "observation", "version",
+    "extra_table", "extra_view", "extra_trigger", "scope_check", "scope_check_comment", "scope_check_quoted",
+    "key_missing", "key_partial", "key_expression", "key_nocase", "key_duplicate",
+    "foreign_key", "not_null", "column_type", "missing_trigger", "trigger_literal",
+])
+def test_history_constraints_and_missing_conflicts_refused_before_publication(
+    history_state: Path, tmp_path: Path, damage: str,
+) -> None:
+    module = runpy.run_path(str(TOOL))
+    # Use the actual standalone entry points without spawning a process for every corruption.
+    backup = tmp_path / "backup"
+    assert module["main"](["snapshot", "--source", str(history_state), "--target", str(backup),
+                           "--writers-stopped"]) == 0
+    for path in (history_state / "history.sqlite3", backup / "data/history.sqlite3"):
+        damage_history(path, damage)
+        before = path.read_bytes()
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db, localcontext() as context:
+            context.traps[InvalidOperation] = False
+            db.row_factory = sqlite3.Row
+            with pytest.raises(ValueError):
+                validate_history_database(db)
+            with pytest.raises(module["SnapshotError"]):
+                module["check_history"](db)
+        assert path.read_bytes() == before
+    before = state_bytes(history_state)
+    assert module["main"](["snapshot", "--source", str(history_state), "--target",
+                           str(tmp_path / "invalid"), "--writers-stopped"]) == 1
+    assert not (tmp_path / "invalid").exists()
+    assert state_bytes(history_state) == before
+    rehash_manifest(backup)
+    backup_before = state_bytes(backup)
+    assert module["main"](["restore", "--source", str(backup), "--target", str(tmp_path / "restored")]) == 1
+    assert not (tmp_path / "restored").exists()
+    assert state_bytes(backup) == backup_before
+
+
+def test_history_committed_wal_preserved_without_source_sqlite_access(runtime_state: Path, tmp_path: Path) -> None:
+    with HistoryStore(runtime_state / "history.sqlite3", HISTORY_SCOPE) as store:
+        store.ingest(history_observation())
+        assert (runtime_state / "history.sqlite3-wal").stat().st_size > 0
+        before = state_bytes(runtime_state)
+        backup, restored = tmp_path / "backup", tmp_path / "restored"
+        assert snapshot(runtime_state, backup).returncode == 0
+        assert command("restore", "--source", backup, "--target", restored, "--require-history").returncode == 0
+        assert state_bytes(runtime_state) == before
+        assert state_bytes(restored) == before
+        with HistoryStore(restored / "history.sqlite3", HISTORY_SCOPE) as recovered:
+            receipt = recovered.ingest(history_observation())
+            assert receipt.duplicate
+
+
+@pytest.mark.parametrize("name", ["history.sqlite3.lock", "unexpected.sqlite3", "history.sqlite3-journal"])
+def test_history_unknown_extras_refused(history_state: Path, tmp_path: Path, name: str) -> None:
+    (history_state / name).write_bytes(b"fixture")
+    assert snapshot(history_state, tmp_path / "backup").returncode != 0
+    assert not (tmp_path / "backup").exists()
+
+
+def test_history_standalone_tool_resolves_helper_from_arbitrary_directory(
+    history_state: Path, tmp_path: Path,
+) -> None:
+    result = subprocess.run([sys.executable, "-I", "-S", str(TOOL), "snapshot", "--source", str(history_state),
+                            "--target", str(tmp_path / "standalone"), "--writers-stopped", "--require-history"], cwd=tmp_path,
+                            capture_output=True, text=True, timeout=35, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "verified"
+
+
+def test_history_empty_paired_stores_and_history_scope_reopen(state: Path, tmp_path: Path) -> None:
+    from multi_exchange_trader.execution.journal import CommandJournal, ExecutionScope
+    from multi_exchange_trader.execution.state_store import RuntimeStateStore
+
+    scope = ExecutionScope("backup-fixture", "DEMO")
+    with (CommandJournal(state / "execution.sqlite3", scope),
+          RuntimeStateStore(state / "runtime-state.sqlite3", scope),
+          HistoryStore(state / "history.sqlite3", HISTORY_SCOPE)):
+        pass
+    backup = tmp_path / "backup"
+    assert snapshot(state, backup).returncode == 0
+    assert command("restore", "--source", backup, "--target", tmp_path / "restored", "--require-history").returncode == 0
+    with pytest.raises(HistoryError, match="HISTORY_SCOPE_MISMATCH"):
+        HistoryStore(tmp_path / "restored/history.sqlite3", ProtectionScope("other", "DEMO"))
+
+
+def test_history_restored_observations_do_not_refresh_or_qualify(history_state: Path, tmp_path: Path) -> None:
+    from multi_exchange_trader.execution.account_ledger import (
+        DailyCashBaseline,
+        daily_realized_loss,
+    )
+    from multi_exchange_trader.execution.runtime_policy import RuntimePolicyBook
+
+    backup, restored = tmp_path / "backup", tmp_path / "restored"
+    assert snapshot(history_state, backup).returncode == 0
+    assert command("restore", "--source", backup, "--target", restored).returncode == 0
+    with HistoryStore(restored / "history.sqlite3", HISTORY_SCOPE) as store:
+        view = store.load_window("BTCUSDT", start_ms=1000, end_ms=4000)
+        assert view.coverage.oldest_observed_at == history_observation().observed_at
+        assert view.coverage.oldest_server_observed_at == history_observation().server_observed_at
+        assert not view.coverage.query_complete
+        assert not view.coverage.venue_event_complete and not view.coverage.flat_verified
+        now = datetime(2026, 11, 3, tzinfo=UTC)
+        baseline = DailyCashBaseline(HISTORY_SCOPE, now, Decimal(0), "explicit-test-baseline")
+        with pytest.raises(HistoryError, match="LEDGER_INPUT_INVALID"):
+            daily_realized_loss(view, baseline, now=now)  # type: ignore[arg-type]
+        with pytest.raises(HistoryError, match="LEDGER_COMPLETE_CURRENT_UTC_WINDOW_REQUIRED"):
+            daily_realized_loss(history_observation(), baseline, now=now)
+    with closing(sqlite3.connect(restored / "runtime-policy.sqlite3")) as db:
+        assert not db.execute("SELECT 1 FROM runtime_policy WHERE desired_state != 'STOPPED'").fetchall()
+    RuntimePolicyBook(restored / "runtime-policy.sqlite3")
+
+
+@pytest.mark.parametrize("name,table,values", [
+    ("execution.sqlite3", "projections", ("other", "DEMO", "foreign", 1, "{}")),
+    ("runtime-state.sqlite3", "runtime_orders", ("backup-fixture", "LIVE", "foreign", 1, "{}", 1)),
+])
+def test_history_checks_all_scopes_in_both_paired_stores_before_restore(
+    history_state: Path, tmp_path: Path, name: str, table: str, values: tuple[object, ...],
+) -> None:
+    module = runpy.run_path(str(TOOL))
+    backup = tmp_path / "backup"
+    assert module["main"](["snapshot", "--source", str(history_state), "--target", str(backup),
+                           "--writers-stopped"]) == 0
+    with closing(sqlite3.connect(backup / "data" / name)) as db:
+        db.execute(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in values)})', values)
+        db.commit()
+    rehash_manifest(backup)
+    assert module["main"](["restore", "--source", str(backup), "--target", str(tmp_path / "restored")]) == 1
+    assert not (tmp_path / "restored").exists()
+
+
+@pytest.mark.parametrize("replacement", [
+    'CONSTRAINT "/*" CHECK(id=1) /* harmless */',
+    'CONSTRAINT [/*] CHECK(id=1) /* harmless */',
+    'CONSTRAINT `/*` CHECK(id=1) /* harmless */',
+    'CONSTRAINT "--" CHECK(id=1) -- harmless\n',
+])
+def test_history_equivalent_binary_keys_and_real_commented_scope_check_accepted(
+    history_state: Path, tmp_path: Path, replacement: str,
+) -> None:
+    module = runpy.run_path(str(TOOL))
+    path = tmp_path / "equivalent.sqlite3"
+    with (closing(sqlite3.connect(history_state / "history.sqlite3")) as source,
+          closing(sqlite3.connect(path)) as target):
+        for (sql,) in source.execute("SELECT sql FROM sqlite_master WHERE type='table'"):
+            sql = sql.replace(", PRIMARY KEY(kind,record_id,variant_hash)", "")
+            sql = sql.replace("CHECK(id=1)", replacement)
+            target.execute(sql)
+        target.execute("CREATE UNIQUE INDEX full_identity ON history_variants(variant_hash,record_id,kind)")
+        for (table,) in source.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            rows = source.execute(f'SELECT * FROM "{table}"').fetchall()
+            if rows:
+                target.executemany(f'INSERT INTO "{table}" VALUES({",".join("?" for _ in rows[0])})', rows)
+        for (sql,) in source.execute("SELECT sql FROM sqlite_master WHERE type='trigger'"):
+            target.execute(sql)
+        target.execute("PRAGMA user_version=1")
+        target.commit()
+    before = path.read_bytes()
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        assert validate_history_database(db) == HISTORY_SCOPE
+        assert module["check_history"](db) == ("backup-fixture", "DEMO")
+        assert db.row_factory is sqlite3.Row
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("clause,valid", [
+    ("COLLATE/**/NOCASE", False),
+    ("COLLATE/* token */RTRIM", False),
+    ('COLLATE/**/"NOCASE"', False),
+    ('COLLATE/**/"binary"', True),
+    ('/* COLLATE NOCASE */ COLLATE/**/[BINARY]', True),
+    ('CONSTRAINT "COLLATE NOCASE" CHECK(length(snapshot_id)>0) COLLATE `BINARY`', True),
+])
+def test_history_nonkey_collation_app_offline_parity_and_publication_gate(
+    history_state: Path, tmp_path: Path, clause: str, valid: bool,
+) -> None:
+    module = runpy.run_path(str(TOOL))
+    path = history_state / "history.sqlite3"
+    with closing(sqlite3.connect(path)) as db:
+        sql = db.execute("SELECT sql FROM sqlite_master WHERE name='history_snapshots'").fetchone()[0]
+        dependents = db.execute("SELECT sql FROM sqlite_master WHERE tbl_name='history_snapshots' "
+                                "AND type IN ('trigger','index') AND sql IS NOT NULL").fetchall()
+        rows = db.execute("SELECT * FROM history_snapshots").fetchall()
+        db.execute("DROP TABLE history_snapshots")
+        db.execute(sql.replace("snapshot_id TEXT NOT NULL", "snapshot_id TEXT NOT NULL " + clause))
+        db.executemany("INSERT INTO history_snapshots VALUES(?,?,?,?,?,?,?,?)", rows)
+        for (statement,) in dependents:
+            db.execute(statement)
+        db.commit()
+    before = state_bytes(history_state)
+    # The synthetic writer is closed/checkpointed; immutable readback avoids SQLite
+    # creating its own WAL sidecars before the portable tool's copy-only source check.
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+        if valid:
+            assert validate_history_database(db) == HISTORY_SCOPE
+            assert module["check_history"](db) == ("backup-fixture", "DEMO")
+        else:
+            rejected = []
+            for validator, error in ((validate_history_database, HistoryError),
+                                     (module["check_history"], module["SnapshotError"])):
+                try:
+                    validator(db)
+                except error:
+                    rejected.append(True)
+                else:
+                    rejected.append(False)
+            assert rejected == [True, True]
+    assert state_bytes(history_state) == before
+    target = tmp_path / "backup"
+    result = module["main"](["snapshot", "--source", str(history_state), "--target", str(target),
+                             "--writers-stopped", "--require-history"])
+    assert result == (0 if valid else 1)
+    assert target.exists() is valid
+    assert state_bytes(history_state) == before

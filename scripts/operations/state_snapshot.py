@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import shutil
 import sqlite3
 import stat
@@ -24,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 MAX_FILES = 10_000
 MAX_FILE_BYTES = 512 * 1024 * 1024
@@ -84,7 +85,20 @@ RUNTIME_KEYS: dict[str, dict[str, tuple[tuple[str, ...], ...]]] = {
     "runtime-policy.sqlite3": {"runtime_policy": (("id",),)},
     "ai-dispatch.sqlite3": {"ai_dispatches": (("request_id",),)},
 }
-ALL_SCHEMAS = SCHEMAS | RUNTIME_SCHEMAS
+HISTORY_SCHEMAS = {
+    "history.sqlite3": {
+        "history_scope": "id account environment",
+        "history_snapshots": "observation_key snapshot_id symbol start_ms end_ms observed_at "
+                             "server_observed_at transport_injected",
+        "history_variants": "kind record_id variant_hash symbol event_ms updated_ms payload",
+        "history_members": "observation_key kind record_id variant_hash",
+        "history_conflicts": "conflict_key kind record_id left_observation_key right_observation_key reason",
+    },
+}
+ALL_SCHEMAS = SCHEMAS | RUNTIME_SCHEMAS | HISTORY_SCHEMAS
+# Anchor to this script, including when launched outside the repository or via runpy.
+# The sibling is part of the portable operations tool, not an application dependency.
+_HISTORY_VALIDATOR = runpy.run_path(str(Path(__file__).with_name("history_snapshot_validation.py")))
 METADATA = {
     "paper.sqlite3": {"schema": 1, "assumptions": "PAPER-v1", "engine": "1.231.0"},
     "spot-paper.sqlite3": {"schema": 1, "assumptions": "SPOT-PAPER-v2",
@@ -155,7 +169,8 @@ def file_hash(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
-def inventory(root: Path, *, require_runtime: bool = False) -> list[Entry]:
+def inventory(root: Path, *, require_runtime: bool = False,
+              require_history: bool = False) -> list[Entry]:
     safe_path(root)
     files: list[Path] = []
     allowed = {name + suffix for name in ALL_SCHEMAS for suffix in ("", "-wal", "-shm")}
@@ -184,6 +199,10 @@ def inventory(root: Path, *, require_runtime: bool = False) -> list[Entry]:
         raise SnapshotError("Execution journal and normalized runtime state must be preserved together")
     if require_runtime and not set(RUNTIME_SCHEMAS) <= present:
         raise SnapshotError("Complete four-store runtime generation required")
+    if require_history and "history.sqlite3" not in present:
+        raise SnapshotError("History generation required")
+    if "history.sqlite3" in present and not {"execution.sqlite3", "runtime-state.sqlite3"} <= present:
+        raise SnapshotError("History requires execution journal and normalized runtime state")
     for name in ALL_SCHEMAS:
         if name not in present and any(name + suffix in present for suffix in ("-wal", "-shm")):
             raise SnapshotError("SQLite sidecar has no corresponding database")
@@ -273,6 +292,8 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                 if entry.path.endswith("-wal"):
                     check_wal(scratch / entry.path)
         present = {entry.path for entry in entries}
+        history_scope: tuple[str, str] | None = None
+        runtime_scopes: set[tuple[str, str]] = set()
         for name, schema in ALL_SCHEMAS.items():
             if name not in present:
                 continue
@@ -296,7 +317,8 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                     if actual != columns.split():
                         raise SnapshotError("Unsupported SQLite columns")
                 version = db.execute("PRAGMA user_version").fetchone()[0]
-                versioned = name in METADATA or name in RUNTIME_SCHEMAS and name != "execution.sqlite3"
+                versioned = (name in METADATA or name in HISTORY_SCHEMAS
+                             or name in RUNTIME_SCHEMAS and name != "execution.sqlite3")
                 if version != (1 if versioned else 0):
                     raise SnapshotError("Unsupported SQLite version")
                 if name in METADATA:
@@ -309,8 +331,24 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                             raise SnapshotError("AI dispatch history file is required for dispatched liabilities")
                 if name in RUNTIME_SCHEMAS:
                     check_runtime(db, name)
+                    if name in {"execution.sqlite3", "runtime-state.sqlite3"}:
+                        for table in schema:
+                            runtime_scopes.update(tuple(row) for row in db.execute(
+                                f'SELECT DISTINCT account,environment FROM "{table}"'))
                     if name == "ai-dispatch.sqlite3":
                         check_dispatch_budget(db, scratch / "ai.sqlite3")
+                if name in HISTORY_SCHEMAS:
+                    history_scope = check_history(db)
+        if history_scope is not None and runtime_scopes - {history_scope}:
+            raise SnapshotError("History and paired runtime account scopes must match")
+
+
+def check_history(db: sqlite3.Connection) -> tuple[str, str]:
+    """Standalone strict schema, payload, provenance and conflict validation."""
+    try:
+        return cast(tuple[str, str], _HISTORY_VALIDATOR["check_history"](db))
+    except (sqlite3.Error, ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise SnapshotError("History database integrity validation failed") from None
 
 
 def json_payload(raw: object) -> object:
@@ -487,7 +525,8 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def verify(source: Path, *, require_runtime: bool = False) -> list[Entry]:
+def verify(source: Path, *, require_runtime: bool = False,
+           require_history: bool = False) -> list[Entry]:
     safe_path(source)
     if {p.name for p in source.iterdir()} != {"manifest.json", "data"}:
         raise SnapshotError("Incomplete snapshot or unexpected snapshot entry")
@@ -498,8 +537,10 @@ def verify(source: Path, *, require_runtime: bool = False) -> list[Entry]:
     manifest = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
     base_fields = {"format_version", "created_at", "writers_stopped", "files"}
     if (not isinstance(manifest, dict)
-            or manifest.get("format_version") not in (1, 2)
-            or set(manifest) != (base_fields | {"runtime_files"} if manifest.get("format_version") == 2 else base_fields)
+            or manifest.get("format_version") not in (1, 2, 3)
+            or set(manifest) != (base_fields
+                | ({"runtime_files"} if manifest.get("format_version") in (2, 3) else set())
+                | ({"history_files"} if manifest.get("format_version") == 3 else set()))
             or type(manifest["format_version"]) is not int
             or manifest["writers_stopped"] is not True
             or not isinstance(manifest["created_at"], str)
@@ -516,13 +557,19 @@ def verify(source: Path, *, require_runtime: bool = False) -> list[Entry]:
             raise SnapshotError("Invalid manifest file record")
         entries.append(Entry(**item))
     # Match against independently discovered allowlisted paths before using manifest paths.
-    actual = inventory(source / "data", require_runtime=require_runtime)
+    actual = inventory(source / "data", require_runtime=require_runtime, require_history=require_history)
     if entries != actual:
         raise SnapshotError("Manifest paths, completeness or hashes do not match")
     runtime_files = sorted(entry.path for entry in actual if entry.path in RUNTIME_SCHEMAS)
+    history_files = sorted(entry.path for entry in actual if entry.path in HISTORY_SCHEMAS)
+    if manifest["format_version"] != 3 and history_files:
+        raise SnapshotError("History data requires a version three manifest")
+    if manifest["format_version"] == 3 and (
+            history_files != ["history.sqlite3"] or manifest["history_files"] != history_files):
+        raise SnapshotError("History generation completeness does not match manifest")
     if manifest["format_version"] == 1 and runtime_files:
         raise SnapshotError("Runtime data requires a version two manifest")
-    if manifest["format_version"] == 2 and (not runtime_files or manifest["runtime_files"] != runtime_files):
+    if manifest["format_version"] in (2, 3) and (not runtime_files or manifest["runtime_files"] != runtime_files):
         raise SnapshotError("Runtime generation completeness does not match manifest")
     check_sqlite(source / "data", actual)
     if inventory(source / "data") != actual:
@@ -539,10 +586,14 @@ def publish(source: Path, target: Path, entries: list[Entry], *, snapshot: bool)
     copy_files(source, data, entries)
     if snapshot:
         runtime_files = sorted(entry.path for entry in entries if entry.path in RUNTIME_SCHEMAS)
-        manifest: dict[str, Any] = {"format_version": 2 if runtime_files else 1, "created_at": datetime.now(UTC).isoformat(),
+        history_files = sorted(entry.path for entry in entries if entry.path in HISTORY_SCHEMAS)
+        manifest: dict[str, Any] = {"format_version": 3 if history_files else 2 if runtime_files else 1,
+                    "created_at": datetime.now(UTC).isoformat(),
                     "writers_stopped": True, "files": [asdict(e) for e in entries]}
         if runtime_files:
             manifest["runtime_files"] = runtime_files
+        if history_files:
+            manifest["history_files"] = history_files
         with (target / "manifest.json").open("x", encoding="utf-8") as stream:
             os.chmod(target / "manifest.json", 0o600)
             json.dump(manifest, stream, sort_keys=True, indent=2)
@@ -559,6 +610,8 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--source", required=True, type=Path)
         command.add_argument("--require-runtime", action="store_true",
                              help="Require all four runtime stores, including durable dispatch history")
+        command.add_argument("--require-history", action="store_true",
+                             help="Require history with execution journal and runtime state")
         if name != "verify":
             command.add_argument("--target", required=True, type=Path)
         if name == "snapshot":
@@ -571,13 +624,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         source = safe_path(args.source)
         if args.command == "verify":
-            entries = verify(source, require_runtime=args.require_runtime)
+            entries = verify(source, require_runtime=args.require_runtime, require_history=args.require_history)
         else:
             target = target_path(args.target, source)
             if args.command == "snapshot":
                 if not args.writers_stopped:
                     raise SnapshotError("All writers must be stopped: --writers-stopped required")
-                before = inventory(source, require_runtime=args.require_runtime)
+                before = inventory(source, require_runtime=args.require_runtime, require_history=args.require_history)
                 with tempfile.TemporaryDirectory(prefix=".trader-stage-", dir=target.parent) as raw:
                     stage = Path(raw)
                     copy_files(source, stage, before)
@@ -587,9 +640,9 @@ def main(argv: list[str] | None = None) -> int:
                     if inventory(source) != before:
                         raise SnapshotError("Source changed; no consistent snapshot produced")
                     publish(stage, target, before, snapshot=True)
-                entries = verify(target, require_runtime=args.require_runtime)
+                entries = verify(target, require_runtime=args.require_runtime, require_history=args.require_history)
             else:
-                entries = verify(source, require_runtime=args.require_runtime)
+                entries = verify(source, require_runtime=args.require_runtime, require_history=args.require_history)
                 # Freeze the verified generation before publishing restored data.
                 with tempfile.TemporaryDirectory(prefix=".trader-stage-", dir=target.parent) as raw:
                     stage = Path(raw)

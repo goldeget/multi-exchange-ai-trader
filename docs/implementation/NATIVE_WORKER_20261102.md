@@ -123,6 +123,75 @@ runtime-state store as one generation with the policy and other ledgers. See the
 [offline backup and restore procedure](../operations/LINUX_DEPLOYMENT_KO.md) for
 manifest verification, new-target restoration and the complete-runtime requirement.
 
+History generations add `history.sqlite3` to this same root. The portable recovery
+tool consists of `state_snapshot.py` and its sibling `history_snapshot_validation.py`;
+both run with Python 3.12's standard library, without installing the application.
+The sibling resolves relative to the script, including invocation from another
+working directory. Source databases are never opened with SQLite: only disposable
+copies are checked, including committed WAL, before publication.
+
+| Inventory | Manifest | Explicit requirement |
+| --- | --- | --- |
+| Six base ledgers and `datasets/` | v1 | Existing base requirement |
+| Base plus present original runtime stores | v2 | `--require-runtime` requires all original four |
+| Base plus history and paired execution/runtime-state stores | v3 | `--require-history` requires this triple |
+| Base plus all original runtime stores and history | v3 | Both flags together |
+
+The original four remain `execution.sqlite3`, `runtime-state.sqlite3`,
+`runtime-policy.sqlite3`, and `ai-dispatch.sqlite3`. A monitor history backup does
+not require paid-AI dispatch or policy files. If present, they are preserved.
+History always requires both paired stores even without a flag. Version 3 has
+exact base manifest fields plus `runtime_files` and
+`history_files: ["history.sqlite3"]`; v1/v2 cannot contain or claim history.
+Genuine v1/v2 generations and partial policy-only backups remain readable.
+All three subcommands support both flags. Missing required history is refused;
+restore never creates a replacement empty database or restores history alone.
+
+History validation checks exact schema v1, column types/order, full BINARY keys,
+foreign keys, scope CHECK, canonical append-only triggers, bounded canonical
+payloads and hashes, original membership/provenance, and every deterministic
+conflict pair. All account/environment rows in both paired stores must match the
+single persisted history scope; empty paired stores supply no contrary scope.
+Unknown files, lock files, views and triggers remain rejected. Hashes and this
+scope check establish capture integrity, not historical authenticity against an
+actor independently mixing same-scope files and recomputing the manifest.
+
+## Bounded durable history
+
+`HistoryStore.ingest` commits complete typed snapshots, immutable variants and
+conflict pairs atomically. `coverage(symbol, start_ms=..., end_ms=...)` and
+`load_window(...)` preserve original provenance through restart and offline restore.
+The worker integration contract is explicit
+`await worker.collect_history(symbol, start_ms=..., end_ms=...)`, returning an
+ingestion receipt; `read_history` stays read-only. The worker opens the scoped
+history store on its owner loop. Collection rechecks the exact runtime, lease
+acquisition, session/binding and requested scope/window after GET, before any
+history write. A requested stop rejects the result while retaining ownership
+until the admitted operation ends and stop is retried. Portable tests exercise
+populated v3 recovery a day later without refreshing observations or activating
+orders; actual venue and deployment qualification remain separate.
+No automatic first-history date, polling interval, startup collection flag or
+midnight balance is chosen.
+
+Query windows are inclusive and bounded to seven days. Execution/order coverage
+is symbol-specific; transaction coverage is account-wide, including transfers
+with empty symbols and activity in other symbols. Overlapping/adjacent successful
+queries compose into covered ranges and explicit gaps. A completed empty query
+counts as query coverage. A failed/cancelled collection advances no coverage.
+Account transactions appear once per distinct variant. Later ordinary order
+updates remain observations; identity changes, equal-update collisions and true
+venue-time fill regressions remain explicit conflicts, including older updates
+received later. Conflicts discovered later also taint earlier relevant coverage.
+
+`query_complete` and `last_query_end_ms` describe successful queries, not arrival
+of every venue event. Contradictions and gaps are independent. Orders are filtered
+by creation time and do not prove absence of older open orders. Views retain all
+conflicting variants rather than choosing a winner. Neither load nor restore
+refreshes observation timestamps, turns a union into `HistorySnapshot`, or grants
+runtime/risk authority. `venue_event_complete`, `flat_verified` and
+`DailyRealizedLoss.ledger_qualified` remain false; runtime remains BLOCKED and
+policy remains STOPPED.
+
 Restoration is an explicit operator action: verify the chosen backup, restore to
 a new private directory without overwriting the original, and review account/
 environment identity and ownership. With writers still stopped, set application

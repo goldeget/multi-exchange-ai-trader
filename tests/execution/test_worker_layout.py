@@ -4,13 +4,16 @@ import asyncio
 import json
 import runpy
 import shutil
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from test_worker import fill, harness, stage
+from test_worker_history import observation
 
 from multi_exchange_trader.execution import worker_cli
+from multi_exchange_trader.execution.history import HistorySnapshot
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.runtime import RuntimeBlocked
@@ -23,6 +26,7 @@ async def test_worker_creates_canonical_execution_journal(tmp_path: Path) -> Non
     try:
         assert (tmp_path / "execution.sqlite3").is_file()
         assert (tmp_path / "runtime-state.sqlite3").is_file()
+        assert (tmp_path / "history.sqlite3").is_file()
         assert not (tmp_path / "journal.sqlite3").exists()
     finally:
         await h.worker.stop()
@@ -49,6 +53,7 @@ async def test_legacy_worker_store_refused_without_opening_or_creating_stores(
     else:
         assert not canonical.exists()
     assert not (tmp_path / "runtime-state.sqlite3").exists()
+    assert not (tmp_path / "history.sqlite3").exists()
     lock = AccountWorkerLock(tmp_path, account_id=h.worker.scope.account_id, environment="DEMO")
     lock.acquire()
     lock.release()
@@ -130,7 +135,9 @@ def test_cli_accepts_explicit_separate_lease_directory(monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize("filled", [False, True])
-async def test_real_worker_common_root_snapshot_verify_restore(tmp_path: Path, filled: bool) -> None:
+async def test_real_worker_common_root_snapshot_verify_restore(
+    tmp_path: Path, filled: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Reuse the operations suite's six-ledger fixture and real offline CLI without
     # editing that suite or loosening the snapshot inventory to admit lease files.
     root = Path(__file__).resolve().parents[2]
@@ -140,6 +147,14 @@ async def test_real_worker_common_root_snapshot_verify_restore(tmp_path: Path, f
     locks.mkdir()
     h = harness(source, lock_directory=locks)
     await h.worker.start_passive()
+    history = observation()
+
+    async def read_history(symbol: str, *, start_ms: int, end_ms: int) -> HistorySnapshot:
+        assert (symbol, start_ms, end_ms) == ("BTCUSDT", 1000, 10000)
+        return history
+
+    monkeypatch.setattr(h.worker, "read_history", read_history)
+    await h.worker.collect_history("BTCUSDT", start_ms=1000, end_ms=10000)
     record = await stage(h)
     h.worker.runtime.journal.claim("entry")
     if filled:
@@ -149,17 +164,20 @@ async def test_real_worker_common_root_snapshot_verify_restore(tmp_path: Path, f
     await h.worker.stop()
     assert list(locks.glob("*.lock")) and not list(source.glob("*.lock"))
     backup, restored = tmp_path / "backup", tmp_path / "restored"
-    result = operations["snapshot"](source, backup)
+    result = operations["command"]("snapshot", "--source", source, "--target", backup,
+                                    "--writers-stopped", "--require-history")
     assert result.returncode == 0, result.stderr
-    result = operations["command"]("verify", "--source", backup)
+    result = operations["command"]("verify", "--source", backup, "--require-history")
     assert result.returncode == 0, result.stderr
-    result = operations["command"]("restore", "--source", backup, "--target", restored)
+    result = operations["command"]("restore", "--source", backup, "--target", restored,
+                                    "--require-history")
     assert result.returncode == 0, result.stderr
     template = tmp_path / "fresh-worker-fixture"
     template.mkdir()
     fresh = harness(template, lock_directory=locks)
     fresh.worker.directory = restored
     fresh.worker.policy_book = RuntimePolicyBook(restored / "runtime-policy.sqlite3")
+    fresh.worker.clock = lambda: history.observed_at + timedelta(days=1)
     assert not fresh.assembly.bridge._requests
     await fresh.worker.start_passive()
     try:
@@ -171,6 +189,15 @@ async def test_real_worker_common_root_snapshot_verify_restore(tmp_path: Path, f
         assert record.client_order_id in fresh.assembly.bridge._requests
         assert not fresh.assembly.bridge._submissions
         assert fresh.worker.runtime.status.entries_paused
+        assert fresh.worker.runtime.status.state == "BLOCKED"
+        assert fresh.worker.policy_book.read()["desired_state"] == "STOPPED"
+        assert not fresh.assembly.strategy.commands
+        view = fresh.worker._history_store.load_window("BTCUSDT", start_ms=1000, end_ms=10000)
+        assert view.coverage.query_complete
+        assert len(view.variants) == 1 and view.variants[0].record == history.transactions[0]
+        assert view.coverage.oldest_observed_at == history.observed_at
+        assert view.coverage.oldest_server_observed_at == history.server_observed_at
+        assert not view.coverage.venue_event_complete and not view.coverage.flat_verified
         assert fresh.worker._lock.path.parent == locks
         assert not list(restored.glob("*.lock"))
     finally:

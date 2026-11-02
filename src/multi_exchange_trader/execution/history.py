@@ -21,10 +21,10 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
@@ -284,6 +284,128 @@ def _transaction(row: dict[str, object], window: HistoryWindow) -> TransactionRe
     return TransactionRecord(_text(row.get("id")), _text(row.get("tradeId"), empty=True),
         _text(row.get("orderId"), empty=True), symbol, category, "USDT", kind,
         _in_window(row.get("transactionTime"), window), cash, funding, fee, change, balance)
+
+
+def canonical_history_decimal(value: Decimal) -> str:
+    """Exact, bounded plain notation without Decimal context rounding."""
+    if type(value) is not Decimal or not value.is_finite():
+        raise HistoryError("HISTORY_DECIMAL_REQUIRED")
+    sign, digits, exponent = value.as_tuple()
+    if len(digits) > 256 or not isinstance(exponent, int) or abs(exponent) > 1000:
+        raise HistoryError("HISTORY_DECIMAL_REQUIRED")
+    if not any(digits):
+        return "0"
+    text = "".join(str(digit) for digit in digits)
+    stripped = text.rstrip("0")
+    exponent += len(text) - len(stripped)
+    point = len(stripped) + exponent
+    if point > 30 or exponent < -18:
+        raise HistoryError("HISTORY_DECIMAL_REQUIRED")
+    if exponent >= 0:
+        plain = stripped + "0" * exponent
+    elif point > 0:
+        plain = stripped[:point] + "." + stripped[point:]
+    else:
+        plain = "0." + "0" * -point + stripped
+    return ("-" if sign else "") + plain
+
+
+_HISTORY_FIELD_MAPS: dict[type[ExecutionRecord | OrderHistoryRecord | TransactionRecord], tuple[str, ...]] = {
+    ExecutionRecord: ("execId", "orderId", "orderLinkId", "symbol", "side", "execType",
+        "execTime", "execQty", "execPrice", "execValue", "execFee", "feeCurrency", "feeRate",
+        "closedSize"),
+    OrderHistoryRecord: ("orderId", "orderLinkId", "symbol", "side", "positionIdx", "orderStatus",
+        "qty", "cumExecQty", "leavesQty", "reduceOnly", "createdTime", "updatedTime"),
+    TransactionRecord: ("id", "tradeId", "orderId", "symbol", "category", "currency", "type",
+        "transactionTime", "cashFlow", "funding", "fee", "change", "cashBalance"),
+}
+
+
+def validate_history_record(record: ExecutionRecord | OrderHistoryRecord | TransactionRecord,
+                            *, symbol: str, window: HistoryWindow) -> None:
+    """Validate constructed records using the same bounded REST field rules."""
+    kind = type(record)
+    if kind not in _HISTORY_FIELD_MAPS:
+        raise HistoryError("HISTORY_RECORD_INVALID")
+    row: dict[str, object] = {}
+    primitives = {"str": str, "int": int, "bool": bool, "Decimal": Decimal}
+    for item, remote in zip(fields(record), _HISTORY_FIELD_MAPS[kind], strict=True):
+        value = getattr(record, item.name)
+        if type(value) is not primitives[str(item.type)]:
+            raise HistoryError("HISTORY_RECORD_INVALID")
+        if item.type == "Decimal":
+            value = canonical_history_decimal(cast(Decimal, value))
+        elif item.name.endswith("_ms"):
+            value = str(value)
+        row[remote] = value
+    if kind is ExecutionRecord:
+        _execution(row, symbol, window)
+    elif kind is OrderHistoryRecord:
+        _order(row, symbol, window)
+    else:
+        row["transSubType"] = ""
+        _transaction(row, window)
+
+
+def validate_history_scope(scope: ProtectionScope) -> None:
+    if (type(scope) is not ProtectionScope or type(scope.account_id) is not str
+            or type(scope.environment) is not str or scope.environment not in {"DEMO", "LIVE"}):
+        raise HistoryError("HISTORY_SCOPE_INVALID")
+    _text(scope.account_id)
+
+
+def validate_history_snapshot(snapshot: HistorySnapshot) -> None:
+    """Validate original typed evidence without consulting a clock or granting authority."""
+    if type(snapshot) is not HistorySnapshot or type(snapshot.window) is not HistoryWindow:
+        raise HistoryError("HISTORY_SNAPSHOT_INVALID")
+    validate_history_scope(snapshot.scope)
+    _symbol(snapshot.symbol)
+    _text(snapshot.snapshot_id)
+    HistoryWindow(snapshot.window.start_ms, snapshot.window.end_ms)
+    observed = utc(snapshot.observed_at)
+    server = utc(snapshot.server_observed_at)
+    observed_ms = milliseconds(observed.replace(microsecond=observed.microsecond // 1000 * 1000))
+    if (not 0 < milliseconds(server) or snapshot.window.end_ms > observed_ms
+            or server > observed or type(snapshot.transport_injected) is not bool
+            or snapshot.page_complete is not True or snapshot.transactions_account_wide is not True
+            or snapshot.venue_event_complete is not False or snapshot.flat_verified is not False):
+        raise HistoryError("HISTORY_SNAPSHOT_INVALID")
+    for records, kind, identity in (
+        (snapshot.executions, ExecutionRecord, "execution_id"),
+        (snapshot.orders, OrderHistoryRecord, "venue_order_id"),
+        (snapshot.transactions, TransactionRecord, "transaction_id"),
+    ):
+        if type(records) is not tuple or len(records) > 10000:
+            raise HistoryError("HISTORY_RECORDS_INVALID")
+        identities: set[str] = set()
+        for record in records:
+            if type(record) is not kind:
+                raise HistoryError("HISTORY_RECORD_INVALID")
+            validate_history_record(record, symbol=snapshot.symbol, window=snapshot.window)
+            key = getattr(record, identity)
+            if key in identities:
+                raise HistoryError("HISTORY_DUPLICATE_IDENTITY")
+            identities.add(key)
+    order_map = {order.venue_order_id: order for order in snapshot.orders}
+    totals: dict[str, Decimal] = {}
+    with localcontext() as context:
+        context.prec = 100
+        for execution in snapshot.executions:
+            order = order_map.get(execution.venue_order_id)
+            if order is not None:
+                if execution.client_order_id != order.client_order_id or execution.side != order.side:
+                    raise HistoryError("HISTORY_EXECUTION_ORDER_CONFLICT")
+                if not order.created_ms <= execution.time_ms <= order.updated_ms:
+                    raise HistoryError("HISTORY_EXECUTION_ORDER_TIME_CONFLICT")
+            if execution.execution_type != "Funding":
+                totals[execution.venue_order_id] = (totals.get(execution.venue_order_id, Decimal(0))
+                                                   + execution.quantity)
+    for order in snapshot.orders:
+        # The snapshot retains MIN(page-server-time), not MAX; final observation
+        # is the available upper bound. Never reject a valid later page update.
+        if (order.updated_ms > observed_ms
+                or totals.get(order.venue_order_id, Decimal(0)) > order.cumulative_filled):
+            raise HistoryError("HISTORY_EXECUTION_ORDER_TOTAL_CONFLICT")
 
 
 class BybitHistoryReader:
