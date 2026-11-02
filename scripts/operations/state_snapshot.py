@@ -99,6 +99,8 @@ ALL_SCHEMAS = SCHEMAS | RUNTIME_SCHEMAS | HISTORY_SCHEMAS
 # Anchor to this script, including when launched outside the repository or via runpy.
 # The sibling is part of the portable operations tool, not an application dependency.
 _HISTORY_VALIDATOR = runpy.run_path(str(Path(__file__).with_name("history_snapshot_validation.py")))
+_NATIVE_VALIDATOR = runpy.run_path(str(Path(__file__).with_name("native_restart_format.py")))
+NATIVE_FILE = "native-restart.json"
 METADATA = {
     "paper.sqlite3": {"schema": 1, "assumptions": "PAPER-v1", "engine": "1.231.0"},
     "spot-paper.sqlite3": {"schema": 1, "assumptions": "SPOT-PAPER-v2",
@@ -170,10 +172,11 @@ def file_hash(path: Path) -> tuple[int, str]:
 
 
 def inventory(root: Path, *, require_runtime: bool = False,
-              require_history: bool = False) -> list[Entry]:
+              require_history: bool = False, require_native: bool = False) -> list[Entry]:
     safe_path(root)
     files: list[Path] = []
     allowed = {name + suffix for name in ALL_SCHEMAS for suffix in ("", "-wal", "-shm")}
+    allowed.add(NATIVE_FILE)
     with os.scandir(root) as children:
         for child in children:
             path = Path(child.path)
@@ -201,6 +204,10 @@ def inventory(root: Path, *, require_runtime: bool = False,
         raise SnapshotError("Complete four-store runtime generation required")
     if require_history and "history.sqlite3" not in present:
         raise SnapshotError("History generation required")
+    if require_native and NATIVE_FILE not in present:
+        raise SnapshotError("Native generation required")
+    if NATIVE_FILE in present and not (set(RUNTIME_SCHEMAS) | set(HISTORY_SCHEMAS)) <= present:
+        raise SnapshotError("Native requires complete runtime and history generation")
     if "history.sqlite3" in present and not {"execution.sqlite3", "runtime-state.sqlite3"} <= present:
         raise SnapshotError("History requires execution journal and normalized runtime state")
     for name in ALL_SCHEMAS:
@@ -209,6 +216,8 @@ def inventory(root: Path, *, require_runtime: bool = False,
     result, total = [], 0
     for path in sorted(files):
         size, digest = file_hash(path)
+        if path.name == NATIVE_FILE and size > _NATIVE_VALIDATOR["MAX_BYTES"]:
+            raise SnapshotError("Native generation size limit exceeded")
         total += size
         if total > MAX_TOTAL_BYTES:
             raise SnapshotError("Total size limit exceeded")
@@ -341,6 +350,17 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                     history_scope = check_history(db)
         if history_scope is not None and runtime_scopes - {history_scope}:
             raise SnapshotError("History and paired runtime account scopes must match")
+        if NATIVE_FILE in present:
+            try:
+                # Only disposable copies are opened by the WAL-aware logical digester.
+                document = _NATIVE_VALIDATOR["decode_document"]((scratch / NATIVE_FILE).read_bytes())
+                _NATIVE_VALIDATOR["validate_generation_document"](document,
+                    expected_digest=_NATIVE_VALIDATOR["application_digest"](scratch))
+                scope = document["identity"]["scope"]
+                if history_scope != (scope["account_id"], scope["environment"]):
+                    raise ValueError("scope")
+            except (ValueError, TypeError, KeyError, RecursionError, OSError, sqlite3.Error):
+                raise SnapshotError("Native sealed generation integrity or scope invalid") from None
 
 
 def check_history(db: sqlite3.Connection) -> tuple[str, str]:
@@ -526,7 +546,7 @@ def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def verify(source: Path, *, require_runtime: bool = False,
-           require_history: bool = False) -> list[Entry]:
+           require_history: bool = False, require_native: bool = False) -> list[Entry]:
     safe_path(source)
     if {p.name for p in source.iterdir()} != {"manifest.json", "data"}:
         raise SnapshotError("Incomplete snapshot or unexpected snapshot entry")
@@ -537,10 +557,11 @@ def verify(source: Path, *, require_runtime: bool = False,
     manifest = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
     base_fields = {"format_version", "created_at", "writers_stopped", "files"}
     if (not isinstance(manifest, dict)
-            or manifest.get("format_version") not in (1, 2, 3)
+            or manifest.get("format_version") not in (1, 2, 3, 4)
             or set(manifest) != (base_fields
-                | ({"runtime_files"} if manifest.get("format_version") in (2, 3) else set())
-                | ({"history_files"} if manifest.get("format_version") == 3 else set()))
+                | ({"runtime_files"} if manifest.get("format_version") in (2, 3, 4) else set())
+                | ({"history_files"} if manifest.get("format_version") in (3, 4) else set())
+                | ({"native_files"} if manifest.get("format_version") == 4 else set()))
             or type(manifest["format_version"]) is not int
             or manifest["writers_stopped"] is not True
             or not isinstance(manifest["created_at"], str)
@@ -557,22 +578,30 @@ def verify(source: Path, *, require_runtime: bool = False,
             raise SnapshotError("Invalid manifest file record")
         entries.append(Entry(**item))
     # Match against independently discovered allowlisted paths before using manifest paths.
-    actual = inventory(source / "data", require_runtime=require_runtime, require_history=require_history)
+    actual = inventory(source / "data", require_runtime=require_runtime,
+        require_history=require_history, require_native=require_native)
     if entries != actual:
         raise SnapshotError("Manifest paths, completeness or hashes do not match")
     runtime_files = sorted(entry.path for entry in actual if entry.path in RUNTIME_SCHEMAS)
     history_files = sorted(entry.path for entry in actual if entry.path in HISTORY_SCHEMAS)
-    if manifest["format_version"] != 3 and history_files:
+    native_files = sorted(entry.path for entry in actual if entry.path == NATIVE_FILE)
+    if manifest["format_version"] != 4 and native_files:
+        raise SnapshotError("Native data requires a version four manifest")
+    if manifest["format_version"] == 4 and (
+            native_files != [NATIVE_FILE] or manifest["native_files"] != native_files
+            or runtime_files != sorted(RUNTIME_SCHEMAS)):
+        raise SnapshotError("Native generation completeness does not match manifest")
+    if manifest["format_version"] not in (3, 4) and history_files:
         raise SnapshotError("History data requires a version three manifest")
-    if manifest["format_version"] == 3 and (
+    if manifest["format_version"] in (3, 4) and (
             history_files != ["history.sqlite3"] or manifest["history_files"] != history_files):
         raise SnapshotError("History generation completeness does not match manifest")
     if manifest["format_version"] == 1 and runtime_files:
         raise SnapshotError("Runtime data requires a version two manifest")
-    if manifest["format_version"] in (2, 3) and (not runtime_files or manifest["runtime_files"] != runtime_files):
+    if manifest["format_version"] in (2, 3, 4) and (not runtime_files or manifest["runtime_files"] != runtime_files):
         raise SnapshotError("Runtime generation completeness does not match manifest")
     check_sqlite(source / "data", actual)
-    if inventory(source / "data") != actual:
+    if inventory(source / "data", require_native=require_native) != actual:
         raise SnapshotError("Snapshot changed during verification")
     return actual
 
@@ -587,13 +616,16 @@ def publish(source: Path, target: Path, entries: list[Entry], *, snapshot: bool)
     if snapshot:
         runtime_files = sorted(entry.path for entry in entries if entry.path in RUNTIME_SCHEMAS)
         history_files = sorted(entry.path for entry in entries if entry.path in HISTORY_SCHEMAS)
-        manifest: dict[str, Any] = {"format_version": 3 if history_files else 2 if runtime_files else 1,
+        native_files = sorted(entry.path for entry in entries if entry.path == NATIVE_FILE)
+        manifest: dict[str, Any] = {"format_version": 4 if native_files else 3 if history_files else 2 if runtime_files else 1,
                     "created_at": datetime.now(UTC).isoformat(),
                     "writers_stopped": True, "files": [asdict(e) for e in entries]}
         if runtime_files:
             manifest["runtime_files"] = runtime_files
         if history_files:
             manifest["history_files"] = history_files
+        if native_files:
+            manifest["native_files"] = native_files
         with (target / "manifest.json").open("x", encoding="utf-8") as stream:
             os.chmod(target / "manifest.json", 0o600)
             json.dump(manifest, stream, sort_keys=True, indent=2)
@@ -612,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
                              help="Require all four runtime stores, including durable dispatch history")
         command.add_argument("--require-history", action="store_true",
                              help="Require history with execution journal and runtime state")
+        command.add_argument("--require-native", action="store_true",
+                             help="Require a sealed native file and complete runtime/history generation")
         if name != "verify":
             command.add_argument("--target", required=True, type=Path)
         if name == "snapshot":
@@ -624,34 +658,39 @@ def main(argv: list[str] | None = None) -> int:
     try:
         source = safe_path(args.source)
         if args.command == "verify":
-            entries = verify(source, require_runtime=args.require_runtime, require_history=args.require_history)
+            entries = verify(source, require_runtime=args.require_runtime,
+                require_history=args.require_history, require_native=args.require_native)
         else:
             target = target_path(args.target, source)
             if args.command == "snapshot":
                 if not args.writers_stopped:
                     raise SnapshotError("All writers must be stopped: --writers-stopped required")
-                before = inventory(source, require_runtime=args.require_runtime, require_history=args.require_history)
+                before = inventory(source, require_runtime=args.require_runtime,
+                    require_history=args.require_history, require_native=args.require_native)
                 with tempfile.TemporaryDirectory(prefix=".trader-stage-", dir=target.parent) as raw:
                     stage = Path(raw)
                     copy_files(source, stage, before)
-                    if inventory(source) != before or inventory(stage) != before:
+                    if (inventory(source, require_native=args.require_native) != before
+                            or inventory(stage, require_native=args.require_native) != before):
                         raise SnapshotError("Source changed; no consistent snapshot produced")
                     check_sqlite(stage, before)
-                    if inventory(source) != before:
+                    if inventory(source, require_native=args.require_native) != before:
                         raise SnapshotError("Source changed; no consistent snapshot produced")
                     publish(stage, target, before, snapshot=True)
-                entries = verify(target, require_runtime=args.require_runtime, require_history=args.require_history)
+                entries = verify(target, require_runtime=args.require_runtime,
+                    require_history=args.require_history, require_native=args.require_native)
             else:
-                entries = verify(source, require_runtime=args.require_runtime, require_history=args.require_history)
+                entries = verify(source, require_runtime=args.require_runtime,
+                    require_history=args.require_history, require_native=args.require_native)
                 # Freeze the verified generation before publishing restored data.
                 with tempfile.TemporaryDirectory(prefix=".trader-stage-", dir=target.parent) as raw:
                     stage = Path(raw)
                     copy_files(source / "data", stage, entries)
                     check_sqlite(stage, entries)
-                    if inventory(stage) != entries:
+                    if inventory(stage, require_native=args.require_native) != entries:
                         raise SnapshotError("Restore copy mismatch")
                     publish(stage, target, entries, snapshot=False)
-                if inventory(target) != entries:
+                if inventory(target, require_native=args.require_native) != entries:
                     raise SnapshotError("Restore copy mismatch")
         print(json.dumps({"status": "verified", "operation": args.command,
                           "files": len(entries), "bytes": sum(e.size for e in entries)}))

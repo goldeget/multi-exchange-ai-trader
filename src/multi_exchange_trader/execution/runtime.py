@@ -100,6 +100,18 @@ class RuntimeBlocked(ValueError):
 
 
 @dataclass(frozen=True)
+class NativeOwnedRequest:
+    """Validated immutable ownership, without recovery writes or fresh authority."""
+
+    request: NativeOrderRequest
+    command_state: CommandState
+    venue_order_ids: frozenset[str]
+
+
+NativeOwnershipResolver = Callable[[tuple[tuple[str, str], ...]], tuple[NativeOwnedRequest, ...]]
+
+
+@dataclass(frozen=True)
 class RuntimeStatus:
     state: Literal["BLOCKED", "PAUSED", "RUNNING"]
     entries_paused: bool
@@ -182,7 +194,9 @@ class NativeExecutionRuntime:
                  bridge: NativeBybitBridge, entry_risk: RiskCheck,
                  clock: Callable[[], datetime], max_evidence_age: timedelta,
                  receipt_session: BybitDemoAccountSession | None = None,
-                 history_store: HistoryStore | None = None) -> None:
+                 history_store: HistoryStore | None = None,
+                 _pre_recovery: Callable[[NativeOwnershipResolver], None] | None = None,
+                 ) -> None:
         if (type(journal) is not CommandJournal or type(store) is not RuntimeStateStore
                 or type(bridge) is not NativeBybitBridge
                 or type(worker_lock) is not AccountWorkerLock
@@ -219,7 +233,9 @@ class NativeExecutionRuntime:
             if (previous is not None and not previous._closed
                     and previous._lease == self._lease and previous.worker_lock.acquired):
                 raise RuntimeBlocked("ACCOUNT_RUNTIME_ALREADY_RUNNING")
-            self._states()  # Corrupt projection fails before any recovery mutation.
+            self._states()  # Full replay before any recovery mutation.
+            if _pre_recovery is not None:
+                _pre_recovery(self.native_owned_requests)
             self.journal.recover_sending(exclusive_owner=True)
             self.store.recover(exclusive_owner=True)
             for record in journal.list_commands():
@@ -231,6 +247,64 @@ class NativeExecutionRuntime:
                         and self._find_owned(record.client_order_id) is not None):
                     self.bridge.register_owned(self._request(record))
             _OWNERS[str(self._lock_path)] = self
+
+    def native_owned_requests(self, native_venues: tuple[tuple[str, str], ...] = ()
+                              ) -> tuple[NativeOwnedRequest, ...]:
+        """Read-only full replay seam shared by startup and quiesced capture."""
+        self._guard()
+        states = self._states()
+        candidates = tuple(item for cached in self._projections.values()
+                           for item in cached[3].candidates)
+        result = []
+        for record in self.journal.list_commands():
+            if record.kind not in (CommandKind.ENTRY, CommandKind.EXIT):
+                continue
+            matches = tuple(state for state in states if any(
+                order.client_order_id == record.client_order_id for order in state.orders))
+            if not matches and record.kind is CommandKind.ENTRY and record.state is CommandState.PENDING:
+                # Validate interrupted journal-before-mapping intent without creating a native owner.
+                self._entry_mapping(record)
+                continue
+            if len(matches) != 1:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            request = self._request_for_state(record, matches[0])
+            venues = self._known_venues(record.client_order_id, candidates)
+            # Only the coordinator supplies seeds from fully validated detached
+            # native orders. They restrict identity, never grant event authority.
+            venues.update(venue for client, venue in native_venues
+                          if client == record.client_order_id)
+            if self._history_store is not None:
+                while True:
+                    if len(venues) > 16:
+                        raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                    queried_venues = frozenset(venues)
+                    for evidence in self._history_store.order_evidence(
+                            client_order_id=record.client_order_id,
+                            venue_order_ids=tuple(sorted(queried_venues))):
+                        row, owned = evidence.record, request.owned
+                        if (evidence.conflict_keys or row.client_order_id != owned.client_order_id
+                                or row.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                                or row.side != ("Buy" if owned.side == "BUY" else "Sell")
+                                or row.quantity != owned.quantity or row.reduce_only != owned.reduce_only
+                                or row.position_idx != 0):
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        venues.add(row.venue_order_id)
+                    for execution in self._history_store.execution_identity_evidence(
+                            client_order_id=record.client_order_id,
+                            venue_order_ids=tuple(sorted(queried_venues))):
+                        fill, owned = execution.record, request.owned
+                        if (execution.conflict_keys or fill.client_order_id != owned.client_order_id
+                                or fill.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                                or fill.side != ("Buy" if owned.side == "BUY" else "Sell")):
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        # Partial fill quantity/price are not original order economics.
+                        venues.add(fill.venue_order_id)
+                    if venues == queried_venues:
+                        break
+            if len(venues) > 1:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            result.append(NativeOwnedRequest(request, record.state, frozenset(venues)))
+        return tuple(result)
 
     @property
     def receipt_session(self) -> BybitDemoAccountSession | None:
@@ -1079,9 +1153,14 @@ class NativeExecutionRuntime:
     def _recover_entry_mapping(self, record: CommandRecord) -> None:
         """Restore committed ownership under the lease; never renew selection authority."""
         self._guard()
+        state, order = self._entry_mapping(record)
+        self._register(state, order)
+
+    def _entry_mapping(self, record: CommandRecord) -> tuple[p.ProtectionProjection, p.OwnedOrder]:
         raw = json.loads(record.payload_json)
         plan, policy = self._plan(record), self._policy(record)
-        if ((plan.scope.account_id, plan.scope.environment)
+        if (hashlib.sha256(record.payload_json.encode()).hexdigest() != record.payload_hash
+                or (plan.scope.account_id, plan.scope.environment)
                 != (self.journal.scope.account_id, self.journal.scope.environment)
                 or _reassess(plan, plan.assessed_at) != plan
                 or policy.revision != plan.policy.revision
@@ -1094,8 +1173,8 @@ class NativeExecutionRuntime:
         NativeOrderRequest(self.bridge.scope, order, "MARKET", plan.market.entry_price,
             attached=AttachedProtection(policy.stop_price, policy.take_profit_price,
                                         policy.trigger_source))
-        self._register(p.ProtectionProjection(self.bridge.scope, order.position_id,
-                                              order.instrument_id, order.side), order)
+        return p.ProtectionProjection(self.bridge.scope, order.position_id,
+                                      order.instrument_id, order.side), order
 
     def _request(self, record: CommandRecord) -> NativeOrderRequest:
         state = self._find_owned(record.client_order_id)
