@@ -24,7 +24,6 @@ from ._credential_files import (
     read_checked,
     sync_directory,
 )
-from .ai.config import load_anthropic_config
 from .ai.provider_config import load_ai_provider_config
 
 __all__ = ["CredentialSnapshot", "CredentialStore", "CredentialStoreError", "RegistrationResult",
@@ -128,10 +127,10 @@ def _validate_values(values: Mapping[str, str]) -> dict[str, str]:
         raise CredentialStoreError("INVALID_VALUES")
     # Both namespaces are checked even if the selected provider is the other one.
     explicit = dict(result, AI_ENV_FILE="off", ANTHROPIC_ENV_FILE="off")
-    if (load_anthropic_config(explicit).status == "INVALID_CONFIGURATION" or
-        load_ai_provider_config(dict(explicit, AI_PROVIDER="OPENROUTER")).status ==
-            "INVALID_CONFIGURATION" or
-        result.get("AI_PROVIDER", "ANTHROPIC") not in {"ANTHROPIC", "OPENROUTER"}):
+    if (result.get("AI_PROVIDER", "ANTHROPIC") not in {"ANTHROPIC", "OPENROUTER"} or any(
+        load_ai_provider_config(dict(explicit, AI_PROVIDER=provider)).status ==
+        "INVALID_CONFIGURATION" for provider in ("ANTHROPIC", "OPENROUTER")
+    )):
         raise CredentialStoreError("INVALID_VALUES")
     return result
 

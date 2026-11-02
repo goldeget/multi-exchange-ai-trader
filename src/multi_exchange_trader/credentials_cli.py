@@ -28,7 +28,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-revision", type=int)
     try:
         options = parser.parse_args(argv)
-        store = (CredentialStore(Path(options.store)) if options.store else
+        store = (CredentialStore(Path(options.store)) if options.store is not None else
                  default_credential_store(os.environ))
         if store is None:
             raise CredentialStoreError("INVALID_ARGUMENTS")

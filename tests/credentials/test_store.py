@@ -165,6 +165,19 @@ def test_registration_rejects_invalid_values(
         private_store(credentials, tmp_path).register(values, expected_revision=None)
 
 
+@pytest.mark.parametrize("selector", ["ANTHROPIC", "OPENROUTER"])
+def test_anthropic_model_cannot_contain_other_provider_credential(
+    credentials: ModuleType, tmp_path: Path, selector: str,
+) -> None:
+    store = private_store(credentials, tmp_path)
+    values = {"AI_PROVIDER": selector, "ANTHROPIC_API_KEY": "synthetic-anthropic",
+              "ANTHROPIC_MODEL": "claude-sk-or-v1-synthetic1234",
+              "OPENROUTER_API_KEY": "sk-or-v1-synthetic1234", "OPENROUTER_MODEL": "vendor/model"}
+    with pytest.raises(credentials.CredentialStoreError, match="INVALID_VALUES"):
+        store.register(values, expected_revision=None)
+    assert not store.path.exists()
+
+
 @pytest.mark.parametrize("raw", ["relative/store", "../store"])
 def test_relative_and_parent_paths_rejected(credentials: ModuleType, raw: str) -> None:
     with pytest.raises(credentials.CredentialStoreError, match="UNSAFE_PATH"):

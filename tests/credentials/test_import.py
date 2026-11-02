@@ -112,3 +112,28 @@ def test_cli_does_not_echo_unknown_secret_arguments(tmp_path: Path) -> None:
                                env=dict(os.environ, PYTHONPATH=str(Path(__file__).parents[2] / "src")))
     assert completed.returncode != 0
     assert "synthetic" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("store_arguments", [["--store", ""], ["--store="],
+                                             ["--store", "relative/store"]])
+def test_explicit_invalid_store_never_selects_or_writes_default(
+    credentials: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], store_arguments: list[str],
+) -> None:
+    cli = importlib.import_module("multi_exchange_trader.credentials_cli")
+    source = source_file(tmp_path, "ANTHROPIC_API_KEY=synthetic-anthropic\n")
+    default_path = tmp_path / "default-private" / "store"
+    selector_calls: list[bool] = []
+
+    def synthetic_default_selector(environ: object) -> object:
+        selector_calls.append(True)
+        return credentials.CredentialStore(default_path)
+
+    monkeypatch.setattr(cli, "default_credential_store", synthetic_default_selector)
+    result = cli.main(["--import-env", str(source), *store_arguments])
+    captured = capsys.readouterr()
+    assert result == 1
+    assert selector_calls == []
+    assert not default_path.parent.exists()
+    assert captured.out == ""
+    assert captured.err.strip() == "UNSAFE_PATH"
