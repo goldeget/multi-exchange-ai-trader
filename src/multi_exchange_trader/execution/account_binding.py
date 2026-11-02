@@ -21,12 +21,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Self
+from uuid import uuid4
 
 import httpx
 
 from ..account.bybit_readonly import BybitReadOnlyClient
 from ..account.config import allowed_host
 from .bybit_native import build_demo_exec_config
+from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
 from .protection import ProtectionScope
 
 _PERMISSIONS = {
@@ -101,6 +103,17 @@ class BybitAccountIdentity:
                 and not self.prohibited_permissions)
 
 
+@dataclass(frozen=True, repr=False)
+class _HistoryReceiptSlot:
+    binding: AuthenticatedAccountBinding
+    scope: ProtectionScope
+    generation: object
+    started_at: datetime
+    started_mono: float
+    binding_reference: str
+    view: HistoryReceiptView | None = None
+
+
 def _uid(value: object, *, allow_zero: bool = False) -> str:
     if ((type(value) is not str or re.fullmatch(r"[1-9][0-9]{0,19}", value) is None)
             and not (allow_zero and value == "0")):
@@ -166,6 +179,11 @@ class BybitDemoAccountSession:
         self._issued_mono = 0.0
         self._closed = False
         self._refresh_lock = asyncio.Lock()
+        self._history_receipts: dict[object, _HistoryReceiptSlot] = {}
+        self._history_generation = object()
+        self._history_binding: AuthenticatedAccountBinding | None = None
+        self._history_binding_reference = ""
+        self._history_last_clock: tuple[datetime, float] | None = None
 
     def __repr__(self) -> str:
         return "BybitDemoAccountSession(environment=DEMO, credentials=REDACTED)"
@@ -178,7 +196,41 @@ class BybitDemoAccountSession:
                 or self._client._api_secret != self._api_secret):
             self._binding = None
             self._identity = None
+            self._revoke_history_receipts()
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+
+    def _revoke_history_receipts(self) -> None:
+        self._history_receipts.clear()
+        self._history_generation = object()
+        self._history_binding = None
+        self._history_binding_reference = ""
+        self._history_last_clock = None
+
+    def _prune_history_receipts(self) -> tuple[datetime, float]:
+        """Prune expired pending/issued slots without evicting live handles."""
+        try:
+            now, mono = _utc(self._clock()), self._mono()
+            if self._history_last_clock is not None:
+                last_wall, last_mono = self._history_last_clock
+                if now < last_wall or mono < last_mono:
+                    raise AccountBindingError("AUTHENTICATED_HISTORY_CLOCK_INVALID")
+        except Exception:  # noqa: BLE001 - clock callbacks cannot expose private data.
+            self._revoke_history_receipts()
+        else:
+            self._history_last_clock = now, mono
+            ttl = min(self._max_age, timedelta(seconds=30))
+            for key, slot in tuple(self._history_receipts.items()):
+                valid = (slot.generation is self._history_generation
+                         and timedelta(0) <= now - slot.started_at <= ttl
+                         and 0 <= mono - slot.started_mono <= ttl.total_seconds())
+                if slot.view is not None:
+                    snapshot = slot.view.snapshot
+                    valid = (valid and timedelta(0) <= now - snapshot.observed_at <= ttl
+                             and timedelta(0) <= now - snapshot.server_observed_at <= ttl)
+                if not valid:
+                    self._history_receipts.pop(key, None)
+            return now, mono
+        raise AccountBindingError("AUTHENTICATED_HISTORY_CLOCK_INVALID") from None
 
     def _mono(self) -> float:
         value = self._monotonic()
@@ -199,6 +251,7 @@ class BybitDemoAccountSession:
         expected field from the other or use the returned value as its own expectation.
         """
         async with self._refresh_lock:
+            self._revoke_history_receipts()
             self._binding = None
             self._identity = None
             self._guard()
@@ -269,6 +322,82 @@ class BybitDemoAccountSession:
             raise AccountBindingError("ACCOUNT_LINEAR_PERMISSIONS_REQUIRED")
         return identity
 
+    def require_observation_binding(self, binding: AuthenticatedAccountBinding, *,
+                                    scope: ProtectionScope) -> BybitAccountIdentity:
+        """Actual-session read authority, independent of permission to trade."""
+        identity = self.require_binding(binding, scope=scope)
+        if self._transport_injected or identity.transport_injected:
+            raise AccountBindingError("ACCOUNT_NETWORK_TRANSPORT_REQUIRED")
+        return identity
+
+    async def read_history_receipt(self, binding: AuthenticatedAccountBinding, *,
+                                   scope: ProtectionScope, symbol: str,
+                                   start_ms: int, end_ms: int) -> AuthenticatedHistoryReceipt:
+        """Read through the owned exact reader, reserving bounded GET-start lifetime."""
+        from .history import BybitHistoryReader, validate_history_snapshot
+
+        now, mono = self._prune_history_receipts()
+        self.require_observation_binding(binding, scope=scope)
+        if len(self._history_receipts) >= 4:
+            raise AccountBindingError("AUTHENTICATED_HISTORY_RECEIPT_CAPACITY")
+        if self._history_binding is not binding:
+            self._history_binding = binding
+            self._history_binding_reference = uuid4().hex
+        pending = object()
+        slot = _HistoryReceiptSlot(binding, scope, self._history_generation, now, mono,
+                                   self._history_binding_reference)
+        self._history_receipts[pending] = slot
+        receipt: AuthenticatedHistoryReceipt | None = None
+        try:
+            snapshot = await BybitHistoryReader(self, binding, scope=scope, clock=self._clock,
+                max_age=min(self._max_age, timedelta(seconds=30))).read_history(
+                    symbol, start_ms=start_ms, end_ms=end_ms)
+            self._prune_history_receipts()
+            self.require_observation_binding(binding, scope=scope)
+            if (self._history_receipts.get(pending) is not slot
+                    or slot.generation is not self._history_generation):
+                raise AccountBindingError("AUTHENTICATED_HISTORY_RECEIPT_REQUIRED")
+            validate_history_snapshot(snapshot)
+            if (snapshot.transport_injected or snapshot.scope != scope
+                    or snapshot.symbol != symbol or snapshot.window.start_ms != start_ms
+                    or snapshot.window.end_ms != end_ms):
+                raise AccountBindingError("AUTHENTICATED_HISTORY_RECEIPT_REQUIRED")
+            view = HistoryReceiptView(snapshot, slot.binding_reference)
+            receipt = object.__new__(AuthenticatedHistoryReceipt)
+            self._history_receipts.pop(pending, None)
+            self._history_receipts[receipt] = _HistoryReceiptSlot(binding, scope,
+                slot.generation, slot.started_at, slot.started_mono, slot.binding_reference, view)
+            # The lookup applies all original observation-time checks before issuance.
+            self.require_history_receipt(receipt, binding=binding, scope=scope)
+            return receipt
+        except Exception:  # noqa: BLE001 - reader/transport errors never cross this boundary.
+            if receipt is not None:
+                self._history_receipts.pop(receipt, None)
+            # Outside the handler below: no retained provider exception context.
+        finally:
+            self._history_receipts.pop(pending, None)
+        raise AccountBindingError("AUTHENTICATED_HISTORY_READ_FAILED") from None
+
+    def require_history_receipt(self, receipt: AuthenticatedHistoryReceipt, *,
+                                binding: AuthenticatedAccountBinding,
+                                scope: ProtectionScope) -> HistoryReceiptView:
+        """Validate exact session/handle/binding identity immediately before use."""
+        self._prune_history_receipts()
+        self.require_observation_binding(binding, scope=scope)
+        if type(receipt) is not AuthenticatedHistoryReceipt:
+            raise AccountBindingError("AUTHENTICATED_HISTORY_RECEIPT_REQUIRED")
+        slot = self._history_receipts.get(receipt)
+        if (slot is None or slot.view is None or slot.binding is not binding
+                or slot.scope != scope or slot.generation is not self._history_generation):
+            raise AccountBindingError("AUTHENTICATED_HISTORY_RECEIPT_REQUIRED")
+        return slot.view
+
+    def discard_history_receipt(self, receipt: AuthenticatedHistoryReceipt) -> None:
+        """Idempotently release this session's handle; foreign data grants nothing."""
+        self._prune_history_receipts()
+        if type(receipt) is AuthenticatedHistoryReceipt:
+            self._history_receipts.pop(receipt, None)
+
     def read_client(self, binding: AuthenticatedAccountBinding, *,
                     scope: ProtectionScope) -> BybitReadOnlyClient:
         """Give readback the exact authenticated client; revalidate every polling cycle."""
@@ -292,6 +421,7 @@ class BybitDemoAccountSession:
             raise AccountBindingError("ACCOUNT_NATIVE_CONFIGURATION_FAILED") from None
 
     async def aclose(self) -> None:
+        self._revoke_history_receipts()
         self._binding = None
         self._identity = None
         self._closed = True

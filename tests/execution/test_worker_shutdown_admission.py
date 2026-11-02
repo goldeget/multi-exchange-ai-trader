@@ -30,6 +30,7 @@ async def test_stop_closes_paid_selection_admission_before_native_shutdown_await
     tmp_path: Path,
 ) -> None:
     h = harness(tmp_path, mode="ALL_IN_ONE")
+    h.core.permit_fake_monitoring()
     await h.worker.start_passive()
     entered, release, done = asyncio.Event(), asyncio.Event(), asyncio.Event()
     calls: list[str] = []
@@ -75,6 +76,7 @@ async def test_admitted_leverage_prevents_lease_release_until_accounting_finishe
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool,
 ) -> None:
     h = harness(tmp_path)
+    h.core.permit_fake_monitoring()
     h.worker.entry_risk = risk_check
     await h.worker.start_passive()
     runtime = h.worker.runtime
@@ -181,6 +183,7 @@ async def test_failed_or_cancelled_stop_keeps_admission_closed_and_allows_retry(
     tmp_path: Path,
 ) -> None:
     h = harness(tmp_path)
+    h.core.permit_fake_monitoring()
     await h.worker.start_passive()
     entered, done = asyncio.Event(), asyncio.Event()
 

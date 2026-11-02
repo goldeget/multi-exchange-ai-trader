@@ -274,3 +274,230 @@ def test_changed_quarantine_content_cannot_match_saved_summary(setup: Any) -> No
     with pytest.raises(module.RuntimeBlocked, match="PROJECTION_HISTORY"):
         module.NativeExecutionRuntime(**kwargs)
     assert journal.get("entry").state is CommandState.SENDING
+
+
+# Durable synthetic inbox rows below test restart semantics only. No live issuer is supplied.
+def seed_credit(worker: Any, store: Any, candidate_value: Any) -> Any:
+    from test_execution_credit import replay_credit
+
+    from multi_exchange_trader.execution.execution_credit import (
+        CreditReplayState,
+        execution_guard,
+        reduce_credit_event,
+    )
+
+    event = replay_credit(candidate_value)
+    state, replay = reduce_credit_event(worker.projection(candidate_value.fill.position_id), event,
+        candidates=worker.persisted_candidates(), replay=CreditReplayState())
+    identities = {candidate_value.fill.execution_id: (worker._candidate_identity(candidate_value),)}
+    current = store.get_position(state.position_id)
+    store.apply_position_event(execution_guard(state.scope, state.instrument_id,
+        candidate_value.fill.execution_id), json.loads(codec.encode(event)), state.position_id,
+        current.revision, json.loads(codec.encode(worker._summary(state, identities, replay))))
+    return event
+
+
+def test_v3_credit_restart_enumerates_resolved_candidate_and_retains_original_times(setup: Any) -> None:
+    worker, journal, store, strategy, kwargs, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    value = candidates(store)[0].candidate
+    event = seed_credit(worker, store, value)
+    state = worker.projection('position-1')
+    assert state.owned_quantity == Decimal('0.4') and not state.conflicts
+    assert state.latest_fill_at == value.fill.to_owned_fill().occurred_at
+    assert worker.persisted_candidates(symbol='BTCUSDT') == (value,)
+    assert worker.persisted_candidates(symbol='ETHUSDT') == ()
+    original = store.get_position('position-1'), store.list_position_events('position-1')
+    worker.shutdown()
+    restarted = module.NativeExecutionRuntime(**kwargs)
+    assert restarted.projection('position-1') == state
+    assert restarted.persisted_candidates() == (value,)
+    assert store.get_position('position-1').payload_json == original[0].payload_json
+    assert store.get_position('position-1').reconciliation_required
+    assert store.list_position_events('position-1') == original[1]
+    assert journal.get('entry').state is CommandState.UNKNOWN
+    assert journal.get('entry').reservation == record.reservation
+    assert restarted.status.state == 'BLOCKED' and restarted.status.entries_paused
+    assert not strategy.commands
+    assert event.candidate.fill.received_at_ns == value.fill.received_at_ns
+
+
+def test_late_candidate_reopens_marker_without_retroactive_credit_loss(setup: Any) -> None:
+    worker, journal, store, _, kwargs, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    seed_credit(worker, store, candidates(store)[0].candidate)
+    assert worker.projection('position-1').owned_quantity == Decimal('0.4')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=True)
+    state = worker.projection('position-1')
+    assert state.owned_quantity == Decimal('0.4')
+    assert {item.reason for item in state.conflicts} == {
+        'EXECUTION_ID_CONFLICT', 'AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED'}
+    assert len(worker.persisted_candidates()) == 2
+    worker.shutdown()
+    restarted = module.NativeExecutionRuntime(**kwargs)
+    assert restarted.projection('position-1') == state
+    assert len(restarted.persisted_candidates()) == 2
+
+
+@pytest.mark.parametrize('tamper', [
+    'source-time', 'candidate-time', 'decision-time', 'decision-key', 'guard-key',
+])
+def test_v3_replay_rejects_complete_record_and_guard_tamper(setup: Any, tamper: str) -> None:
+    import hashlib
+    from datetime import timedelta
+
+    from multi_exchange_trader.execution.execution_credit import (
+        CreditReplayState,
+        ExecutionCorroborationConflict,
+        decision_event_id,
+        execution_guard,
+        reduce_credit_event,
+    )
+
+    worker, journal, store, _, kwargs, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    value = candidates(store)[0].candidate
+    event = seed_credit(worker, store, value)
+    row = store.get_inbox_event(execution_guard(value.fill.scope, value.fill.instrument_id,
+                                              value.fill.execution_id))
+    if tamper in ('decision-time', 'decision-key'):
+        decision = ExecutionCorroborationConflict(event.candidate_id, value.fill.scope,
+            value.fill.instrument_id, value.fill.execution_id, value.venue_order_id,
+            value.fill.client_order_id, event.source, event.history_variant_hash, (),
+            ('PRICE_MISMATCH',), row.event_id)
+        replay = CreditReplayState((event,), (event.candidate_id,))
+        state, replay = reduce_credit_event(worker.projection('position-1'), decision,
+            candidates=(value,), replay=replay)
+        encoded = codec.encode(decision)
+        current = store.get_position('position-1')
+        key = 'decision:' + hashlib.sha256(encoded.encode()).hexdigest()
+        store.apply_position_event(key, json.loads(encoded), 'position-1', current.revision,
+            json.loads(codec.encode(worker._summary(state,
+                {value.fill.execution_id: (event.candidate_id,)}, replay))))
+        row = store.get_inbox_event(key)
+        event = decision
+    worker.shutdown()
+    changed: Any = event
+    if tamper in ('source-time', 'decision-time'):
+        changed = replace(event, source=replace(event.source,
+            observed_at=event.source.observed_at + timedelta(seconds=1)))
+    elif tamper == 'candidate-time':
+        changed = replace(event, candidate=replace(value,
+            fill=replace(value.fill, received_at_ns=value.fill.received_at_ns + 1)))
+    with sqlite3.connect(kwargs['lock_directory'] / 'runtime-state.sqlite3') as conn:
+        if tamper in ('guard-key', 'decision-key'):
+            conn.execute('UPDATE runtime_inbox SET event_id=? WHERE event_id=?',
+                         ('native:untrusted-key', row.event_id))
+        else:
+            conn.execute('UPDATE runtime_inbox SET event_payload=? WHERE event_id=?',
+                         (codec.encode(changed), row.event_id))
+            if tamper == 'decision-time':
+                # Recompute the content key too: the independent full-record
+                # decision digest must still reject a changed original timestamp.
+                conn.execute('UPDATE runtime_inbox SET event_id=? WHERE event_id=?',
+                             (decision_event_id(changed), row.event_id))
+    with pytest.raises((ValueError, module.RuntimeBlocked)):
+        module.NativeExecutionRuntime(**kwargs)
+    assert journal.get('entry').state is CommandState.SENDING
+
+
+def test_generic_persist_cannot_turn_durable_record_into_live_credit(setup: Any) -> None:
+    from test_execution_credit import replay_credit
+
+    worker, journal, store, _, _, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    before = store.get_position('position-1'), store.list_position_events('position-1')
+    with pytest.raises(module.RuntimeBlocked, match='AUTHENTICATED_EXECUTION_RECEIPT_REQUIRED'):
+        worker._persist(replay_credit(candidates(store)[0].candidate), worker.projection('position-1'))
+    assert (store.get_position('position-1'), store.list_position_events('position-1')) == before
+
+
+def test_cross_position_decision_replays_before_original_credit_position(setup: Any) -> None:
+    import hashlib
+
+    from multi_exchange_trader.execution.execution_credit import (
+        CreditReplayState,
+        ExecutionCorroborationConflict,
+        execution_guard,
+        reduce_credit_event,
+    )
+
+    worker, journal, store, _, kwargs, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    original = candidates(store)[0].candidate
+    event = seed_credit(worker, store, original)
+    first_state = worker.projection('position-1')
+    other = replace(original, fill=replace(original.fill,
+        position_id='a-other', client_order_id='ec_' + 'a' * 32), venue_order_id='other-venue')
+    order = replace(first_state.orders[0], position_id='a-other',
+                    client_order_id=other.fill.client_order_id)
+    worker._register(p.ProtectionProjection(SCOPE, 'a-other', order.instrument_id, 'BUY'), order)
+    state = worker.projection('a-other')
+    quarantine = FillQuarantineRecord(other, 'AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED')
+    worker._persist(quarantine, worker._reduce_event(state, quarantine, {}))
+    candidate_id = worker._candidate_identity(other)
+    decision = ExecutionCorroborationConflict(candidate_id, SCOPE, other.fill.instrument_id,
+        other.fill.execution_id, other.venue_order_id, other.fill.client_order_id,
+        event.source, event.history_variant_hash, (), ('VENUE_ORDER_ID_MISMATCH',),
+        execution_guard(SCOPE, original.fill.instrument_id, original.fill.execution_id))
+    reduced, replay = reduce_credit_event(worker.projection('a-other'), decision,
+        candidates=(other,), replay=CreditReplayState())
+    payload = codec.encode(decision)
+    store.apply_position_event('decision:' + hashlib.sha256(payload.encode()).hexdigest(),
+        json.loads(payload), 'a-other', store.get_position('a-other').revision,
+        json.loads(codec.encode(worker._summary(reduced,
+            {other.fill.execution_id: (candidate_id,)}, replay))))
+    worker.shutdown()
+    restarted = module.NativeExecutionRuntime(**kwargs)
+    assert restarted.projection('a-other') == reduced
+    assert restarted.projection('position-1') == first_state
+    assert restarted.projection('a-other').owned_quantity == 0
+    assert restarted.projection('position-1').owned_quantity == Decimal('0.4')
+    assert len(restarted.persisted_candidates()) == 2
+
+
+def test_failed_late_candidate_commit_keeps_credit_resolution_cache(setup: Any) -> None:
+    worker, journal, store, _, kwargs, _ = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    seed_credit(worker, store, candidates(store)[0].candidate)
+    state = worker.projection('position-1')
+    cache = worker._projections['position-1']
+    before = store.get_position('position-1'), store.list_position_events('position-1')
+    with sqlite3.connect(kwargs['lock_directory'] / 'runtime-state.sqlite3') as conn:
+        conn.execute("CREATE TRIGGER fail_late BEFORE INSERT ON runtime_inbox "
+                     "BEGIN SELECT RAISE(ABORT,'storage failure'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        consume(worker, record.client_order_id, 'OrderFilled', reconciliation=True)
+    assert worker._projections['position-1'] == cache
+    assert worker.projection('position-1') == state
+    assert worker.persisted_candidates() == (candidates(store)[0].candidate,)
+    assert (store.get_position('position-1'), store.list_position_events('position-1')) == before
+
+
+def test_content_addressed_duplicate_credit_row_is_refused(setup: Any) -> None:
+    import hashlib
+
+    worker, journal, store, _, kwargs, module = setup
+    record = queue(worker)
+    journal.claim('entry')
+    consume(worker, record.client_order_id, 'OrderFilled', reconciliation=False)
+    event = seed_credit(worker, store, candidates(store)[0].candidate)
+    payload = codec.encode(event)
+    current = store.get_position('position-1')
+    store.apply_position_event('native:' + hashlib.sha256(payload.encode()).hexdigest(),
+        json.loads(payload), 'position-1', current.revision, json.loads(current.payload_json))
+    worker.shutdown()
+    with pytest.raises(module.RuntimeBlocked, match='INVALID_DURABLE_CREDIT_GUARD'):
+        module.NativeExecutionRuntime(**kwargs)

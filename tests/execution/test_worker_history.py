@@ -15,6 +15,7 @@ from test_worker import fill, harness, harness_existing, quarantines, stage
 
 from multi_exchange_trader.execution import worker as worker_module
 from multi_exchange_trader.execution.history import (
+    ExecutionRecord,
     HistoryError,
     HistorySnapshot,
     HistoryWindow,
@@ -273,6 +274,43 @@ async def test_native_fill_progresses_during_slow_history_read(
     release.set()
     await task
     await h.worker.stop()
+
+
+async def test_matching_observation_collection_never_credits_or_mints_live_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    h = harness(tmp_path)
+    await h.worker.start_passive()
+    record = await stage(h)
+    h.worker.runtime.journal.claim("entry")
+    h.worker.post_native(h.assembly.channel, fill(record.client_order_id))
+    await asyncio.sleep(0)
+    ms = int(NOW.timestamp()) * 1000
+    row = ExecutionRecord("fill-1", "venue-1", record.client_order_id, "BTCUSDT", "Buy", "Trade",
+        ms, Decimal("0.4"), Decimal(100), Decimal(40), Decimal("0.01"), "USDT",
+        Decimal("0.00025"), Decimal(0))
+    snapshot = observation(window=HistoryWindow(ms - 1000, ms), executions=(row,), transactions=())
+
+    class Reader:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def read_history(self, *_args: Any, **_kwargs: Any) -> HistorySnapshot:
+            return snapshot
+
+    monkeypatch.setattr(worker_module, "BybitHistoryReader", Reader)
+    try:
+        runtime = h.worker.runtime
+        assert runtime.receipt_session is h.session
+        assert runtime.history_store is h.worker._history_store
+        assert await h.worker.read_history("BTCUSDT", start_ms=ms - 1000, end_ms=ms) == snapshot
+        await h.worker.collect_history("BTCUSDT", start_ms=ms - 1000, end_ms=ms)
+        assert runtime.projection("position-1").owned_quantity == 0
+        assert len(quarantines(h.worker)) == 1 and not h.session._history_receipts
+        assert runtime.status.state == "BLOCKED" and h.book.read()["desired_state"] == "STOPPED"
+        assert not h.assembly.strategy.commands and not h.assembly.bridge._submissions
+    finally:
+        await h.worker.stop()
 
 
 @pytest.mark.parametrize("wrong_scope", [False, True])

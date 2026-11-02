@@ -230,16 +230,25 @@ class RuntimeStateStore:
             "WHERE account=? AND environment=? AND position_id=? ORDER BY revision,event_id",
             (*self._scope, position_id),
         ).fetchall()
-        result = []
-        for row in rows:
-            _identifier(row["event_id"])
-            _identifier(row["position_id"])
-            _payload(row["event_payload"])
-            if type(row["revision"]) is not int or row["revision"] < 1:
-                raise ValueError("invalid runtime event revision")
-            result.append(InboxRecord(row["event_id"], row["position_id"], row["revision"],
-                                      row["event_payload"]))
-        return tuple(result)
+        return tuple(self._inbox_record(row) for row in rows)
+
+    @staticmethod
+    def _inbox_record(row: sqlite3.Row) -> InboxRecord:
+        _identifier(row["event_id"])
+        _identifier(row["position_id"])
+        _payload(row["event_payload"])
+        if type(row["revision"]) is not int or row["revision"] < 1:
+            raise ValueError("invalid runtime event revision")
+        return InboxRecord(row["event_id"], row["position_id"], row["revision"], row["event_payload"])
+
+    def get_inbox_event(self, event_id: str) -> InboxRecord | None:
+        """Read a scoped collision guard across positions without any state transition."""
+        _identifier(event_id)
+        row = self._db.execute(
+            "SELECT event_id,position_id,revision,event_payload FROM runtime_inbox "
+            "WHERE account=? AND environment=? AND event_id=?", (*self._scope, event_id),
+        ).fetchone()
+        return None if row is None else self._inbox_record(row)
 
     def _save(self, kind: Literal["position", "order"], identity: str, payload: str,
               expected_revision: int) -> None:

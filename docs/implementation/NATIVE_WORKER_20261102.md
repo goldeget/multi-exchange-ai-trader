@@ -213,6 +213,68 @@ operator-led recovery into a separately validated canonical generation; do not
 delete the old files or merely point the worker at an empty directory to clear the
 blocker. Automatic migration from the legacy filename is not implemented.
 
+## Explicit receipt corroboration
+
+`await worker.corroborate_native_fills(symbol, start_ms=..., end_ms=...)` is an
+explicit owner-loop operation. No timer, endpoint, CLI flag or automatic caller
+invokes it. The runtime always pins the worker's exact session and history store
+at construction. The worker captures those identities, its binding, scope,
+requested window, runtime and lease acquisition generation before obtaining an
+opaque session-owned receipt through the existing GET reader. After GET, sticky
+stop admission wins before any history SQL access. All identities, the allowed
+symbol, live receipt and lease are checked again before ingestion and each
+candidate's synchronous runtime call. Receipt cleanup always uses the captured
+issuing session, including failure and cancellation continuations.
+
+The existing history store commits the receipt's entire exact snapshot first.
+Persisted native candidates for that symbol are selected when either their native
+event's floor millisecond lies in the inclusive requested window, or their
+execution ID occurs in that exact receipt. Credited candidates are included to
+catch later contradictions. Results are globally sorted by canonical candidate
+ID and contain only CREDITED, DUPLICATE, CONFLICT or UNRESOLVED data. Actual
+comparison still requires exact `history.time_ms * 1_000_000` nanoseconds; selecting
+an end-millisecond candidate with a one-nanosecond mismatch never tolerates it.
+Unrelated history rows cannot create or adopt a native candidate.
+
+The session allows at most four pending-plus-issued receipts, valid for no more
+than 30 seconds from GET start and bounded by session freshness. Publicly
+constructible snapshots, comparisons, durable references and credits cannot
+replace an exact live handle. Injected HTTP transport is rejected by the public
+receipt route. Read-only authentication does not grant execution permission;
+the existing permission and qualification gates remain in force.
+
+The runtime validates exact stored whole-snapshot membership and immutable owned
+commands, exact execution economics and all relevant history conflicts, then
+atomically writes one stable account/environment/instrument/execution guard and
+projection. New receipt metadata alone never changes the first credit. Later
+contradictions preserve the original quantity and record sourced durable
+decisions, including contradictions against an already credited execution.
+History and runtime writes are separate transactions. Each candidate commits
+independently; a later operational exception propagates while prior committed
+history and credits remain queryable and safe to retry with a fresh receipt.
+Empty, failed, partial or successful batches do not establish complete exposure,
+flatness or account-ledger qualification. No ACK, terminal confirmation,
+reservation release, exit authority or protection repair is added.
+
+The portable regression in `test_worker_corroboration.py` uses real temporary
+SQLite and the existing standard-library v3 snapshot/verify/restore tool with
+both `--require-history` and `--require-runtime`. It compares stopped source and
+restored bytes before opening a genuinely fresh next-day worker, session, bridge,
+strategy and channel. Replay preserves one accounting credit, original times,
+source identifiers, conflicts and V3 digests, with BLOCKED/STOPPED and
+reconciliation still required. The old handle and restored data cannot authorize
+another credit. No restore-time GET is made and no policy is refreshed to hide
+expired original observations.
+
+Positive tests privately seed synthetic session state and replace the exact
+owned client's read with configured fixture responses; unconfigured paths fail
+closed. They never exercise a public fake-transport success or a production test
+issuer. Existing fake monitoring/control fixtures explicitly grant only their
+synthetic identities the permissions their tests require. Actual authenticated
+transport observation remains unverified. This implementation uses no actual
+keys, orders, paid AI or server effects and chooses no operator investment,
+model, budget or hosting settings.
+
 ## Remaining implementation and evidence
 
 - No production strategy signal/approved-plan producer or qualified risk evidence

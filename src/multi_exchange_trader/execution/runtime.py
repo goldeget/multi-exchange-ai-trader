@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal, localcontext
 from pathlib import Path
@@ -23,8 +23,30 @@ from weakref import WeakValueDictionary
 from . import codec, modes
 from . import protection as p
 from . import risk as r
+from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .bybit_native import AttachedProtection, NativeBybitBridge, NativeOrderRequest
-from .execution_provenance import FillQuarantineRecord, NativeExecutionCandidate
+from .execution_credit import (
+    CorroboratedExecutionCredit,
+    CreditReplayState,
+    ExecutionCorroborationConflict,
+    ExecutionCreditResult,
+    ExecutionObservationReference,
+    HistoricalOrderEvidence,
+    candidate_identity,
+    decision_event_id,
+    execution_guard,
+    reduce_credit_event,
+    same_credit,
+)
+from .execution_provenance import (
+    FillQuarantineRecord,
+    NativeExecutionCandidate,
+    VenueExecutionObservation,
+    compare_execution_candidate,
+)
+from .history import HistoryError, _symbol
+from .history_receipts import AuthenticatedHistoryReceipt
+from .history_store import HistoryStore
 from .journal import (
     CommandJournal,
     CommandKind,
@@ -71,6 +93,19 @@ class RuntimeStatus:
     owned_positions: int
     blockers: tuple[str, ...]
     production_supported: Literal[False] = False
+
+
+@dataclass
+class _ReplayContext:
+    candidates: tuple[NativeExecutionCandidate, ...] = ()
+    credit: CreditReplayState = field(default_factory=CreditReplayState)
+
+
+def _record_digest(records: tuple[object, ...]) -> str:
+    # Frame canonical complete records; sorting makes traversal order irrelevant.
+    encoded = json.dumps(sorted(codec.encode(item) for item in records),
+                         ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def _sum(values: tuple[Decimal, ...]) -> Decimal:
@@ -130,7 +165,9 @@ class NativeExecutionRuntime:
     def __init__(self, *, journal: CommandJournal, store: RuntimeStateStore,
                  worker_lock: AccountWorkerLock, lock_directory: Path,
                  bridge: NativeBybitBridge, entry_risk: RiskCheck,
-                 clock: Callable[[], datetime], max_evidence_age: timedelta) -> None:
+                 clock: Callable[[], datetime], max_evidence_age: timedelta,
+                 receipt_session: BybitDemoAccountSession | None = None,
+                 history_store: HistoryStore | None = None) -> None:
         if (type(journal) is not CommandJournal or type(store) is not RuntimeStateStore
                 or type(bridge) is not NativeBybitBridge
                 or type(worker_lock) is not AccountWorkerLock
@@ -139,6 +176,12 @@ class NativeExecutionRuntime:
                 or bridge.scope != p.ProtectionScope(
                     journal.scope.account_id, journal.scope.environment)):
             raise RuntimeBlocked("MATCHING_DURABLE_NATIVE_SCOPE_REQUIRED")
+        if ((receipt_session is None) != (history_store is None)
+                or (receipt_session is not None and type(receipt_session) is not BybitDemoAccountSession)
+                or (history_store is not None and (type(history_store) is not HistoryStore
+                                                   or history_store.scope != bridge.scope))):
+            raise RuntimeBlocked("MATCHING_RECEIPT_DEPENDENCIES_REQUIRED")
+        self._receipt_session, self._history_store = receipt_session, history_store
         self.journal, self.store, self.bridge = journal, store, bridge
         self.worker_lock = worker_lock
         self.entry_risk = entry_risk
@@ -151,7 +194,7 @@ class NativeExecutionRuntime:
         self._leverage_readbacks: dict[str, LeverageObservation] = {}
         self._control_busy = False
         self._projections: dict[str, tuple[int, p.ProtectionProjection,
-                                           dict[str, tuple[object, ...]]]] = {}
+                                           dict[str, tuple[object, ...]], _ReplayContext]] = {}
         self._active = self._closed = False
         self._guard()
         # The OS lease excludes other processes. Also exclude a second object
@@ -173,6 +216,15 @@ class NativeExecutionRuntime:
                         and self._find_owned(record.client_order_id) is not None):
                     self.bridge.register_owned(self._request(record))
             _OWNERS[str(self._lock_path)] = self
+
+    @property
+    def receipt_session(self) -> BybitDemoAccountSession | None:
+        """Pinned issuer identity for worker lifetime fences; never an authority grant."""
+        return self._receipt_session
+
+    @property
+    def history_store(self) -> HistoryStore | None:
+        return self._history_store
 
     def _guard(self) -> None:
         if (self._closed or self.worker_lock.acquisition_id != self._lease
@@ -241,13 +293,36 @@ class NativeExecutionRuntime:
                 continue
             persisted = codec.decode(record.payload_json)
             identities: dict[str, tuple[object, ...]] = {}
+            context = _ReplayContext()
+            events = self.store.list_position_events(record.position_id)
+            decoded: list[object] = []
+            for item in events:
+                event = codec.decode(item.payload_json)
+                if type(event) is CorroboratedExecutionCredit:
+                    fill = event.candidate.fill
+                    if item.event_id != execution_guard(
+                            fill.scope, fill.instrument_id, fill.execution_id):
+                        raise RuntimeBlocked("INVALID_DURABLE_CREDIT_GUARD")
+                elif type(event) is ExecutionCorroborationConflict:
+                    key = decision_event_id(event)
+                    if item.event_id != key:
+                        raise RuntimeBlocked("INVALID_DURABLE_DECISION_ID")
+                    if event.prior_credit_event_id is not None:
+                        original = self.store.get_inbox_event(event.prior_credit_event_id)
+                        if (original is None
+                                or type(codec.decode(original.payload_json))
+                                is not CorroboratedExecutionCredit):
+                            raise RuntimeBlocked("INVALID_DURABLE_PRIOR_CREDIT")
+                decoded.append(event)
             if type(persisted) is p.ProtectionProjection:
                 # Version-one projections already have independently committed inbox
                 # evidence. Their next write replaces the aggregate with a summary.
                 state = p.ProtectionProjection(persisted.scope, persisted.position_id,
                                                persisted.instrument_id, persisted.entry_side)
-                for item in self.store.list_position_events(record.position_id):
-                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
+                for event in decoded:
+                    state = self._reduce_event(state, event, identities, context)
+                if context.credit.credits or context.credit.decisions:
+                    raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
                 # Retain the aggregate's original conflicts. Any legacy fill
                 # tuple above has already failed closed without a recovery write.
                 if (replace(state, conflicts=persisted.conflicts) != persisted
@@ -256,52 +331,60 @@ class NativeExecutionRuntime:
             elif (type(persisted) is tuple and len(persisted) == 11
                   and persisted[0] == "RUNTIME_POSITION_V1") or (
                       type(persisted) is tuple and len(persisted) == 13
-                      and persisted[0] == "RUNTIME_POSITION_V2"):
+                      and persisted[0] == "RUNTIME_POSITION_V2") or (
+                          type(persisted) is tuple and len(persisted) == 17
+                          and persisted[0] == "RUNTIME_POSITION_V3"):
                 state = p.ProtectionProjection(persisted[1], persisted[2],
                                                persisted[3], persisted[4])
-                for item in self.store.list_position_events(record.position_id):
-                    state = self._reduce_event(state, codec.decode(item.payload_json), identities)
-                if self._summary(state, identities) != persisted:
+                for event in decoded:
+                    state = self._reduce_event(state, event, identities, context)
+                if self._summary(state, identities, context.credit) != persisted:
                     raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
             else:
                 raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
             if (type(state) is not p.ProtectionProjection or state.scope != self.bridge.scope
                     or state.position_id != record.position_id):
                 raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
-            self._projections[record.position_id] = (record.revision, state, identities)
+            self._projections[record.position_id] = (record.revision, state, identities, context)
             states.append(state)
         return tuple(states)
 
     @staticmethod
     def _summary(state: p.ProtectionProjection,
-                 identities: dict[str, tuple[object, ...]] | None = None) -> tuple[object, ...]:
+                 identities: dict[str, tuple[object, ...]] | None = None,
+                 replay: CreditReplayState | None = None) -> tuple[object, ...]:
         """Bounded current state; immutable event rows hold all historical evidence."""
         summary = ("RUNTIME_POSITION_V1", state.scope, state.position_id, state.instrument_id,
                 state.entry_side, state.signed_quantity, state.latest_fill_at,
                 len(state.orders), len(state.executions), len(state.cancelled_order_ids),
                 len(state.conflicts))
-        if not identities:
+        v3 = replay is not None and bool(replay.credits or replay.decisions)
+        if not identities and not v3:
             return summary
-        keys = sorted(str(key) for values in identities.values() for key in values)
+        keys = sorted(str(key) for values in (identities or {}).values() for key in values)
         digest = hashlib.sha256("".join(keys).encode()).hexdigest()
+        if v3 and replay is not None:
+            return ("RUNTIME_POSITION_V3", *summary[1:], len(keys), digest,
+                    len(replay.credits), _record_digest(replay.credits),
+                    len(replay.decisions), _record_digest(replay.decisions))
         return ("RUNTIME_POSITION_V2", *summary[1:], len(keys), digest)
 
     @staticmethod
     def _candidate_identity(candidate: NativeExecutionCandidate) -> str:
         """Canonical candidate content; receipt/init times never create executions."""
-        fill = candidate.fill
-        # Decimal scale is representation, not economic content. Use sufficient
-        # precision to retain every validated digit, including negative rebates.
-        with localcontext() as context:
-            context.prec = 256
-            canonical = replace(candidate, fill=replace(fill, ts_init_ns=0, received_at_ns=0,
-                quantity=fill.quantity.normalize(), price=fill.price.normalize(),
-                commission=fill.commission.normalize() if fill.commission else Decimal(0)))
-        return hashlib.sha256(codec.encode(canonical).encode()).hexdigest()
+        return candidate_identity(candidate)
 
     @staticmethod
     def _reduce_event(state: p.ProtectionProjection, event: object,
-                      identities: dict[str, tuple[object, ...]]) -> p.ProtectionProjection:
+                      identities: dict[str, tuple[object, ...]],
+                      context: _ReplayContext | None = None) -> p.ProtectionProjection:
+        if type(event) in (CorroboratedExecutionCredit, ExecutionCorroborationConflict):
+            if context is None:
+                raise RuntimeBlocked("EXECUTION_CREDIT_REPLAY_CONTEXT_REQUIRED")
+            assert isinstance(event, (CorroboratedExecutionCredit, ExecutionCorroborationConflict))
+            state, context.credit = reduce_credit_event(state, event,
+                candidates=context.candidates, replay=context.credit)
+            return state
         if type(event) is p.OwnedOrder:
             return p.register_order(state, event)
         if type(event) is FillQuarantineRecord:
@@ -326,6 +409,8 @@ class NativeExecutionRuntime:
                 if conflict not in conflicts:
                     conflicts.append(conflict)
             identities[fill.execution_id] = (*previous, identity)
+            if context is not None:
+                context.candidates += (event.candidate,)
             return replace(state, conflicts=tuple(conflicts))
         if type(event) is not tuple:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
@@ -356,10 +441,223 @@ class NativeExecutionRuntime:
                     return state
             raise RuntimeBlocked("UNKNOWN_OWNED_POSITION")
 
+    def persisted_candidates(self, *, symbol: str | None = None) -> tuple[NativeExecutionCandidate, ...]:
+        """Read-only quarantine history, including credited records, without time filtering."""
+        with self._mutex:
+            self._guard()
+            if symbol is not None:
+                _symbol(symbol)
+            self._states()
+            result: list[NativeExecutionCandidate] = []
+            for position_id in sorted(self._projections):
+                for candidate in sorted(self._projections[position_id][3].candidates,
+                                        key=candidate_identity):
+                    if symbol is not None:
+                        record = next((item for item in self.journal.list_commands()
+                            if item.client_order_id == candidate.fill.client_order_id), None)
+                        if record is None:
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        request = self._request(record)
+                        if request.owned.instrument_id != candidate.fill.instrument_id:
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        if request.owned.instrument_id != symbol + "-LINEAR.BYBIT":
+                            continue
+                    result.append(candidate)
+            return tuple(result)
+
+    def corroborate_execution(self, *, receipt: AuthenticatedHistoryReceipt,
+                              binding: AuthenticatedAccountBinding, observation_key: str,
+                              candidate_id: str) -> ExecutionCreditResult:
+        """Join an exact live receipt to committed history and owned native evidence.
+
+        All reads and the sole accounting transaction are synchronous under the
+        lease mutex. Receipt acquisition/GET and history ingestion happen outside.
+        """
+        with self._mutex:
+            self._guard()
+            session, history = self._receipt_session, self._history_store
+            if session is None or history is None:
+                raise RuntimeBlocked("AUTHENTICATED_EXECUTION_RECEIPT_REQUIRED")
+            view = session.require_history_receipt(receipt, binding=binding, scope=self.bridge.scope)
+            try:
+                history.require_observation(view.snapshot, observation_key)
+            except HistoryError as error:
+                if str(error) != "HISTORY_OBSERVATION_NOT_FOUND":
+                    raise
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_OBSERVATION_REQUIRED",))
+            # Validate a caller's identifier even when no matching candidate exists.
+            missing = ExecutionCreditResult(candidate_id, "UNRESOLVED",
+                                            ("PERSISTED_EXECUTION_CANDIDATE_REQUIRED",))
+            candidates = self.persisted_candidates()
+            candidate = next((item for item in candidates
+                              if candidate_identity(item) == candidate_id), None)
+            if candidate is None:
+                return missing
+            fill = candidate.fill
+            # New-credit exclusions cannot suppress contradiction of a credit
+            # already recorded under this account-wide execution guard.
+            guard = execution_guard(fill.scope, fill.instrument_id, fill.execution_id)
+            previous_row = self.store.get_inbox_event(guard)
+            previous: CorroboratedExecutionCredit | None = None
+            if previous_row is not None:
+                decoded = codec.decode(previous_row.payload_json)
+                if (type(decoded) is not CorroboratedExecutionCredit
+                        or execution_guard(decoded.candidate.fill.scope,
+                            decoded.candidate.fill.instrument_id, decoded.candidate.fill.execution_id) != guard):
+                    raise RuntimeBlocked("INVALID_DURABLE_CREDIT_GUARD")
+                previous = decoded
+            record = next((item for item in self.journal.list_commands()
+                           if item.client_order_id == fill.client_order_id), None)
+            if record is None or (previous is None and (
+                    record.state in (CommandState.PENDING, CommandState.REJECTED) or record.terminal_confirmed)):
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("OWNED_COMMAND_INELIGIBLE",))
+            request = self._request(record)
+            try:
+                evidence = history.execution_evidence(observation_key, fill.execution_id)
+            except HistoryError as error:
+                if str(error) != "HISTORY_EXECUTION_NOT_FOUND":
+                    raise
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_EXECUTION_REQUIRED",))
+            row, snapshot = evidence.record, view.snapshot
+            if previous is None and row.execution_type != "Trade":
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED", ("HISTORY_TRADE_REQUIRED",))
+            if previous is None and not row.client_order_id:
+                return ExecutionCreditResult(candidate_id, "UNRESOLVED",
+                                             ("HISTORY_CLIENT_ORDER_ID_REQUIRED",))
+            source = ExecutionObservationReference(snapshot.scope, view.binding_reference,
+                observation_key, snapshot.snapshot_id, snapshot.symbol, snapshot.window.start_ms,
+                snapshot.window.end_ms, snapshot.observed_at, snapshot.server_observed_at)
+            observation: VenueExecutionObservation | None = None
+            codes: list[str] = []
+            if row.execution_type != "Trade":
+                codes.append("HISTORY_TRADE_REQUIRED")
+            if not row.client_order_id:
+                codes.extend(("HISTORY_CLIENT_ORDER_ID_REQUIRED", "CLIENT_ORDER_ID_MISMATCH"))
+            if not row.venue_order_id:
+                codes.append("VENUE_ORDER_ID_MISMATCH")
+            if not codes:
+                observation = VenueExecutionObservation(snapshot.scope, view.binding_reference,
+                    snapshot.snapshot_id, row.execution_id, row.client_order_id, row.venue_order_id,
+                    request.owned.instrument_id, "BUY" if row.side == "Buy" else "SELL",
+                    row.quantity, row.price, row.fee, row.fee_currency, row.time_ms * 1_000_000)
+                codes.extend(compare_execution_candidate(candidate, observation).mismatch_codes)
+            if (request.owned.instrument_id != row.symbol + "-LINEAR.BYBIT"
+                    or row.symbol != snapshot.symbol):
+                codes.append("INSTRUMENT_ID_MISMATCH")
+            if evidence.conflict_keys:
+                codes.append("HISTORY_EXECUTION_CONFLICT")
+            order_sources: list[HistoricalOrderEvidence] = []
+            conflict_keys = set(evidence.conflict_keys)
+            venue_ids = tuple(sorted({candidate.venue_order_id, row.venue_order_id} - {""}))
+            for stored in history.order_evidence(client_order_id=fill.client_order_id,
+                                                  venue_order_ids=venue_ids):
+                order = stored.record
+                if (stored.conflict_keys or order.client_order_id != fill.client_order_id
+                        or order.venue_order_id != candidate.venue_order_id
+                        or request.owned.instrument_id != order.symbol + "-LINEAR.BYBIT"
+                        or order.side != ("Buy" if request.owned.side == "BUY" else "Sell")
+                        or order.position_idx != 0 or order.reduce_only != request.owned.reduce_only):
+                    codes.append("HISTORY_ORDER_CONFLICT")
+                    conflict_keys.update(stored.conflict_keys)
+                    for original in stored.observations:
+                        order_sources.append(HistoricalOrderEvidence(fill.scope,
+                            original.observation_key, original.snapshot_id, original.symbol,
+                            original.window.start_ms, original.window.end_ms,
+                            original.observed_at, original.server_observed_at, original.transport_injected,
+                            stored.variant_hash, order.venue_order_id, order.client_order_id,
+                            "Buy" if order.side == "Buy" else "Sell", order.position_idx, order.reduce_only))
+            variants = {candidate_identity(item) for item in candidates
+                        if execution_guard(item.fill.scope, item.fill.instrument_id,
+                                           item.fill.execution_id) == guard}
+            if len(variants) != 1:
+                codes.append("NATIVE_CANDIDATE_VARIANT_CONFLICT")
+            # Known venue mappings come from immutable stored evidence, never a
+            # guessed association or an in-memory native cache.
+            known = {item.venue_order_id for item in candidates
+                     if item.fill.client_order_id == fill.client_order_id}
+            for position in self.store.list_positions():
+                for inbox in self.store.list_position_events(position.position_id):
+                    native = codec.decode(inbox.payload_json)
+                    if (type(native) is tuple and len(native) == 6
+                            and native[1] == fill.client_order_id and native[2] is not None):
+                        known.add(native[2])
+                    elif (type(native) is CorroboratedExecutionCredit
+                          and native.candidate.fill.client_order_id == fill.client_order_id):
+                        known.add(native.candidate.venue_order_id)
+            if known != {row.venue_order_id}:
+                codes.append("VENUE_ORDER_ID_MISMATCH")
+            if any(execution_guard(item.scope, item.instrument_id,
+                    item.execution_id) == guard for cached in self._projections.values()
+                    for item in cached[3].credit.decisions):
+                codes.append("EXECUTION_DECISION_CONFLICT")
+            proposed: CorroboratedExecutionCredit | None = None
+            if not codes:
+                assert observation is not None
+                proposed = CorroboratedExecutionCredit(candidate_id, candidate, observation,
+                    source, evidence.variant_hash, record.command_key)
+                if previous is not None:
+                    if same_credit(previous, proposed):
+                        # Still validate authority at the end of this synchronous
+                        # read path. A duplicate never changes first receipt metadata.
+                        session.require_history_receipt(receipt, binding=binding, scope=self.bridge.scope)
+                        self._guard()
+                        return ExecutionCreditResult(candidate_id, "DUPLICATE", ())
+                    codes.append("EXECUTION_GUARD_CONFLICT")
+            if codes:
+                decision = ExecutionCorroborationConflict(candidate_id, fill.scope,
+                    fill.instrument_id, fill.execution_id, row.venue_order_id, row.client_order_id,
+                    source, evidence.variant_hash, tuple(sorted(conflict_keys)),
+                    tuple(dict.fromkeys(codes)), guard if previous is not None else None,
+                    tuple(order_sources))
+                return self._commit_corroboration(decision, candidate, receipt, binding)
+            assert proposed is not None
+            return self._commit_corroboration(proposed, candidate, receipt, binding)
+
+    def _commit_corroboration(self,
+                             event: CorroboratedExecutionCredit | ExecutionCorroborationConflict,
+                             candidate: NativeExecutionCandidate,
+                             receipt: AuthenticatedHistoryReceipt,
+                             binding: AuthenticatedAccountBinding) -> ExecutionCreditResult:
+        """Reduce fresh durable revision and install caches only after atomic commit."""
+        state = self.projection(candidate.fill.position_id)
+        cached = self._projections[state.position_id]
+        identities, context = dict(cached[2]), replace(cached[3])
+        reduced = self._reduce_event(state, event, identities, context)
+        if (type(event) is CorroboratedExecutionCredit
+                and context.credit.credits == cached[3].credit.credits):
+            # A quantity/ownership refusal is a decision, never a credit guard.
+            event = context.credit.decisions[-1]
+            identities, context = dict(cached[2]), replace(cached[3])
+            reduced = self._reduce_event(state, event, identities, context)
+        if isinstance(event, CorroboratedExecutionCredit):
+            key = execution_guard(candidate.fill.scope, candidate.fill.instrument_id,
+                                  candidate.fill.execution_id)
+        else:
+            key = decision_event_id(event)
+        payload = json.loads(codec.encode(event))
+        summary = json.loads(codec.encode(self._summary(reduced, identities, context.credit)))
+        self._readbacks.clear()
+        self._leverage_readbacks.clear()
+        self._active = False
+        session = self._receipt_session
+        if session is None:
+            raise RuntimeBlocked("AUTHENTICATED_EXECUTION_RECEIPT_REQUIRED")
+        session.require_history_receipt(receipt, binding=binding, scope=self.bridge.scope)
+        self._guard()
+        saved = self.store.apply_position_event(key, payload, state.position_id, cached[0], summary)
+        if saved.revision == cached[0] + 1:
+            self._projections[state.position_id] = (saved.revision, reduced, identities, context)
+        if type(event) is ExecutionCorroborationConflict:
+            return ExecutionCreditResult(event.candidate_id, "CONFLICT", event.mismatch_codes)
+        return ExecutionCreditResult(event.candidate_id, "CREDITED", ())
+
     def _persist(self, event: object, state: p.ProtectionProjection) -> None:
         self._guard()
+        if type(event) in (CorroboratedExecutionCredit, ExecutionCorroborationConflict):
+            raise RuntimeBlocked("AUTHENTICATED_EXECUTION_RECEIPT_REQUIRED")
         cached = self._projections.get(state.position_id)
         identities = {} if cached is None else dict(cached[2])
+        context = _ReplayContext() if cached is None else replace(cached[3])
         encoded = codec.encode(event)
         key = "native:" + hashlib.sha256(encoded.encode()).hexdigest()
         if type(event) is FillQuarantineRecord:
@@ -367,15 +665,15 @@ class NativeExecutionRuntime:
             if identity in identities.get(event.candidate.fill.execution_id, ()):
                 return  # Keep the first durable observation, including its original receipt times.
             key = "native:" + identity
-        self._reduce_event(state, event, identities)
+        self._reduce_event(state, event, identities, context)
         current = self.store.get_position(state.position_id)
         saved = self.store.apply_position_event(key, json.loads(encoded), state.position_id,
             0 if current is None else current.revision,
-            json.loads(codec.encode(self._summary(state, identities))))
+            json.loads(codec.encode(self._summary(state, identities, context.credit))))
         # Cache only after the atomic inbox/projection commit. A duplicate event
         # returns the current revision, so cannot replace it with an older reduction.
         if saved.revision == (0 if current is None else current.revision) + 1:
-            self._projections[state.position_id] = (saved.revision, state, identities)
+            self._projections[state.position_id] = (saved.revision, state, identities, context)
 
     def _find_owned(self, client_id: str) -> p.ProtectionProjection | None:
         return next((state for state in self._states()

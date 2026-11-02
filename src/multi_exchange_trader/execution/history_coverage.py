@@ -11,6 +11,14 @@ HistoryRecord = ExecutionRecord | TransactionRecord | OrderHistoryRecord
 
 
 @dataclass(frozen=True)
+class StoredExecutionEvidence:
+    record: ExecutionRecord
+    variant_hash: str
+    observation_key: str
+    conflict_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class QueryProvenance:
     observation_key: str
     snapshot_id: str
@@ -19,6 +27,14 @@ class QueryProvenance:
     observed_at: datetime
     server_observed_at: datetime
     transport_injected: bool
+
+
+@dataclass(frozen=True)
+class StoredOrderEvidence:
+    record: OrderHistoryRecord
+    variant_hash: str
+    observations: tuple[QueryProvenance, ...]
+    conflict_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)

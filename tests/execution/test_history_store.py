@@ -54,6 +54,117 @@ def counts(path: Path) -> tuple[int, ...]:
                      for table in ("scope", "snapshots", "variants", "members", "conflicts"))
 
 
+def test_execution_evidence_is_exact_member_and_reads_do_not_mutate(tmp_path: Path) -> None:
+    path = tmp_path / "history.sqlite3"
+    original = snapshot(executions=(execution(fee=D("-0.010")),))
+    with HistoryStore(path, SCOPE) as store:
+        receipt = store.ingest(original)
+        empty = store.ingest(snapshot(snapshot_id="empty"))
+        before, changes = counts(path), store._db.total_changes
+        evidence = store.execution_evidence(receipt.observation_key, "e1")
+        assert evidence.record == original.executions[0]
+        assert len(evidence.variant_hash) == 64
+        assert evidence.observation_key == receipt.observation_key
+        assert evidence.conflict_keys == ()
+        store.require_observation(original, receipt.observation_key)
+        store.require_observation(replace(original, executions=(execution(fee=D("-0.01")),)),
+                                  receipt.observation_key)
+        assert counts(path) == before and store._db.total_changes == changes
+        for key, identity, code in (("f" * 64, "e1", "HISTORY_OBSERVATION_NOT_FOUND"),
+                                    (empty.observation_key, "e1", "HISTORY_EXECUTION_NOT_FOUND"),
+                                    (receipt.observation_key, "other", "HISTORY_EXECUTION_NOT_FOUND")):
+            with pytest.raises(HistoryError, match=f"^{code}$"):
+                store.execution_evidence(key, identity)
+
+
+def test_original_history_variant_digest_is_unchanged() -> None:
+    assert history_store._variant(execution())[2] == (
+        "62941d3096b99480825f415c63b8119211a426916b858d98c40af83569345367")
+
+
+def test_order_evidence_retains_exact_global_variants_and_sources_without_writes(tmp_path: Path) -> None:
+    path = tmp_path / "history.sqlite3"
+    with HistoryStore(path, SCOPE) as store:
+        first = store.ingest(snapshot(orders=(order(),)))
+        second = store.ingest(snapshot(snapshot_id="changed", orders=(order(reduce_only=True),)))
+        unrelated = store.ingest(snapshot(snapshot_id="unrelated", orders=(order(venue_order_id="other", client_order_id="other"),)))
+        before, changes = counts(path), store._db.total_changes
+        evidence = store.order_evidence(client_order_id="c1", venue_order_ids=("o1",))
+        assert len(evidence) == 2
+        assert {source.observation_key for item in evidence for source in item.observations} == {
+            first.observation_key, second.observation_key}
+        assert all(set(item.conflict_keys) == set(second.conflict_keys) for item in evidence)
+        for item in evidence:
+            assert item.variant_hash == history_store._variant(item.record)[2]
+            assert item.observations[0].observed_at == NOW
+            assert item.observations[0].transport_injected
+        assert unrelated.observation_key not in {source.observation_key for item in evidence for source in item.observations}
+        assert counts(path) == before and store._db.total_changes == changes
+        assert store.order_evidence(client_order_id="absent", venue_order_ids=("absent",)) == ()
+        # Either side of the immutable mapping must find changed IDs.
+        assert store.order_evidence(client_order_id="c1", venue_order_ids=("absent",)) == evidence
+        assert store.order_evidence(client_order_id="absent", venue_order_ids=("o1",)) == evidence
+
+
+def test_order_evidence_rejects_missing_members_and_wrong_thread(tmp_path: Path) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        store.ingest(snapshot(orders=(order(),)))
+        with ThreadPoolExecutor() as pool, pytest.raises(ValueError):
+            pool.submit(store.order_evidence, client_order_id="c1", venue_order_ids=("o1",)).result()
+        store._db.execute("DROP TRIGGER history_members_no_delete")
+        store._db.execute("DELETE FROM history_members WHERE kind='ORDER'")
+        with pytest.raises(HistoryError, match="HISTORY_DATABASE_INVALID"):
+            store.order_evidence(client_order_id="c1", venue_order_ids=("o1",))
+
+
+def test_duplicate_execution_members_are_rejected_as_ambiguous(tmp_path: Path) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        receipt = store.ingest(snapshot(executions=(execution(),)))
+        store._db.execute("PRAGMA foreign_keys=OFF")
+        store._db.execute("ALTER TABLE history_members RENAME TO old_members")
+        store._db.execute("CREATE TABLE history_members AS SELECT * FROM old_members")
+        store._db.execute("INSERT INTO history_members SELECT * FROM old_members")
+        with pytest.raises(HistoryError, match="^HISTORY_DATABASE_INVALID$"):
+            store.execution_evidence(receipt.observation_key, "e1")
+
+
+def test_exact_observation_requires_all_metadata_and_all_stream_members(tmp_path: Path) -> None:
+    original = snapshot(executions=(execution(),), orders=(order(),), transactions=(transaction(),))
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        receipt = store.ingest(original)
+        for changed in (replace(original, snapshot_id="changed"), replace(original, orders=()),
+                        replace(original, transactions=()), replace(original, executions=()),
+                        replace(original, transport_injected=False)):
+            with pytest.raises(HistoryError, match="^HISTORY_OBSERVATION_MISMATCH$"):
+                store.require_observation(changed, receipt.observation_key)
+        with pytest.raises(HistoryError, match="^HISTORY_OBSERVATION_NOT_FOUND$"):
+            store.require_observation(original, "f" * 64)
+
+
+def test_execution_evidence_includes_identity_conflicts_outside_window_and_snapshot_conflicts(
+    tmp_path: Path,
+) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        first = store.ingest(snapshot(executions=(execution(),)))
+        store.ingest(snapshot(snapshot_id="later", window=HistoryWindow(20000, 30000),
+                              executions=(execution(time_ms=22000),)))
+        store.ingest(snapshot(snapshot_id="third", window=HistoryWindow(40000, 50000),
+                              executions=(execution(time_ms=42000),)))
+        store.ingest(snapshot())  # Reuses first snapshot ID with changed members.
+        evidence = store.execution_evidence(first.observation_key, "e1")
+        assert len(evidence.conflict_keys) == 4  # Three identity pairs, one snapshot pair.
+        assert evidence.conflict_keys == tuple(sorted(set(evidence.conflict_keys)))
+
+
+def test_execution_evidence_rejects_ambiguous_or_corrupt_members_after_open(tmp_path: Path) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        receipt = store.ingest(snapshot(executions=(execution(),)))
+        store._db.execute("DROP TRIGGER history_variants_no_update")
+        store._db.execute("UPDATE history_variants SET payload='{}'")
+        with pytest.raises(HistoryError, match="^HISTORY_DATABASE_INVALID$"):
+            store.execution_evidence(receipt.observation_key, "e1")
+
+
 def test_exact_replay_and_decimal_equivalence_are_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "history.sqlite3"
     with HistoryStore(path, SCOPE) as store, localcontext() as ctx:

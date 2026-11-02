@@ -178,6 +178,39 @@ def test_position_event_history_rejects_corruption_after_open(tmp_path: Path) ->
             store.list_position_events("")
 
 
+def test_inbox_lookup_is_scoped_across_positions_and_never_mutates(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    with RuntimeStateStore(path, SCOPE) as store:
+        store.apply_position_event("credit:a", {"source": "first"}, "p", 0, {})
+        store.apply_position_event("credit:b", {"source": "second"}, "other-p", 0, {})
+        before = store._db.total_changes
+        assert store.get_inbox_event("credit:b") == store.list_position_events("other-p")[0]
+        assert store.get_inbox_event("missing") is None
+        assert store._db.total_changes == before
+        with pytest.raises(ValueError):
+            store.get_inbox_event("")
+    for scope in (ExecutionScope("other", "DEMO"), ExecutionScope(SCOPE.account_id, "LIVE")):
+        with RuntimeStateStore(path, scope) as other:
+            assert other.get_inbox_event("credit:a") is None
+            other.apply_position_event("credit:a", {}, "their-p", 0, {})
+    with RuntimeStateStore(path, SCOPE) as store:
+        assert store.get_inbox_event("credit:a").position_id == "p"
+
+
+@pytest.mark.parametrize("column,value", [("event_payload", "bad-json"), ("position_id", ""),
+                                           ("revision", 0)])
+def test_inbox_lookup_validates_corruption_after_open(
+    tmp_path: Path, column: str, value: object,
+) -> None:
+    with RuntimeStateStore(tmp_path / "state.sqlite3", SCOPE) as store:
+        store.apply_position_event("event", {}, "p", 0, {})
+        store._db.execute("PRAGMA foreign_keys=OFF")
+        store._db.execute("PRAGMA ignore_check_constraints=ON")
+        store._db.execute(f"UPDATE runtime_inbox SET {column}=?", (value,))
+        with pytest.raises(ValueError):
+            store.get_inbox_event("event")
+
+
 @pytest.mark.parametrize("damage", ["missing_keys", "wrong_scope_key", "partial_key",
                                   "wrong_collation", "missing_fk", "wrong_fk", "cascading_fk",
                                   "duplicate_positions"])
