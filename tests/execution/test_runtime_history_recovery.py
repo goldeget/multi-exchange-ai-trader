@@ -323,6 +323,55 @@ def test_raw_cross_instrument_positive_credit_fails_restore_before_recovery_writ
         live.journal.audit_events()) == before
 
 
+@pytest.mark.parametrize("case", [
+    "zero_cumulative", "insufficient_cumulative", "before_creation", "after_update",
+    "update_after_observation", "future_window", "future_execution", "zero_server", "fractional_server",
+])
+def test_inconsistent_positive_pair_rehashed_v4_restore_fails_before_writes(
+    live: Any, monkeypatch: Any, case: str,
+) -> None:
+    from test_history_recovery import inconsistent_history_pair
+
+    from multi_exchange_trader.execution.history import validate_history_snapshot
+    from multi_exchange_trader.execution.history_recovery import (
+        HistoryExecutionEvidence,
+        HistoryOrderEvidence,
+    )
+    from multi_exchange_trader.execution.history_store import _variant
+
+    record = owned(live)
+    snap = observed(record)
+    assert recover(live, snap).status == "CREDITED"
+    guard = execution_guard(SCOPE, "BTCUSDT-LINEAR.BYBIT", "fill-1")
+    original = codec.decode(live.store.get_inbox_event(guard).payload_json)
+    ref, row, order, reason = inconsistent_history_pair(case, original.execution.source,
+        original.execution.execution, original.order.order)
+    with pytest.raises(ValueError, match=reason):
+        validate_history_snapshot(replace(snap, observed_at=ref.observed_at,
+            server_observed_at=ref.server_observed_at, executions=(row,), orders=(order,)))
+    raw = json.loads(codec.encode(original))
+    raw["fields"]["execution"] = json.loads(codec.encode(HistoryExecutionEvidence(ref, row, _variant(row)[2])))
+    raw["fields"]["order"] = json.loads(codec.encode(HistoryOrderEvidence(ref, order, _variant(order)[2])))
+    payload = json.dumps(raw, sort_keys=True, separators=(",", ":"))
+    summary = list(codec.decode(live.store.get_position("position-1").payload_json))
+    summary[18] = hashlib.sha256(json.dumps([payload], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+    with sqlite3.connect(live.kwargs["lock_directory"] / "runtime-state.sqlite3") as db:
+        db.execute("UPDATE runtime_inbox SET event_payload=? WHERE event_id=?", (payload, guard))
+        db.execute("UPDATE runtime_positions SET payload=? WHERE position_id='position-1'",
+            (json.dumps(json.loads(codec.encode(tuple(summary))), sort_keys=True, separators=(",", ":")),))
+    before = live.store.list_position_events("position-1"), live.store.get_position("position-1"), live.journal.audit_events()
+    live.runtime.shutdown()
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("inconsistent positive pair reached recovery writes")
+    monkeypatch.setattr(live.journal, "recover_sending", forbidden)
+    monkeypatch.setattr(live.store, "recover", forbidden)
+    with pytest.raises(ValueError, match=reason):
+        live.module.NativeExecutionRuntime(**live.kwargs)
+    assert (live.store.list_position_events("position-1"), live.store.get_position("position-1"),
+        live.journal.audit_events()) == before
+    assert not live.strategy.commands
+
+
 @pytest.mark.parametrize("route", ["history", "native", "new_history_replay"])
 def test_malformed_legacy_command_linkage_cannot_authorize_new_history_or_live_prior(live: Any, route: str) -> None:
     from test_native_quarantine import seed_credit

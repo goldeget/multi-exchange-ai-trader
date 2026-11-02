@@ -21,7 +21,15 @@ from multi_exchange_trader.execution.execution_credit import (
     candidate_identity,
     execution_guard,
 )
-from multi_exchange_trader.execution.history import ExecutionRecord, OrderHistoryRecord
+from multi_exchange_trader.execution.history import (
+    EPOCH,
+    ExecutionRecord,
+    HistorySnapshot,
+    HistoryWindow,
+    OrderHistoryRecord,
+    milliseconds,
+    validate_history_snapshot,
+)
 from multi_exchange_trader.execution.history_store import _variant
 from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, _ReplayContext
 
@@ -124,6 +132,81 @@ def test_conflict_keeps_contrary_observed_symbol_without_changing_owned_instrume
     state, _, replay = reduce(projection(event), record)
     assert state.owned_quantity == 0 and replay.decisions[0].execution.execution.symbol == "ETHUSDT"
     assert replay.decisions[0].owned_order.instrument_id == "BTCUSDT-LINEAR.BYBIT"
+
+
+PAIR_CASES = (
+    "zero_cumulative", "insufficient_cumulative", "before_creation", "after_update",
+    "update_after_observation", "future_window", "future_execution", "zero_server", "fractional_server",
+)
+
+
+def inconsistent_history_pair(case: str, ref: Any, row: Any, history_order: Any) -> tuple[Any, Any, Any, str]:
+    """Literal pair/source contradictions accepted by row-only validation."""
+    reason = "HISTORY_EXECUTION_ORDER_TOTAL_CONFLICT"
+    if case in ("zero_cumulative", "insufficient_cumulative"):
+        total = Decimal(0) if case == "zero_cumulative" else row.quantity / 2
+        history_order = replace(history_order, cumulative_filled=total,
+                                leaves_quantity=history_order.quantity - total)
+    elif case == "before_creation":
+        history_order = replace(history_order, created_ms=row.time_ms + 1, updated_ms=row.time_ms + 1)
+        reason = "HISTORY_EXECUTION_ORDER_TIME_CONFLICT"
+    elif case == "after_update":
+        history_order = replace(history_order, created_ms=min(history_order.created_ms, row.time_ms - 1),
+                                updated_ms=row.time_ms - 1)
+        reason = "HISTORY_EXECUTION_ORDER_TIME_CONFLICT"
+    elif case == "update_after_observation":
+        history_order = replace(history_order, updated_ms=milliseconds(ref.observed_at) + 1)
+    elif case in ("future_window", "future_execution"):
+        observed = EPOCH + timedelta(milliseconds=(ref.end_ms if case == "future_window" else row.time_ms) - 1)
+        ref = replace(ref, observed_at=observed, server_observed_at=observed)
+        reason = "HISTORY_SNAPSHOT_INVALID"
+    elif case == "zero_server":
+        ref = replace(ref, server_observed_at=EPOCH)
+        reason = "HISTORY_SNAPSHOT_INVALID"
+    elif case == "fractional_server":
+        ref = replace(ref, server_observed_at=ref.observed_at - timedelta(milliseconds=1) + timedelta(microseconds=1))
+        reason = "HISTORY_MILLISECOND_CLOCK_REQUIRED"
+    else:
+        raise AssertionError(case)
+    return ref, row, history_order, reason
+
+
+@pytest.mark.parametrize("case", PAIR_CASES)
+@pytest.mark.parametrize("stage", ["construction", "codec", "reducer"])
+def test_positive_credit_rejects_inconsistent_pair_and_source(case: str, stage: str) -> None:
+    from dataclasses import fields
+
+    event = credit()
+    ref, row, history_order, reason = inconsistent_history_pair(case, source(), execution(), order())
+    # The existing history validator establishes the exact semantic rejection independently.
+    snapshot = HistorySnapshot(ref.scope, ref.symbol, ref.snapshot_id, HistoryWindow(ref.start_ms, ref.end_ms),
+        ref.observed_at, ref.server_observed_at, (row,), (history_order,), (), True)
+    with pytest.raises(ValueError, match=reason):
+        validate_history_snapshot(snapshot)
+    execution_proof, order_proof = evidence(row, ref), order_evidence(history_order, ref)
+    with pytest.raises(ValueError, match=reason):
+        if stage == "construction":
+            replace(event, execution=execution_proof, order=order_proof)
+        elif stage == "codec":
+            raw = json.loads(codec.encode(event))
+            raw["fields"]["execution"] = json.loads(codec.encode(execution_proof))
+            raw["fields"]["order"] = json.loads(codec.encode(order_proof))
+            codec.decode(json.dumps(raw))
+        else:
+            malformed = object.__new__(type(event))
+            for field in fields(event):
+                object.__setattr__(malformed, field.name, getattr(event, field.name))
+            object.__setattr__(malformed, "execution", execution_proof)
+            object.__setattr__(malformed, "order", order_proof)
+            reduce(projection(event), malformed)
+
+
+def test_positive_pair_allows_later_page_update_and_exact_cumulative_boundary() -> None:
+    ref = replace(source(), observed_at=EPOCH + timedelta(milliseconds=2000),
+                  server_observed_at=EPOCH + timedelta(milliseconds=1100))
+    event = credit(execution=evidence(ref=ref), order=order_evidence(order(updated_ms=1500), ref))
+    assert codec.decode(codec.encode(event)) == event
+    assert reduce(projection(event), event)[0].owned_quantity == Decimal("0.004")
 
 
 def resolution(event: Any = None, candidate: Any = None) -> Any:
@@ -233,17 +316,26 @@ def test_refusals_retain_sourced_decision_and_no_credit(mode: str, code: str) ->
     event = credit()
     candidates: tuple[Any, ...] = ()
     previous = api().HistoryRecoveryReplayState()
+    initial = projection(event)
     if mode == "native":
         candidates = (late_candidate(),)
     elif mode == "overfill":
-        event = replace(event, execution=evidence(execution(quantity=Decimal("0.021"))))
+        prior_source = replace(source(), snapshot_id="earlier-fill")
+        prior = credit(execution=evidence(execution(execution_id="earlier", time_ms=999,
+            quantity=Decimal("0.019"), value=Decimal("950.0285")), prior_source),
+            order=order_evidence(order(updated_ms=999, cumulative_filled=Decimal("0.019"),
+                leaves_quantity=Decimal("0.001")), prior_source))
+        initial, _, previous = reduce(initial, prior)
+        event = replace(event, order=order_evidence(order(cumulative_filled=Decimal("0.020"),
+            leaves_quantity=Decimal(0))))
     elif mode == "exit":
         event = replace(event, owned_order=replace(event.owned_order, role="EXIT", side="SELL", reduce_only=True),
             execution=evidence(execution(side="Sell")), order=order_evidence(order(side="Sell", reduce_only=True)))
+        initial = projection(event)
     else:
         previous = replace(previous, decisions=(decision(),))
-    state, native, replay = reduce(projection(event), event, previous, candidates)
-    assert state.executions == () and replay.credits == () and native == CreditReplayState()
+    state, native, replay = reduce(initial, event, previous, candidates)
+    assert state.executions == initial.executions and replay.credits == previous.credits and native == CreditReplayState()
     assert replay.decisions[-1].mismatch_codes == (code,)
     assert replay.decisions[-1].execution == event.execution
 

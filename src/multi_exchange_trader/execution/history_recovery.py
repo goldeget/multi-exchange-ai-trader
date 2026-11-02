@@ -21,9 +21,11 @@ from .execution_provenance import NativeExecutionCandidate
 from .history import (
     EPOCH,
     ExecutionRecord,
+    HistorySnapshot,
     HistoryWindow,
     OrderHistoryRecord,
     validate_history_record,
+    validate_history_snapshot,
 )
 from .history_store import _variant
 from .native_events import _text
@@ -91,6 +93,16 @@ def _owned(owned: p.OwnedOrder, command_key: str, command_payload_hash: str) -> 
         raise ValueError("HISTORY_RECOVERY_OWNERSHIP_REQUIRED")
 
 
+def _validate_positive_pair(execution: HistoryExecutionEvidence, order: HistoryOrderEvidence) -> None:
+    """Reuse snapshot semantics on a discarded data-only subset, never query completeness."""
+    source = execution.source
+    # This local adapter is never persisted, returned or issued as a receipt. Its
+    # injected pair is not a reconstruction of the source's complete query result.
+    validate_history_snapshot(HistorySnapshot(source.scope, source.symbol, source.snapshot_id,
+        HistoryWindow(source.start_ms, source.end_ms), source.observed_at, source.server_observed_at,
+        (execution.execution,), (order.order,), (), True))
+
+
 @dataclass(frozen=True)
 class HistoryExecutionCredit:
     execution: HistoryExecutionEvidence
@@ -117,6 +129,7 @@ class HistoryExecutionCredit:
                 or order.position_idx != 0 or order.reduce_only != owned.reduce_only
                 or order.quantity != owned.quantity):
             raise ValueError("HISTORY_RECOVERY_CREDIT_INVALID")
+        _validate_positive_pair(self.execution, self.order)
 
 
 @dataclass(frozen=True)
