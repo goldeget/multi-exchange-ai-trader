@@ -263,3 +263,29 @@ class MonitoringReceiptView:
     assessment: MonitoringAssessment
     target_fingerprint: str
     phase: Literal["PRE", "POST"]
+
+
+@dataclass(frozen=True, repr=False)
+class WorkerMonitoringStatus:
+    """Readonly lifecycle checkpoint, not a reusable admission capability."""
+
+    phase: str
+    scope: ProtectionScope
+    symbols: tuple[str, ...]
+    reconciled_at: str | None = None
+    reconciliation_fingerprint: str | None = None
+    current_fingerprint: str | None = None
+    current_revision: str | None = None
+    reconciliation_current: bool = False
+    fresh_read_authority: bool = False
+    stream_stamp: StreamStamp = StreamStamp(0, "", 0, 0)
+    retained_stamp: StreamStamp | None = None
+    fault: str | None = None
+    resources_retained: bool = False
+    trading_enabled: Literal[False] = field(default=False, init=False)
+    credit_authorized: Literal[False] = field(default=False, init=False)
+    production_supported: Literal[False] = field(default=False, init=False)
+    venue_event_complete: Literal[False] = field(default=False, init=False)
+
+    def __repr__(self) -> str:
+        return f"WorkerMonitoringStatus(phase={self.phase!r}, trading_enabled=False)"

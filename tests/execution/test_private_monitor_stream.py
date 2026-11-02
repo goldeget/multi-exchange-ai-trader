@@ -361,3 +361,45 @@ async def test_retirement_drains_only_already_admitted_delivery_without_ready(
     finally:
         release.set()
         await stream.close()
+
+async def test_completed_owned_tasks_are_retired_and_failures_retrieved(monkeypatch):
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    active = len(stream._tasks)
+    async def completed():
+        return
+    async def failed():
+        raise RuntimeError('private provider payload must not escape')
+    try:
+        for _ in range(100):
+            stream._task(completed())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(stream._tasks) == active
+        stream._task(failed())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert stream.fault == 'MONITORING_OWNED_TASK_FAILED'
+        assert all(not task.done() for task in stream._tasks)
+    finally:
+        await stream.close()
+    assert not stream._tasks
+
+async def test_close_keeps_running_task_owned_until_cancel_cleanup_finishes(monkeypatch):
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    entered, finishing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def running():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finishing.set()
+            await release.wait()
+    stream._task(running())
+    await entered.wait()
+    closing = asyncio.create_task(stream.close())
+    await finishing.wait()
+    assert not closing.done()
+    assert any(not task.done() for task in stream._tasks)
+    release.set()
+    await closing
+    assert not stream._tasks

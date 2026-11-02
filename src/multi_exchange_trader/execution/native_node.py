@@ -12,6 +12,7 @@ import importlib
 import re
 import sys
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -86,6 +87,16 @@ class NativeNodeAssembly:
         self.require_monitoring_ready()
         return stamp
 
+    def require_monitoring_delivery(self, event: object) -> None:
+        """Only already-noted exact originals may enter app consumption, even at stop."""
+        client = self._monitor_client()
+        reports = client._monitor_reports
+        expected = None if reports is None else reports._expected.get(id(event))
+        if (expected is None or expected["event"] is not event
+                or not expected["native"] or expected["future"].done()):
+            raise MonitoringError("MONITORING_ACCEPTED_EVENT_REQUIRED")
+        reports._accepted_guard()
+
     def acknowledge_monitoring(self, event: object, *, evidence: object) -> None:
         self._monitor_client().acknowledge_monitoring(event, evidence=evidence)
 
@@ -95,6 +106,16 @@ class NativeNodeAssembly:
     async def drain_monitoring(self) -> StreamStamp:
         stamp: StreamStamp = await self._monitor_client().drain_monitoring()
         return stamp
+
+    def require_monitoring_tasks_quiesced(self) -> None:
+        client = self._monitor_client()
+        stream = client._monitor_stream
+        if (any(not task.done() for task in client._tasks)
+                or not client._repay_task.done()
+                or any(not task.done() for task in client._ws_client_futures)
+                or stream is not None and (any(not task.done() for task in stream._tasks)
+                    or stream._socket is not None and not stream._socket.is_closed())):
+            raise MonitoringError("MONITORING_CLIENT_TASKS_NOT_QUIESCED")
 
     def close_event_channel(self) -> None:
         if self.order_subscription is not None:
@@ -203,6 +224,10 @@ def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
 
         validate_passive_config(execution)
         settings = passive_node_settings(instruments)
+        # Pinned kernel.stop_async unconditionally sleeps this value before
+        # check_residuals. Its ordinary 10s default exhausts our entire cleanup
+        # attempt before disconnect begins; passive drain still proves quiescence.
+        settings["timeout_post_stop"] = 0.05
     return cfg.TradingNodeConfig(
         trader_id=trader_id,
         logging=cfg.LoggingConfig(log_level="ERROR"),
@@ -229,7 +254,11 @@ def build_native_node(*, session: BybitDemoAccountSession,
     def install(config: object) -> None:
         node_config = build_node_config(config, symbols=symbols, trader_id=trader_id,
                                         restart_safe=restart_safe, monitor_only=monitor_only)
-        native_node = modules["node"].TradingNode(config=node_config, loop=loop)
+        from .native_loop_ownership import preserve_default_executor
+
+        ownership = preserve_default_executor(loop) if monitor_only else nullcontext()
+        with ownership:
+            native_node = modules["node"].TradingNode(config=node_config, loop=loop)
         try:
             captured: list[Any] = []
             channel = NativeChannel(scope, "BYBIT-UNIFIED")

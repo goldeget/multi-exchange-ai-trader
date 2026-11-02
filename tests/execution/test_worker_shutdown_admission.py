@@ -185,14 +185,15 @@ async def test_failed_or_cancelled_stop_keeps_admission_closed_and_allows_retry(
     h = harness(tmp_path)
     h.core.permit_fake_monitoring()
     await h.worker.start_passive()
-    entered, done = asyncio.Event(), asyncio.Event()
+    entered, done, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def run() -> None:
         await done.wait()
 
     async def waiting_stop() -> None:
         entered.set()
-        await asyncio.Event().wait()
+        await release.wait()
+        done.set()
 
     h.assembly.node = SimpleNamespace(run_async=run, stop_async=waiting_stop)
     await h.worker.connect_monitoring()
@@ -206,11 +207,11 @@ async def test_failed_or_cancelled_stop_keeps_admission_closed_and_allows_retry(
     with pytest.raises(RuntimeBlocked, match="WORKER_STOPPING"):
         await h.worker.connect_monitoring()
 
-    async def complete_stop() -> None:
-        done.set()
-
-    h.assembly.node.stop_async = complete_stop
+    owned_stop = h.worker._node_stop_task
+    assert owned_stop is not None and not owned_stop.done()
+    release.set()
     await h.worker.stop()
+    assert h.worker._node_stop_task is owned_stop and owned_stop.done()
 
 
 async def test_admitted_readback_retains_store_until_its_continuation_finishes(

@@ -107,7 +107,10 @@ async def start(h: Any) -> None:
     assert type(h.assembly.node) is module("live.node").TradingNode
     assert type(h.assembly.node.cache) is module("cache.cache").Cache
     assert type(h.assembly.strategy) is module("trading.strategy").Strategy
-    assert type(h.assembly.execution_client) is module("adapters.bybit.execution").BybitExecutionClient
+    from multi_exchange_trader.execution.native_monitor_client import MonitoringBybitExecutionClient
+
+    assert type(h.assembly.execution_client) is MonitoringBybitExecutionClient
+    assert isinstance(h.assembly.execution_client, module("adapters.bybit.execution").BybitExecutionClient)
     assert h.assembly.strategy.cache is h.assembly.node.cache
     assert h.assembly.node.is_built() and not h.assembly.node.is_running()
     assert h.assembly.node.kernel.exec_engine.command_count == 0

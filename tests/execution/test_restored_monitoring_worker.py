@@ -1,0 +1,251 @@
+"""Worker admission races against real session/SQLite/Cache, before node startup.
+
+These tests make no Linux native lifecycle acceptance claim.
+"""
+# ruff: noqa: F811
+import asyncio
+from dataclasses import FrozenInstanceError
+
+import pytest
+from test_monitoring_receipts import session, target_core  # noqa: F401
+from test_native_monitor_client import client  # noqa: F401
+
+from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+
+@pytest.fixture
+async def prepared(target_core, client):
+    worker = target_core[2]
+    worker._assembly.execution_client = client
+    worker._runtime._receipt_session = worker.session
+    worker._journal, worker._store = worker.runtime.journal, worker.runtime.store
+    yield target_core
+
+
+async def test_refresh_fences_second_resume_history_and_stop_wins(prepared):
+    core = prepared
+    assert hasattr(core[2], 'resume_restored_monitoring'), 'worker resume protocol is required'
+    worker, blocked, started, release = core[2], *core[4:]
+    blocked[0] = True
+    attempt = asyncio.create_task(worker.resume_restored_monitoring())
+    await started.wait()
+    assert worker._operations == 1
+    for operation in (worker.resume_restored_monitoring(),
+                      worker.collect_history('BTCUSDT', start_ms=1, end_ms=2),
+                      worker.corroborate_native_fills('BTCUSDT', start_ms=1, end_ms=2),
+                      worker.recover_history_fills('BTCUSDT', start_ms=1, end_ms=2),
+                      worker.stage()):
+        with pytest.raises(RuntimeBlocked, match='MONITORING_RESUME_IN_PROGRESS'):
+            await operation
+    with pytest.raises(RuntimeBlocked, match='AWAIT_INFLIGHT_OPERATION'):
+        await worker.stop()
+    release.set()
+    with pytest.raises((RuntimeBlocked, ValueError)):
+        await attempt
+    assert worker._node_task is None
+    assert worker._operations == 0
+    assert worker.monitoring_status.phase == 'ATTENTION'
+    assert worker.monitoring_status.resources_retained
+    assert worker._lock.acquired and not worker._channel_closed
+
+
+@pytest.mark.parametrize('mutation', ['binding', 'client', 'lease', 'policy', 'session_close', 'key', 'store'])
+async def test_refresh_owner_change_cannot_reach_native_start(prepared, mutation):
+    core = prepared
+    assert hasattr(core[2], 'resume_restored_monitoring'), 'worker resume protocol is required'
+    worker, blocked, started, release = core[2], *core[4:]
+    blocked[0] = True
+    attempt = asyncio.create_task(worker.resume_restored_monitoring())
+    await started.wait()
+    if mutation == 'binding':
+        worker.binding = object()
+    elif mutation == 'client':
+        worker._assembly.execution_client = object()
+    elif mutation == 'lease':
+        worker._lock.release()
+        worker._lock.acquire()
+    elif mutation == 'key':
+        worker.session._api_key = 'different-synthetic-key'
+    elif mutation == 'store':
+        worker._store = object()
+    elif mutation == 'policy':
+        snap = worker.policy_book.read()
+        worker.policy_book.save(snap['revision'], snap['policy'])
+    else:
+        await worker.session.aclose()
+    release.set()
+    with pytest.raises((RuntimeBlocked, ValueError)):
+        await attempt
+    assert worker._node_task is None and worker._operations == 0
+    assert worker.monitoring_status.phase == 'ATTENTION'
+    if mutation == 'lease':
+        worker._lock.release()
+
+
+async def test_cancel_settles_read_and_retains_unproven_resources(prepared):
+    core = prepared
+    assert hasattr(core[2], 'resume_restored_monitoring'), 'worker resume protocol is required'
+    worker, blocked, started, _ = core[2], *core[4:]
+    blocked[0] = True
+    attempt = asyncio.create_task(worker.resume_restored_monitoring())
+    await started.wait()
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    assert not worker.session._monitoring_receipts
+    assert worker._node_task is None and worker._operations == 0
+    status = worker.monitoring_status
+    assert status.phase == 'ATTENTION' and status.resources_retained
+    assert status.trading_enabled is False and status.venue_event_complete is False
+    assert status.production_supported is False and status.credit_authorized is False
+    with pytest.raises(FrozenInstanceError):
+        status.phase = 'MONITORING'
+    with pytest.raises((RuntimeBlocked, ValueError)):
+        await worker.resume_restored_monitoring()
+
+async def test_readonly_no_capital_pre_matches_then_native_start_fails_closed(prepared):
+    # The genuine client is armed by a real PRE receipt. This fixture deliberately
+    # has no runnable Linux node; it cannot pass readiness or produce MONITORING.
+    worker = prepared[2]
+    original_binding = worker.binding
+    assert worker.policy_book.read()['policy']['capital_usdt'] is None
+    with pytest.raises((ValueError, RuntimeBlocked)):
+        await worker.connect_monitoring()
+    controller = worker._monitoring
+    assert controller.armed
+    assert worker.binding is not original_binding
+    assert controller.client._monitor_binding is worker.binding
+    assert controller.budget.physical_attempts >= 6
+    assert not worker.session._monitoring_receipts
+    assert worker.monitoring_status.phase == 'ATTENTION'
+    assert worker._node_task.done()
+    # Retrieve failed node result in this negative fixture; never native proof.
+    if not worker._node_task.cancelled():
+        worker._node_task.exception()
+
+
+async def test_resume_refuses_other_already_admitted_operation(prepared):
+    worker = prepared[2]
+    worker._operations = 1
+    try:
+        with pytest.raises(RuntimeBlocked, match='MONITORING_OPERATION_IN_PROGRESS'):
+            await worker.resume_restored_monitoring()
+        assert worker._monitoring is None and worker._node_task is None
+    finally:
+        worker._operations = 0
+
+
+async def test_resume_deadline_stops_blocked_http_and_releases_pending_receipts(prepared, monkeypatch):
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    original = MonitoringReadBudget.__init__
+    def short(self, **kwargs):
+        original(self, **kwargs)
+        self.deadline = asyncio.get_running_loop().time() + 0.05
+    monkeypatch.setattr(MonitoringReadBudget, '__init__', short)
+    worker = prepared[2]
+    prepared[4][0] = True
+    with pytest.raises(TimeoutError):
+        await worker.resume_restored_monitoring()
+    assert worker._node_task is None and not worker.session._monitoring_receipts
+    assert worker.monitoring_status.phase == 'ATTENTION'
+
+
+async def test_mutation_after_genuine_pre_read_cannot_arm(prepared, monkeypatch):
+    import httpx
+    original = httpx.AsyncClient.send
+    worker = prepared[2]
+    async def mutate(client, request, **kwargs):
+        response = await original(client, request, **kwargs)
+        if request.url.path == '/v5/position/list':
+            snapshot = worker.policy_book.read()
+            worker.policy_book.save(snapshot['revision'], snapshot['policy'])
+        return response
+    monkeypatch.setattr(httpx.AsyncClient, 'send', mutate)
+    with pytest.raises(ValueError):
+        await worker.resume_restored_monitoring()
+    assert not worker._monitoring.armed and worker._node_task is None
+    assert not worker.session._monitoring_receipts
+
+async def test_cleanup_owner_guard_rejects_reacquired_lease(prepared):
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+    worker = prepared[2]
+    controller = MonitoringResume(worker)
+    assert hasattr(controller, 'require_cleanup_owner'), 'cleanup must fence exact resource owner'
+    worker._stopping = True
+    controller.require_cleanup_owner()  # Stopping is expected during accepted draining.
+    worker._lock.release()
+    worker._lock.acquire()
+    try:
+        with pytest.raises(ValueError, match='MONITORING_CLEANUP_OWNER_CHANGED'):
+            controller.require_cleanup_owner()
+    finally:
+        worker._lock.release()
+
+
+async def test_callback_decode_failure_retires_without_application_ack(prepared):
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+    worker = prepared[2]
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    worker._consume_native(worker._assembly.channel, object(), 1)
+    assert worker.callback_failures == 1
+    assert worker.monitoring_status.fault == 'MONITORING_APPLICATION_CALLBACK_FAILED'
+    assert worker._assembly.monitoring_stamp().delivered == 0
+
+
+async def test_unexplained_target_delta_is_not_a_retarget_permission(prepared):
+    from dataclasses import replace
+
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+    worker, target = prepared[2], prepared[1]
+    controller = MonitoringResume(worker)
+    unknown = replace(target, application=replace(target.application, digest='unknown'))
+    assert not controller.legitimate_delta(target, unknown)
+    assert controller.legitimate_delta(target, replace(target,
+        stream_stamp=replace(target.stream_stamp, received=4, delivered=4)))
+
+
+async def test_manufactured_monitoring_status_cannot_qualify_readiness(prepared):
+    from dataclasses import replace
+
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+    worker = prepared[2]
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    controller.state = replace(controller.state, phase='MONITORING')
+    assert worker.monitoring_status.phase == 'ATTENTION'
+    assert not worker.monitoring_status.trading_enabled
+
+async def test_unknown_native_event_cannot_enter_application_delivery(prepared):
+    assembly = prepared[2]._assembly
+    assert hasattr(assembly, 'require_monitoring_delivery'), 'accepted exact event guard is required'
+    with pytest.raises(ValueError, match='MONITORING_ACCEPTED_EVENT_REQUIRED'):
+        assembly.require_monitoring_delivery(object())
+
+async def test_real_fresh_worker_cannot_launch_unarmed_monitor_client(prepared):
+    from multi_exchange_trader.execution.native_restart import WorkerNativeRestartStatus
+    worker = prepared[2]
+    worker._native_restart_status = WorkerNativeRestartStatus('FRESH_EMPTY_CACHE')
+    with pytest.raises(RuntimeBlocked, match='MONITORING_RESTORED_CACHE_REQUIRED'):
+        await worker.connect_monitoring()
+    assert worker._node_task is None
+
+
+async def test_incomplete_client_task_prevents_monitor_quiescence(prepared):
+    assembly = prepared[2]._assembly
+    client = assembly.execution_client
+    await client._repay_task
+    assert hasattr(assembly, 'require_monitoring_tasks_quiesced'), 'owned tasks must settle before seal'
+    started, release = asyncio.Event(), asyncio.Event()
+    async def unfinished():
+        started.set()
+        await release.wait()
+    task = client.create_task(unfinished())
+    await started.wait()
+    try:
+        with pytest.raises(ValueError, match='MONITORING_CLIENT_TASKS_NOT_QUIESCED'):
+            assembly.require_monitoring_tasks_quiesced()
+    finally:
+        release.set()
+        await task
+    assembly.require_monitoring_tasks_quiesced()

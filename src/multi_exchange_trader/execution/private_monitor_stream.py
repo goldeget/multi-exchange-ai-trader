@@ -206,6 +206,12 @@ class OwnedPrivateMonitorStream:
     def _task(self, coroutine: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coroutine)
         self._tasks.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            self.retire("MONITORING_OWNED_TASK_FAILED")
 
     async def connect(self, *, timeout: float = 10) -> None:
         from nautilus_trader.core import nautilus_pyo3
