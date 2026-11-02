@@ -91,6 +91,25 @@ jobs:
                   raise SystemExit(f"{module_name} requires exactly {expected} passing cases")
           print(f"Verified {total} actual native contract tests without network access")
           PY
+      - name: Require isolated actual native restart contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_native_restart_linux.py --junitxml=native-restart-contracts.xml
+      - name: Reject empty or skipped native restart qualification
+        run: |
+          .venv/bin/python - <<'PY'
+          import xml.etree.ElementTree as ET
+          suites = list(ET.parse("native-restart-contracts.xml").getroot().iter("testsuite"))
+          total = sum(int(s.attrib.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.attrib.get("skipped", 0)) for s in suites)
+          failures = sum(int(s.attrib.get("failures", 0)) + int(s.attrib.get("errors", 0)) for s in suites)
+          cases = [case for suite in suites for case in suite.iter("testcase")]
+          if (total != 6 or len(cases) != 6 or skipped or failures
+                  or any(case.attrib.get("classname", "").split(".")[-1]
+                         != "test_native_restart_linux" for case in cases)):
+              raise SystemExit("Native restart contracts require exactly 6 unskipped passing cases")
+          print("Verified 6 actual native restart contracts without network access")
+          PY
 
   operations:
     name: Linux operations checks

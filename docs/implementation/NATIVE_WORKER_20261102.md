@@ -17,15 +17,19 @@ to `NativeBybitBridge`. Construction/build does not connect the node.
 
 The provider has explicit instruments, no load-all default. The strategy uses
 NETTING with no external-order claims and no contingent/GTD/stop management.
-Reconciliation filters unclaimed external orders and position reports and does
-not generate missing orders. Connect configuration has no leverage, margin-mode
+Worker construction disables native reconciliation and cache reloading. The
+standalone non-restart config retains unclaimed-order/position-report filters
+and disables missing-order generation; that setting alone cannot prevent inferred
+fills. Connect configuration has no leverage, margin-mode
 or position-mode mutation and disables spot borrow repayment. ONE_WAY is still
 independently required by risk/readback; NETTING alone does not prove venue mode.
 
 `ExecutionWorker.start_passive` acquires the existing account/environment lease,
 creates the existing journal and runtime-state handles on the running worker loop,
-and restores ownership/unknown commands without sending. `connect_monitoring` is
-a separate explicit call to `TradingNode.run_async`. Neither calls runtime.start.
+and validates/restores the sealed local native generation before recovering
+ownership/unknown commands without sending. `connect_monitoring` is a separate
+explicit call to `TradingNode.run_async`, currently refused for restored local
+generations. Neither calls runtime.start.
 An independent subscription to the exact `events.order.<strategy-id>` message-bus
 topic is the sole worker callback route; the Strategy retains its default no-op
 order callback. The subscription stays alive when the native Strategy enters
@@ -57,10 +61,12 @@ await boundary; it does not require a separate asynchronous lifetime counter.
 After admitted work has completed, shutdown stops the producer, awaits the
 native run task, and verifies native disconnection and empty execution queues.
 Only then does it unsubscribe the channel, drain posted callbacks, mark in-flight
-commands unknown and close SQLite/relinquish the lease on its owner loop. A native
+commands unknown, publish the matching clean seal, dispose the native assembly,
+and close SQLite/relinquish the lease on its owner loop. A native
 stop failure or unproven drain keeps the sink, stores and lease alive for an explicit
-retry, and marks unacknowledged handoffs unknown. Abrupt termination still
-requires existing durable recovery and independent venue reconciliation.
+retry, and marks unacknowledged handoffs unknown. Abrupt termination leaves an
+active generation blocked; arbitrary-crash native recovery and independent venue
+reconciliation remain unimplemented gates.
 Concurrent stop attempts are rejected while one native shutdown is running;
 successful repeated stop on the owner loop is idempotent. Failed or cancelled
 shutdown never reopens admission automatically. Native callbacks retain their
@@ -80,8 +86,9 @@ An explicitly invoked `--run-monitor` requires `--uid`, `--parent-uid`,
 Only that path reads `BYBIT_DEMO_API_KEY`/`BYBIT_DEMO_API_SECRET` from the process
 environment and performs UID authentication GETs. It creates passive runtime
 state, periodically refreshes same-session identity and polls owned-position
-readback. Adding `--connect-monitoring` explicitly starts the native read/stream
-connection. The process has an empty plan registry and a risk producer which
+readback. Adding `--connect-monitoring` requests a native read/stream connection;
+a restored local generation refuses that request pending reviewed reconciliation.
+The process has an empty plan registry and a risk producer which
 always raises a monitor-only blocker. It has no automatic entry generation,
 strategy import path, paid AI dispatch, web port, or policy activation path.
 SIGTERM/SIGINT handlers are installed before startup and reinstalled immediately
@@ -124,9 +131,10 @@ runtime-state store as one generation with the policy and other ledgers. See the
 manifest verification, new-target restoration and the complete-runtime requirement.
 
 History generations add `history.sqlite3` to this same root. The portable recovery
-tool consists of `state_snapshot.py` and its sibling `history_snapshot_validation.py`;
-both run with Python 3.12's standard library, without installing the application.
-The sibling resolves relative to the script, including invocation from another
+tool consists of `state_snapshot.py` and its siblings `history_snapshot_validation.py`
+and `native_restart_format.py`; all run with Python 3.12's standard library,
+without installing the application. Both siblings resolve relative to the script,
+including invocation from another
 working directory. Source databases are never opened with SQLite: only disposable
 copies are checked, including committed WAL, before publication.
 
@@ -136,15 +144,21 @@ copies are checked, including committed WAL, before publication.
 | Base plus present original runtime stores | v2 | `--require-runtime` requires all original four |
 | Base plus history and paired execution/runtime-state stores | v3 | `--require-history` requires this triple |
 | Base plus all original runtime stores and history | v3 | Both flags together |
+| Base plus all four runtime stores, history and sealed native file | v4 | `--require-native`; native presence always enforces this completeness |
 
 The original four remain `execution.sqlite3`, `runtime-state.sqlite3`,
-`runtime-policy.sqlite3`, and `ai-dispatch.sqlite3`. A monitor history backup does
-not require paid-AI dispatch or policy files. If present, they are preserved.
+`runtime-policy.sqlite3`, and `ai-dispatch.sqlite3`. A legacy history backup without
+native data does not require paid-AI dispatch or policy files. If present, they
+are preserved. A native-bearing backup always requires all four, even when paid
+dispatch is unused; the backup tool refuses a missing store and never creates a
+placeholder to hide incompleteness. Preparing a complete application state root
+is a separate operator/application setup gate.
 History always requires both paired stores even without a flag. Version 3 has
 exact base manifest fields plus `runtime_files` and
 `history_files: ["history.sqlite3"]`; v1/v2 cannot contain or claim history.
 Genuine v1/v2 generations and partial policy-only backups remain readable.
-All three subcommands support both flags. Missing required history is refused;
+All three subcommands support the runtime, history and native requirement flags.
+Missing required history is refused;
 restore never creates a replacement empty database or restores history alone.
 
 History validation checks exact schema v1, column types/order, full BINARY keys,
@@ -275,6 +289,102 @@ transport observation remains unverified. This implementation uses no actual
 keys, orders, paid AI or server effects and chooses no operator investment,
 model, budget or hosting settings.
 
+## Sealed local native restart and offline v4 backup
+
+The production `ExecutionWorker.start_passive()` construction path now uses a
+fresh actual node, Strategy, factory, adapter and native Cache. It does not call
+`run_async`, connect clients or start the trader. Its restart configuration sets
+`load_cache=False` and `reconciliation=False`: a later native `load_cache()` would
+erase the restored in-memory cache, and native reconciliation can infer events
+which are not original execution receipts. Monitoring connection after a restored
+generation refuses with `NATIVE_RESTART_RECONCILIATION_REQUIRED`. Execution
+qualification remains a fixed rejection and saved policy remains STOPPED.
+
+The private `native-restart.json` envelope binds exact account/environment,
+BYBIT account label, trader, strategy, instrument allowlist and pinned native
+version to the complete logical contents of `execution.sqlite3`,
+`runtime-state.sqlite3` and `history.sqlite3`. The canonical digest includes
+schema, SQLite versions, all rows and typed cells, including audit/inbox and
+liability data; committed WAL content is included and checkpoint layout is not.
+Generation IDs are distinct from the new worker's channel and lease identity.
+Hashes detect accidental corruption; a writer controlling the private directory
+can replace the envelope and its hash. They are not signatures or authentication.
+
+Before application recovery mutates SENDING state or projections, the worker
+validates the matching sealed generation and complete immutable application
+ownership. It decodes original native events and instruments into detached
+objects, reconstructs actual Position objects from their effective original fill
+streams, and validates exact object state, routing links, open/closed indexes and
+cache integrity. Only a completely validated candidate can consume the seal into
+active state and populate an empty fresh cache. A startup failure disposes the
+new native assembly and blocks startup; no failed candidate may connect. Original
+events are not passed to runtime callbacks, the message bus or fill accounting.
+Native ACCEPTED/FILLED/CANCELED data does not ACK a command, credit a fill, confirm
+terminal state or release reservations. Existing SENDING-to-UNKNOWN recovery and
+reconciliation flags still apply. An explicitly unresolved command with no known
+venue identity may remain missing from cache, unresolved and ineligible for resend.
+
+Clean stop requires the admission fence, settled admitted work, disconnected
+actual engines and empty command/event queues. It closes the native event
+subscription, drains posted callbacks, preserves transport-loss uncertainty, then
+captures genuine cache objects and the application digest under the scoped lease.
+Atomic restrictive publication creates a new sealed generation before disposal
+and ownership release. Failed quiescence or capture does not publish a seal. An
+active generation left by a crash, missing seal on an existing application, stale
+digest, partial/mixed generation or unsupported native stream blocks restart;
+there is no fallback to an earlier seal. This supports a clean-stop local
+generation, not arbitrary-crash recovery.
+
+Supported objects are pinned original MarketOrder/LimitOrder event streams and
+CryptoPerpetual instruments in the exact allowlist, with one unambiguous NETTING
+application lifetime per instrument. Original INITIALIZED, accepted, partially
+filled, pending-cancel, terminal orders and closed Position states are preserved.
+Successful OrderUpdated histories, transformations, emulation/contingent orders,
+position adjustments, split flip fills, flat/reopen multiple lifetimes, foreign
+or manual objects, missing source fills/instruments and ambiguous ownership are
+blocked rather than normalized or merged. Cached native exposure is local data,
+not fresh venue proof or whole-account exposure authority.
+
+The offline standard-library tool automatically includes any native file and
+validates it even when `--require-native` is omitted. A native-bearing manifest is
+version 4 with exactly `native_files=["native-restart.json"]`, all four runtime
+stores, history and existing complete base ledgers/datasets. `--require-native`
+applies to snapshot, verify and restore. Missing native files cannot satisfy it;
+malformed, active, stale, mixed, oversized or partial native generations refuse
+before destination publication. Without native data, the existing v1/v2/v3
+formats and completeness rules remain unchanged.
+
+The packaged stdlib `execution/native_restart_format.py` is canonical. Its
+portable sibling `scripts/operations/native_restart_format.py` is a mechanically
+copied byte-identical implementation guarded by an equality test; tests never
+refresh either file. The script loads this sibling anchored to its own path and
+needs no source tree, installed application/native package or site-packages. The
+portable bundle is `state_snapshot.py`, `history_snapshot_validation.py` and
+`native_restart_format.py`; copied-bundle tests use an arbitrary working directory
+and Python `-I -S`. SQLite logical digest checks run only on disposable scratch
+copies, preserving operator source bytes including WAL/SHM. Portable validation
+establishes sealed wire/schema/digest and paired scope consistency. Opaque MsgPack
+blobs still require the pinned native semantic codec; declared trader/account
+labels require separate live authenticated matching and cannot authenticate
+themselves through this unsigned artifact.
+
+Operators must still stop all writers, explicitly declare `--writers-stopped`,
+keep private state/backup/parent directories, and restore to a new destination.
+Keep leases outside the state root. Nothing here stops a service, migrates or
+cleans state, reads operator credentials, connects to a provider or starts trading.
+
+The separate `test_native_restart_linux.py` module defines exactly six actual
+native contracts with no parametrization changing that count. Worker cases use
+the actual worker builder without `assembly_factory` or builder replacement,
+synthetic credentials and temporary SQLite only. CI runs it under `unshare --net`
+and a clean environment, requires pinned 1.231.0, a distinct network namespace,
+loopback-only interfaces and unreachable IPv4/IPv6 probes, and checks
+`native-restart-contracts.xml` for exactly six passing cases and zero skips,
+errors or failures. The old strict36 command and XML gate are unchanged. Windows
+collection/skips and portable cache tests do not establish this Linux result.
+Exact-head hosted CI and independent review remain necessary before accepting
+that qualification; this implementation document is not a CI result.
+
 ## Remaining implementation and evidence
 
 - No production strategy signal/approved-plan producer or qualified risk evidence
@@ -285,13 +395,12 @@ model, budget or hosting settings.
 - Missing event completeness, drawdown/loss-sequence evidence, liquidation evidence,
   attached child ownership, venue readback/protection qualification and replay-safe
   protection repair remain blockers. Factory/config tests cannot prove these.
-- Durable runtime/bridge ownership restoration does not reconstruct prior orders
-  into a fresh native Strategy cache. D4 filtering deliberately does not claim
-  unknown venue orders, so events for orders surviving a process restart may not
-  reach the strategy until independent owned history/cache reconciliation is
-  implemented and qualified. Existing cancel controls correctly require a real
-  cached owned order; portable callback recovery tests do not prove native cache
-  reconstruction or venue event delivery.
+- Sealed local cache reconstruction does not establish authenticated venue
+  reconciliation or continuity/completeness of exchange event delivery. D4
+  filtering still refuses unowned venue objects. A separately reviewed passive
+  reconciliation lifecycle, arbitrary-crash persistence model and actual venue
+  evidence remain open gates; restored cache data cannot enable monitoring or
+  cancel/exit/protection authority by itself.
 - The lease fences this designated host only, not another computer. No actual
   deployment, PC-off continuous operation, disconnect/reconnect venue behavior or
   real DEMO canary has been demonstrated.
