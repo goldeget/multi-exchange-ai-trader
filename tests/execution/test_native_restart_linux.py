@@ -30,6 +30,7 @@ from test_runtime import SCOPE, selection
 from test_worker import stage
 from worker_receipt_support import synthetic_session
 
+from multi_exchange_trader.execution.account_binding import AccountBindingError
 from multi_exchange_trader.execution.journal import (
     CommandJournal,
     CommandKind,
@@ -407,10 +408,14 @@ async def test_actual_uncertainty_control_liabilities_and_fixed_authority_blocks
             assert new.worker.runtime.projection("position-1").owned_quantity == 0
             assert len(new.worker.runtime.store.list_position_events("position-1")) == 1
             assert new.worker.runtime.store.get_position("position-1").reconciliation_required
-            with pytest.raises(RuntimeBlocked, match="NATIVE_RESTART_RECONCILIATION_REQUIRED"):
-                await new.worker.connect_monitoring()
             with pytest.raises(RuntimeBlocked, match="QUALIFICATION"):
                 new.worker.runtime.start()
+            # This restart-only fixture has no genuine session attestation.
+            # Failed resume retires/cleans the worker, so test runtime authority
+            # above while it is still open; never manufacture monitoring proof.
+            assert new.session._attested is None
+            with pytest.raises(AccountBindingError, match="^MONITORING_PRIOR_ATTESTATION_REQUIRED$"):
+                await new.worker.connect_monitoring()
             no_effects(new)
         finally:
             await new.worker.stop()
