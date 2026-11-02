@@ -18,8 +18,10 @@ import hmac
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
-from typing import TypeGuard, cast
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Protocol, TypeGuard, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -161,6 +163,13 @@ def _region_message(value: object) -> bool:
     return any(phrase in text for phrase in _REGION_PHRASES)
 
 
+class _ReadOperation(Protocol):
+    def check(self) -> None: ...
+    def begin_read(self) -> float: ...
+    def before_attempt(self, attempt: int) -> None: ...
+    def response(self, status: int, headers: Mapping[str, str]) -> None: ...
+
+
 class BybitReadOnlyClient:
     """GET-only Bybit client. It cannot place orders or change leverage."""
 
@@ -188,6 +197,7 @@ class BybitReadOnlyClient:
         self._server_ms: int | None = None
         self._mono: float | None = None
         self.retry_waits = (0.4, 0.8)
+        self._operation: ContextVar[_ReadOperation | None] = ContextVar("bybit_read_operation", default=None)
         self._sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep
         self._log_filter = _DropCredentialLogs((key, secret))
         self._loggers = [logging.getLogger(name) for name in _LOGGERS]
@@ -277,6 +287,17 @@ class BybitReadOnlyClient:
             target = f"{target}?{query}"
         return httpx.Request("GET", target, headers=headers)
 
+    @contextmanager
+    def _monitoring_operation(self, operation: _ReadOperation) -> Iterator[None]:
+        current = self._operation.get()
+        if current is not None and current is not operation:
+            raise BybitReadError("monitoring_operation_overlap")
+        token = self._operation.set(operation)
+        try:
+            yield
+        finally:
+            self._operation.reset(token)
+
     async def read(
         self,
         path: str,
@@ -287,10 +308,16 @@ class BybitReadOnlyClient:
     ) -> tuple[dict[str, object], int | None]:
         if path not in READ_ONLY_PATHS:
             raise ReadOnlyViolation()
+        operation = self._operation.get()
+        if operation is not None:
+            bounded = operation.begin_read()
+            deadline = bounded if deadline is None else min(deadline, bounded)
         attempt = 0
         while True:
             self._raise_if_deadline(deadline)
             request = self._build_request(path, params, signed=signed)
+            if operation is not None:
+                operation.before_attempt(attempt)
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
                 raise BybitReadError("timeout")
@@ -317,6 +344,8 @@ class BybitReadOnlyClient:
                 ):
                     raise BybitReadError("dns") from None
                 raise BybitReadError("network") from None
+            if operation is not None:
+                operation.response(response.status_code, response.headers)
             if response.status_code in _RETRY_STATUSES and attempt < len(self.retry_waits):
                 await response.aclose()
                 self._raise_if_deadline(deadline)
@@ -337,7 +366,10 @@ class BybitReadOnlyClient:
                 data.extend(chunk)
             # aiter_bytes() already decodes content. The wire encoding/length
             # headers no longer describe this body and must not trigger decoding again.
-            return httpx.Response(response.status_code, content=bytes(data), request=request)
+            return httpx.Response(response.status_code, content=bytes(data), request=request,
+                headers={key: value for key, value in response.headers.items()
+                         if key.lower() in {"x-bapi-limit", "x-bapi-limit-status",
+                                            "x-bapi-limit-reset-timestamp"}})
         finally:
             await response.aclose()
 

@@ -69,6 +69,7 @@ from .journal import (
     Reservation,
     ReservationLimits,
 )
+from .monitoring_models import ApplicationMonitoringSummary
 from .native_controls import (
     LeverageObservation,
     NativeLeverageControl,
@@ -305,6 +306,37 @@ class NativeExecutionRuntime:
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
             result.append(NativeOwnedRequest(request, record.state, frozenset(venues)))
         return tuple(result)
+
+    def monitoring_state(self) -> ApplicationMonitoringSummary:
+        """Typed read-only logical view; no order acknowledgement or fill promotion."""
+        with self._mutex:
+            self._guard()
+            states = self._states()
+            contexts = tuple(self._projections[state.position_id][3] for state in states)
+            connections = [self.journal._db, self.store._db]
+            if self._history_store is not None:
+                connections.append(self._history_store._db)
+            ledgers = []
+            for connection in connections:
+                tables = connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+                content = []
+                for name, schema in tables:
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    rows = sorted(repr(tuple(row)) for row in connection.execute("SELECT * FROM " + quoted))
+                    content.append((name, schema, rows))
+                ledgers.append(content)
+            digest = hashlib.sha256(repr((ledgers, self._active, self._control_busy)).encode()).hexdigest()
+            conflicts = tuple(sorted(
+                ["PROJECTION_CONFLICT" for state in states if state.conflicts]
+                + ["CREDIT_DECISION" for context in contexts
+                   if context.credit.decisions or context.history.decisions]))
+            return ApplicationMonitoringSummary(self.native_owned_requests(),
+                self.journal.list_commands(), states,
+                tuple(item for context in contexts for item in context.candidates),
+                tuple(item for context in contexts for item in context.credit.credits),
+                tuple(item for context in contexts for item in context.history.credits),
+                conflicts, digest)
 
     @property
     def receipt_session(self) -> BybitDemoAccountSession | None:

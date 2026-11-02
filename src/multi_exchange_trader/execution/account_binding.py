@@ -17,10 +17,11 @@ import hmac
 import math
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Self
+from typing import Literal, Self
 from uuid import uuid4
 
 import httpx
@@ -29,6 +30,9 @@ from ..account.bybit_readonly import BybitReadOnlyClient
 from ..account.config import allowed_host
 from .bybit_native import build_demo_exec_config
 from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
+from .monitoring_budget import MonitoringReadBudget
+from .monitoring_models import MonitoringReceiptView, MonitoringStatus, MonitoringTarget
+from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
 
 _PERMISSIONS = {
@@ -114,6 +118,18 @@ class _HistoryReceiptSlot:
     view: HistoryReceiptView | None = None
 
 
+@dataclass(frozen=True, repr=False)
+class _MonitoringSlot:
+    binding: AuthenticatedAccountBinding
+    target: MonitoringTarget
+    fingerprint: str
+    phase: Literal["PRE", "POST"]
+    generation: object
+    started_at: datetime
+    started_mono: float
+    view: MonitoringReceiptView | None = None
+
+
 def _uid(value: object, *, allow_zero: bool = False) -> str:
     if ((type(value) is not str or re.fullmatch(r"[1-9][0-9]{0,19}", value) is None)
             and not (allow_zero and value == "0")):
@@ -184,27 +200,73 @@ class BybitDemoAccountSession:
         self._history_binding: AuthenticatedAccountBinding | None = None
         self._history_binding_reference = ""
         self._history_last_clock: tuple[datetime, float] | None = None
+        self._attested: tuple[AuthenticatedAccountBinding, str, str, bool] | None = None
+        self._credential_client = self._client
+        self._credential_pair = self._api_key, self._api_secret
+        self._binding_last_clock: tuple[datetime, float] | None = None
+        self._binding_freshness_revoked = False
+        self._monitoring_receipts: dict[object, _MonitoringSlot] = {}
+        self._monitoring_generation = object()
+        self._monitoring_last_clock: tuple[datetime, float] | None = None
 
     def __repr__(self) -> str:
         return "BybitDemoAccountSession(environment=DEMO, credentials=REDACTED)"
 
     def _guard(self) -> None:
-        if (self._closed or type(self._client) is not BybitReadOnlyClient
+        if (self._closed or (self._api_key, self._api_secret) != self._credential_pair
+                or self._client is not self._credential_client or type(self._client) is not BybitReadOnlyClient
                 or self._client.environment != "demo"
                 or self._client.base_url != allowed_host("demo")
                 or self._client._api_key != self._api_key
                 or self._client._api_secret != self._api_secret):
             self._binding = None
             self._identity = None
+            self._attested = None
             self._revoke_history_receipts()
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
 
     def _revoke_history_receipts(self) -> None:
+        self._revoke_monitoring_receipts()
         self._history_receipts.clear()
         self._history_generation = object()
         self._history_binding = None
         self._history_binding_reference = ""
         self._history_last_clock = None
+
+    def _revoke_monitoring_receipts(self) -> None:
+        self._monitoring_receipts.clear()
+        self._monitoring_generation = object()
+        self._monitoring_last_clock = None
+
+    def _prune_monitoring_receipts(self) -> tuple[datetime, float]:
+        try:
+            now, mono = _utc(self._clock()), self._mono()
+            prior = self._monitoring_last_clock
+            if prior is not None and (now < prior[0] or mono < prior[1]):
+                raise AccountBindingError("MONITORING_CLOCK_INVALID")
+        except Exception:  # noqa: BLE001 - fixed codes prevent credential/provider disclosure.
+            self._revoke_monitoring_receipts()
+            self._attested = None
+            raise AccountBindingError("MONITORING_CLOCK_INVALID") from None
+        self._monitoring_last_clock = now, mono
+        ttl = min(self._max_age, timedelta(seconds=30))
+        for key, slot in tuple(self._monitoring_receipts.items()):
+            valid = (slot.generation is self._monitoring_generation
+                     and timedelta(0) <= now - slot.started_at <= ttl
+                     and 0 <= mono - slot.started_mono <= ttl.total_seconds())
+            if slot.view is not None:
+                valid = valid and all(timedelta(0) <= now - _server_time(stamp) <= ttl
+                                      for stamp in slot.view.observation.response_times_ms)
+            if not valid:
+                self._monitoring_receipts.pop(key, None)
+        return now, mono
+
+    @contextmanager
+    def _monitoring_operation(self, budget: MonitoringReadBudget) -> Iterator[None]:
+        """Worker's shared scope spans refresh, PRE, native startup and POST."""
+        self._guard()
+        with self._client._monitoring_operation(budget):
+            yield
 
     def _prune_history_receipts(self) -> tuple[datetime, float]:
         """Prune expired pending/issued slots without evicting live handles."""
@@ -252,6 +314,7 @@ class BybitDemoAccountSession:
         """
         async with self._refresh_lock:
             self._revoke_history_receipts()
+            self._attested = None
             self._binding = None
             self._identity = None
             self._guard()
@@ -294,7 +357,112 @@ class BybitDemoAccountSession:
                 raise AccountBindingError("ACCOUNT_AUTHENTICATION_FAILED") from None
             self._binding = object.__new__(AuthenticatedAccountBinding)
             self._identity, self._issued_mono = identity, mono
+            self._binding_last_clock = now, mono
+            self._binding_freshness_revoked = False
+            self._attested = self._binding, uid, parent, expected_is_master
             return self._binding
+
+    async def refresh_monitoring_binding(self, prior_binding: AuthenticatedAccountBinding, *,
+                                         scope: ProtectionScope) -> AuthenticatedAccountBinding:
+        self._guard()
+        attested = self._attested
+        if (attested is None or prior_binding is not attested[0]
+                or type(prior_binding) is not AuthenticatedAccountBinding
+                or type(scope) is not ProtectionScope or scope != ProtectionScope(attested[1], "DEMO")
+                or self._transport_injected):
+            raise AccountBindingError("MONITORING_PRIOR_ATTESTATION_REQUIRED")
+        return await self.authenticate(expected_uid=attested[1], expected_parent_uid=attested[2],
+                                       expected_is_master=attested[3])
+
+    def configure_native_monitoring(self, binding: AuthenticatedAccountBinding, *,
+                                    scope: ProtectionScope, install: Callable[[object], None]) -> None:
+        self.require_observation_binding(binding, scope=scope)
+        try:
+            config = build_demo_exec_config(api_key=self._api_key, api_secret=self._api_secret)
+            self.require_observation_binding(binding, scope=scope)
+            install(config)
+        except Exception:  # noqa: BLE001 - fixed codes prevent credential/provider disclosure.
+            failure = AccountBindingError("ACCOUNT_NATIVE_CONFIGURATION_FAILED")
+        else:
+            return
+        raise failure from None
+
+    async def read_monitoring_receipt(self, binding: AuthenticatedAccountBinding, *,
+                                      target: MonitoringTarget,
+                                      phase: Literal["PRE", "POST"]) -> AuthenticatedMonitoringReceipt:
+        from .monitoring_readback import BybitMonitoringReader
+        from .monitoring_reconciliation import compare_restored_state, require_current_target
+
+        if type(target) is not MonitoringTarget:
+            raise AccountBindingError("MONITORING_TARGET_REQUIRED")
+        now, mono = self._prune_monitoring_receipts()
+        self.require_observation_binding(binding, scope=target.scope)
+        require_current_target(target, self, phase)
+        if len(self._monitoring_receipts) >= 16:
+            raise AccountBindingError("MONITORING_RECEIPT_CAPACITY")
+        pending = object()
+        slot = _MonitoringSlot(binding, target, target.fingerprint, phase,
+                               self._monitoring_generation, now, mono)
+        self._monitoring_receipts[pending] = slot
+        receipt: AuthenticatedMonitoringReceipt | None = None
+
+        def guard() -> None:
+            self._prune_monitoring_receipts()
+            self.require_observation_binding(binding, scope=target.scope)
+            require_current_target(target, self, phase)
+            if (self._monitoring_receipts.get(pending) is not slot
+                    or slot.generation is not self._monitoring_generation):
+                raise AccountBindingError("MONITORING_RECEIPT_REVOKED")
+
+        try:
+            observation = await BybitMonitoringReader(self, binding, target=target, guard=guard).read()
+            guard()
+            assessment = compare_restored_state(target, observation)
+            if assessment.status is MonitoringStatus.BLOCKED:
+                raise AccountBindingError("MONITORING_STATE_MISMATCH")
+            view = MonitoringReceiptView(observation, assessment, slot.fingerprint, phase)
+            receipt = object.__new__(AuthenticatedMonitoringReceipt)
+            self._monitoring_receipts.pop(pending)
+            self._monitoring_receipts[receipt] = _MonitoringSlot(binding, target, slot.fingerprint,
+                phase, slot.generation, now, mono, view)
+            self.require_monitoring_receipt(receipt, binding=binding, target=target, phase=phase)
+            return receipt
+        except Exception:  # noqa: BLE001 - fixed codes prevent credential/provider disclosure.
+            if receipt is not None:
+                self._monitoring_receipts.pop(receipt, None)
+        finally:
+            self._monitoring_receipts.pop(pending, None)
+        raise AccountBindingError("MONITORING_READ_FAILED") from None
+
+    def require_monitoring_receipt(self, receipt: AuthenticatedMonitoringReceipt, *,
+                                   binding: AuthenticatedAccountBinding, target: MonitoringTarget,
+                                   phase: Literal["PRE", "POST"]) -> MonitoringReceiptView:
+        from .monitoring_reconciliation import require_current_target
+
+        if type(target) is not MonitoringTarget:
+            raise AccountBindingError("MONITORING_TARGET_REQUIRED")
+        self._prune_monitoring_receipts()
+        self.require_observation_binding(binding, scope=target.scope)
+        require_current_target(target, self, phase)
+        if type(receipt) is not AuthenticatedMonitoringReceipt:
+            raise AccountBindingError("AUTHENTICATED_MONITORING_RECEIPT_REQUIRED")
+        slot = self._monitoring_receipts.get(receipt)
+        if (slot is None or slot.view is None or slot.binding is not binding
+                or slot.target is not target or slot.fingerprint != target.fingerprint
+                or slot.phase != phase or slot.generation is not self._monitoring_generation):
+            raise AccountBindingError("AUTHENTICATED_MONITORING_RECEIPT_REQUIRED")
+        return slot.view
+
+    def consume_monitoring_receipt(self, receipt: AuthenticatedMonitoringReceipt, *,
+                                   binding: AuthenticatedAccountBinding, target: MonitoringTarget,
+                                   phase: Literal["PRE", "POST"]) -> MonitoringReceiptView:
+        view = self.require_monitoring_receipt(receipt, binding=binding, target=target, phase=phase)
+        self._monitoring_receipts.pop(receipt)
+        return view
+
+    def discard_monitoring_receipt(self, receipt: AuthenticatedMonitoringReceipt) -> None:
+        if type(receipt) is AuthenticatedMonitoringReceipt:
+            self._monitoring_receipts.pop(receipt, None)
 
     def require_binding(self, binding: AuthenticatedAccountBinding, *,
                         scope: ProtectionScope) -> BybitAccountIdentity:
@@ -306,11 +474,23 @@ class BybitDemoAccountSession:
         identity = self._identity
         if type(scope) is not ProtectionScope or scope != identity.scope:
             raise AccountBindingError("AUTHENTICATED_ACCOUNT_SCOPE_MISMATCH")
-        now = _utc(self._clock())
-        self._fresh(identity.observed_at, now)
-        self._fresh(identity.server_observed_at, now)
-        if not 0 <= self._mono() - self._issued_mono <= self._max_age.total_seconds():
-            raise AccountBindingError("ACCOUNT_BINDING_STALE")
+        try:
+            now, mono = _utc(self._clock()), self._mono()
+            prior = self._binding_last_clock
+            if prior is not None and (now < prior[0] or mono < prior[1]):
+                self._attested = None
+                raise AccountBindingError("ACCOUNT_BINDING_CLOCK_INVALID")
+            self._binding_last_clock = now, mono
+            if self._binding_freshness_revoked:
+                raise AccountBindingError("ACCOUNT_BINDING_STALE")
+            self._fresh(identity.observed_at, now)
+            self._fresh(identity.server_observed_at, now)
+            if not 0 <= mono - self._issued_mono <= self._max_age.total_seconds():
+                raise AccountBindingError("ACCOUNT_BINDING_STALE")
+        except Exception:  # noqa: BLE001 - revoke before reporting a fixed freshness code.
+            self._binding_freshness_revoked = True
+            self._revoke_monitoring_receipts()
+            raise AccountBindingError("ACCOUNT_BINDING_STALE") from None
         return identity
 
     def require_execution_binding(self, binding: AuthenticatedAccountBinding, *,
@@ -425,6 +605,7 @@ class BybitDemoAccountSession:
         self._binding = None
         self._identity = None
         self._closed = True
+        self._attested = None
         try:
             await self._client.aclose()
         except Exception:  # noqa: BLE001 - transport error may contain credentials.
