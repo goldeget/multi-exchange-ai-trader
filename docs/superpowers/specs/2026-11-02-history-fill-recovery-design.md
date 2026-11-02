@@ -1,5 +1,10 @@
 # History-only owned execution recovery
 
+## CURRENT IMPLEMENTATION STATUS (2026-11-02)
+
+Local code and synthetic/offline proof implement separate historical credit/replay and the explicit worker recovery route. Task1 and Task2 passed their task-scoped independent reviews; Task3 independent review, whole-branch review and exact final-source CI remain pending. Main merge/readback and main push CI are separate later gates. No actual authenticated provider issuance, DEMO execution, complete ledger, TP/SL qualification or PC-off hosting has been verified; runtime remains BLOCKED and policy STOPPED. Backup manifest v3 and runtime summary V4 are distinct formats.
+
+
 Accepted base: `abc47d7304e8ff4e238b25e0edfef009a78bfbec`, tree `127a2c129c43cbd0ad8014be0fe333eeeda249d2`. User authorizes this feature's implementation, independent review, verification, and main merge. This is the next bounded development unit, not a product-completion or operating approval.
 
 ## Intent and scope
@@ -42,6 +47,10 @@ Recovery consumes ONLY normalized rows accepted by the unchanged history parser 
 History-first then native: retain genuine late native quarantine, no accounting on arrival. Existing corroborate_execution compares a fresh exact receipt against that candidate AND the historical guard; exact match appends NativeHistoryResolution with no second credit. It resolves only that candidate's corroboration marker when all candidates for the order are resolved; unrelated conflicts remain. Mismatch appends sourced conflict, preserving the historical credit. Source-distinct variants remain evidence; never resolve an inconsistent variant by matching a different one.
 
 Native-first then recovery: recognize the prior native guard and use its real existing candidate through existing corroboration. Exact match is DUPLICATE and contradiction is persisted; translate the returned result to the history result shape. Never create a historical credit for that guard. If prior credits/owned command linkage are malformed, fail closed.
+
+## Legacy native-only replay compatibility
+
+Pre-existing native-only V3 ExecutionCorroborationConflict -> CorroboratedExecutionCredit references retain their original data-only semantics: exact prior type, guard/account/instrument and prior inbox position against that prior candidate's own position are checked without retroactively imposing new journal linkage. This preserves old record fields, hashes and meaning, grants no authority and stays BLOCKED; placeholder test fixtures are not evidence of actual operator history. Every NEW historical credit/decision/resolution replay and EVERY live prior-credit use verifies immutable journal/request/key/hash linkage as applicable.
 
 ## Closed durable records and replay
 

@@ -26,6 +26,7 @@ class SyntheticSession:
     wall: list[datetime]
     mono: list[float]
     rows: list[dict[str, Any]] = field(default_factory=list)
+    order_rows: list[dict[str, Any]] = field(default_factory=list)
     configured: bool = False
     block: bool = False
     entered: asyncio.Event = field(default_factory=asyncio.Event)
@@ -64,7 +65,8 @@ def synthetic_session(scope: ProtectionScope, now: datetime, *,
         paths = {"/v5/execution/list", "/v5/order/history", "/v5/account/transaction-log"}
         if path not in paths:
             raise AssertionError("UNCONFIGURED_SYNTHETIC_PATH")
-        rows = list(core.rows) if path == "/v5/execution/list" else []
+        rows = (list(core.rows) if path == "/v5/execution/list" else
+                list(core.order_rows) if path == "/v5/order/history" else [])
         return {"category": "linear", "list": rows, "nextPageCursor": ""}, int(
             core.wall[0].timestamp() * 1000)
 

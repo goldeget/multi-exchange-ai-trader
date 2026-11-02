@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from functools import wraps
@@ -21,11 +22,16 @@ from typing import Any, Concatenate
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
 from . import modes
-from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
+from .account_binding import (
+    AuthenticatedAccountBinding,
+    BybitDemoAccountSession,
+)
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
 from .execution_credit import ExecutionCreditResult, candidate_identity
 from .history import BybitHistoryReader, HistorySnapshot, HistoryWindow
 from .history_coverage import IngestionReceipt
+from .history_receipts import AuthenticatedHistoryReceipt
+from .history_recovery import HistoryRecoveryResult
 from .history_store import HistoryStore
 from .journal import CommandJournal, CommandRecord, ExecutionScope
 from .native_controls import NativeLeverageControl
@@ -384,15 +390,12 @@ class ExecutionWorker:
         # No await or thread handoff between final guards and the atomic commit.
         return self._history_store.ingest(snapshot)
 
-    @_admitted
-    async def corroborate_native_fills(self, symbol: str, *, start_ms: int,
-                                       end_ms: int) -> tuple[ExecutionCreditResult, ...]:
-        """Explicit history-first accounting for persisted native candidates only.
-
-        The bounded receipt is discarded on every continuation. Each candidate
-        commits independently; an exception may follow earlier durable credits.
-        Neither an empty result nor a completed batch establishes flatness.
-        """
+    @asynccontextmanager
+    async def _history_accounting_receipt(self, symbol: str, *, start_ms: int,
+            end_ms: int) -> AsyncIterator[tuple[NativeExecutionRuntime,
+                AuthenticatedHistoryReceipt, AuthenticatedAccountBinding,
+                HistorySnapshot, IngestionReceipt, Callable[[], None]]]:
+        """One captured issuer, exact snapshot, and sticky owner fences for accounting."""
         runtime = self.runtime
         lock, scope = self._lock, self.scope
         session, binding, history = self.session, self.binding, self._history_store
@@ -429,6 +432,20 @@ class ExecutionWorker:
                 raise RuntimeBlocked("WORKER_HISTORY_REQUEST_MISMATCH")
             # No await or thread handoff between final guards and history commit.
             observation = history.ingest(snapshot)
+            def require_authority() -> None:
+                require_owner()
+                session.require_history_receipt(receipt, binding=binding, scope=scope)
+
+            yield runtime, receipt, binding, snapshot, observation, require_authority
+        finally:
+            session.discard_history_receipt(receipt)
+
+    @_admitted
+    async def corroborate_native_fills(self, symbol: str, *, start_ms: int,
+                                       end_ms: int) -> tuple[ExecutionCreditResult, ...]:
+        """Explicit accounting for persisted native candidates; each commits independently."""
+        async with self._history_accounting_receipt(symbol, start_ms=start_ms,
+                end_ms=end_ms) as (runtime, receipt, binding, snapshot, observation, require_owner):
             execution_ids = {row.execution_id for row in snapshot.executions}
             candidates = sorted((candidate for candidate in runtime.persisted_candidates(symbol=symbol)
                 if (start_ms <= candidate.fill.ts_event_ns // 1_000_000 <= end_ms
@@ -436,13 +453,28 @@ class ExecutionWorker:
             results = []
             for candidate in candidates:
                 require_owner()
-                session.require_history_receipt(receipt, binding=binding, scope=scope)
                 results.append(runtime.corroborate_execution(receipt=receipt, binding=binding,
                     observation_key=observation.observation_key,
                     candidate_id=candidate_identity(candidate)))
             return tuple(results)
-        finally:
-            session.discard_history_receipt(receipt)
+
+    @_admitted
+    async def recover_history_fills(self, symbol: str, *, start_ms: int,
+                                    end_ms: int) -> tuple[HistoryRecoveryResult, ...]:
+        """Recover owned history rows in event order without inventing native evidence.
+
+        History and each execution commit separately. Failure may follow durable
+        earlier credits; neither an empty nor completed batch proves completeness.
+        """
+        async with self._history_accounting_receipt(symbol, start_ms=start_ms,
+                end_ms=end_ms) as (runtime, receipt, binding, snapshot, observation, require_owner):
+            results = []
+            for row in sorted(snapshot.executions,
+                    key=lambda row: (row.time_ms, row.execution_id, row.venue_order_id)):
+                require_owner()
+                results.append(runtime.recover_history_execution(receipt=receipt, binding=binding,
+                    observation_key=observation.observation_key, execution_id=row.execution_id))
+            return tuple(results)
 
     def realized_loss(self, history: HistorySnapshot, baseline: DailyCashBaseline) -> DailyRealizedLoss:
         _ = self.runtime
