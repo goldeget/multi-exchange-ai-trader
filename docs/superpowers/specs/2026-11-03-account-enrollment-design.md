@@ -41,6 +41,8 @@ Candidate is an opaque exact session/generation-owned, single-use in-memory hand
 
 Explicit adopt is a separate named operation in the same live process. Delegated root may invoke it without a new routine user prompt. No default observe/status/start acceptance. Before and after acquiring the CAS lock, and immediately before publication, recheck exact owner/generation/target/revision/freshness. Consume before possible publication. Guarded private store publication must only permit pending-to-adopted transition; failure/ambiguous write cannot reuse candidate. The file is local trusted configuration; Python reflection/same-user adversary isolation or rollback prevention is not claimed.
 
+Repeated guards have no external or authority-changing effects. They may retain private nondecreasing wall/monotonic sample watermarks solely to reject an observed reversal between checks. Such bookkeeping never renews the original30sTTL, changes identity/target/generation, consumes again, persists data or activates anything. VALID-to-ADOPTING consumption and final retirement remain outside the repeated guard.
+
 ## Startup and compatibility
 
 Retain one private immutable expectation/provenance context for the worker session and refresh closures. Resolve profile before credentials/network. Unknown policy/pending/corrupt source fails without fallback. Strict-only consumers reject adopted provenance; the reviewed monitor consumer explicitly supports the named policy. A new session compares fresh metadata to the saved tuple using existing authenticate; drift revokes and blocks without modifying profile. Key rotation with identical UID/tuple may work only after new fresh authentication; file/env changes never hot-switch a running context.

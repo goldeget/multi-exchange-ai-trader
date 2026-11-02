@@ -170,6 +170,27 @@ def _permissions(value: object) -> tuple[tuple[str, tuple[str, ...]], ...]:
     return tuple(sorted(result))
 
 
+def _parse_account_metadata(result: dict[str, object], *, api_key: str, api_secret: str,
+                            expected_uid: str, observed_at: datetime,
+                            server_observed_at: datetime,
+                            transport_injected: bool) -> BybitAccountIdentity:
+    """Strict shared observation parser; it neither authenticates nor issues authority."""
+    echoed_key = result.get("apiKey")
+    user_id, master, read_only = result.get("userID"), result.get("isMaster"), result.get("readOnly")
+    parent = _uid(result.get("parentUid"), allow_zero=True)
+    if (type(echoed_key) is not str
+            or not hmac.compare_digest(echoed_key.encode(), api_key.encode())
+            or result.get("secret") != "" or type(user_id) is not int
+            or user_id <= 0 or str(user_id) != expected_uid or type(master) is not bool
+            or parent == expected_uid or type(read_only) is not int or read_only not in (0, 1)):
+        raise AccountBindingError("AUTHENTICATED_ACCOUNT_IDENTITY_MISMATCH")
+    identity = BybitAccountIdentity(expected_uid, parent, master, read_only == 1,
+        _permissions(result.get("permissions")), observed_at, server_observed_at, transport_injected)
+    if any(secret in repr(identity) for secret in (api_key, api_secret)):
+        raise AccountBindingError("ACCOUNT_PUBLIC_IDENTITY_REDACTION_REQUIRED")
+    return identity
+
+
 class BybitDemoAccountSession:
     """Own explicit credentials, reads and native configuration for one DEMO UID.
 
@@ -312,10 +333,13 @@ class BybitDemoAccountSession:
     async def authenticate(self, *, expected_uid: str,
                            expected_parent_uid: str,
                            expected_is_master: bool) -> AuthenticatedAccountBinding:
-        """Attest UID, parent and master independently; every attempt revokes prior proof.
+        """Compare all three explicit expectations; every attempt revokes prior proof.
 
         DEMO can return isMaster=False with parentUid="0". Never derive either
         expected field from the other or use the returned value as its own expectation.
+        High-level callers retain their source context: independently confirmed
+        expectations, or explicitly enrolled uid-anchored-adoption-v1 configuration.
+        The latter is provider-observed/operator-adopted, not independent evidence.
         """
         async with self._refresh_lock:
             self._revoke_history_receipts()
@@ -344,20 +368,11 @@ class BybitDemoAccountSession:
                 self._fresh(observed, now)
                 if not 0 <= mono - started <= self._max_age.total_seconds():
                     raise AccountBindingError("ACCOUNT_BINDING_STALE")
-                echoed_key = result.get("apiKey")
-                user_id, master, read_only = (result.get("userID"), result.get("isMaster"),
-                                              result.get("readOnly"))
-                if (type(echoed_key) is not str
-                        or not hmac.compare_digest(echoed_key.encode(), self._api_key.encode())
-                        or result.get("secret") != "" or type(user_id) is not int
-                        or user_id <= 0 or str(user_id) != uid or type(master) is not bool
-                        or master != expected_is_master or result.get("parentUid") != parent
-                        or parent == uid or type(read_only) is not int or read_only not in (0, 1)):
+                identity = _parse_account_metadata(result, api_key=self._api_key,
+                    api_secret=self._api_secret, expected_uid=uid, observed_at=now,
+                    server_observed_at=observed, transport_injected=self._transport_injected)
+                if identity.is_master != expected_is_master or identity.parent_uid != parent:
                     raise AccountBindingError("AUTHENTICATED_ACCOUNT_IDENTITY_MISMATCH")
-                identity = BybitAccountIdentity(uid, parent, master, read_only == 1,
-                    _permissions(result.get("permissions")), now, observed, self._transport_injected)
-                if any(secret in repr(identity) for secret in (self._api_key, self._api_secret)):
-                    raise AccountBindingError("ACCOUNT_PUBLIC_IDENTITY_REDACTION_REQUIRED")
             except Exception:  # noqa: BLE001 - no provider error/body/credential can escape.
                 raise AccountBindingError("ACCOUNT_AUTHENTICATION_FAILED") from None
             self._binding = object.__new__(AuthenticatedAccountBinding)

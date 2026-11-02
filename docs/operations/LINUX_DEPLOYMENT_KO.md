@@ -48,6 +48,19 @@ systemd 격리 내 읽기 권한을 검토한다. 기존 경로나 권한을 자
 
 ## 재현 가능한 소스·빌드 준비
 
+선택한 DEMO 기대 신원은 별도 [ACCOUNT_PROFILES_KO.md](ACCOUNT_PROFILES_KO.md)의
+프로필에 보관할 수 있다. 먼저 UID를 고정하고, 이름이 명시된 `enroll-observed` 명령에서
+`uid-anchored-adoption-v1` 정책과 `--adopt-observed-relationship` 의도를 함께 지정한다.
+이는 제공자 관찰 관계의 명시적 채택이며 부모·마스터의 독립 확인이 아니다. 등록·채택은
+이 배포 템플릿이나 서비스를 변경하지 않는다.
+
+명시적인 Linux `--run-monitor`는 완전한 기존 UID/parent/master 인수 또는 저장된 선택
+프로필을 사용한다. 부분·혼합 인수는 거부한다. 완전한 기존 인수는 프로필 I/O를 우회하며
+`--profile-store` 위치도 무시한다. 저장 프로필 선택은 키보다 먼저 검증되고 새 시작마다
+세 필드에 대한 새 인증을 요구한다. 불변의 신원·출처 문맥은 refresh까지 유지되며 파일
+수정으로 실행 중 계정을 전환하지 않는다. native·lease·권한·symbol·장부·정책 DB 조건과
+배포 템플릿의 DEMO 강제 비활성화는 그대로다. 프로필도 장부 백업 manifest에 포함하지 않는다.
+
 대상은 Ubuntu 24.04 x86_64, Python **3.12**, uv **0.12.23**, Node **24** 계열이다. Python 패키지는 `uv.lock`, 웹 패키지는 `apps/web/package-lock.json`을 그대로 사용한다. NautilusTrader **1.231.0**, fsspec **2026.6.0** 보안 override를 유지한다. OS·Node·Python의 실제 패치 버전과 설치 패키지 버전도 설치 기록에 남긴다. `uv sync --upgrade`, 잠금 파일 재생성, 자동 배포·자동 업데이트를 하지 않는다.
 
 설치자가 출처와 SHA를 검토한 Git clone 또는 검증한 Git bundle clone을 **최종 경로 `/opt/trader/app`에** 준비한다. 다른 위치에서 만든 가상환경을 복사하면 절대경로가 깨질 수 있다. Git archive/소스 ZIP만 풀어 `.git`을 없애지 않는다. 원본 commit, Git 상태, 잠금 파일과 빌드 결과 해시를 기록해야 네이티브 자격 검증과 소스 출처를 재현할 수 있다. 프로젝트 밖을 가리키는 worktree의 `.git` 파일도 독립 배포본으로 사용하지 않는다. 자격 증명이 들어간 Git remote URL을 쓰지 않는다.

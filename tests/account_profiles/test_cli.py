@@ -5,6 +5,7 @@ import json
 import socket
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -57,3 +58,50 @@ def test_explicit_cli_safe_pending_status_and_errors(
         output = capsys.readouterr()
         assert UID not in output.out + output.err
         assert "secret" not in output.out + output.err
+
+
+def test_enrollment_cli_requires_named_policy_and_intent_before_keys(
+    cli: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from multi_exchange_trader.credential_resolution import CredentialResolver
+
+    monkeypatch.setattr(CredentialResolver, "from_environment",
+                        lambda **k: pytest.fail("keys before intent/profile"))
+    prefix = ["--profile-store", str(tmp_path / "profile.json"), "enroll-observed"]
+    for extra in ([], ["--policy", "uid-anchored-adoption-v1"],
+                  ["--policy", "wrong-private-policy", "--adopt-observed-relationship"]):
+        assert cli.main(prefix + extra) == 1
+        assert "private" not in capsys.readouterr().err
+
+
+def test_enrollment_cli_performs_separate_observe_then_explicit_adopt_in_alive_session(
+    cli: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from multi_exchange_trader.account_enrollment import BybitDemoEnrollmentSession
+    from multi_exchange_trader.account_profiles import AccountProfileResult
+
+    calls: list[str] = []
+    handle = object()
+
+    class Owner:
+        async def observe(self) -> object:
+            calls.append("observe")
+            return handle
+
+        def adopt(self, candidate: object, **kwargs: Any) -> AccountProfileResult:
+            assert candidate is handle
+            assert kwargs == {"policy": "uid-anchored-adoption-v1", "adopt_observed_relationship": True}
+            calls.append("adopt")
+            return AccountProfileResult(2, "83a05b72-f883-451a-9e58-639bd9909912", "COMPLETE",
+                                        "PROVIDER_OBSERVED_OPERATOR_ADOPTED")
+
+        async def aclose(self) -> None:
+            calls.append("close")
+
+    monkeypatch.setattr(BybitDemoEnrollmentSession, "from_environment", lambda **k: Owner())
+    assert cli.main(["--profile-store", str(tmp_path / "profile.json"), "enroll-observed",
+        "--policy", "uid-anchored-adoption-v1", "--adopt-observed-relationship"]) == 0
+    assert calls == ["observe", "adopt", "close"]
+    assert json.loads(capsys.readouterr().out)["state"] == "COMPLETE"
