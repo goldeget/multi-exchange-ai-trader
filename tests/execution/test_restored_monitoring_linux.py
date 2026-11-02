@@ -325,8 +325,43 @@ async def test_pending_applied_duplicates_and_original_field_guards(tmp_path, mo
         await admit(h)
         first = await h.io.ledger.execution("batch-first", "0.400")
         second = await h.io.ledger.execution("batch-second", "0.600")
-        # One raw batch: native engine can advance twice before the app callback.
-        order = await deliver(h, [first, copy.deepcopy(first), second, copy.deepcopy(second)])
+        # Production waits for native + app ACK per row. Duplicates in this
+        # whole batch are evaluated after the earlier original is applied.
+        # Queue another raw duplicate at the observable first-native/app gap;
+        # this proves pending original + queued INPUT, not pending-ledger dispatch.
+        windows = []
+        bus = h.assembly.node.kernel.msgbus
+        topic = f"events.order.{h.assembly.strategy.id}"
+
+        def observe_pending_original(event):
+            if type(event) is not module("model.events.order").OrderFilled:
+                return
+            reports = h.assembly.execution_client._monitor_reports
+            pending = tuple(sorted(key[1] for key in reports._ledger._pending))
+            applied = tuple(sorted(key[1] for key in reports._ledger._applied))
+            expected = reports._expected.get(id(event))
+            unacknowledged = expected is not None and not expected["future"].done()
+            before = h.assembly.monitoring_stamp()
+            if str(event.trade_id) == "batch-first":
+                h.io.wires[-1].emit("execution.linear", [copy.deepcopy(first)])
+            after = h.assembly.monitoring_stamp()
+            windows.append((str(event.trade_id), pending, applied, unacknowledged,
+                len(h.worker.runtime.monitoring_state().candidates),
+                h.assembly.node.cache.order(h.order_id).filled_qty.as_decimal(),
+                after.received - before.received, after.received > after.delivered))
+
+        bus.subscribe(topic=topic, handler=observe_pending_original)
+        try:
+            order = await deliver(h, [first, copy.deepcopy(first), second, copy.deepcopy(second)])
+        finally:
+            bus.unsubscribe(topic=topic, handler=observe_pending_original)
+        assert windows == [
+            ("batch-first", ("batch-first",), (), True, 0, Decimal("0.4"), 1, True),
+            ("batch-second", ("batch-second",), ("batch-first",), True, 1, Decimal(1), 0, True),
+        ]
+        stamp = h.assembly.monitoring_stamp()
+        assert stamp.received == stamp.delivered
+        assert not h.assembly.execution_client._monitor_reports._ledger._pending
         assert order.filled_qty.as_decimal() == Decimal(1)
         assert [str(event.trade_id) for event in order.events if hasattr(event, "trade_id")] == ["batch-first", "batch-second"]
         await deliver(h, [first, second])
@@ -371,6 +406,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
         second = await h.io.ledger.execution("ahead-second", "0.600")
         wire = h.io.wires[-1]
         wire.emit("order.linear", [copy.deepcopy(h.io.ledger.order)])
+        # Whole raw batch; the real dispatcher, not this test, serializes ACKs.
         wire.emit("execution.linear", [first, first, second])
         await h.assembly.monitoring_barrier()
         assert h.assembly.node.cache.order(h.order_id).is_closed
@@ -508,6 +544,9 @@ async def test_pre_post_mutation_and_final_delivery_barrier(tmp_path, monkeypatc
                     stamp = h.assembly.monitoring_stamp()
                     assert stamp.received == stamp.delivered
                     if mutation == "fill":
+                        # Each genuine row has its own native-before-app window;
+                        # serialization deliberately prevents multiple native rows
+                        # advancing ahead of the first application's ACK.
                         assert windows == [("CONNECTING", 0, Decimal("0.4")), ("CONNECTING", 1, Decimal(1))]
             finally:
                 bus.unsubscribe(topic=topic, handler=observe_native_before_app)

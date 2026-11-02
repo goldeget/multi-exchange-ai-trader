@@ -489,6 +489,14 @@ terminal acknowledgements, repayment or reservation release. This is not
 whole-account reconciliation, a complete venue event replay, a valuation proof,
 live Bybit acceptance or permission to trade in DEMO or production.
 
+Execution rows are applied serially: each row waits for native completion and
+application acknowledgement before the next row is dispatched. Whole batches and
+duplicate input may queue during that wait; duplicate evaluation then observes the
+already-applied original. This limits throughput to per-row completion. Linux
+qualification observes queued input and each native-before-app window; defensive
+pending-ledger duplicate evaluation is separately unit-tested, not claimed as a
+reachable concurrent production dispatch path.
+
 Call `await worker.stop()` and wait for completion. Shutdown first retires
 admission, then waits for actual node/client/socket tasks and accepted callbacks.
 The monitor-only native post-stop wait is 0.05 seconds; actual residual/queue/drain
