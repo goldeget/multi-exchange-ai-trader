@@ -266,18 +266,23 @@ class NativeExecutionRuntime:
             request = self._request_for_state(record, matches[0])
             venues = self._known_venues(record.client_order_id, candidates)
             if self._history_store is not None:
-                if len(venues) > 16:
-                    raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-                for evidence in self._history_store.order_evidence(
-                        client_order_id=record.client_order_id, venue_order_ids=tuple(sorted(venues))):
-                    row, owned = evidence.record, request.owned
-                    if (row.client_order_id != owned.client_order_id
-                            or row.symbol + "-LINEAR.BYBIT" != owned.instrument_id
-                            or row.side != ("Buy" if owned.side == "BUY" else "Sell")
-                            or row.quantity != owned.quantity or row.reduce_only != owned.reduce_only
-                            or row.position_idx != 0):
+                while True:
+                    if len(venues) > 16:
                         raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-                    venues.add(row.venue_order_id)
+                    queried_venues = frozenset(venues)
+                    for evidence in self._history_store.order_evidence(
+                            client_order_id=record.client_order_id,
+                            venue_order_ids=tuple(sorted(queried_venues))):
+                        row, owned = evidence.record, request.owned
+                        if (evidence.conflict_keys or row.client_order_id != owned.client_order_id
+                                or row.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                                or row.side != ("Buy" if owned.side == "BUY" else "Sell")
+                                or row.quantity != owned.quantity or row.reduce_only != owned.reduce_only
+                                or row.position_idx != 0):
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        venues.add(row.venue_order_id)
+                    if venues == queried_venues:
+                        break
             if len(venues) > 1:
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
             result.append(NativeOwnedRequest(request, record.state, frozenset(venues)))

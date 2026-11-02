@@ -235,15 +235,9 @@ def test_history_order_evidence_allows_exact_client_only_lookup(tmp_path: Path) 
         assert store._db.total_changes == before
 
 
-@pytest.mark.parametrize("state", ["INITIALIZED", "ACCEPTED", "PENDING_CANCEL", "CANCELED"])
-async def test_original_native_state_is_restored_without_callbacks_or_ack(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
-) -> None:
+def add_original_native_order(h: Any, record: Any, state: str = "ACCEPTED") -> Any:
     from test_native_restart_codec import module
-    h = real_cache_boundary(tmp_path, monkeypatch)
-    await h.worker.start_passive()
-    record = await stage(h)
-    request = h.worker.runtime.native_owned_requests()[0].request
+    request = h.worker.runtime._request(record)
     ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
     uuid, events = module("core.uuid").UUID4, module("model.events.order")
     instrument_type = module("model.instruments").CryptoPerpetual
@@ -269,6 +263,17 @@ async def test_original_native_state_is_restored_without_callbacks_or_ack(
     cache.add_instrument(instrument)
     cache.add_order(native, client_id=ids.ClientId("BYBIT"))
     cache.build_index()
+    return native
+
+
+@pytest.mark.parametrize("state", ["INITIALIZED", "ACCEPTED", "PENDING_CANCEL", "CANCELED"])
+async def test_original_native_state_is_restored_without_callbacks_or_ack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    h = real_cache_boundary(tmp_path, monkeypatch)
+    await h.worker.start_passive()
+    record = await stage(h)
+    native = add_original_native_order(h, record, state)
     h.worker.runtime.journal.claim("entry")
     original = native.to_dict()
     original_events = [e.to_dict(e) for e in native.events]
@@ -331,3 +336,62 @@ async def test_target_instrument_inventory_must_be_empty_before_seal_consumption
         await h.worker.start_passive()
     assert (marker.read_bytes() if marker.exists() else None) == prior
     assert h.trace == ["dispose"] and h.worker._runtime is None
+
+
+@pytest.mark.parametrize("variant", ["recorded-conflict", "changed-client", "missing-client"])
+async def test_learned_history_venue_closes_all_variants_before_capture_and_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str,
+) -> None:
+    from test_history_store import order, snapshot
+
+    from multi_exchange_trader.execution.journal import CommandJournal, ExecutionScope
+    from multi_exchange_trader.execution.native_restart import NativeRestartCoordinator
+    h = real_cache_boundary(tmp_path, monkeypatch)
+    await h.worker.start_passive()
+    record = await stage(h)
+    native = add_original_native_order(h, record)
+    owned = h.worker.runtime._request(record).owned
+    assert not h.worker.runtime.native_owned_requests()[0].venue_order_ids
+    first = order(client_order_id=owned.client_order_id, venue_order_id="native-venue",
+        quantity=owned.quantity)
+    second = replace(first, client_order_id="" if variant == "missing-client" else "foreign-client",
+        updated_ms=first.updated_ms if variant == "recorded-conflict" else first.updated_ms + 1)
+    history = h.worker._history_store
+    history.ingest(replace(snapshot(orders=(first,)), scope=SCOPE))
+    history.ingest(replace(snapshot(snapshot_id="changed", orders=(second,)), scope=SCOPE))
+    evidence = history.order_evidence(client_order_id=owned.client_order_id, venue_order_ids=())
+    assert len(evidence) == 1
+    assert bool(evidence[0].conflict_keys) == (variant == "recorded-conflict")
+    assert len(history.order_evidence(client_order_id=owned.client_order_id,
+        venue_order_ids=("native-venue",))) == 2
+    marker = tmp_path / "native-restart.json"
+    with pytest.raises(RuntimeBlocked, match="DURABLE_IMMUTABLE_MAPPING_REQUIRED"):
+        await h.worker.stop()
+    assert decode_document(marker.read_bytes())["state"] == "active"
+    assert h.worker._stopped and "dispose" in h.trace
+
+    # Synthetic matching sealed fixture retains an actual native order so only
+    # the omitted restrictive history evidence can cause this startup refusal.
+    coordinator = NativeRestartCoordinator(tmp_path, h.assembly, h.worker.scope,
+        h.worker.symbols, h.worker.trader_id)
+    from multi_exchange_trader.execution.native_recovery import OwnedCacheExpectation
+    from multi_exchange_trader.execution.native_restart_codec import capture_native_cache
+    request = h.assembly.bridge._requests[record.client_order_id]
+    owner = OwnedCacheExpectation(request, "BYBIT-UNIFIED", "WORKER-001",
+        "OwnedExecution-001", "native-venue", None)
+    payload = capture_native_cache(h.assembly.node.cache, identity=coordinator.identity,
+        owners=(owner,))
+    assert str(native.client_order_id) == owned.client_order_id
+    with CommandJournal(tmp_path / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        journal.claim("entry")
+        assert journal.get("entry").state is CommandState.SENDING
+    coordinator.store.seal(coordinator.identity, payload)
+    before = application_digest(tmp_path)
+    sealed = marker.read_bytes()
+    new = real_cache_boundary(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeBlocked, match="DURABLE_IMMUTABLE_MAPPING_REQUIRED"):
+        await new.worker.start_passive()
+    assert application_digest(tmp_path) == before and marker.read_bytes() == sealed
+    assert new.worker._runtime is None and new.trace == ["dispose"]
+    with CommandJournal(tmp_path / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        assert journal.get("entry").state is CommandState.SENDING
