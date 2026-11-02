@@ -218,6 +218,135 @@ async def test_corrupt_store_isolates_connections_from_unrelated_api(tmp_path: P
         assert value["ai"]["status"] == "INVALID_CONFIGURATION"
 
 
+@pytest.mark.parametrize("pair_failure", ["partial", "collision"])
+@pytest.mark.parametrize("model_contains_secret", [True, False])
+async def test_startup_ai_redacts_legacy_secret_after_bybit_pair_failure(
+    tmp_path: Path, pair_failure: str, model_contains_secret: bool,
+) -> None:
+    from multi_exchange_trader.api import create_app
+    from multi_exchange_trader.market_data.service import MarketDataService
+
+    fragment = "synthetic-legacy-secret-fragment"
+    source = tmp_path / "bybit.env"
+    values = LIVE | {"BYBIT_API_SECRET": fragment} | DEMO
+    if pair_failure == "partial":
+        values.pop("BYBIT_DEMO_API_SECRET")
+    else:
+        values["BYBIT_DEMO_API_KEY"] = values["BYBIT_API_KEY"]
+    source.write_text("\n".join(f"{name}={value}" for name, value in values.items()))
+    model = "vendor/" + fragment if model_contains_secret else AI["OPENROUTER_MODEL"]
+    store = saved(tmp_path, AI | {"OPENROUTER_MODEL": model})
+    context = resolver(store, {"BYBIT_ENV_FILE": str(source), "BYBIT_DEMO": "true"})
+    app = create_app(MarketDataService({}), credential_resolver=context)
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://localhost:8000"
+    ) as client:
+        assert app.state.bybit_account is None
+        assert app.state.bybit_practice is None
+        response = await client.get("/api/v1/connections/status")
+        assert response.status_code == 200
+        ai = response.json()["ai"]
+        if model_contains_secret:
+            assert ai["status"] == "INVALID_CONFIGURATION"
+            assert ai["model_id"] is None
+        else:
+            assert ai["status"] == "REGISTERED_UNVERIFIED"
+            assert ai["model_id"] == AI["OPENROUTER_MODEL"]
+        assert all(fragment not in value for value in ai.values() if isinstance(value, str))
+        assert (await client.get("/api/v1/health")).status_code == 200
+
+
+@pytest.mark.parametrize("pair_result", ["complete", "partial", "collision"])
+def test_ai_first_rechecks_captured_bybit_candidates_without_source_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pair_result: str,
+) -> None:
+    from multi_exchange_trader.ai.provider_config import load_ai_provider_config
+
+    fragment = "synthetic-later-read-secret"
+    source = tmp_path / "bybit.env"
+    values = LIVE | DEMO | {"BYBIT_API_SECRET": fragment}
+    if pair_result == "partial":
+        values.pop("BYBIT_DEMO_API_SECRET")
+    elif pair_result == "collision":
+        values["BYBIT_DEMO_API_KEY"] = values["BYBIT_API_KEY"]
+    source.write_text("\n".join(f"{name}={value}" for name, value in values.items()))
+    store = saved(tmp_path, AI | {"OPENROUTER_MODEL": "vendor/" + fragment})
+    context = resolver(store, {"BYBIT_ENV_FILE": str(source)})
+    reads = 0
+    original = Path.read_text
+
+    def counted(path: Path, *args: Any, **kwargs: Any) -> str:
+        nonlocal reads
+        if path == source:
+            reads += 1
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted)
+    # AI-only reads do not discover an unrelated Bybit file. This earlier object
+    # proves only the sources known then and cannot be changed retroactively.
+    first = load_ai_provider_config(resolver=context)
+    assert first.status == "REGISTERED_UNVERIFIED"
+    assert reads == 0
+    if pair_result == "complete":
+        assert context.bybit_pair("mainnet")[1] == fragment
+    else:
+        with pytest.raises(CredentialStoreError):
+            context.bybit_pair("mainnet")
+    assert reads == 1
+    source.write_text("\n".join(f"{name}={value}" for name, value in (LIVE | DEMO).items()))
+    for _ in range(2):
+        current = load_ai_provider_config(resolver=context)
+        assert current.status == "INVALID_CONFIGURATION"
+        assert current.model_id is None
+        assert fragment not in repr(current)
+    if pair_result == "complete":
+        assert context.bybit_pair("mainnet")[1] == fragment
+    else:
+        with pytest.raises(CredentialStoreError):
+            context.bybit_pair("mainnet")
+    assert reads == 1
+
+
+def test_failed_ai_cache_stays_redacted_after_late_bybit_capture(tmp_path: Path) -> None:
+    from multi_exchange_trader.ai.provider_config import load_ai_provider_config
+
+    fragment = "synthetic-error-path-secret"
+    source = tmp_path / "bybit.env"
+    source.write_text("\n".join(f"{name}={value}" for name, value in (
+        LIVE | {"BYBIT_API_SECRET": fragment, "BYBIT_DEMO_API_KEY": "partial-demo-key"}
+    ).items()))
+    context = resolver(None, AI | {"BYBIT_ENV_FILE": str(source),
+                                  "OPENROUTER_API_KEY": "invalid-synthetic-key",
+                                  "OPENROUTER_MODEL": "vendor/" + fragment})
+    first = load_ai_provider_config(resolver=context)
+    assert first.status == "INVALID_CONFIGURATION"
+    assert first.model_id is None
+    with pytest.raises(CredentialStoreError):
+        context.bybit_pair("mainnet")
+    source.unlink()
+    current = load_ai_provider_config(resolver=context)
+    assert current == first
+    assert current.model_id is None
+    assert fragment not in repr(current)
+
+
+def test_ai_redaction_retains_every_read_legacy_credential_candidate(tmp_path: Path) -> None:
+    from multi_exchange_trader.ai.provider_config import load_ai_provider_config
+
+    fragment = "synthetic-duplicate-secret-candidate"
+    source = tmp_path / "bybit.env"
+    source.write_text("\n".join(f"{name}={value}" for name, value in LIVE.items()) +
+                      "\nBYBIT_API_SECRET=" + fragment)
+    context = resolver(saved(tmp_path, AI | {"OPENROUTER_MODEL": "vendor/" + fragment}),
+                       {"BYBIT_ENV_FILE": str(source)})
+    # Legacy first-assignment selection stays unchanged, while every secret
+    # candidate already observed at that source boundary must stay private.
+    assert context.bybit_pair("mainnet")[1] == LIVE["BYBIT_API_SECRET"]
+    config = load_ai_provider_config(resolver=context)
+    assert config.status == "INVALID_CONFIGURATION"
+    assert config.model_id is None
+
+
 def test_saved_pair_reused_by_fresh_process_after_source_unavailable(tmp_path: Path) -> None:
     source = tmp_path / "source.env"
     source.write_text("\n".join(f"{key}={value}" for key, value in (LIVE | DEMO | AI).items()))

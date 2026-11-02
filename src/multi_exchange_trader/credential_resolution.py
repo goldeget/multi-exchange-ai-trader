@@ -62,6 +62,7 @@ class CredentialResolver:
         self._bybit: dict[str, tuple[str, str]] | None = None
         self._bybit_failure: CredentialStoreError | None = None
         self._bybit_flags: Mapping[str, str] = self._environ
+        self._legacy_bybit_candidates: frozenset[str] = frozenset()
         self._ai: Mapping[str, str] | None = None
         self._ai_failure: CredentialStoreError | None = None
 
@@ -88,6 +89,7 @@ class CredentialResolver:
         # Preserve the legacy explicit/default dotenv fallback without mutating
         # os.environ. Only absent namespaces consult it; pair selection is atomic.
         values: dict[str, str] = {}
+        candidates: set[str] = set()
         raw = self._environ.get("BYBIT_ENV_FILE", ".env").strip()
         if raw.lower() not in _DISABLED:
             try:
@@ -110,7 +112,12 @@ class CredentialResolver:
                     continue
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
                     value = value[1:-1]
+                if name in _BYBIT_NAMES and value:
+                    candidates.add(value)
                 values.setdefault(name, value)
+        # Candidates are source observations, not accepted credential pairs.
+        # Retain them even if later pair/collision validation fails closed.
+        self._legacy_bybit_candidates = frozenset(candidates)
         return values
 
     def _resolve_bybit(self) -> None:
@@ -175,11 +182,29 @@ class CredentialResolver:
             return True
         raise ValueError(f"Invalid boolean environment flag: {name}")
 
+    def _guard_captured_legacy_model(self, config: "AIProviderConfig") -> None:
+        if config.model_id and any(value in config.model_id
+                                   for value in self._legacy_bybit_candidates):
+            from .ai.provider_config import AIProviderConfig
+
+            raise InvalidAIConfiguration(AIProviderConfig(
+                config.provider, config.registered, "INVALID_CONFIGURATION"))
+
     def ai_values(self) -> Mapping[str, str]:
-        if self._ai_failure is not None:
-            raise self._ai_failure
         try:
-            return self._select_ai()
+            if self._ai_failure is not None:
+                if isinstance(self._ai_failure, InvalidAIConfiguration):
+                    self._guard_captured_legacy_model(self._ai_failure.config)
+                raise self._ai_failure
+            values = self._select_ai()
+            if self._legacy_bybit_candidates:
+                from .ai.provider_config import load_ai_provider_config
+
+                # Recheck a cached model after a later explicit Bybit source read.
+                # The private AI mapping has file fallbacks disabled; no reread or
+                # identity rotation is performed by this redaction check.
+                self._guard_captured_legacy_model(load_ai_provider_config(values))
+            return values
         except CredentialStoreError as exc:
             self._ai_failure = exc
             raise
