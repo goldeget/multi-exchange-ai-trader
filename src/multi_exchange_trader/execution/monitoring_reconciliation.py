@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from decimal import Decimal, localcontext
 from typing import TYPE_CHECKING, Any
+from weakref import WeakValueDictionary
 
 from .monitoring_models import (
     MonitoringAssessment,
@@ -31,6 +32,11 @@ _STATUS = {
     "CANCELED": "Cancelled",
     "REJECTED": "Rejected",
 }
+
+
+# Only a complete genuine capture registers an object. Public frozen dataclass
+# copies and caller-retained digest strings cannot attest comparison contents.
+_CAPTURED_TARGETS: WeakValueDictionary[int, MonitoringTarget] = WeakValueDictionary()
 
 
 def _candidate_matches(fill: object, venue: str, native: MonitoringExecution) -> bool:
@@ -373,7 +379,7 @@ def capture_monitoring_target(
         for order in native.orders
     ):
         raise MonitoringError("MONITORING_NATIVE_STATUS_UNSUPPORTED")
-    return MonitoringTarget(
+    target = MonitoringTarget(
         identity.scope,
         witness._symbols,
         restore_generation_id,
@@ -383,9 +389,13 @@ def capture_monitoring_target(
         stream_stamp,
         witness,
     )
+    _CAPTURED_TARGETS[id(target)] = target
+    return target
 
 
 def require_current_target(target: MonitoringTarget, session: object, phase: str) -> None:
+    if type(target) is not MonitoringTarget or _CAPTURED_TARGETS.get(id(target)) is not target:
+        raise MonitoringError("MONITORING_CAPTURED_TARGET_REQUIRED")
     if (
         type(target) is not MonitoringTarget
         or type(target._witness) is not MonitoringWitness
@@ -410,5 +420,9 @@ def require_current_target(target: MonitoringTarget, session: object, phase: str
         witness=witness,
         stream_stamp=stamp,
     )
-    if current.fingerprint != target.fingerprint:
+    if (
+        current.fingerprint != target.fingerprint
+        or current.native != target.native
+        or current.application != target.application
+    ):
         raise MonitoringError("MONITORING_TARGET_CHANGED")

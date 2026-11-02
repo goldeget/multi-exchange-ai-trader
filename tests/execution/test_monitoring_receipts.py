@@ -451,3 +451,86 @@ async def test_monitoring_installer_failure_does_not_retain_credential_exception
         owner.configure_native_monitoring(binding, scope=SCOPE, install=fail)
     assert failure.value.__context__ is None
     assert "synthetic" not in str(failure.value)
+
+
+@pytest.mark.parametrize("phase", ["PRE", "POST"])
+@pytest.mark.parametrize("replacement", ["copy", "native", "conflicts", "candidates", "credits"])
+async def test_fresh_acquisition_rejects_public_target_replacements(
+    target_core, phase, replacement
+):
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from test_execution_credit import credit
+    from test_execution_provenance import candidate
+
+    from multi_exchange_trader.execution.monitoring_models import StreamStamp
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, _wall, _mono, requests = core[0]
+    original = core[1]
+    if phase == "POST":
+        core[3][0] = StreamStamp(1, "original-connection", 0, 0)
+        original = capture_monitoring_target(
+            core[2].runtime,
+            core[2]._assembly,
+            restore_generation_id="restore-1",
+            policy_revision="0",
+            witness=original._witness,
+            stream_stamp=core[3][0],
+        )
+    if replacement == "native":
+        altered = replace(
+            original,
+            native=replace(
+                original.native,
+                positions=(replace(original.native.positions[0], signed_quantity=Decimal(1)),),
+            ),
+        )
+    elif replacement in ("conflicts", "candidates", "credits"):
+        # These are typed public data replacements, never injected into runtime or issuer.
+        # Removing a nonempty data tuple must not turn the resulting copy into a capture.
+        contents = {
+            "conflicts": ("PROJECTION_CONFLICT",),
+            "candidates": (candidate(),),
+            "credits": (credit(),),
+        }
+        public_view = replace(
+            original,
+            application=replace(original.application, **{replacement: contents[replacement]}),
+        )
+        assert getattr(public_view.application, replacement)
+        altered = replace(
+            public_view, application=replace(public_view.application, **{replacement: ()})
+        )
+    else:
+        altered = replace(original)
+    assert altered is not original and altered.fingerprint == original.fingerprint
+    before = len(requests)
+    with pytest.raises(ValueError, match="MONITORING_CAPTURED_TARGET_REQUIRED"):
+        await owner.read_monitoring_receipt(binding, target=altered, phase=phase)
+    assert len(requests) == before
+    assert owner._monitoring_receipts == {}
+    receipt = await owner.read_monitoring_receipt(binding, target=original, phase=phase)
+    assert (
+        owner.consume_monitoring_receipt(
+            receipt, binding=binding, target=original, phase=phase
+        ).assessment.status.value
+        == "MATCHED"
+    )
+    with pytest.raises(ValueError):
+        owner.consume_monitoring_receipt(receipt, binding=binding, target=original, phase=phase)
+    # A new genuine capture of unchanged state is independently admissible.
+    recaptured = capture_monitoring_target(
+        core[2].runtime,
+        core[2]._assembly,
+        restore_generation_id="restore-1",
+        policy_revision="0",
+        witness=original._witness,
+        stream_stamp=core[3][0],
+    )
+    assert recaptured is not original
+    fresh = await owner.read_monitoring_receipt(binding, target=recaptured, phase=phase)
+    owner.discard_monitoring_receipt(fresh)
+    assert owner._monitoring_receipts == {}

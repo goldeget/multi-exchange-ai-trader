@@ -359,3 +359,25 @@ def test_actual_original_native_fill_chain_matches_without_invented_sequence():
     )
     assert order.filled_qty.as_decimal() == Decimal(5)
     assert target.application.positions == ()
+
+
+@pytest.mark.parametrize("part", ["native", "application"])
+async def test_current_target_rejects_public_summary_substitution(target_core, part):
+    from multi_exchange_trader.execution.monitoring_reconciliation import require_current_target
+
+    owner = target_core[0][0]
+    original = target_core[1]
+    if part == "native":
+        altered = replace(original, native=replace(original.native, positions=()))
+    else:
+        altered = replace(
+            original, application=replace(original.application, conflicts=("PROJECTION_CONFLICT",))
+        )
+    assert altered.fingerprint == original.fingerprint
+    require_current_target(original, owner, "PRE")
+    with pytest.raises(ValueError, match="MONITORING_CAPTURED_TARGET_REQUIRED"):
+        require_current_target(altered, owner, "PRE")
+
+
+from test_monitoring_receipts import session as session  # noqa: PLC0414
+from test_monitoring_receipts import target_core as target_core  # noqa: PLC0414
