@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
+from typing import Any, Concatenate
 
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
@@ -69,6 +71,43 @@ class TrustedPlanRegistry:
 AssemblyFactory = Callable[[Callable[[NativeChannel, object], None]], NativeNodeAssembly]
 
 
+def _admitted[**P, T](
+    method: Callable[Concatenate[ExecutionWorker, P], Awaitable[T]],
+) -> Callable[Concatenate[ExecutionWorker, P], Awaitable[T]]:
+    """Owner-loop admission and lifetime, separate from native callback admission."""
+    @wraps(method)
+    async def invoke(worker: ExecutionWorker, /, *args: P.args, **kwargs: P.kwargs) -> T:
+        worker._require_admission()
+        worker._operations += 1
+        try:
+            return await method(worker, *args, **kwargs)
+        finally:
+            worker._operations -= 1
+    return invoke
+
+
+async def _settle_effect[T](effect: Coroutine[Any, Any, T]) -> T:
+    """Cancellation cannot abandon a native effect or a paid thread's accounting.
+
+    Repeated cancellation requests still wait for the protected task to finish.
+    Its result/exception is retrieved before cancellation propagates to the caller.
+    """
+    task = asyncio.create_task(effect)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:  # noqa: BLE001 - propagate the settled task exception below.
+            break  # Retrieve the settled exception below.
+    if cancelled:
+        if not task.cancelled():
+            task.exception()  # Retrieve failure after the effect's durable unknown accounting.
+        raise asyncio.CancelledError
+    return task.result()
+
+
 class ExecutionWorker:
     """Explicit lifecycle on one running event loop; injected assembly is test-only.
 
@@ -100,6 +139,9 @@ class ExecutionWorker:
         self._lock: AccountWorkerLock | None = None
         self._node_task: asyncio.Task[None] | None = None
         self._stopped = False
+        self._stopping = False
+        self._stop_in_progress = False
+        self._operations = 0
         self._staging = False
         self._channel_closed = False
         self.callback_failures = 0
@@ -111,6 +153,11 @@ class ExecutionWorker:
                 or self._stopped):
             raise RuntimeBlocked("WORKER_OWNER_LOOP_REQUIRED")
         return self._runtime
+
+    def _require_admission(self) -> None:
+        _ = self.runtime
+        if self._stopping:
+            raise RuntimeBlocked("WORKER_STOPPING")
 
     async def start_passive(self) -> None:
         if self._loop is not None or self._stopped:
@@ -200,6 +247,7 @@ class ExecutionWorker:
             if self.policy_book.risk_policy(registered.plan.scope) != registered.plan.policy:
                 raise RuntimeBlocked("CURRENT_RISK_POLICY_REQUIRED")
 
+    @_admitted
     async def stage(self, *, command_key: str, position_id: str,
                     mode: modes.AutomaticMode, request: modes.SelectionRequest,
                     priority_candidate_ids: tuple[str, ...] | None = None,
@@ -224,15 +272,8 @@ class ExecutionWorker:
             elif mode is modes.AutomaticMode.ALL_IN_ONE:
                 if dispatcher is None or quote is None or maximum_cost_usd is None:
                     raise RuntimeBlocked("EXPLICIT_PAID_DISPATCH_INPUTS_REQUIRED")
-                dispatch_task = asyncio.create_task(asyncio.to_thread(dispatcher.dispatch, request,
+                result = await _settle_effect(asyncio.to_thread(dispatcher.dispatch, request,
                     maximum_cost_usd=maximum_cost_usd, quote=quote, enabled=True))
-                try:
-                    result = await asyncio.shield(dispatch_task)
-                except asyncio.CancelledError:
-                    # A Python thread cannot be canceled. Keep the selection lock until
-                    # the durable paid dispatcher finishes its liability bookkeeping.
-                    await dispatch_task
-                    raise
                 self._fresh_policy(request, mode)
                 if result.failure is not None or result.selection is None:
                     return None
@@ -259,6 +300,7 @@ class ExecutionWorker:
         return BybitVenueReadback(client=client, scope=self.scope, clock=self.clock,
                                  max_evidence_age=self.max_age)
 
+    @_admitted
     async def connect_monitoring(self) -> None:
         """Explicit network start for the passive node, never entry activation.
 
@@ -285,9 +327,11 @@ class ExecutionWorker:
             await self._node_task
             raise RuntimeBlocked("NATIVE_MONITORING_ENDED")
 
+    @_admitted
     async def poll_position(self, position_id: str) -> ProtectionAssessment:
         return await self.runtime.poll_readback(self._readback(), position_id)
 
+    @_admitted
     async def read_history(self, symbol: str, *, start_ms: int, end_ms: int) -> HistorySnapshot:
         _ = self.runtime
         if symbol not in self.symbols:
@@ -302,20 +346,37 @@ class ExecutionWorker:
             raise RuntimeBlocked("WORKER_HISTORY_SCOPE_REQUIRED")
         return daily_realized_loss(history, baseline, now=self.clock(), max_age=self.max_age)
 
+    @_admitted
     async def apply_leverage(self, command_key: str, entry_key: str) -> CommandRecord:
         runtime = self.runtime
         self.session.require_execution_binding(self.binding, scope=self.scope)
         assert self._assembly is not None
         control = NativeLeverageControl(client=self._assembly.execution_client,
             scope=self.scope, native_account_id=self._assembly.channel.native_account_id)
-        return await runtime.apply_leverage(command_key, entry_key, control=control,
-                                             adapter=self._readback())
+        return await _settle_effect(runtime.apply_leverage(command_key, entry_key, control=control,
+                                                           adapter=self._readback()))
 
     async def stop(self) -> None:
+        if self._stopped and self._loop is asyncio.get_running_loop():
+            return
         runtime = self.runtime
+        # Sticky admission fence is set before any await, even when this attempt
+        # refuses because a previously admitted operation still owns liabilities.
+        self._stopping = True
+        runtime.pause_entries()
+        if self._stop_in_progress:
+            raise RuntimeBlocked("WORKER_STOP_ALREADY_RUNNING")
         if self._staging:
             raise RuntimeBlocked("AWAIT_INFLIGHT_SELECTION_BEFORE_STOP")
-        runtime.pause_entries()
+        if self._operations:
+            raise RuntimeBlocked("AWAIT_INFLIGHT_OPERATION_BEFORE_STOP")
+        self._stop_in_progress = True
+        try:
+            await self._finish_stop(runtime)
+        finally:
+            self._stop_in_progress = False
+
+    async def _finish_stop(self, runtime: NativeExecutionRuntime) -> None:
         try:
             if self._node_task is not None:
                 assert self._assembly is not None

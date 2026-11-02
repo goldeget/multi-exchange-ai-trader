@@ -42,14 +42,29 @@ an immutable trusted plan registry. ALL_IN_ONE uses the existing durable
 `AIDispatcher`, which can select candidate IDs only. Provider dispatch runs on a
 separate thread to preserve fill processing; policy revision, complete risk policy,
 scope, registry revision and evidence expiry are rechecked after the await. A
-selection never activates trading. Shutdown requires the caller to await in-flight
-selection accounting first, then pauses entries, stops the producer, awaits the
+selection never activates trading. The first shutdown request closes admission to
+new worker selection, control, connection and read operations before any await.
+If a previously admitted async operation is still running, shutdown refuses with
+`AWAIT_INFLIGHT_SELECTION_BEFORE_STOP` or `AWAIT_INFLIGHT_OPERATION_BEFORE_STOP`:
+entries remain paused, new work stays blocked, and the callback sink, SQLite stores
+and account lease remain owned. The caller awaits that operation and explicitly
+retries stop. Repeated cancellation of paid dispatch or native leverage callers
+cannot abandon their protected effect and liability-accounting task; cancellation
+propagates only after it settles. Ambiguous native outcomes retain UNKNOWN records
+and reservations under the original owner. Synchronous runtime cancellation has no
+await boundary; it does not require a separate asynchronous lifetime counter.
+
+After admitted work has completed, shutdown stops the producer, awaits the
 native run task, and verifies native disconnection and empty execution queues.
 Only then does it unsubscribe the channel, drain posted callbacks, mark in-flight
 commands unknown and close SQLite/relinquish the lease on its owner loop. A native
 stop failure or unproven drain keeps the sink, stores and lease alive for an explicit
 retry, and marks unacknowledged handoffs unknown. Abrupt termination still
 requires existing durable recovery and independent venue reconciliation.
+Concurrent stop attempts are rejected while one native shutdown is running;
+successful repeated stop on the owner loop is idempotent. Failed or cancelled
+shutdown never reopens admission automatically. Native callbacks retain their
+separate admission path until transport quiescence and drain are established.
 
 ## Dormant headless entrypoint
 
