@@ -23,7 +23,9 @@ from ..ai.generation import GenerationPriceQuote
 from . import modes
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
-from .history import BybitHistoryReader, HistorySnapshot
+from .history import BybitHistoryReader, HistorySnapshot, HistoryWindow
+from .history_coverage import IngestionReceipt
+from .history_store import HistoryStore
 from .journal import CommandJournal, CommandRecord, ExecutionScope
 from .native_controls import NativeLeverageControl
 from .native_events import NativeEventContext, NativeEventDecoder
@@ -136,6 +138,7 @@ class ExecutionWorker:
         self._runtime: NativeExecutionRuntime | None = None
         self._journal: CommandJournal | None = None
         self._store: RuntimeStateStore | None = None
+        self._history_store: HistoryStore | None = None
         self._lock: AccountWorkerLock | None = None
         self._node_task: asyncio.Task[None] | None = None
         self._stopped = False
@@ -187,6 +190,7 @@ class ExecutionWorker:
             scope = ExecutionScope(self.scope.account_id, self.scope.environment)
             self._journal = CommandJournal(self.directory / "execution.sqlite3", scope)
             self._store = RuntimeStateStore(self.directory / "runtime-state.sqlite3", scope)
+            self._history_store = HistoryStore(self.directory / "history.sqlite3", self.scope)
             self._runtime = NativeExecutionRuntime(journal=self._journal, store=self._store,
                 worker_lock=self._lock, lock_directory=self.lock_directory,
                 bridge=self._assembly.bridge,
@@ -196,8 +200,8 @@ class ExecutionWorker:
                 if self._assembly is not None and self._factory is None:
                     self._assembly.dispose_local()
             finally:
-                self._close_stores()
                 self._stopped = True
+                self._close_stores()
             raise
 
     def post_native(self, channel: NativeChannel, event: object) -> None:
@@ -340,6 +344,44 @@ class ExecutionWorker:
                                     clock=self.clock, max_age=self.max_age)
         return await reader.read_history(symbol, start_ms=start_ms, end_ms=end_ms)
 
+    @_admitted
+    async def collect_history(self, symbol: str, *, start_ms: int, end_ms: int) -> IngestionReceipt:
+        """Persist one explicit bounded read under the same owner and lease.
+
+        The GET yields to native callbacks. Its result has no storage authority
+        after stop, binding change or lease loss, even when that GET succeeds.
+        """
+        runtime = self.runtime
+        _ = runtime.status  # Run the runtime's exact scoped lease guard before GET.
+        lock, scope = self._lock, self.scope
+        session, binding = self.session, self.binding
+        if (lock is None or lock is not runtime.worker_lock
+                or runtime.journal.scope != ExecutionScope(scope.account_id, scope.environment)):
+            raise RuntimeBlocked("WORKER_HISTORY_OWNER_CHANGED")
+        if symbol not in self.symbols:
+            raise RuntimeBlocked("WORKER_SYMBOL_SCOPE_REQUIRED")
+        window = HistoryWindow(start_ms, end_ms)
+        session.require_binding(binding, scope=scope)
+        epoch = lock.acquisition_id
+        snapshot = await self.read_history(symbol, start_ms=start_ms, end_ms=end_ms)
+
+        # The existing sticky stop fence wins before any history database access.
+        self._require_admission()
+        if (self.runtime is not runtime or self._lock is not lock
+                or lock.acquisition_id != epoch or self.scope != scope
+                or self.session is not session or self.binding is not binding):
+            raise RuntimeBlocked("WORKER_HISTORY_OWNER_CHANGED")
+        _ = runtime.status
+        if symbol not in self.symbols:
+            raise RuntimeBlocked("WORKER_SYMBOL_SCOPE_REQUIRED")
+        session.require_binding(binding, scope=scope)
+        if (type(snapshot) is not HistorySnapshot or snapshot.scope != scope
+                or snapshot.symbol != symbol or snapshot.window != window):
+            raise RuntimeBlocked("WORKER_HISTORY_REQUEST_MISMATCH")
+        assert self._history_store is not None
+        # No await or thread handoff between final guards and the atomic commit.
+        return self._history_store.ingest(snapshot)
+
     def realized_loss(self, history: HistorySnapshot, baseline: DailyCashBaseline) -> DailyRealizedLoss:
         _ = self.runtime
         if history.scope != self.scope:
@@ -404,9 +446,17 @@ class ExecutionWorker:
             self._close_stores()
 
     def _close_stores(self) -> None:
-        if self._store is not None:
-            self._store.close()
-        if self._journal is not None:
-            self._journal.close()
-        if self._lock is not None:
-            self._lock.release()
+        try:
+            if self._history_store is not None:
+                self._history_store.close()
+        finally:
+            try:
+                if self._store is not None:
+                    self._store.close()
+            finally:
+                try:
+                    if self._journal is not None:
+                        self._journal.close()
+                finally:
+                    if self._lock is not None:
+                        self._lock.release()
