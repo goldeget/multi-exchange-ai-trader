@@ -32,6 +32,12 @@ from .journal import (
     Reservation,
     ReservationLimits,
 )
+from .native_controls import (
+    LeverageObservation,
+    NativeLeverageControl,
+    observe_leverage,
+    require_flat_snapshot,
+)
 from .native_events import NativeEventContext, NativeEventDecoder, NativeOrderEvidence
 from .ownership import AccountWorkerLock
 from .state_store import RuntimeStateStore
@@ -93,8 +99,14 @@ def _reassess(plan: r.EntryDecision, now: datetime) -> r.EntryDecision:
 def _economic_identity(plan: r.EntryDecision) -> object:
     """Fresh snapshots may advance; immutable command economics may not."""
     omitted = {"market", "instrument", "account", "tiers", "reservations", "liquidation",
-               "leverage_readback", "assessed_at", "stage", "submission_ready", "blockers"}
+               "leverage_readback", "assessed_at", "stage", "submission_ready", "blockers",
+               "liquidation_price", "liquidation_distance_fraction", "liquidation_buffer_fraction",
+               "required_leverage", "initial_margin", "margin_amount"}
+    # Adding qualified evidence changes risk's precision budget. Repeating ratios
+    # may differ in their last digit, even for identical notional/leverage/costs.
+    # Compare the same conservative margin actually reserved by the journal.
     return (tuple(getattr(plan, field.name) for field in fields(plan) if field.name not in omitted),
+        _margin(plan.margin_amount),
         tuple(getattr(plan.market, field.name) for field in fields(plan.market)
               if field.name not in ("observed_at", "quote_id")),
         tuple(getattr(plan.instrument, field.name) for field in fields(plan.instrument)
@@ -106,7 +118,7 @@ def _economic_identity(plan: r.EntryDecision) -> object:
 class NativeExecutionRuntime:
     """One designated account worker, with passive recovery and monitoring.
 
-    Only start/dispatch could authorize native writes; both consult the fixed
+    Start and every native effect path consult the fixed
     missing-qualification gate. Removing it requires an independently reviewed
     deployed worker/identity/evidence implementation, not a caller-provided bool.
     The native dispatch implementation is exercised with fake native boundaries.
@@ -135,6 +147,8 @@ class NativeExecutionRuntime:
             account_id=journal.scope.account_id, environment=journal.scope.environment).path.resolve()
         self._mutex = RLock()
         self._readbacks: dict[str, VenueSnapshot] = {}
+        self._leverage_readbacks: dict[str, LeverageObservation] = {}
+        self._control_busy = False
         self._projections: dict[str, tuple[int, p.ProtectionProjection,
                                            dict[str, tuple[object, ...]]]] = {}
         self._active = self._closed = False
@@ -272,6 +286,12 @@ class NativeExecutionRuntime:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
         if len(event) == 3 and event[0] == "READBACK":
             return state
+        if (len(event) == 2 and event[0] == "CANCEL_IDENTITY_UNVERIFIED"
+                and type(event[1]) is str
+                and any(order.client_order_id == event[1] for order in state.orders)):
+            conflict = p.ProjectionConflict(event[0], client_order_id=event[1])
+            return (state if conflict in state.conflicts else
+                    replace(state, conflicts=state.conflicts + (conflict,)))
         if len(event) != 6:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
         fill_identity = event[5]
@@ -479,7 +499,9 @@ class NativeExecutionRuntime:
     def _entry_gate(self, record: CommandRecord, final: r.EntryDecision) -> None:
         self._guard()
         self._require_qualification()
-        if (not self._active or any(state.entries_blocked for state in self._states())
+        self._leverage_gate(record, final)
+        if (self._control_busy or not self._active
+                or any(state.entries_blocked for state in self._states())
                 or any(item.command_key != record.command_key and not item.terminal_confirmed
                        for item in self.journal.list_commands())
                 or self._now() >= datetime.fromisoformat(
@@ -489,12 +511,235 @@ class NativeExecutionRuntime:
         if _reassess(final, now) != replace(final, assessed_at=now):
             raise RuntimeBlocked("CURRENT_RISK_REQUIRED")
 
+    def _leverage_gate(self, record: CommandRecord, final: r.EntryDecision) -> None:
+        observation = self._leverage_readbacks.get(record.command_key)
+        readback = final.leverage_readback
+        if (observation is None or not self._fresh(observation.observed_at)
+                or observation.leverage != final.leverage
+                or observation.policy_revision != final.policy.revision
+                or observation.symbol != final.scope.symbol
+                or readback is None or readback.applied_leverage != observation.leverage
+                or readback.observed_at < observation.observed_at
+                or final.account.observed_at < observation.observed_at
+                or final.assessed_at < observation.observed_at):
+            raise RuntimeBlocked("NATIVE_LEVERAGE_SEQUENCE_AND_FRESH_RISK_REQUIRED")
+
+    def _leverage_plan(self, entry_key: str, control_key: str) -> r.EntryDecision:
+        self._guard()
+        self._require_qualification()
+        record = self._required(entry_key)
+        if (record.kind is not CommandKind.ENTRY or record.state is not CommandState.PENDING
+                or any(state.owned_quantity != 0 or state.conflicts for state in self._states())
+                or any(item.command_key not in (entry_key, control_key)
+                       and not item.terminal_confirmed for item in self.journal.list_commands())):
+            raise RuntimeBlocked("UNRESOLVED_EXPOSURE_FORBIDS_LEVERAGE_CHANGE")
+        plan = self._plan(record)
+        totals = self.reservation_totals(plan.scope, entry_key)
+        try:
+            fresh = self.entry_risk(plan, self._now(), totals)
+        except Exception:  # noqa: BLE001 - provider exceptions may contain transport secrets.
+            raise RuntimeBlocked("FRESH_EXPLICIT_LEVERAGE_RISK_REQUIRED") from None
+        checked_at = self._now()
+        if (type(fresh) is not r.EntryDecision or fresh.reservations != totals
+                or _economic_identity(fresh) != _economic_identity(plan)
+                or fresh.account.external_same_symbol_orders
+                or fresh.account.external_same_symbol_position
+                or fresh.account.symbol_notional != 0
+                or not fresh.policy.leverage_min <= fresh.leverage <= fresh.policy.leverage_max
+                or not fresh.venue_leverage_min <= fresh.leverage <= fresh.venue_leverage_max
+                or _reassess(fresh, checked_at) != replace(fresh, assessed_at=checked_at)):
+            raise RuntimeBlocked("FRESH_EXPLICIT_LEVERAGE_RISK_REQUIRED")
+        return fresh
+
+    async def apply_leverage(self, command_key: str, entry_key: str, *,
+                             control: NativeLeverageControl,
+                             adapter: BybitVenueReadback) -> CommandRecord:
+        """Durable claim -> existing native writer -> independent GET -> fresh risk later.
+
+        Any ambiguous handoff is never replayed. A separate GET reconciliation can
+        resolve the setting without retrying the mutation. Entry reservation stays held.
+        """
+        with self._mutex:
+            self._guard()
+            self._require_qualification()
+            if (type(control) is not NativeLeverageControl or control.scope != self.bridge.scope
+                    or control.native_account_id != self.bridge.native_account_id
+                    or type(adapter) is not BybitVenueReadback or adapter.scope != self.bridge.scope
+                    or self._control_busy):
+                raise RuntimeBlocked("SCOPED_SINGLE_NATIVE_CONTROL_REQUIRED")
+            plan = self._plan(self._required(entry_key))
+            existing = self.journal.get(command_key)
+            payload = {"entry_key": entry_key, "symbol": plan.scope.symbol,
+                       "leverage": str(plan.leverage), "policy_revision": plan.policy.revision}
+            if existing is not None:
+                if (existing.kind is not CommandKind.LEVERAGE
+                        or json.loads(existing.payload_json) != payload):
+                    raise RuntimeBlocked("IMMUTABLE_CONTROL_CONFLICT")
+                if existing.state is not CommandState.PENDING:
+                    return existing
+            self._leverage_plan(entry_key, command_key)
+            record = self.journal.register(command_key, CommandKind.LEVERAGE, payload)
+            self._control_busy = True
+            self._leverage_readbacks.pop(entry_key, None)
+        try:
+            before = await adapter.snapshot(plan.scope.symbol)
+            with self._mutex:
+                self._guard()
+                self._leverage_plan(entry_key, command_key)
+                require_flat_snapshot(before, scope=self.bridge.scope, symbol=plan.scope.symbol,
+                                      now=self._now(), max_age=self._max_age)
+                claimed = self.journal.claim(command_key)
+                if claimed is None:
+                    return self._required(command_key)
+                self._guard()
+            try:
+                await control.apply(plan.scope.symbol, plan.leverage)
+                with self._mutex:
+                    self._guard()
+                    finished_at = self._now()
+                snapshot = await adapter.snapshot(plan.scope.symbol)
+                with self._mutex:
+                    self._guard()
+                    if snapshot.cycle_id == before.cycle_id:
+                        raise RuntimeBlocked("INDEPENDENT_POST_EFFECT_READBACK_REQUIRED")
+                    self._confirm_leverage(record, snapshot, after=finished_at)
+            except BaseException as error:
+                # Includes cancellation while awaiting native response. No retry.
+                with self._mutex:
+                    self._guard()
+                    self._unknown(command_key)
+                if isinstance(error, Exception):
+                    raise RuntimeBlocked("NATIVE_LEVERAGE_AMBIGUOUS_OR_UNVERIFIED") from None
+                raise
+            return self._required(command_key)
+        finally:
+            with self._mutex:
+                self._control_busy = False
+
+    def _confirm_leverage(self, record: CommandRecord, snapshot: VenueSnapshot, *,
+                          after: datetime) -> None:
+        self._guard()
+        raw = json.loads(record.payload_json)
+        observation = observe_leverage(snapshot, command_key=record.command_key,
+            entry_key=raw["entry_key"], scope=self.bridge.scope, symbol=raw["symbol"],
+            leverage=Decimal(raw["leverage"]), policy_revision=raw["policy_revision"],
+            now=self._now(), max_age=self._max_age, after=after)
+        self.journal.acknowledge(record.command_key, "INDEPENDENT_GET_LEVERAGE_MATCH")
+        self.journal.release_reservation(record.command_key, confirmed_terminal=True,
+                                        terminal_evidence="CONTROL_SETTING_READ_BACK")
+        self._leverage_readbacks[raw["entry_key"]] = observation
+
+    async def reconcile_leverage(self, command_key: str,
+                                 adapter: BybitVenueReadback) -> CommandRecord:
+        """Read-only restart recovery, never repeat an UNKNOWN mutation."""
+        with self._mutex:
+            self._guard()
+            record = self._required(command_key)
+            if (record.kind is not CommandKind.LEVERAGE
+                    or record.state not in (CommandState.UNKNOWN, CommandState.ACKNOWLEDGED)
+                    or type(adapter) is not BybitVenueReadback or adapter.scope != self.bridge.scope):
+                raise RuntimeBlocked("LEVERAGE_RECONCILIATION_SCOPE_REQUIRED")
+            raw = json.loads(record.payload_json)
+            started_at = self._now()
+        snapshot = await adapter.snapshot(raw["symbol"])
+        with self._mutex:
+            self._guard()
+            self._confirm_leverage(self._required(command_key), snapshot, after=started_at)
+            return self._required(command_key)
+
+    def queue_cancel(self, command_key: str, target_client_id: str) -> CommandRecord:
+        with self._mutex:
+            self._guard()
+            # The mutex and scoped OS lease serialize this check with registration
+            # across all runtime callers/processes. Reject before creating a second
+            # durable intent that could block the first pending cancellation.
+            if any(control.command_key != command_key
+                   for control in self._cancel_controls(target_client_id)):
+                raise RuntimeBlocked("CANCEL_ALREADY_UNRESOLVED")
+            state = self._find_owned(target_client_id)
+            if state is None or state.conflicts:
+                raise RuntimeBlocked("CANCEL_EXACT_OWNERSHIP_REQUIRED")
+            target = next(item for item in self.journal.list_commands()
+                          if item.client_order_id == target_client_id)
+            if target.state is not CommandState.ACKNOWLEDGED:
+                raise RuntimeBlocked("CANCEL_KNOWN_NATIVE_TARGET_REQUIRED")
+            order = self.bridge.cached_owned_order(target_client_id)
+            venue_id = str(getattr(order, "venue_order_id", ""))
+            known_ids = set()
+            for event_record in self.store.list_position_events(state.position_id):
+                event = codec.decode(event_record.payload_json)
+                if (type(event) is tuple and len(event) == 6 and event[1] == target_client_id
+                        and event[2] is not None):
+                    known_ids.add(event[2])
+            if not venue_id or known_ids != {venue_id}:
+                raise RuntimeBlocked("PERSISTED_NATIVE_CANCEL_IDENTITY_REQUIRED")
+            self._guard()
+            return self.journal.register(command_key, CommandKind.CANCEL,
+                {"target_client_id": target_client_id, "position_id": state.position_id,
+                 "venue_order_id": venue_id, "instrument_id": state.instrument_id,
+                 "native_account_id": self.bridge.native_account_id})
+
+    def _cancel_controls(self, target_client_id: str) -> tuple[CommandRecord, ...]:
+        return tuple(item for item in self.journal.list_commands()
+                     if item.kind is CommandKind.CANCEL and not item.terminal_confirmed
+                     and json.loads(item.payload_json)["target_client_id"] == target_client_id)
+
+    @staticmethod
+    def _cancel_identity_matches(control: CommandRecord, evidence: NativeOrderEvidence,
+                                 state: p.ProtectionProjection) -> bool:
+        raw = json.loads(control.payload_json)
+        return (evidence.venue_order_id is not None
+                and evidence.venue_order_id == raw["venue_order_id"]
+                and evidence.client_order_id == raw["target_client_id"]
+                and evidence.instrument_id == raw["instrument_id"] == state.instrument_id
+                and evidence.native_account_id == raw["native_account_id"]
+                and state.position_id == raw["position_id"] and evidence.scope == state.scope)
+
+    def dispatch_cancel(self, command_key: str) -> CommandRecord:
+        with self._mutex:
+            self._guard()
+            record = self._required(command_key)
+            if record.kind is not CommandKind.CANCEL:
+                raise RuntimeBlocked("CANCEL_COMMAND_REQUIRED")
+            if record.state is not CommandState.PENDING:
+                return record
+            self._require_qualification()
+            if self._control_busy:
+                raise RuntimeBlocked("NATIVE_CONTROL_BUSY")
+            raw = json.loads(record.payload_json)
+            state = self._find_owned(raw["target_client_id"])
+            if state is None or state.conflicts or state.position_id != raw["position_id"]:
+                raise RuntimeBlocked("CANCEL_EXACT_OWNERSHIP_REQUIRED")
+            if any(item.kind is CommandKind.CANCEL and item.command_key != command_key
+                   and not item.terminal_confirmed
+                   and json.loads(item.payload_json)["target_client_id"] == raw["target_client_id"]
+                   for item in self.journal.list_commands()):
+                raise RuntimeBlocked("CANCEL_ALREADY_UNRESOLVED")
+            order = self.bridge.cached_owned_order(raw["target_client_id"])
+            if (str(getattr(order, "venue_order_id", "")) != raw["venue_order_id"]
+                    or raw["instrument_id"] != state.instrument_id
+                    or raw["native_account_id"] != self.bridge.native_account_id):
+                raise RuntimeBlocked("PERSISTED_NATIVE_CANCEL_IDENTITY_REQUIRED")
+            if self.journal.claim(command_key) is None:
+                return self._required(command_key)
+            self._guard()
+            self._active = False
+            try:
+                result = self.bridge.cancel_owned(raw["target_client_id"])
+                if result.state == "UNKNOWN":
+                    self._unknown(command_key)
+            except Exception:  # noqa: BLE001 - cached order may change during native handoff.
+                self._unknown(command_key)
+            return self._required(command_key)
+
     def dispatch(self, command_key: str) -> CommandRecord:
         with self._mutex:
             self._guard()
             record = self._required(command_key)
             if record.state is not CommandState.PENDING:
                 return record  # In particular, UNKNOWN never resubmits.
+            if record.kind not in (CommandKind.ENTRY, CommandKind.EXIT):
+                raise RuntimeBlocked("EXPLICIT_CONTROL_DISPATCH_REQUIRED")
             self._require_qualification()
             request = self._request(record)
             if record.kind is CommandKind.ENTRY:
@@ -553,8 +798,26 @@ class NativeExecutionRuntime:
             if record.state is CommandState.PENDING:
                 self._active = False
                 raise RuntimeBlocked("UNSENT_COMMAND_HAS_NATIVE_EVENT")
+            cancellations = self._cancel_controls(evidence.client_order_id)
+            if ((evidence.kind in ("CANCELED", "EXPIRED") or (
+                    evidence.kind == "STATUS" and evidence.native_status == "CANCELED"))
+                    and any(not self._cancel_identity_matches(control, evidence, state)
+                            for control in cancellations)):
+                # One fixed conflict per owned target, regardless of callback count
+                # or untrusted venue IDs. Do not record cancellation or ACK it.
+                conflict_identity = ("CANCEL_IDENTITY_UNVERIFIED", evidence.client_order_id)
+                reduced = self._reduce_event(state, conflict_identity,
+                    dict(self._projections[state.position_id][2]))
+                self._persist(conflict_identity, reduced)
+                for control in cancellations:
+                    if control.state is CommandState.SENDING:
+                        self.journal.mark_unknown(control.command_key,
+                                                  "NATIVE_CANCEL_IDENTITY_UNVERIFIED")
+                self._active = False
+                return evidence
             if evidence.fill is not None:
                 self._readbacks.pop(state.position_id, None)
+                self._leverage_readbacks.clear()
                 self._active = False  # Every fill invalidates previous protection/readback.
             # Receipt time varies on replay; retain source event time, execution fee/price
             # identity and native status. Exact duplicate events do not rewind projections.
@@ -580,6 +843,11 @@ class NativeExecutionRuntime:
                 if record.state in (CommandState.SENDING, CommandState.UNKNOWN):
                     self.journal.reject(record.command_key, "SCOPED_NATIVE_REJECTION")
                 self._active = False
+            if evidence.kind == "CANCELED":
+                for control in cancellations:
+                    if (control.state in (CommandState.SENDING, CommandState.UNKNOWN)
+                            and self._cancel_identity_matches(control, evidence, state)):
+                        self.journal.acknowledge(control.command_key, "SCOPED_NATIVE_CANCEL_EVENT")
             # Terminal status is not full execution/flat proof; reservation stays held.
             return evidence
 

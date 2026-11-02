@@ -93,6 +93,9 @@ def queue(worker: Any, key: str = "entry") -> Any:
 
 def enable_fake_handoff(worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "_require_qualification", lambda: None)
+    # These legacy event/projection tests isolate entry handoff. The actual
+    # leverage sequence and fresh-risk gate have dedicated controls tests.
+    monkeypatch.setattr(worker, "_leverage_gate", lambda *_args: None)
     worker.start()
 
 

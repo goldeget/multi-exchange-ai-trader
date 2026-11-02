@@ -60,6 +60,11 @@ class FakeStrategy:
         self.commands: list[tuple[object, dict[str, object]]] = []
         self.fail = fail
 
+    def cancel_order(self, order: object, *, params: dict[str, object]) -> None:
+        self.commands.append((order, params))
+        if self.fail:
+            raise TimeoutError("UNTRUSTED_PROVIDER_TEXT_MUST_NOT_ESCAPE")
+
     def submit_order(self, order: object, *, params: dict[str, object]) -> None:
         self.commands.append((order, params))
         if self.fail:

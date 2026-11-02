@@ -1,0 +1,40 @@
+[Unit]
+Description=DEMO account monitor only (native trading remains blocked)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/trader/app
+# Separate root-owned 0600 file; never install keys in this repository.
+# Explicit values required: BYBIT_DEMO_API_KEY, BYBIT_DEMO_API_SECRET,
+# BYBIT_DEMO_UID, BYBIT_DEMO_PARENT_UID, BYBIT_DEMO_IS_MASTER, TRADER_MONITOR_SYMBOL.
+EnvironmentFile=/etc/trader/monitor-worker.env
+# No shell interpolation, server port, strategy plugin, or automatic order activation.
+# Co-locate execution.sqlite3/runtime-state.sqlite3 with policy and app ledgers for offline recovery.
+ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=false BYBIT_TESTNET=false BYBIT_ENV_FILE=off AI_ENV_FILE=off ANTHROPIC_ENV_FILE=off /opt/trader/app/.venv/bin/python -m multi_exchange_trader.execution.worker_cli --run-monitor --connect-monitoring --uid ${BYBIT_DEMO_UID} --parent-uid ${BYBIT_DEMO_PARENT_UID} --is-master ${BYBIT_DEMO_IS_MASTER} --symbol ${TRADER_MONITOR_SYMBOL} --directory /var/lib/trader/data --policy-db /var/lib/trader/data/runtime-policy.sqlite3 --lock-directory /var/lib/trader/locks
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+KillMode=control-group
+LimitCORE=0
+UMask=0077
+StateDirectory=trader trader/locks
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/trader
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

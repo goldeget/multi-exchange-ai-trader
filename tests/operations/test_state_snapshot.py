@@ -348,6 +348,77 @@ def test_disabled_policy_only_installation_remains_backuppable(runtime_state: Pa
     assert command("verify", "--source", backup, "--require-runtime").returncode != 0
 
 
+def test_leverage_command_snapshot_restore_preserves_intent_state_and_audit(
+    runtime_state: Path, tmp_path: Path,
+) -> None:
+    from multi_exchange_trader.execution.journal import (
+        CommandJournal,
+        CommandKind,
+        CommandState,
+        ExecutionScope,
+    )
+
+    scope = ExecutionScope("backup-fixture", "DEMO")
+    payload = {"instrument_id": "BTCUSDT-LINEAR.BYBIT", "leverage": "1.8"}
+    with CommandJournal(runtime_state / "execution.sqlite3", scope) as journal:
+        journal.register("leverage", CommandKind.LEVERAGE, payload)
+        expected = journal.claim("leverage")
+        audit = journal.audit_events()
+    assert expected is not None and expected.state == CommandState.SENDING
+
+    backup, restored = tmp_path / "backup", tmp_path / "restored"
+    result = command("snapshot", "--source", runtime_state, "--target", backup,
+                     "--writers-stopped", "--require-runtime")
+    assert result.returncode == 0, result.stderr
+    result = command("verify", "--source", backup, "--require-runtime")
+    assert result.returncode == 0, result.stderr
+    result = command("restore", "--source", backup, "--target", restored, "--require-runtime")
+    assert result.returncode == 0, result.stderr
+    with CommandJournal(restored / "execution.sqlite3", scope) as journal:
+        actual = journal.get("leverage")
+        assert actual == expected
+        assert json.loads(actual.payload_json) == payload
+        assert journal.audit_events() == audit
+        assert journal.claim("leverage") is None
+
+
+@pytest.mark.parametrize("kind", ["leverage", "LEVERAGE_UNKNOWN", ""])
+def test_unknown_command_kind_refused_before_snapshot_and_restore_publication(
+    runtime_state: Path, tmp_path: Path, kind: str,
+) -> None:
+    from multi_exchange_trader.execution.journal import CommandJournal, CommandKind, ExecutionScope
+
+    with CommandJournal(runtime_state / "execution.sqlite3", ExecutionScope("backup-fixture", "DEMO")) as journal:
+        journal.register("leverage", CommandKind.LEVERAGE, {"leverage": "1.8"})
+    backup = tmp_path / "backup"
+    result = snapshot(runtime_state, backup)
+    assert result.returncode == 0, result.stderr
+
+    for path in (runtime_state / "execution.sqlite3", backup / "data/execution.sqlite3"):
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("UPDATE commands SET kind=? WHERE command_key='leverage'", (kind,))
+            db.commit()
+    invalid = tmp_path / "invalid-backup"
+    result = snapshot(runtime_state, invalid)
+    assert result.returncode != 0
+    assert "Runtime command state invalid" in result.stderr
+    assert not invalid.exists()
+
+    # Rehash the synthetic backup: restore must validate the kind beyond file integrity.
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    content = (backup / "data/execution.sqlite3").read_bytes()
+    for entry in manifest["files"]:
+        if entry["path"] == "execution.sqlite3":
+            entry.update(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    restored = tmp_path / "restored"
+    result = command("restore", "--source", backup, "--target", restored, "--require-runtime")
+    assert result.returncode != 0
+    assert "Runtime command state invalid" in result.stderr
+    assert not restored.exists()
+
+
 @pytest.mark.parametrize("missing", ["execution.sqlite3", "runtime-state.sqlite3"])
 def test_runtime_command_and_projection_pair_cannot_be_backed_up_separately(
     runtime_state: Path, tmp_path: Path, missing: str,

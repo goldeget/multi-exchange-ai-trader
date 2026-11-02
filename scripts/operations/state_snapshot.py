@@ -411,7 +411,7 @@ def check_runtime(db: sqlite3.Connection, name: str) -> None:
                     raise SnapshotError("Runtime inbox projection missing or stale")
             elif name == "execution.sqlite3" and table == "commands":
                 identifier(row["client_id"])
-                if row["kind"] not in {"ENTRY", "PROTECTION", "EXIT", "CANCEL"} or row["state"] not in {"PENDING", "SENDING", "ACKNOWLEDGED", "UNKNOWN", "REJECTED"}:
+                if row["kind"] not in {"ENTRY", "PROTECTION", "EXIT", "CANCEL", "LEVERAGE"} or row["state"] not in {"PENDING", "SENDING", "ACKNOWLEDGED", "UNKNOWN", "REJECTED"}:
                     raise SnapshotError("Runtime command state invalid")
                 if hashlib.sha256(row["payload"].encode()).hexdigest() != row["payload_hash"] or row["terminal"] not in (0, 1):
                     raise SnapshotError("Runtime command integrity invalid")

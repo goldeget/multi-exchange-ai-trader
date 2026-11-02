@@ -40,6 +40,8 @@ class NativeOrderFactory(Protocol):
 class NativeStrategy(Protocol):
     def submit_order(self, order: object, *, params: dict[str, object]) -> None: ...
 
+    def cancel_order(self, order: object, *, params: dict[str, object]) -> None: ...
+
 
 class _FactoryArguments(TypedDict):
     instrument_id: object
@@ -173,6 +175,7 @@ class NativeBybitBridge:
         self._bindings = bindings
         self._requests: dict[str, NativeOrderRequest] = {}
         self._submissions: dict[str, NativeSubmission] = {}
+        self._cancellations: dict[str, NativeSubmission] = {}
         self._lock = RLock()
 
     def register_owned(self, request: NativeOrderRequest) -> None:
@@ -237,6 +240,41 @@ class NativeBybitBridge:
             if request is None:
                 raise ValueError("NATIVE_EVENT_EXACT_OWNERSHIP_REQUIRED")
             return (decoder or load_native_event_decoder()).decode(event, context, request.owned)
+
+    def cached_owned_order(self, client_order_id: str) -> object:
+        """Resolve the actual strategy cache; never reconstruct a cancel target."""
+        with self._lock:
+            request = self._requests.get(client_order_id)
+            if request is None:
+                raise ValueError("NATIVE_CANCEL_EXACT_OWNERSHIP_REQUIRED")
+            cache = getattr(self._strategy, "cache", None)
+            order = cache.order(self._bindings.client_order_id(client_order_id)) if cache else None
+            if order is None:
+                raise ValueError("NATIVE_CANCEL_CACHED_ORDER_REQUIRED")
+            _verify_built_order(order, request)
+            if (str(getattr(order, "account_id", None)) != self.native_account_id
+                    or getattr(order, "strategy_id", None) != getattr(self._strategy, "id", None)
+                    or getattr(order, "strategy_id", None) is None
+                    or getattr(order, "is_closed", None) is not False
+                    or getattr(order, "is_pending_cancel", None) is not False):
+                raise ValueError("NATIVE_CANCEL_ACTIVE_SCOPED_ORDER_REQUIRED")
+            return order
+
+    def cancel_owned(self, client_order_id: str) -> NativeSubmission:
+        """Caller must durably claim CANCEL first. Invocation is never no-fill proof."""
+        with self._lock:
+            previous = self._cancellations.get(client_order_id)
+            if previous is not None:
+                return previous
+            order = self.cached_owned_order(client_order_id)
+            result = NativeSubmission(client_order_id, "SUBMITTING", "NATIVE_SUBMIT_INVOKED")
+            self._cancellations[client_order_id] = result
+            try:
+                self._strategy.cancel_order(order, params={})
+            except Exception:  # noqa: BLE001 - a cancel can race a fill or a disconnect.
+                result = NativeSubmission(client_order_id, "UNKNOWN", "NATIVE_SUBMIT_AMBIGUOUS")
+                self._cancellations[client_order_id] = result
+            return result
 
     def consume_reports(self, reports: tuple[object, ...], context: NativeEventContext, *,
                         query_succeeded: bool, query_complete: bool,
