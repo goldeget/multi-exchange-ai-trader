@@ -37,6 +37,7 @@ from .journal import CommandJournal, CommandRecord, ExecutionScope
 from .native_controls import NativeLeverageControl
 from .native_events import NativeEventContext, NativeEventDecoder
 from .native_node import NativeChannel, NativeNodeAssembly, build_native_node
+from .native_restart import NativeRestartCoordinator, WorkerNativeRestartStatus
 from .ownership import AccountWorkerLock
 from .protection import ProtectionAssessment, ProtectionPolicy, ProtectionScope
 from .risk import EntryDecision
@@ -148,6 +149,8 @@ class ExecutionWorker:
         self._history_store: HistoryStore | None = None
         self._lock: AccountWorkerLock | None = None
         self._node_task: asyncio.Task[None] | None = None
+        self._restart: NativeRestartCoordinator | None = None
+        self._native_restart_status = WorkerNativeRestartStatus("BLOCKED")
         self._stopped = False
         self._stopping = False
         self._stop_in_progress = False
@@ -156,6 +159,11 @@ class ExecutionWorker:
         self._channel_closed = False
         self.callback_failures = 0
         self.rejected_channels = 0
+
+    @property
+    def native_restart_status(self) -> WorkerNativeRestartStatus:
+        """Diagnostic only; callers cannot turn restoration into connect authority."""
+        return self._native_restart_status
 
     @property
     def runtime(self) -> NativeExecutionRuntime:
@@ -187,7 +195,7 @@ class ExecutionWorker:
             if self._factory is None:
                 self._assembly = build_native_node(session=self.session, binding=self.binding,
                     scope=self.scope, symbols=self.symbols, trader_id=self.trader_id,
-                    on_event=self.post_native)
+                    on_event=self.post_native, restart_safe=True)
             else:
                 self._assembly = self._factory(self.post_native)
             channel = self._assembly.channel
@@ -198,11 +206,19 @@ class ExecutionWorker:
             self._journal = CommandJournal(self.directory / "execution.sqlite3", scope)
             self._store = RuntimeStateStore(self.directory / "runtime-state.sqlite3", scope)
             self._history_store = HistoryStore(self.directory / "history.sqlite3", self.scope)
+            if self._factory is None:
+                self._restart = NativeRestartCoordinator(self.directory, self._assembly,
+                    self.scope, self.symbols, self.trader_id)
+            else:
+                self._native_restart_status = WorkerNativeRestartStatus("TEST_ASSEMBLY")
             self._runtime = NativeExecutionRuntime(journal=self._journal, store=self._store,
                 worker_lock=self._lock, lock_directory=self.lock_directory,
                 bridge=self._assembly.bridge,
                 entry_risk=self.entry_risk, clock=self.clock, max_evidence_age=self.max_age,
-                receipt_session=self.session, history_store=self._history_store)
+                receipt_session=self.session, history_store=self._history_store,
+                _pre_recovery=None if self._restart is None else self._restart.restore)
+            if self._restart is not None:
+                self._native_restart_status = self._restart.status
         except BaseException:
             try:
                 if self._assembly is not None and self._factory is None:
@@ -320,6 +336,8 @@ class ExecutionWorker:
         This call is not made by app startup, saved policy, or start_passive.
         """
         self.runtime.pause_entries()
+        if self._restart is not None and self._restart.status.status == "RESTORED_LOCAL_CACHE":
+            raise RuntimeBlocked("NATIVE_RESTART_RECONCILIATION_REQUIRED")
         self.session.require_execution_binding(self.binding, scope=self.scope)
         if self._node_task is not None:
             raise RuntimeBlocked("NATIVE_MONITORING_ALREADY_STARTED")
@@ -518,9 +536,9 @@ class ExecutionWorker:
                 assert self._assembly is not None
                 await self._assembly.node.stop_async()
                 await self._node_task
-                if self._factory is None:
-                    self._assembly.require_quiesced()
             assert self._assembly is not None
+            if self._factory is None:
+                self._assembly.require_quiesced()
             self._assembly.close_event_channel()
             self._channel_closed = True
             # Process callbacks already posted by the stopped producer before closing SQLite.
@@ -532,9 +550,15 @@ class ExecutionWorker:
             raise
         try:
             runtime.transport_lost()
-            runtime.shutdown()
-            if self._factory is None:
-                self._assembly.dispose_local()
+            try:
+                if self._restart is not None:
+                    self._restart.seal(runtime.native_owned_requests())
+            finally:
+                try:
+                    runtime.shutdown()
+                finally:
+                    if self._factory is None:
+                        self._assembly.dispose_local()
         finally:
             self._stopped = True
             self._close_stores()

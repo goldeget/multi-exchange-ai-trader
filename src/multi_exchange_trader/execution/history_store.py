@@ -671,7 +671,7 @@ class HistoryStore:
         """
         self._check_open()
         client_order_id = _text(client_order_id)
-        if (type(venue_order_ids) is not tuple or not 0 < len(venue_order_ids) <= 16
+        if (type(venue_order_ids) is not tuple or not 0 <= len(venue_order_ids) <= 16
                 or any(type(identity) is not str for identity in venue_order_ids)
                 or len(set(venue_order_ids)) != len(venue_order_ids)):
             raise HistoryError("HISTORY_ORDER_IDENTITIES_INVALID")

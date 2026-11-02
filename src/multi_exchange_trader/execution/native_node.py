@@ -107,7 +107,7 @@ def _native_modules() -> dict[str, Any]:
 
 
 def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
-                      trader_id: str) -> object:
+                      trader_id: str, restart_safe: bool = False) -> object:
     """Build the actual pinned config without importing native modules on Windows."""
     if (type(symbols) is not tuple or not symbols or len(set(symbols)) != len(symbols)
             or any(type(s) is not str or re.fullmatch(r"[A-Z0-9]{2,48}", s) is None
@@ -134,7 +134,8 @@ def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
         trader_id=trader_id,
         logging=cfg.LoggingConfig(log_level="ERROR"),
         exec_engine=cfg.LiveExecEngineConfig(
-            reconciliation=True, reconciliation_instrument_ids=instruments,
+            load_cache=not restart_safe, reconciliation=not restart_safe,
+            reconciliation_instrument_ids=instruments,
             filter_unclaimed_external_orders=True, filter_position_reports=True,
             generate_missing_orders=False),
         data_clients={}, exec_clients={"BYBIT": execution},
@@ -144,7 +145,8 @@ def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
 def build_native_node(*, session: BybitDemoAccountSession,
                       binding: AuthenticatedAccountBinding, scope: ProtectionScope,
                       symbols: tuple[str, ...], trader_id: str,
-                      on_event: Callable[[NativeChannel, object], None]) -> NativeNodeAssembly:
+                      on_event: Callable[[NativeChannel, object], None],
+                      restart_safe: bool = False) -> NativeNodeAssembly:
     """Register real Strategy/factory/client on the current worker loop, without run.
 
     Only session.configure_native_execution delivers credentials into the builder.
@@ -155,7 +157,8 @@ def build_native_node(*, session: BybitDemoAccountSession,
     result: list[NativeNodeAssembly] = []
 
     def install(config: object) -> None:
-        node_config = build_node_config(config, symbols=symbols, trader_id=trader_id)
+        node_config = build_node_config(config, symbols=symbols, trader_id=trader_id,
+                                        restart_safe=restart_safe)
         native_node = modules["node"].TradingNode(config=node_config, loop=loop)
         try:
             captured: list[Any] = []
