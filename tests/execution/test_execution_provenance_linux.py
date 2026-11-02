@@ -4,13 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-
-from multi_exchange_trader.execution.execution_provenance import (
-    NativeExecutionCandidate,
-    VenueExecutionObservation,
-    compare_execution_candidate,
-)
-from tests.execution.test_bybit_native_linux import (
+from test_bybit_native_linux import (
     CLIENT_ID,
     INSTRUMENT,
     SCOPE,
@@ -21,6 +15,12 @@ from tests.execution.test_bybit_native_linux import (
     module,
     native_harness,
     request,
+)
+
+from multi_exchange_trader.execution.execution_provenance import (
+    NativeExecutionCandidate,
+    VenueExecutionObservation,
+    compare_execution_candidate,
 )
 
 # Imported fixtures retain their actual namespace and socket-denial checks.
