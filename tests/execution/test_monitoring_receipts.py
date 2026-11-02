@@ -677,3 +677,142 @@ async def test_terminal_post_body_with_real_pong_is_not_target_invalidation(
         assert not owner._monitoring_receipts
     finally:
         await stream.close()
+
+@pytest.mark.parametrize('endpoint,defect', [
+    ('position', 'missing_page'), ('position', 'bad_list'), ('position', 'bad_cursor'),
+    ('position', 'missing_position'), ('position', 'bad_size'), ('position', 'missing_side'),
+    ('position', 'hedge'), ('order', 'bad_quantity'), ('order', 'missing_id'),
+    ('order', 'conditional'), ('order', 'bad_updated_time'),
+    ('order', 'cursor_repeat'), ('order', 'cursor_cap'), ('order', 'duplicate_conflict'),
+    ('execution', 'bad_quantity'),
+    ('execution', 'missing_fee_currency'), ('execution', 'bad_value'),
+    ('execution', 'missing_seq'), ('execution', 'nontrade'),
+])
+async def test_malformed_endpoint_and_real_pong_is_terminal_before_retarget(
+    target_core, monkeypatch, endpoint, defect
+):
+    from test_private_monitor_reports import execution_row
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.execution.monitoring_models import _MonitoringTargetInvalidated
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    budget, sends = MonitoringReadBudget(), []
+    def capture():
+        core[3][0] = stream.stamp()
+        return capture_monitoring_target(core[2].runtime, core[2]._assembly,
+            restore_generation_id='restore-1', policy_revision='0', witness=core[1]._witness,
+            stream_stamp=core[3][0])
+    target = capture()
+    paths = {'position': '/v5/position/list', 'order': '/v5/order/realtime',
+             'execution': '/v5/execution/list'}
+    position = {'symbol': 'BTCUSDT', 'positionIdx': 0, 'side': '', 'size': '0'}
+    order = {'symbol': 'BTCUSDT', 'positionIdx': 0, 'side': 'Buy', 'orderId': 'venue-1',
+             'orderLinkId': 'client-1', 'orderStatus': 'New', 'qty': '2', 'cumExecQty': '0',
+             'leavesQty': '2', 'createdTime': str(MS-1000), 'updatedTime': str(MS-1000),
+             'orderType': 'Limit', 'timeInForce': 'GTC', 'price': '100', 'reduceOnly': False,
+             'stopOrderType': '', 'triggerPrice': '', 'triggerDirection': 0,
+             'closeOnTrigger': False, 'takeProfit': '', 'stopLoss': '', 'createType': 'CreateByUser'}
+    execution = execution_row()
+    execution.update(symbol='BTCUSDT', execTime=str(MS-500))
+    row = {'position': position, 'order': order, 'execution': execution}[endpoint].copy()
+    updates = {'bad_size': ('size', '-1'), 'missing_side': ('side', None),
+               'hedge': ('positionIdx', 1), 'bad_quantity': ('qty' if endpoint == 'order' else 'execQty', '-1'),
+               'missing_id': ('orderId', None), 'conditional': ('stopOrderType', 'StopLoss'),
+               'bad_updated_time': ('updatedTime', str(MS+1000)),
+               'missing_fee_currency': ('feeCurrency', None), 'bad_value': ('execValue', '999'),
+               'missing_seq': ('seq', None), 'nontrade': ('execType', 'Funding')}
+    if defect in updates:
+        key, value = updates[defect]
+        row[key] = value
+    result = {'category': 'linear', 'list': [row], 'nextPageCursor': ''}
+    if defect == 'missing_page':
+        result = {}
+    elif defect == 'bad_list':
+        result['list'] = {}
+    elif defect == 'bad_cursor':
+        result['nextPageCursor'] = None
+    elif defect == 'missing_position':
+        result['list'] = []
+    original = httpx.AsyncClient.send
+    async def send(client, request, **kwargs):
+        sends.append(request.url.path)
+        if request.url.path != paths[endpoint]:
+            return await original(client, request, **kwargs)
+        body = result
+        page_count = sends.count(paths[endpoint])
+        fail_page = 5 if defect == 'cursor_cap' else 2
+        if defect in ('cursor_repeat', 'cursor_cap', 'duplicate_conflict'):
+            page_row = row.copy()
+            cursor = f'cursor-{page_count}'
+            if page_count == fail_page and defect == 'cursor_repeat':
+                cursor = 'cursor-1'
+            if page_count == fail_page and defect == 'duplicate_conflict':
+                cursor = ''
+                page_row['price'] = '101'
+            body = {'category': 'linear', 'list': [page_row], 'nextPageCursor': cursor}
+        if defect not in ('cursor_repeat', 'cursor_cap', 'duplicate_conflict') or page_count == fail_page:
+            await stream._ping()
+            await stream.barrier()
+            core[3][0] = stream.stamp()
+        return httpx.Response(200, json={'retCode': 0, 'time': MS, 'result': body}, request=request)
+    monkeypatch.setattr(httpx.AsyncClient, 'send', send)
+    try:
+        with owner._monitoring_operation(budget):
+            with pytest.raises(ValueError) as failure:
+                await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+            assert not isinstance(failure.value, _MonitoringTargetInvalidated)
+            assert str(failure.value) == 'MONITORING_READ_FAILED'
+            count = len(sends)
+            assert core[3][0].received > target.stream_stamp.received
+            with pytest.raises(ValueError):
+                await owner.read_monitoring_receipt(binding, target=capture(), phase='POST')
+            assert len(sends) == count and budget.physical_attempts == count
+            assert not owner._monitoring_receipts
+    finally:
+        await stream.close()
+
+@pytest.mark.parametrize('path', ['/v5/position/list', '/v5/order/realtime', '/v5/execution/list'])
+async def test_valid_endpoint_with_real_pong_remains_retargetable(target_core, monkeypatch, path):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.execution.monitoring_models import _MonitoringTargetInvalidated
+    from multi_exchange_trader.execution.monitoring_reconciliation import capture_monitoring_target
+
+    core = target_core
+    owner, binding, *_ = core[0]
+    stream, _ = await connected(monkeypatch, lambda *args: None)
+    budget, advance = MonitoringReadBudget(), [True]
+    def capture():
+        core[3][0] = stream.stamp()
+        return capture_monitoring_target(core[2].runtime, core[2]._assembly,
+            restore_generation_id='restore-1', policy_revision='0', witness=core[1]._witness,
+            stream_stamp=core[3][0])
+    target = capture()
+    original = httpx.AsyncClient.send
+    async def send(client, request, **kwargs):
+        result = await original(client, request, **kwargs)
+        if request.url.path == path and advance[0]:
+            await stream._ping()
+            await stream.barrier()
+            core[3][0] = stream.stamp()
+            advance[0] = False
+        return result
+    monkeypatch.setattr(httpx.AsyncClient, 'send', send)
+    try:
+        with owner._monitoring_operation(budget):
+            with pytest.raises(_MonitoringTargetInvalidated):
+                await owner.read_monitoring_receipt(binding, target=target, phase='POST')
+            current = capture()
+            assert current.stream_stamp.received > target.stream_stamp.received
+            receipt = await owner.read_monitoring_receipt(binding, target=current, phase='POST')
+            view = owner.consume_monitoring_receipt(receipt, binding=binding, target=current, phase='POST')
+            assert view.assessment.status.value == 'MATCHED'
+            assert not owner._monitoring_receipts
+    finally:
+        await stream.close()

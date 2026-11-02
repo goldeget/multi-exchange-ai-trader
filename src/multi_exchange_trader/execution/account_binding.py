@@ -411,17 +411,23 @@ class BybitDemoAccountSession:
         self._monitoring_receipts[pending] = slot
         receipt: AuthenticatedMonitoringReceipt | None = None
 
-        def guard() -> None:
+        def require_owner() -> None:
             self._prune_monitoring_receipts()
             self.require_observation_binding(binding, scope=target.scope)
-            require_current_target(target, self, phase)
+            assert target._witness is not None
+            target._witness.require()
             if (self._monitoring_receipts.get(pending) is not slot
                     or slot.generation is not self._monitoring_generation):
                 raise AccountBindingError("MONITORING_RECEIPT_REVOKED")
 
+        def guard() -> None:
+            require_owner()
+            require_current_target(target, self, phase)
+
         failure: ValueError
         try:
-            observation = await BybitMonitoringReader(self, binding, target=target, guard=guard).read()
+            observation = await BybitMonitoringReader(self, binding, target=target,
+                guard=guard, owner_guard=require_owner).read()
             guard()
             assessment = compare_restored_state(target, observation)
             if assessment.status is MonitoringStatus.BLOCKED:

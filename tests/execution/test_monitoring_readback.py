@@ -435,3 +435,17 @@ def test_terminal_budget_fault_survives_target_change_and_new_receipt(failure, m
     with pytest.raises(ValueError):
         budget.before_attempt(0)
     assert budget.physical_attempts == 0
+
+@pytest.mark.parametrize('field,value', [('quantity', Decimal(3)), ('price', Decimal(101)),
+                                       ('venue_order_id', 'foreign'), ('time_in_force', 'IOC')])
+def test_positive_owned_order_immutable_economics_are_validated_per_response(field, value):
+    from dataclasses import replace
+
+    from test_monitoring_reconciliation import sample
+
+    import multi_exchange_trader.execution.monitoring_readback as module
+    target, observation = sample()
+    assert hasattr(module, '_validate_positive_order'), 'owned row shape must validate before retarget'
+    module._validate_positive_order(target.native.orders[0], observation.orders[0])
+    with pytest.raises(ValueError):
+        module._validate_positive_order(target.native.orders[0], replace(observation.orders[0], **{field: value}))

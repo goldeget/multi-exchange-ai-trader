@@ -170,6 +170,7 @@ class _ReadOperation(Protocol):
     def before_attempt(self, attempt: int) -> None: ...
     def response(self, status: int, headers: Mapping[str, str]) -> None: ...
     def read_failed(self) -> None: ...
+    def validate_response(self, result: dict[str, object], stamp: int | None) -> None: ...
 
 
 class BybitReadOnlyClient:
@@ -363,6 +364,7 @@ class BybitReadOnlyClient:
                     operation.read_failed()
                 raise
             if operation is not None:
+                operation.validate_response(*accepted)
                 operation.check()
             return accepted
 

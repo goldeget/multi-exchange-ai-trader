@@ -19,6 +19,7 @@ class MonitoringBudgetError(ValueError):
 class _ReceiptBudget:
     deadline: float
     guard: Callable[[], None]
+    owner_guard: Callable[[], None]
     logical: int = 0
 
 
@@ -31,6 +32,9 @@ class MonitoringReadBudget:
         self.deadline = self._last + 60.0
         self.physical_attempts = 0
         self._terminal_failure: str | None = None
+        self._validator: ContextVar[Callable[[dict[str, object], int | None], None] | None] = ContextVar(
+            "monitoring_response_validator", default=None
+        )
         self._receipt: ContextVar[_ReceiptBudget | None] = ContextVar(
             "monitoring_receipt", default=None
         )
@@ -64,9 +68,28 @@ class MonitoringReadBudget:
         self._fail("MONITORING_READ_FAILED")
 
     @contextmanager
-    def receipt(self, *, guard: Callable[[], None] = lambda: None) -> Iterator[None]:
+    def validating_response(self, validator: Callable[[dict[str, object], int | None], None]
+                            ) -> Iterator[None]:
+        token = self._validator.set(validator)
+        try:
+            yield
+        finally:
+            self._validator.reset(token)
+
+    def validate_response(self, result: dict[str, object], stamp: int | None) -> None:
+        validator = self._validator.get()
+        if validator is not None:
+            try:
+                validator(result, stamp)
+            except Exception:  # noqa: BLE001 - validation errors are fixed terminal failures.
+                self.read_failed()
+
+    @contextmanager
+    def receipt(self, *, guard: Callable[[], None] = lambda: None,
+                owner_guard: Callable[[], None] = lambda: None) -> Iterator[None]:
         self.check()
-        token = self._receipt.set(_ReceiptBudget(min(self.deadline, time.monotonic() + 20), guard))
+        token = self._receipt.set(_ReceiptBudget(
+            min(self.deadline, time.monotonic() + 20), guard, owner_guard))
         try:
             yield
         finally:
@@ -95,6 +118,9 @@ class MonitoringReadBudget:
         if remaining is not None and (not remaining.isdigit() or int(remaining) <= 0):
             self._fail("MONITORING_QUOTA_OR_BAN")
         # Bounds/owner checks still run immediately after I/O. Defer only
-        # target comparison until the accepted response envelope is validated.
+        # target comparison until the envelope and endpoint rows are validated.
         self._check_limits()
         self._guard()
+        receipt = self._receipt.get()
+        if receipt is not None:
+            receipt.owner_guard()
