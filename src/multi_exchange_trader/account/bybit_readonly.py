@@ -26,6 +26,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..credential_resolution import CredentialResolver
 from .config import (
     EnvironmentName,
     MissingBybitCredentials,
@@ -217,10 +218,12 @@ class BybitReadOnlyClient:
 
     @classmethod
     def from_environment(
-        cls, transport: httpx.AsyncBaseTransport | None = None
+        cls, transport: httpx.AsyncBaseTransport | None = None, *,
+        resolver: CredentialResolver | None = None,
     ) -> "BybitReadOnlyClient":
-        key, secret = require_bybit_credentials()
-        environment, base_url = resolve_environment()
+        context = resolver if resolver is not None else CredentialResolver.from_environment()
+        key, secret = require_bybit_credentials(resolver=context)
+        environment, base_url = resolve_environment(resolver=context)
         return cls(
             api_key=key,
             api_secret=secret,
@@ -230,9 +233,10 @@ class BybitReadOnlyClient:
         )
 
     @classmethod
-    def for_demo(cls, transport: httpx.AsyncBaseTransport | None = None) -> "BybitReadOnlyClient":
+    def for_demo(cls, transport: httpx.AsyncBaseTransport | None = None, *,
+                 resolver: CredentialResolver | None = None) -> "BybitReadOnlyClient":
         """Practice-account reads. The host is fixed and the live key is refused."""
-        key, secret = require_demo_credentials()
+        key, secret = require_demo_credentials(resolver=resolver)
         return cls(
             api_key=key,
             api_secret=secret,
@@ -243,6 +247,10 @@ class BybitReadOnlyClient:
 
     def __repr__(self) -> str:
         return f"BybitReadOnlyClient(environment={self.environment}, base_url={self.base_url})"
+
+    def _contains_credential(self, text: str) -> bool:
+        """Private publication guard for this client's captured credentials."""
+        return any(value and value in text for value in (self._api_key, self._api_secret))
 
     async def aclose(self) -> None:
         for logger in self._loggers:

@@ -13,6 +13,8 @@ from .ai.budget import BudgetBook
 from .ai.config import AnthropicConfig, load_anthropic_config
 from .ai.provider_config import AIProviderConfig, load_ai_provider_config
 from .capabilities import capabilities
+from .credential_resolution import CredentialStartup
+from .credentials import CredentialStoreError
 from .read_models import read_overview
 from .recommendations.execution import demo_capability
 from .research.api import public_scheduler
@@ -80,12 +82,17 @@ def _scheduler(request: Request, value: dict[str, Any]) -> dict[str, object]:
     return status
 
 
-def install(application: FastAPI) -> None:
+def install(application: FastAPI, *, credential_context: CredentialStartup | None = None) -> None:
+    context = credential_context if credential_context is not None else CredentialStartup()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Importing/creating an app must not read an operator credential file.
         # Capture once at startup; subsequent changes require a restart.
-        config = load_ai_provider_config()
+        try:
+            config = load_ai_provider_config(resolver=context.get())
+        except CredentialStoreError:
+            config = AIProviderConfig(status="INVALID_CONFIGURATION")
         app.state.ai_provider_config = config
         app.state.anthropic_config = (AnthropicConfig(config.registered, config.status, config.model_id)
                                       if config.provider == "ANTHROPIC" else AnthropicConfig())

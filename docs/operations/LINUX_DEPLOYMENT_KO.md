@@ -19,6 +19,33 @@
 
 공개 설정 API는 `OFFLINE_TEST`, `llm_enabled=false`, `external_calls=false` 계약을 유지한다. 해당 이름의 가상 환경 스위치를 새로 만들지 않는다. Anthropic/OpenRouter 키·모델 등록은 `REGISTERED_UNVERIFIED`이며 인증 성공, 잔액, 유료 호출 승인, LLM 분석 실행을 의미하지 않는다. 기본 비밀 파일은 주석만 있다. 별도 명시 호출용 OpenRouter 생성 라이브러리가 있어도 이 서비스는 이를 자동 실행하는 worker를 연결하지 않는다. 일반 공개 시세 호스트도 `runtime.env.example`에서 차단한다. Bybit 실제 DEMO 점검은 연습 계정에 **실제 주문**을 만들 수 있으므로 설치·건강 점검으로 사용하지 않는다.
 
+## 선택적 프로그램 관리 자격 증명
+
+기존 root 소유 `0600` systemd `EnvironmentFile` 방식은 계속 지원한다. 프로그램 관리
+방식을 선택할 때는 [CREDENTIALS_KO.md](CREDENTIALS_KO.md)의 명시 CLI로 서비스 사용자
+`trader` 권한에서 한 번 등록하고, 같은 사용자 권한으로 재시작하여 읽는다. Linux 저장소는
+서비스 사용자 소유 디렉터리 `0700`·파일 `0600`인 **접근 통제된 평문**이며 암호화가 아니다.
+root가 읽어 환경에 전달하는 기존 파일을 trader가 직접 읽을 수 있다고 가정하지 않는다.
+운영자가 등록 원본을 안전하게 준비하며 원본은 CLI가 변경·삭제하지 않는다.
+
+`TRADER_CREDENTIAL_FILE`에 `/var/lib/trader/private/credentials.json` 같은 명시 절대 경로를
+설정할 수 있다. 코드·웹·`/var/lib/trader/data`·업무 백업 디렉터리 밖에 둔다. 기본 경로는
+서비스 사용자의 `$XDG_CONFIG_HOME` 또는 `$HOME/.config` 기준이며 배포 전에 실제 경로와
+systemd 격리 내 읽기 권한을 검토한다. 기존 경로나 권한을 자동 변경하지 않는다.
+`TRADER_CREDENTIAL_FILE=off`는 프로그램 저장소 선택만 끄고 기존 환경 설정을 유지한다.
+
+앱은 시작 시 한 저장소 스냅샷을 계좌·AI 등록 상태에 공유하고 이후 키 변경에는 재시작을
+요구한다. 저장 namespace가 우선하며, 저장소가 존재하지만 손상·읽기 불가일 때는 기존
+환경 파일로 다른 계정을 선택하지 않는다. 관련 연결은 차단되고 PAPER·리서치 조회의
+별도 오류 격리는 유지한다. 저장 파일은 `state_snapshot.py`의 장부 목록이나 manifest에
+추가하지 않는다. 운영자의 OS 계정·원본·비밀 복구 절차는 장부 복구와 별도로 관리한다.
+
+템플릿의 DEMO/LIVE/TESTNET 강제 비활성화와 AI `OFFLINE_TEST` 계약은 그대로다. 저장된
+키가 있어도 모니터·거래 worker·유료 AI worker를 자동 시작하지 않는다. 기본 worker CLI의
+`DRY_CHECK`는 비밀 저장소를 열지 않으며 명시 `--run-monitor`도 기존 계정 identity·권한·
+네이티브·운용 자격을 우회하지 않는다. 실제 등록·서비스 변경·DEMO 또는 유료 AI 실행은
+이 문서 작성으로 수행된 작업이 아니다.
+
 ## 재현 가능한 소스·빌드 준비
 
 대상은 Ubuntu 24.04 x86_64, Python **3.12**, uv **0.12.23**, Node **24** 계열이다. Python 패키지는 `uv.lock`, 웹 패키지는 `apps/web/package-lock.json`을 그대로 사용한다. NautilusTrader **1.231.0**, fsspec **2026.6.0** 보안 override를 유지한다. OS·Node·Python의 실제 패치 버전과 설치 패키지 버전도 설치 기록에 남긴다. `uv sync --upgrade`, 잠금 파일 재생성, 자동 배포·자동 업데이트를 하지 않는다.

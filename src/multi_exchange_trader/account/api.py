@@ -121,7 +121,7 @@ async def account_view(request: Request) -> AccountView:
         client = _client(request)
         problem = None if client is not None else _problem(request)
         view = await build_account_view(client, problem, live_trading=live_trading_enabled())
-        return publish(view)
+        return publish(view, credential_check=client._contains_credential if client else None)
 
     return await gate.get(load)
 

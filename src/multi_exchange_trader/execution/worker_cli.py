@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..account.config import require_demo_credentials
+from ..credential_resolution import CredentialResolver
 from .account_binding import BybitDemoAccountSession
 from .protection import ProtectionScope
 from .risk import EntryDecision, ReservationTotals
@@ -71,9 +73,9 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
 
 
 async def _run(args: argparse.Namespace) -> None:
-    # No dotenv, key discovery, import paths, UI plugins, or fallback account identity.
-    key = os.environ.get("BYBIT_DEMO_API_KEY", "")
-    secret = os.environ.get("BYBIT_DEMO_API_SECRET", "")
+    # Explicit monitor only: one saved snapshot; no flags or identity are inferred.
+    context = CredentialResolver.from_environment(environ=os.environ)
+    key, secret = require_demo_credentials(resolver=context)
     session = BybitDemoAccountSession(api_key=key, api_secret=secret)
     try:
         # Authenticate directly for the typed opaque binding; no caller flags can create it.

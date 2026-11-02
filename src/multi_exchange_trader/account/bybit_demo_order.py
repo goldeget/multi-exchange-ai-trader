@@ -14,6 +14,7 @@ from typing import cast
 
 import httpx
 
+from ..credential_resolution import CredentialResolver
 from .bybit_readonly import sign_v5
 from .config import allowed_host, require_demo_credentials
 
@@ -69,9 +70,10 @@ class BybitDemoOrderClient:
 
     @classmethod
     def from_environment(
-        cls, transport: httpx.AsyncBaseTransport | None = None
+        cls, transport: httpx.AsyncBaseTransport | None = None, *,
+        resolver: CredentialResolver | None = None,
     ) -> BybitDemoOrderClient:
-        key, secret = require_demo_credentials()
+        key, secret = require_demo_credentials(resolver=resolver)
         return cls(api_key=key, api_secret=secret, transport=transport)
 
     def __repr__(self) -> str:

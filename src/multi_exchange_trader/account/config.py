@@ -1,8 +1,14 @@
-"""Bybit credentials and the live-trading gate. Values come from the environment only."""
+"""Private Bybit credential selection and the unchanged explicit trading gates."""
 
 import os
 from pathlib import Path
 from typing import Literal
+
+from ..credential_resolution import (
+    BybitPairCollision,
+    CredentialResolver,
+    MissingBybitField,
+)
 
 EnvironmentName = Literal["mainnet", "demo", "testnet"]
 
@@ -75,14 +81,15 @@ def _flag(name: str, default: bool) -> bool:
     raise ValueError(f"Invalid boolean environment flag: {name}")
 
 
-def resolve_environment() -> tuple[EnvironmentName, str]:
+def resolve_environment(*, resolver: CredentialResolver | None = None) -> tuple[EnvironmentName, str]:
     """Return the live-account host.
 
     ``BYBIT_DEMO`` marks that a separate practice key exists. It does not move
     this live client onto the demo host, and it never replaces the live key.
     """
-    demo = _flag("BYBIT_DEMO", False)
-    testnet = _flag("BYBIT_TESTNET", False)
+    demo = _flag("BYBIT_DEMO", False) if resolver is None else resolver.bybit_flag("BYBIT_DEMO")
+    testnet = (_flag("BYBIT_TESTNET", False) if resolver is None
+               else resolver.bybit_flag("BYBIT_TESTNET"))
     if demo and testnet:
         raise ValueError("BYBIT_DEMO and BYBIT_TESTNET cannot both be enabled")
     if testnet:
@@ -90,19 +97,19 @@ def resolve_environment() -> tuple[EnvironmentName, str]:
     return "mainnet", _HOSTS["mainnet"]
 
 
-def require_demo_credentials() -> tuple[str, str]:
+def require_demo_credentials(*, resolver: CredentialResolver | None = None) -> tuple[str, str]:
     """Return the practice-account key pair. The live key is not accepted here."""
-    load_bybit_env_file()
-    if not _flag("BYBIT_DEMO", False):
+    context = resolver if resolver is not None else CredentialResolver.from_environment()
+    try:
+        key, secret = context.bybit_pair("demo")
+    except MissingBybitField as exc:
+        raise MissingBybitCredentials(f"{exc.name} is not set") from None
+    except BybitPairCollision:
+        raise MissingBybitCredentials("demo credentials must stay separate from the live key") from None
+    if not context.bybit_flag("BYBIT_DEMO"):
         raise MissingBybitCredentials("BYBIT_DEMO is not enabled")
-    key = os.environ.get("BYBIT_DEMO_API_KEY", "").strip()
-    secret = os.environ.get("BYBIT_DEMO_API_SECRET", "").strip()
-    live_key = os.environ.get("BYBIT_API_KEY", "").strip()
-    live_secret = os.environ.get("BYBIT_API_SECRET", "").strip()
     if not key or not secret:
         raise MissingBybitCredentials("BYBIT_DEMO_API_KEY is not set")
-    if key == live_key or secret == live_secret:
-        raise MissingBybitCredentials("demo credentials must stay separate from the live key")
     return key, secret
 
 
@@ -110,11 +117,13 @@ def allowed_host(environment: EnvironmentName) -> str:
     return _HOSTS[environment]
 
 
-def require_bybit_credentials() -> tuple[str, str]:
+def require_bybit_credentials(*, resolver: CredentialResolver | None = None) -> tuple[str, str]:
     """Return the key and secret, or refuse to start the account client."""
-    load_bybit_env_file()
-    key = os.environ.get("BYBIT_API_KEY", "").strip()
-    secret = os.environ.get("BYBIT_API_SECRET", "").strip()
+    context = resolver if resolver is not None else CredentialResolver.from_environment()
+    try:
+        key, secret = context.bybit_pair("mainnet")
+    except MissingBybitField as exc:
+        raise MissingBybitCredentials(f"{exc.name} is not set") from None
     if not secret:
         raise MissingBybitCredentials("BYBIT_API_SECRET is not set")
     if not key:

@@ -6,9 +6,12 @@ import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from .config import load_anthropic_config
+
+if TYPE_CHECKING:
+    from ..credential_resolution import CredentialResolver
 
 Provider = Literal["ANTHROPIC", "OPENROUTER"]
 RegistrationStatus = Literal["NOT_CONFIGURED", "REGISTERED_UNVERIFIED", "INVALID_CONFIGURATION"]
@@ -85,7 +88,8 @@ def _file_values(raw: str, *, shared: bool) -> dict[str, str]:
     return values
 
 
-def load_ai_provider_config(environ: Mapping[str, str] | None = None) -> AIProviderConfig:
+def load_ai_provider_config(environ: Mapping[str, str] | None = None, *,
+                            resolver: "CredentialResolver | None" = None) -> AIProviderConfig:
     """Read an explicit shared file and nonblank overrides; never search for .env.
 
     An absent selector defaults to Anthropic. AI_ENV_FILE, including an explicit
@@ -93,7 +97,18 @@ def load_ai_provider_config(environ: Mapping[str, str] | None = None) -> AIProvi
     Explicit OpenRouter never reads ANTHROPIC_ENV_FILE or uses an Anthropic key.
     Invalid input returns fixed metadata without any raw values or exceptions.
     """
-    source = os.environ if environ is None else environ
+    if environ is None:
+        from ..credential_resolution import CredentialResolver, InvalidAIConfiguration
+        from ..credentials import CredentialStoreError
+
+        try:
+            context = resolver if resolver is not None else CredentialResolver.from_environment()
+            environ = context.ai_values()
+        except InvalidAIConfiguration as exc:
+            return exc.config
+        except CredentialStoreError:
+            return AIProviderConfig(status="INVALID_CONFIGURATION")
+    source = environ
     provider: Provider = "ANTHROPIC"
     try:
         selector = source.get("AI_PROVIDER", "").strip()

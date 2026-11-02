@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
@@ -141,10 +142,12 @@ def blank_view(
     )
 
 
-def publish(view: AccountView) -> AccountView:
+def publish(view: AccountView, *, credential_check: Callable[[str], bool] | None = None) -> AccountView:
     """Hide the whole view if a credential slipped into the JSON."""
     rendered = json.dumps(view.model_dump(by_alias=True, mode="json"), ensure_ascii=False)
-    if not text_contains_credential(rendered):
+    if not text_contains_credential(rendered) and not (
+        credential_check is not None and credential_check(rendered)
+    ):
         return view
     return blank_view("credential_leak", view.환경코드, live_trading=view.실거래켜짐)
 

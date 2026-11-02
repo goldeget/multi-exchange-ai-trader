@@ -17,6 +17,8 @@ from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
 from .ai.budget import BudgetBook
 from .controls import install as install_controls
+from .credential_resolution import CredentialResolver, CredentialStartup
+from .credentials import CredentialStoreError
 from .execution.runtime_policy import RuntimePolicyBook
 from .execution.settings_api import install as install_automatic_settings
 from .market_data.adapters.base import MarketDataUnavailable
@@ -49,7 +51,10 @@ def get_market_data_service(request: Request) -> MarketDataService:
 Service = Annotated[MarketDataService, Depends(get_market_data_service)]
 
 
-def create_app(service: MarketDataService | None = None) -> FastAPI:
+def create_app(service: MarketDataService | None = None, *,
+               credential_resolver: CredentialResolver | None = None) -> FastAPI:
+    credential_context = CredentialStartup(credential_resolver)
+
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         # V2 native leverage/pause/replay and evaluation capital/splits passed CI50.
@@ -101,19 +106,19 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
         application.state.bybit_practice = None
         application.state.bybit_account_problem = "missing_credentials"
         try:
-            account = BybitReadOnlyClient.from_environment()
+            account = BybitReadOnlyClient.from_environment(resolver=credential_context.get())
         except MissingBybitCredentials:
             account = None
-        except ValueError:
+        except (ValueError, CredentialStoreError):
             application.state.bybit_account_problem = "config"
         else:
             application.state.bybit_account = account
             application.state.bybit_account_problem = None
         try:
-            practice = BybitReadOnlyClient.for_demo()
-            practice_orders = BybitDemoOrderClient.from_environment()
+            practice = BybitReadOnlyClient.for_demo(resolver=credential_context.get())
+            practice_orders = BybitDemoOrderClient.from_environment(resolver=credential_context.get())
             application.state.bybit_practice = BybitPracticeGate(practice, practice_orders)
-        except (MissingBybitCredentials, ValueError, PracticeUnavailable):
+        except (MissingBybitCredentials, ValueError, CredentialStoreError, PracticeUnavailable):
             if practice is not None:
                 await practice.aclose()
             if practice_orders is not None:
@@ -220,7 +225,7 @@ def create_app(service: MarketDataService | None = None) -> FastAPI:
     install_research(application)
     install_recommendations(application)
     install_account(application)
-    install_controls(application)
+    install_controls(application, credential_context=credential_context)
     install_automatic_settings(application)
     install_spot(application)
     return application
