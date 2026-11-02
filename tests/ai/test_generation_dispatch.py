@@ -12,11 +12,14 @@ from threading import Event
 import httpx
 import pytest
 
+from multi_exchange_trader.ai import generation
 from multi_exchange_trader.ai.budget import BudgetBook
 from multi_exchange_trader.ai.dispatch import AIDispatcher
 from multi_exchange_trader.ai.generation import (
+    GenerationResult,
     OpenRouterGenerationClient,
     quote_from_metadata,
+    validate_http_status,
 )
 from multi_exchange_trader.ai.openrouter_metadata import (
     OpenRouterModelMetadata,
@@ -96,6 +99,173 @@ def dispatch(dispatcher, **changes):
     arguments = {"maximum_cost_usd": "0.01", "quote": quote(), "enabled": True}
     arguments.update(changes)
     return dispatcher.dispatch(selection_request(), **arguments)
+
+
+class StatusSubclass(int):
+    pass
+
+
+@pytest.mark.parametrize("value", [None, 100, 200, 599])
+def test_generation_http_status_scalar_contract(value):
+    assert validate_http_status(value) is value
+    assert GenerationResult(None, http_status=value).http_status is value
+
+
+@pytest.mark.parametrize("value", [True, False, 99, 600, "402", 402.0,
+                                   Decimal(402), StatusSubclass(402)])
+def test_generation_http_status_rejects_invalid_scalars(value):
+    for construct in (validate_http_status, lambda status: GenerationResult(None, http_status=status)):
+        with pytest.raises(ValueError) as caught:
+            construct(value)
+        assert str(caught.value) == "Invalid HTTP status"
+
+
+def test_generation_result_preserves_positional_arguments():
+    legacy = GenerationResult(None, "0.0012", "output")
+    current = GenerationResult(None, "0.0012", "output", http_status=200)
+    assert legacy.http_status is None
+    assert current.output == legacy.output == "output"
+    assert current.exact_cost_usd == legacy.exact_cost_usd == "0.0012"
+    assert "output" not in repr(current)
+
+
+def generate_fake(handler):
+    calls = []
+
+    def receive(request):
+        calls.append(request)
+        return handler(request)
+
+    client = OpenRouterGenerationClient(KEY, MODEL, transport=httpx.MockTransport(receive))
+    result = client.generate(selection_request(), quote=quote(), now=NOW)
+    assert len(calls) == 1
+    assert KEY not in repr(result)
+    return result
+
+
+@pytest.mark.parametrize("status", [200, 401, 402, 403, 404, 429, 503])
+def test_generation_status_from_actual_headers(status):
+    response = completion() if status == 200 else {"error": {"code": 402},
+                                                  "usage": {"cost": 0.0012}}
+    result = generate_fake(lambda _: httpx.Response(status, json=response))
+    assert result.http_status == status
+    assert result.failure == (None if status == 200 else "HTTP_ERROR")
+    assert result.exact_cost_usd == "0.0012"
+    assert (result.output is not None) == (status == 200)
+
+
+@pytest.mark.parametrize(("case", "status", "failure", "cost"), [
+    ("error-envelope", 200, "INVALID_RESPONSE", "0.0012"),
+    ("redirect", 302, "REDIRECT_REJECTED", None),
+    ("malformed", 402, "INVALID_RESPONSE", None),
+    ("duplicate", 404, "INVALID_RESPONSE", None),
+    ("non-utf8", 429, "INVALID_RESPONSE", None),
+    ("reflected-key", 403, "INVALID_RESPONSE", "0.0012"),
+    ("encoding", 503, "INVALID_RESPONSE", None),
+    ("invalid-length", 402, "RESPONSE_TOO_LARGE", None),
+    ("oversized-length", 404, "RESPONSE_TOO_LARGE", None),
+    ("overflow", 429, "RESPONSE_TOO_LARGE", None),
+    ("deadline", 503, "TIMEOUT", None),
+    ("empty-deadline", 402, "TIMEOUT", None),
+    ("read-timeout", 404, "TIMEOUT", None),
+    ("network-error", 429, "NETWORK_ERROR", None),
+    ("arbitrary-error", 503, "TRANSPORT_ERROR", None),
+    ("context-exit", 402, "TRANSPORT_ERROR", None),
+])
+def test_generation_status_survives_post_header_failure(monkeypatch, case, status, failure, cost):
+    clock = [0.0]
+    monkeypatch.setattr(generation, "monotonic", lambda: clock[0])
+
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            if case == "deadline":
+                clock[0] = 11.0
+            if case == "empty-deadline":
+                clock[0] = 11.0
+                return
+            if case == "read-timeout":
+                raise httpx.ReadTimeout(KEY)
+            if case == "network-error":
+                raise httpx.ReadError(KEY)
+            if case == "arbitrary-error":
+                raise RuntimeError(KEY)
+            if case == "overflow":
+                yield b"x" * 40000
+                yield b"y" * 40000
+            else:
+                yield json.dumps(completion()).encode()
+
+        def close(self):
+            if case == "context-exit":
+                raise RuntimeError(KEY)
+
+    def receive(_):
+        if case == "error-envelope":
+            return httpx.Response(status, json={"error": {"code": 402},
+                                                "usage": {"cost": 0.0012}})
+        if case == "redirect":
+            return httpx.Response(status, headers={"location": "https://fake.invalid"})
+        if case in ("malformed", "duplicate", "non-utf8"):
+            raw = {"malformed": b"{", "duplicate": b'{"usage":{},"usage":{}}',
+                   "non-utf8": b"\xff"}[case]
+            return httpx.Response(status, content=raw)
+        if case == "reflected-key":
+            return httpx.Response(status, json={"error": {"message": KEY},
+                                                "usage": {"cost": 0.0012}})
+        headers = {"encoding": {"content-encoding": "unsupported"},
+                   "invalid-length": {"content-length": "bad"},
+                   "oversized-length": {"content-length": "65537"}}.get(case, {})
+        return httpx.Response(status, headers=headers, stream=Body())
+
+    result = generate_fake(receive)
+    assert result.http_status == status
+    assert result.failure == failure
+    assert result.exact_cost_usd == cost
+    assert result.output is None
+
+
+@pytest.mark.parametrize(("error", "failure"), [(httpx.ReadTimeout, "TIMEOUT"),
+                                                (httpx.ConnectError, "NETWORK_ERROR"),
+                                                (RuntimeError, "TRANSPORT_ERROR")])
+def test_generation_status_is_none_before_headers(error, failure):
+    def receive(_):
+        raise error(KEY)
+
+    result = generate_fake(receive)
+    assert result.http_status is None
+    assert result.failure == failure
+    assert result.exact_cost_usd is None and result.output is None
+
+
+def test_transport_status_does_not_come_from_error_code():
+    result = generate_fake(lambda _: httpx.Response(404, json={"error": {"code": 402}}))
+    assert result.http_status == 404
+    assert result.failure == "HTTP_ERROR"
+    assert result.exact_cost_usd is None and result.output is None
+
+
+@pytest.mark.parametrize("status", [True, False, "402", 402.0, 99, 600])
+@pytest.mark.parametrize(("usage", "cost"), [({"cost": 0.0012}, "0.0012"),
+                                           ({}, None), ({"cost": "0.0012"}, None)])
+def test_invalid_header_status_does_not_erase_cost(tmp_path, status, usage, cost):
+    def receive(_):
+        response = httpx.Response(402, json={"error": {"code": 404, "message": "fake prose"},
+                                            "usage": usage})
+        response.status_code = status
+        return response
+
+    result = generate_fake(receive)
+    assert result.http_status is None
+    assert result.failure == "HTTP_ERROR"
+    assert result.exact_cost_usd == cost and result.output is None
+    assert "fake prose" not in repr(result)
+    dispatcher, budget, calls = setup_dispatch(tmp_path, receive)
+    dispatched = dispatch(dispatcher)
+    assert dispatched.failure == "HTTP_ERROR" and len(calls) == 1
+    assert dispatched.selection is None and dispatched.exact_cost_usd == cost
+    assert dispatched.status == ("SETTLED" if cost is not None else "UNCERTAIN")
+    assert budget.summary()["uncertain"] == ("0.00000000" if cost else "0.01000000")
+    assert budget.summary()["used"] == ("0.00120000" if cost else "0.00000000")
 
 
 def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
