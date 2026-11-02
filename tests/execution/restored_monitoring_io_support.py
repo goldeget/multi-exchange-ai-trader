@@ -411,6 +411,7 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
                     await assembly.node.stop_async()
                     if h.worker._node_task is not None:
                         await asyncio.wait_for(asyncio.shield(h.worker._node_task), 12)
+                        await assembly.settle_owned_tasks()
                     assert not assembly.node.is_running()
                     assembly.require_quiesced()
                     assembly.require_monitoring_tasks_quiesced()

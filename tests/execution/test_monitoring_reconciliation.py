@@ -170,6 +170,81 @@ def test_genuine_native_summary_preserves_original_fills_and_nanoseconds():
 from test_runtime import setup  # noqa: F401 - shared real durable-store fixture
 
 
+def test_quarantine_hold_is_monitorable_without_clearing_accounting_conflict(setup):  # noqa: F811
+    from test_runtime import consume, queue
+
+    from multi_exchange_trader.execution.monitoring_reconciliation import compare_restored_state
+
+    runtime, journal, _store, strategy, *_ = setup
+    record = queue(runtime)
+    journal.claim(record.command_key)
+    consume(runtime, record.client_order_id, "OrderFilled", last_qty=Decimal(2), ts_event=1_000_000_000)
+    runtime.transport_lost()
+    before = runtime.projection("position-1")
+    app = runtime.monitoring_state()
+    assert before.conflicts and before.entries_blocked and before.owned_quantity == 0
+    assert not app.conflicts
+    assert len(app.candidates) == 1 and not app.credits and not app.history_credits
+    target, observation = filled_sample()
+    fill = app.candidates[0].fill
+    original = replace(target.native.executions[0], client_order_id=fill.client_order_id,
+                       fee=fill.commission)
+    native_order = replace(target.native.orders[0], client_order_id=fill.client_order_id)
+    target = replace(target, application=app, native=replace(target.native,
+                     executions=(original,), orders=(native_order,)))
+    observation = replace(observation, executions=(replace(original, seq=10),),
+                          orders=(replace(observation.orders[0], client_order_id=fill.client_order_id),))
+    # The same summary is consumed by PRE capture and POST/re-target comparison.
+    for _ in range(2):
+        assert compare_restored_state(target, observation).status.value == "MATCHED_NATIVE_WITH_UNCREDITED_FILLS"
+        assert runtime.projection("position-1") == before
+        assert runtime.monitoring_state() == app
+    assert journal.get(record.command_key).state.value == "UNKNOWN"
+    assert journal.get(record.command_key).reservation == record.reservation
+    assert not strategy.commands
+    consume(runtime, record.client_order_id, "OrderFilled", trade_id="fill-2")
+    later = runtime.monitoring_state()
+    assert not later.conflicts and len(later.candidates) == 2
+    assert later.positions[0].conflicts == before.conflicts
+    assert later.positions[0].owned_quantity == 0 and not later.credits and not later.history_credits
+
+
+@pytest.mark.parametrize("malformation", ["mixed", "unbacked", "payload", "unknown-client", "duplicate", "execution-conflict"])
+def test_monitoring_rejects_real_or_unbacked_quarantine_conflicts(setup, malformation):  # noqa: F811
+    from test_runtime import consume, queue
+
+    from multi_exchange_trader.execution.protection import ProjectionConflict
+
+    runtime, journal, *_ = setup
+    record = queue(runtime)
+    journal.claim(record.command_key)
+    consume(runtime, record.client_order_id, "OrderFilled")
+    state = runtime.projection("position-1")
+    hold = state.conflicts[0]
+    if malformation == "execution-conflict":
+        consume(runtime, record.client_order_id, "OrderFilled", last_qty=Decimal("0.3"))
+    else:
+        conflicts = {
+            "mixed": (hold, ProjectionConflict("REAL_CONFLICT")),
+            "unbacked": (hold,),
+            "payload": (replace(hold, order=state.orders[0]),),
+            "unknown-client": (replace(hold, client_order_id="foreign"),),
+            "duplicate": (hold, hold),
+        }[malformation]
+        runtime._persist(("READBACK", "malformed-domain-input", ()), replace(state, conflicts=conflicts))
+        if malformation == "unbacked":
+            runtime._projections[state.position_id][3].candidates = ()
+    app = runtime.monitoring_state()
+    assert app.conflicts == ("PROJECTION_CONFLICT",)
+    from multi_exchange_trader.execution.monitoring_reconciliation import compare_restored_state
+
+    target, observation = filled_sample()
+    assessment = compare_restored_state(replace(target, application=app), observation)
+    assert "MONITORING_APPLICATION_CONFLICT" in assessment.codes
+    assert not app.credits and not app.history_credits
+    assert runtime.projection("position-1").owned_quantity == 0
+
+
 def filled_sample():
     target, observation = sample()
     from multi_exchange_trader.execution.monitoring_models import (

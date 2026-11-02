@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
+from types import CodeType
 from typing import Any
 from uuid import uuid4
 
@@ -39,6 +40,81 @@ class NativeNodeAssembly:
     bridge: NativeBybitBridge
     channel: NativeChannel
     order_subscription: NativeOrderSubscription | None = None
+    _owned_executor: Any = field(default=None, repr=False)
+    _actor_workers: dict[Any, asyncio.Task[Any]] = field(default_factory=dict, repr=False)
+    _disconnect_workers: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
+
+    def _owned_sdk_tasks(self) -> tuple[list[tuple[Any, asyncio.Task[Any]]], list[asyncio.Task[Any]]]:
+        """Pinned 1.231.0 hides Actor._executor and does not retain disconnect tasks.
+
+        Coroutines expose their exact owners. Identity with this kernel's newly
+        allocated pool/loop is required; task names alone never grant ownership.
+        """
+        from nautilus_trader.common.executor import ActorExecutor
+        from nautilus_trader.live.execution_client import LiveExecutionClient
+
+        _require_native_version()
+        kernel, loop = self.node.kernel, asyncio.get_running_loop()
+        if self._owned_executor is None or kernel.executor is not self._owned_executor or kernel.loop is not loop:
+            raise RuntimeError("NATIVE_EXECUTOR_OWNER_CHANGED")
+        disconnect_codes = tuple(code for code in LiveExecutionClient.disconnect.__code__.co_consts
+                                 if isinstance(code, CodeType) and code.co_name == "_disconnect_with_cleanup")
+        if len(disconnect_codes) != 1:
+            raise RuntimeError("NATIVE_DISCONNECT_TASK_SHAPE_UNSUPPORTED")
+        actors, disconnects = [], []
+        for task in asyncio.all_tasks(loop):
+            coroutine = task.get_coro()
+            frame, code = getattr(coroutine, "cr_frame", None), getattr(coroutine, "cr_code", None)
+            if frame is None:
+                continue
+            owner = frame.f_locals.get("self")
+            if code is ActorExecutor._worker.__code__ and type(owner) is ActorExecutor and owner._executor is self._owned_executor:
+                if owner._loop is not loop:
+                    raise RuntimeError("NATIVE_EXECUTOR_OWNER_CHANGED")
+                actors.append((owner, task))
+            elif code is disconnect_codes[0] and owner is self.execution_client:
+                disconnects.append(task)
+        return actors, disconnects
+
+    async def settle_owned_tasks(self) -> None:
+        """After genuine stop, await disconnect and retire only idle owned actors."""
+        kernel = self.node.kernel
+        if kernel.is_running():
+            raise RuntimeError("NATIVE_NODE_STILL_RUNNING")
+        self.require_quiesced()
+        actors, disconnects = self._owned_sdk_tasks()
+        self._disconnect_workers.update(disconnects)
+        for task in self._disconnect_workers:
+            await asyncio.shield(task)
+        self.require_quiesced()
+        current = {owner: task for owner, task in actors if owner._worker_task is task}
+        expected = sum(len(items()) for items in (kernel.trader.actors, kernel.trader.strategies,
+                                                  kernel.trader.exec_algorithms))
+        if len(current | self._actor_workers) != expected:
+            raise RuntimeError("NATIVE_ACTOR_TASK_SHAPE_UNSUPPORTED")
+        for owner in current:
+            if (not owner._queue.empty() or owner._queued_tasks
+                    or any(not future.done() for future in owner._active_tasks.values())):
+                raise RuntimeError("NATIVE_ACTOR_WORK_NOT_QUIESCED")
+        self._actor_workers.update(current)
+        for owner, task in actors:
+            if owner._worker_task is task:
+                task.cancel()
+            # Actor.stop may have cancelled the predecessor and created a new
+            # worker. Both exact owned tasks must finish before the sink closes.
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                caller = asyncio.current_task()
+                if caller is None or caller.cancelling() or not task.cancelled():
+                    raise
+        self.require_owned_tasks_quiesced()
+
+    def require_owned_tasks_quiesced(self) -> None:
+        actors, disconnects = self._owned_sdk_tasks()
+        if (actors or disconnects or any(not task.done() for task in self._actor_workers.values())
+                or any(not task.done() for task in self._disconnect_workers)):
+            raise RuntimeError("NATIVE_OWNED_TASKS_NOT_QUIESCED")
 
     def _monitor_client(self) -> Any:
         from .native_monitor_client import MonitoringBybitExecutionClient
@@ -116,6 +192,8 @@ class NativeNodeAssembly:
                 or stream is not None and (any(not task.done() for task in stream._tasks)
                     or stream._socket is not None and not stream._socket.is_closed())):
             raise MonitoringError("MONITORING_CLIENT_TASKS_NOT_QUIESCED")
+        if self._owned_executor is not None:
+            self.require_owned_tasks_quiesced()
 
     def close_event_channel(self) -> None:
         if self.order_subscription is not None:
@@ -295,7 +373,7 @@ def build_native_node(*, session: BybitDemoAccountSession,
                     "OrderCanceled", "OrderExpired", "OrderFilled")),
                 on_native=captured[0].note_monitoring_native if monitor_only else None)
             result.append(NativeNodeAssembly(native_node, strategy, captured[0], bridge, channel,
-                                             subscription))
+                                             subscription, native_node.kernel.executor if monitor_only else None))
         except BaseException:
             native_node.kernel.dispose()
             if native_node.kernel.executor:

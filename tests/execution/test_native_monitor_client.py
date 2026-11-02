@@ -197,6 +197,84 @@ async def test_cleanup_preserves_owned_stream_original_loss_evidence(client):
     assert client.monitoring_fault == "MONITORING_INGRESS_LIMIT"
 
 
+async def test_sdk_disconnect_closes_transport_but_never_erases_delivery_gap(client, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    async def dispatch(*args):
+        raise MonitoringError("MONITORING_ORIGINAL_DELIVERY_FAILED")
+
+    stream, wire = await connected(monkeypatch, dispatch)
+    client._monitor_stream = stream
+    wire.emit({"topic": "execution.linear", "data": [{}]})
+    for _ in range(20):
+        if stream.fault:
+            break
+        await asyncio.sleep(0)
+    assert stream.stamp().received > stream.stamp().delivered
+    before = asyncio.all_tasks()
+    client.disconnect()  # Genuine SDK wrapper must complete its normal state transition.
+    tasks = asyncio.all_tasks() - before
+    assert len(tasks) == 1
+    await asyncio.gather(*tasks)
+    assert wire.is_closed() and not client.is_connected
+    assert all(task.done() for task in stream._tasks)
+    for _ in range(2):
+        with pytest.raises(MonitoringError, match="^MONITORING_DELIVERY_GAP_RETAINS_RESOURCES$"):
+            await client.drain_monitoring()
+    assert stream.stamp().received > stream.stamp().delivered
+    await client._disconnect()
+    with pytest.raises(MonitoringError, match="^MONITORING_DELIVERY_GAP_RETAINS_RESOURCES$"):
+        await client.drain_monitoring()
+
+
+async def test_disconnect_preserves_first_bounded_drain_error_after_real_close(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+
+    async def dispatch(*args):
+        pass
+    async def unresolved():
+        raise MonitoringError("MONITORING_APPLICATION_ACK_MISMATCH")
+    stream, wire = await connected(monkeypatch, dispatch)
+    # Unit input for an already failed application ACK; SDK disconnect/stream
+    # lifecycle remain real. This is not an actual native admission proof.
+    client._monitor_stream = stream
+    client._monitor_reports = SimpleNamespace(drain_accepted=unresolved, retire=lambda: None)
+    before = asyncio.all_tasks()
+    client.disconnect()
+    await asyncio.gather(*(asyncio.all_tasks() - before))
+    assert wire.is_closed() and not client.is_connected
+    for _ in range(2):
+        await client._disconnect()
+        with pytest.raises(MonitoringError, match="^MONITORING_APPLICATION_ACK_MISMATCH$"):
+            await client.drain_monitoring()
+
+
+async def test_disconnect_does_not_hide_real_socket_close_failure(client, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    async def dispatch(*args):
+        pass
+    async def failed_close():
+        raise RuntimeError("synthetic socket close failed")
+    stream, wire = await connected(monkeypatch, dispatch)
+    client._monitor_stream = stream
+    close = wire.disconnect
+    wire.disconnect = failed_close  # The permitted socket I/O seam only.
+    try:
+        with pytest.raises(RuntimeError, match="synthetic socket close failed"):
+            await client._disconnect()
+        assert not wire.is_closed()
+    finally:
+        wire.disconnect = close
+        await client._disconnect()
+
+
 async def test_original_session_provenance_survives_read_expiry_but_not_reauthentication(
     client, session
 ):

@@ -328,7 +328,8 @@ class NativeExecutionRuntime:
                 ledgers.append(content)
             digest = hashlib.sha256(repr((ledgers, self._active, self._control_busy)).encode()).hexdigest()
             conflicts = tuple(sorted(
-                ["PROJECTION_CONFLICT" for state in states if state.conflicts]
+                ["PROJECTION_CONFLICT" for state, context in zip(states, contexts, strict=True)
+                 if not self._monitorable_quarantine(state, context)]
                 + ["CREDIT_DECISION" for context in contexts
                    if context.credit.decisions or context.history.decisions]))
             return ApplicationMonitoringSummary(self.native_owned_requests(),
@@ -337,6 +338,30 @@ class NativeExecutionRuntime:
                 tuple(item for context in contexts for item in context.credit.credits),
                 tuple(item for context in contexts for item in context.history.credits),
                 conflicts, digest)
+
+    @staticmethod
+    def _monitorable_quarantine(state: p.ProtectionProjection, context: _ReplayContext) -> bool:
+        """Classify monitoring only; the durable accounting hold remains untouched."""
+        seen: set[str] = set()
+        for conflict in state.conflicts:
+            client = conflict.client_order_id
+            order = next((row for row in state.orders if row.client_order_id == client), None)
+            if (type(conflict) is not p.ProjectionConflict
+                    or conflict.reason != "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED"
+                    or conflict.event is not None or conflict.order is not None
+                    or not client or client in seen or order is None):
+                return False
+            seen.add(client)
+            candidates = tuple(row for row in context.candidates
+                               if row.fill.client_order_id == client)
+            if not candidates or any(
+                type(row) is not NativeExecutionCandidate
+                or row.fill.scope != state.scope or row.fill.position_id != state.position_id
+                or row.fill.instrument_id != state.instrument_id or row.fill.side != order.side
+                or not row.venue_order_id for row in candidates
+            ):
+                return False
+        return True
 
     @property
     def receipt_session(self) -> BybitDemoAccountSession | None:

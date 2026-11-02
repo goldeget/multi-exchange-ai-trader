@@ -127,6 +127,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
     ) -> None:
         validate_passive_config(kwargs["config"])
         self._monitor_fault: str | None = None
+        self._monitor_drain_fault: str | None = None
         self._monitor_session = monitor_session
         self._monitor_binding = monitor_binding
         self._monitor_target: MonitoringTarget | None = None
@@ -348,8 +349,10 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
 
     async def drain_monitoring(self) -> StreamStamp:
         """No admission guard: only already-posted exact native/app ACKs settle."""
-        if self._monitor_reports is not None:
-            await self._monitor_reports.drain_accepted()
+        if self._monitor_drain_fault is not None:
+            raise MonitoringError(self._monitor_drain_fault)
+        if self._monitor_reports is not None and not await self._monitor_reports.drain_accepted():
+            raise MonitoringError("MONITORING_ACCEPTED_DELIVERY_UNRESOLVED")
         if self._monitor_stream is not None:
             return await self._monitor_stream.drain_accepted()
         return self.monitoring_stamp()
@@ -357,13 +360,26 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
     async def _disconnect(self) -> None:
         self.retire_monitoring("MONITORING_STOPPED")
         async with asyncio.timeout(10):
-            await self.drain_monitoring()
-            if self._monitor_reports is not None:
-                self._monitor_reports.retire()
-            if self._monitor_stream is not None:
-                await self._monitor_stream.close()
-            await super()._disconnect()
-            await self._repay_task
+            try:
+                stamp = await self.drain_monitoring()
+                if stamp.received != stamp.delivered:
+                    raise MonitoringError("MONITORING_DELIVERY_GAP_RETAINS_RESOURCES")
+            except (MonitoringError, TimeoutError) as error:
+                # Let the inherited disconnect wrapper complete its genuine
+                # transport transition; logical shutdown must still fail closed.
+                self._monitor_drain_fault = self._monitor_drain_fault or (
+                    str(error) if isinstance(error, MonitoringError)
+                    else "MONITORING_ACCEPTED_DELIVERY_UNRESOLVED")
+                self._fault(self._monitor_drain_fault)
+            finally:
+                if self._monitor_reports is not None:
+                    self._monitor_reports.retire()
+                try:
+                    if self._monitor_stream is not None:
+                        await self._monitor_stream.close()
+                finally:
+                    await super()._disconnect()
+                    await self._repay_task
 
 
 # All pinned financial/query/report/reconciliation entrypoints are denied before

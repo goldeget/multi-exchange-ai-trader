@@ -30,6 +30,7 @@ from restored_monitoring_io_support import (
 )
 from test_bybit_native_linux import isolated_native_runtime, module  # noqa: F401
 
+from multi_exchange_trader.account.bybit_readonly import BybitReadError
 from multi_exchange_trader.execution.account_binding import BybitDemoAccountSession
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
 from multi_exchange_trader.execution.monitoring_receipts import AuthenticatedMonitoringReceipt
@@ -184,7 +185,7 @@ async def test_forged_stale_phase_and_budget_receipts_cannot_admit(tmp_path, mon
             h.io.on_http = timeout_response
             deadline_budget = MonitoringReadBudget()
             count = len(h.io.sends)
-            with h.session._monitoring_operation(deadline_budget), deadline_budget.receipt(), pytest.raises((ValueError, TimeoutError)):
+            with h.session._monitoring_operation(deadline_budget), deadline_budget.receipt(), pytest.raises(BybitReadError, match="^timeout$"):
                 await client.read("/v5/market/time", [], signed=False)
             held.release.set()
             h.io.on_http = None
@@ -405,7 +406,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
         first = await h.io.ledger.execution("ahead-first", "0.400")
         second = await h.io.ledger.execution("ahead-second", "0.600")
         wire = h.io.wires[-1]
-        wire.emit("order.linear", [copy.deepcopy(h.io.ledger.order)])
+        wire.emit("order.linear", [{**copy.deepcopy(h.io.ledger.order), "category": "linear"}])
         # Whole raw batch; the real dispatcher, not this test, serializes ACKs.
         wire.emit("execution.linear", [first, first, second])
         await h.assembly.monitoring_barrier()
@@ -418,7 +419,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
         order = await deliver(h, [partial])
         assert order.status.name == "PARTIALLY_FILLED"
         assert_liabilities(h, candidates=1)
-        terminal = {**h.io.ledger.order, "orderStatus": "Filled", "cumExecQty": "1", "leavesQty": "0"}
+        terminal = {**h.io.ledger.order, "category": "linear", "orderStatus": "Filled", "cumExecQty": "1", "leavesQty": "0"}
         h.io.allow_retained_cleanup = True
         h.io.wires[-1].emit("order.linear", [terminal])
         await asyncio.sleep(5.1)
@@ -430,7 +431,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
         async with restored_case(tmp_path / str(len(str(change))) / next(iter(change)) / str(next(iter(change.values()))), monkeypatch) as h:
             h.io.allow_retained_cleanup = True
             await admit(h)
-            h.io.wires[-1].emit("order.linear", [{**h.io.ledger.order, **change}])
+            h.io.wires[-1].emit("order.linear", [{**h.io.ledger.order, "category": "linear", **change}])
             await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
             assert_liabilities(h)
 

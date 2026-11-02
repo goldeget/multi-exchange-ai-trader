@@ -250,6 +250,39 @@ async def test_incomplete_client_task_prevents_monitor_quiescence(prepared):
         await task
     assembly.require_monitoring_tasks_quiesced()
 
+
+async def test_closed_transport_sticky_gap_cannot_seal_or_release_worker(prepared, monkeypatch):
+    from test_private_monitor_stream import connected
+
+    from multi_exchange_trader.execution.monitoring_models import MonitoringError
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+
+    worker = prepared[2]
+    client = worker._assembly.execution_client
+    async def reject_original(*args):
+        raise MonitoringError("MONITORING_ORIGINAL_DELIVERY_FAILED")
+    stream, wire = await connected(monkeypatch, reject_original)
+    client._monitor_stream = stream
+    wire.emit({"topic": "execution.linear", "data": [{}]})
+    for _ in range(20):
+        if stream.fault:
+            break
+        await asyncio.sleep(0)
+    assert stream.stamp().received > stream.stamp().delivered
+    await client._disconnect()
+    assert wire.is_closed()
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    controller.retire("MONITORING_ORIGINAL_DELIVERY_FAILED")
+    before = worker.runtime.monitoring_state()
+    for _ in range(2):
+        with pytest.raises(MonitoringError, match="^MONITORING_DELIVERY_GAP_RETAINS_RESOURCES$"):
+            await worker.stop()
+        assert not worker._stopped and not worker._channel_closed
+        assert worker._lock.acquired and controller.state.resources_retained
+        assert controller.state.phase == "ATTENTION"
+        assert worker._runtime.monitoring_state() == before
+
 @pytest.mark.parametrize('replacement', ['store', 'assembly', 'lease', 'runtime', 'controller'])
 async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
     prepared, monkeypatch, replacement

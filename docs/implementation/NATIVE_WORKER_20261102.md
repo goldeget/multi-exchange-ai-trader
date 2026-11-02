@@ -489,6 +489,11 @@ terminal acknowledgements, repayment or reservation release. This is not
 whole-account reconciliation, a complete venue event replay, a valuation proof,
 live Bybit acceptance or permission to trade in DEMO or production.
 
+The expected corroboration-required quarantine hold remains a trading/accounting
+block, but does not itself retire monitoring when backed by the exact owned
+candidate. Other conflicts, mixed or malformed holds and credit decisions still
+block monitoring. PRE/POST and live acknowledgement share this distinction.
+
 Execution rows are applied serially: each row waits for native completion and
 application acknowledgement before the next row is dispatched. Whole batches and
 duplicate input may queue during that wait; duplicate evaluation then observes the
@@ -504,6 +509,14 @@ checks still apply and the complete cleanup has a 10-second bound. The direct
 nonmonitoring builder retains its 10-second default. The worker preserves the
 caller's running event loop and default thread executor, including queued work;
 it disposes only its own proven-quiescent SDK resources.
+
+The pinned SDK recreates an internal actor worker during stop and leaves its
+disconnect coroutine untracked. Cleanup verifies their exact owner, kernel pool
+and loop, requires idle actor queues and awaits only those owned tasks. Unsupported
+ownership fails closed. A startup connection wait may be interrupted only after
+genuine stop and disconnection are proven. A bounded delivery failure remains
+sticky even after the SDK finishes closing the transport: later logical shutdown
+proof rethrows it, retaining the gap, stores, callback channel and lease.
 
 An unproven stop, observed unprocessed gap or changed final cleanup owner retains
 the callback channel, stores and lease (`resources_retained=True`). It must not be
@@ -528,8 +541,8 @@ exact module, zero skips, errors and failures. CI archives all three XML receipt
 under the tested commit SHA.
 
 Collection, static checks and Windows skips do not establish native acceptance.
-The first actual Linux execution of these new contracts and all required project
-CI must pass on the reviewed commit before any passing-main integration claim.
+Actual Linux execution of all these contracts and all required project CI must
+pass on the reviewed commit before any passing-main integration claim.
 No fixture result establishes real provider/account acceptance or operational
 financial qualification. Existing v4 backup, sealed generation, offline restore
 and history restrictions remain in force.

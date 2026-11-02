@@ -578,7 +578,16 @@ class ExecutionWorker:
                     and (self._node_stop_task.cancelled() or self._node_stop_task.exception() is not None)):
                 self._node_stop_task = asyncio.create_task(self._assembly.node.stop_async())
             await asyncio.shield(self._node_stop_task)
+            if self._factory is None:
+                self._assembly.require_quiesced()
+                # Pinned startup's connection wait ignores concurrent stop.
+                # Only our run task may be interrupted, after the genuine stop
+                # and engine/client disconnection proof have completed.
+                if not self._node_task.done():
+                    self._node_task.cancel()
             await asyncio.shield(self._node_task)
+            if self._factory is None:
+                await self._assembly.settle_owned_tasks()
         if self._monitoring is not None:
             stamp = await self._assembly.drain_monitoring()
             self._monitoring.require_cleanup_owner()
