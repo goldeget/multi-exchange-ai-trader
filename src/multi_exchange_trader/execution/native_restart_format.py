@@ -251,5 +251,3 @@ def application_digest(directory: Path) -> str:
         return _digest(ledgers)
     except Exception:  # noqa: BLE001 - native/path/provider details must stay redacted.
         raise NativeRestartError() from None
-
-

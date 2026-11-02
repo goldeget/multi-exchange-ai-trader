@@ -64,6 +64,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def actual_worker(directory: Path, previous: Any = None) -> Any:
     """Build synthetic app inputs; leave the actual worker/native builder untouched."""
     directory.mkdir(parents=True, exist_ok=True)
+    lock_directory = directory.parent / "leases"
+    lock_directory.mkdir(mode=0o700, exist_ok=True)
     book = RuntimePolicyBook(directory / "runtime-policy.sqlite3")
     core = synthetic_session(SCOPE, NOW)
     # Grant only the synthetic fixture identity the permissions needed to build
@@ -93,7 +95,7 @@ def actual_worker(directory: Path, previous: Any = None) -> Any:
         binding=core.binding, symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=book,
         registry=registry, entry_risk=lambda _plan, _now, _reservations: plan,
         clock=lambda: core.wall[0], max_age=timedelta(seconds=10),
-        lock_directory=directory.parent / "leases")
+        lock_directory=lock_directory)
     assert worker._factory is None and worker._decoder is None
     return SimpleNamespace(worker=worker, core=core, session=core.session, book=book,
         request=request, registry=registry, plan=plan)
