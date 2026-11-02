@@ -162,3 +162,112 @@ async def test_cancelled_cleanup_caller_does_not_cancel_node_before_real_stop():
         worker._node_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await worker._node_task
+
+
+@pytest.mark.parametrize("replacement", ["run", "stop", "assembly", "node", "controller"])
+async def test_stop_await_owner_replacement_never_cancels_replacement_work(replacement):
+    # Inert lifecycle shells exercise real worker scheduling/identity fences.
+    # They are not evidence of native stop, connection or Linux readiness.
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+    from multi_exchange_trader.execution.worker import ExecutionWorker
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    effects = []
+    async def run(label):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            effects.append(label)
+    async def stop():
+        entered.set()
+        await release.wait()
+    async def settle():
+        effects.append("settle")
+    async def drain():
+        effects.append("drain")
+        return SimpleNamespace(received=0, delivered=0)
+    worker = object.__new__(ExecutionWorker)
+    original_node = SimpleNamespace(stop_async=stop)
+    original_assembly = SimpleNamespace(node=original_node,
+        require_quiesced=lambda: effects.append("proof"), settle_owned_tasks=settle,
+        drain_monitoring=drain, require_monitoring_tasks_quiesced=lambda: None)
+    worker._assembly, worker._monitoring, worker._factory = original_assembly, None, None
+    original = worker._node_task = asyncio.create_task(run("original-cancelled"))
+    foreign = asyncio.create_task(run("foreign-cancelled"))
+    worker._node_stop_task = None
+    cleanup = asyncio.create_task(worker._quiesce())
+    await entered.wait()
+    stopped = worker._node_stop_task
+    if replacement == "run":
+        worker._node_task = foreign
+    elif replacement == "stop":
+        worker._node_stop_task = foreign
+    elif replacement == "assembly":
+        worker._assembly = SimpleNamespace(**vars(original_assembly))
+    elif replacement == "node":
+        original_assembly.node = SimpleNamespace(stop_async=stop)
+    elif replacement == "controller":
+        worker._monitoring = SimpleNamespace(require_cleanup_owner=lambda: None,
+                                             state=SimpleNamespace(retained_stamp=None))
+    release.set()
+    try:
+        with pytest.raises(RuntimeBlocked, match="^MONITORING_CLEANUP_OWNER_CHANGED$"):
+            await asyncio.wait_for(cleanup, 0.5)
+        assert effects == []
+        assert stopped.done() and stopped.exception() is None
+        assert not original.done() and not original.cancelling()
+        assert not foreign.done() and not foreign.cancelling()
+    finally:
+        for task in (cleanup, original, foreign, stopped):
+            task.cancel()
+        await asyncio.gather(cleanup, original, foreign, stopped, return_exceptions=True)
+
+
+@pytest.mark.parametrize("phase", ["run", "settle", "drain"])
+async def test_later_quiesce_await_rechecks_task_owner_before_further_effects(phase):
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+    from multi_exchange_trader.execution.worker import ExecutionWorker
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    effects = []
+    async def boundary(label):
+        effects.append(label)
+        if phase == label:
+            entered.set()
+            await release.wait()
+    async def run():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await boundary("run")
+    async def stop():
+        return None
+    async def settle():
+        await boundary("settle")
+    async def drain():
+        await boundary("drain")
+        return SimpleNamespace(received=0, delivered=0)
+    worker = object.__new__(ExecutionWorker)
+    worker._assembly = SimpleNamespace(node=SimpleNamespace(stop_async=stop),
+        require_quiesced=lambda: None, settle_owned_tasks=settle, drain_monitoring=drain,
+        require_monitoring_tasks_quiesced=lambda: effects.append("final-proof"))
+    worker._monitoring = SimpleNamespace(require_cleanup_owner=lambda: None,
+                                         state=SimpleNamespace(retained_stamp=None))
+    worker._factory, worker._node_stop_task = None, None
+    original = worker._node_task = asyncio.create_task(run())
+    foreign = asyncio.create_task(asyncio.Event().wait())
+    await asyncio.sleep(0)
+    cleanup = asyncio.create_task(worker._quiesce())
+    await entered.wait()
+    worker._node_task = foreign
+    release.set()
+    try:
+        with pytest.raises(RuntimeBlocked, match="^MONITORING_CLEANUP_OWNER_CHANGED$"):
+            await asyncio.wait_for(cleanup, 0.5)
+        assert effects == {"run": ["run"], "settle": ["run", "settle"],
+                           "drain": ["run", "settle", "drain"]}[phase]
+        assert original.done() and not foreign.done() and not foreign.cancelling()
+    finally:
+        for task in (cleanup, original, foreign):
+            task.cancel()
+        await asyncio.gather(cleanup, original, foreign, return_exceptions=True)

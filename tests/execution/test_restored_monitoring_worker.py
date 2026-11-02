@@ -283,7 +283,7 @@ async def test_closed_transport_sticky_gap_cannot_seal_or_release_worker(prepare
         assert controller.state.phase == "ATTENTION"
         assert worker._runtime.monitoring_state() == before
 
-@pytest.mark.parametrize('replacement', ['store', 'assembly', 'lease', 'runtime', 'controller'])
+@pytest.mark.parametrize('replacement', ['store', 'assembly', 'lease', 'runtime', 'controller', 'run', 'stop'])
 async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
     prepared, monkeypatch, replacement
 ):
@@ -307,6 +307,7 @@ async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
     for store in (worker._store, worker._journal):
         monkeypatch.setattr(store, 'close', lambda: traces.append('original-store-close'))
     original_lease = worker._lock.acquisition_id
+    replacement_task = asyncio.create_task(asyncio.Event().wait())
     def mutate():
         if replacement == 'store':
             worker._store = SimpleNamespace(close=lambda: traces.append('replacement-store-close'))
@@ -317,6 +318,8 @@ async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
         elif replacement == 'assembly':
             worker._assembly = replace(original_assembly)
             worker._assembly.dispose_local = lambda: traces.append('replacement-dispose')
+        elif replacement in ('run', 'stop'):
+            setattr(worker, '_node_task' if replacement == 'run' else '_node_stop_task', replacement_task)
         else:
             worker._lock.release()
             worker._lock.acquire()
@@ -332,10 +335,86 @@ async def test_final_cleanup_yield_rechecks_owner_before_closing_any_resource(
         assert controller.state.phase == 'ATTENTION'
         assert controller.state.resources_retained
         assert worker._lock.acquired
+        assert not replacement_task.done() and not replacement_task.cancelling()
         if replacement == 'lease':
             assert worker._lock.acquisition_id != original_lease
     finally:
+        replacement_task.cancel()
+        await asyncio.gather(replacement_task, return_exceptions=True)
+        worker._node_task = worker._node_stop_task = None
         worker._assembly, worker._store = original_assembly, original_store
         worker._runtime, worker._monitoring = original_runtime, controller
         if replacement == 'lease':
             worker._lock.release()
+
+
+@pytest.mark.parametrize('replacement', ['run', 'stop', 'assembly', 'node', 'controller'])
+async def test_stop_wait_owner_change_retains_real_resources(prepared, monkeypatch, replacement):
+    # Real worker/controller/SQLite/lease, with inert run/stop shells only.
+    # The Linux contracts independently prove the SDK lifecycle.
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
+
+    worker = prepared[2]
+    assembly, runtime = worker._assembly, worker._runtime
+    node = assembly.node
+    controller = MonitoringResume(worker)
+    worker._monitoring = controller
+    controller.in_progress = False
+    entered, release = asyncio.Event(), asyncio.Event()
+    effects = []
+    async def run(label):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            effects.append(label)
+    async def stop():
+        entered.set()
+        await release.wait()
+    async def settle():
+        effects.append('settle')
+    monkeypatch.setattr(node, 'stop_async', stop, raising=False)
+    monkeypatch.setattr(assembly, 'require_quiesced', lambda: effects.append('proof'))
+    monkeypatch.setattr(assembly, 'settle_owned_tasks', settle)
+    monkeypatch.setattr(assembly, 'close_event_channel', lambda: effects.append('channel-close'))
+    monkeypatch.setattr(assembly, 'dispose_local', lambda: effects.append('dispose'))
+    worker._restart = SimpleNamespace(seal=lambda _: effects.append('seal'))
+    for store in (worker._store, worker._journal):
+        monkeypatch.setattr(store, 'close', lambda: effects.append('store-close'))
+    original = worker._node_task = asyncio.create_task(run('original-cancelled'))
+    foreign = asyncio.create_task(run('foreign-cancelled'))
+    stopping = asyncio.create_task(worker.stop())
+    await entered.wait()
+    stopped = worker._node_stop_task
+    if replacement == 'run':
+        worker._node_task = foreign
+    elif replacement == 'stop':
+        worker._node_stop_task = foreign
+    elif replacement == 'assembly':
+        worker._assembly = replace(assembly)
+        worker._assembly.require_quiesced = lambda: effects.append('replacement-proof')
+        worker._assembly.settle_owned_tasks = settle
+    elif replacement == 'node':
+        assembly.node = SimpleNamespace(cache=node.cache, stop_async=stop)
+    else:
+        worker._monitoring = None
+    release.set()
+    try:
+        with pytest.raises((ValueError, RuntimeBlocked), match='^MONITORING_CLEANUP_OWNER_CHANGED$'):
+            await asyncio.wait_for(stopping, 0.5)
+        assert effects == []
+        assert not original.done() and not original.cancelling()
+        assert not foreign.done() and not foreign.cancelling()
+        assert not worker._stopped and not worker._channel_closed
+        assert worker._lock.acquired and controller.state.resources_retained
+        assert controller.state.phase == 'ATTENTION'
+        assert runtime.monitoring_state().credits == ()
+    finally:
+        for task in (stopping, stopped, original, foreign):
+            task.cancel()
+        await asyncio.gather(stopping, stopped, original, foreign, return_exceptions=True)
+        assembly.node = node
+        worker._assembly, worker._monitoring = assembly, controller
+        worker._node_task = worker._node_stop_task = None

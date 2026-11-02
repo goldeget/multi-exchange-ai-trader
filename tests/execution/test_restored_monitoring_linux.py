@@ -373,7 +373,7 @@ async def test_pending_applied_duplicates_and_original_field_guards(tmp_path, mo
         await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
         assert_liabilities(h, candidates=2)
     for field, value in (("symbol", "ETHUSDT"), ("side", "Sell"), ("orderLinkId", "foreign"),
-                        ("orderId", "foreign"), ("execQty", "0.0001"), ("execFee", "-1"),
+                        ("orderId", "foreign"), ("execQty", "0.0001"), ("execFee", None),
                         ("feeCurrency", "BTC"), ("execType", "BustTrade"), ("execQty", "2"),
                         ("orderType", "Limit"), ("execTime", "1")):
         async with restored_case(tmp_path / f"{field}-{value}", monkeypatch) as h:

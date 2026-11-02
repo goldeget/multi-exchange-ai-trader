@@ -570,50 +570,67 @@ class ExecutionWorker:
             self._stop_in_progress = False
 
     async def _quiesce(self) -> None:
-        assert self._assembly is not None
-        if self._monitoring is not None:
-            self._monitoring.require_cleanup_owner()
-        if self._node_task is not None:
-            if (self._node_stop_task is None or self._node_stop_task.done()
-                    and (self._node_stop_task.cancelled() or self._node_stop_task.exception() is not None)):
-                self._node_stop_task = asyncio.create_task(self._assembly.node.stop_async())
-            await asyncio.shield(self._node_stop_task)
-            if self._factory is None:
-                self._assembly.require_quiesced()
+        assembly, monitoring, factory = self._assembly, self._monitoring, self._factory
+        assert assembly is not None
+        node, run_task, stop_task = assembly.node, self._node_task, self._node_stop_task
+
+        def require_owner() -> None:
+            if (self._assembly is not assembly or assembly.node is not node
+                    or self._monitoring is not monitoring or self._factory is not factory
+                    or self._node_task is not run_task or self._node_stop_task is not stop_task):
+                raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
+            if monitoring is not None:
+                monitoring.require_cleanup_owner()
+
+        require_owner()
+        if run_task is not None:
+            if (stop_task is None or stop_task.done()
+                    and (stop_task.cancelled() or stop_task.exception() is not None)):
+                stop_task = self._node_stop_task = asyncio.create_task(node.stop_async())
+            await asyncio.shield(stop_task)
+            require_owner()
+            if factory is None:
+                assembly.require_quiesced()
                 # Pinned startup's connection wait ignores concurrent stop.
-                # Only our run task may be interrupted, after the genuine stop
-                # and engine/client disconnection proof have completed.
-                if not self._node_task.done():
-                    self._node_task.cancel()
-            await asyncio.shield(self._node_task)
-            if self._factory is None:
-                await self._assembly.settle_owned_tasks()
-        if self._monitoring is not None:
-            stamp = await self._assembly.drain_monitoring()
-            self._monitoring.require_cleanup_owner()
-            self._assembly.require_monitoring_tasks_quiesced()
-            retained = self._monitoring.state.retained_stamp
+                # Bind the waiter before the stop await: a replacement task
+                # is never evidence for, or owned by, this stopped node.
+                if not run_task.done():
+                    run_task.cancel()
+            await asyncio.shield(run_task)
+            require_owner()
+            if factory is None:
+                await assembly.settle_owned_tasks()
+                require_owner()
+        if monitoring is not None:
+            stamp = await assembly.drain_monitoring()
+            require_owner()
+            assembly.require_monitoring_tasks_quiesced()
+            retained = monitoring.state.retained_stamp
             if (stamp.received != stamp.delivered or retained is not None and (
                     stamp.received < retained.received or stamp.delivered < retained.delivered
                     or retained.conn_id and (retained.epoch, retained.conn_id) != (stamp.epoch, stamp.conn_id))):
                 raise RuntimeBlocked("MONITORING_DELIVERY_GAP_RETAINS_RESOURCES")
-        if self._factory is None:
-            self._assembly.require_quiesced()
+        if factory is None:
+            assembly.require_quiesced()
 
     async def _finish_stop(self, runtime: NativeExecutionRuntime) -> None:
-        monitoring = self._monitoring
+        monitoring, assembly, factory = self._monitoring, self._assembly, self._factory
         try:
+            assert assembly is not None
+            node, run_task = assembly.node, self._node_task
             async with asyncio.timeout(10):
                 await self._quiesce()
+            stop_task = self._node_stop_task
             # Yield before closing the sink. A queued owner/lease replacement
             # must retain every resource, even after successful producer quiescence.
             await asyncio.sleep(0)
-            if self._monitoring is not monitoring:
+            if (self._monitoring is not monitoring or self._assembly is not assembly
+                    or assembly.node is not node or self._factory is not factory
+                    or self._node_task is not run_task or self._node_stop_task is not stop_task):
                 raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
             if monitoring is not None:
                 monitoring.require_cleanup_owner()
-            assert self._assembly is not None
-            self._assembly.close_event_channel()
+            assembly.close_event_channel()
             self._channel_closed = True
             # No await from this final exact-owner check through seal/dispose/close.
         except BaseException:

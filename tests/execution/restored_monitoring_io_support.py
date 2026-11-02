@@ -26,6 +26,7 @@ from test_runtime import selection
 from multi_exchange_trader.execution.account_binding import BybitDemoAccountSession
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.modes import AutomaticMode
+from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
 from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import assess_entry
@@ -401,28 +402,60 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
                 cleanup_errors.append(type(error).__name__)
                 # Failure tests may intentionally leave an observed delivery gap.
                 # Quiesce the genuine socket/node; never change stamps or publish a seal.
-                assembly = h.worker._assembly
+                worker, assembly = h.worker, h.assembly
                 if assembly is not None:
-                    client = assembly.execution_client
+                    node, client = assembly.node, assembly.execution_client
+                    run_task, stop_task = worker._node_task, worker._node_stop_task
+                    controller, runtime = worker._monitoring, worker._runtime
+                    stores = worker._history_store, worker._store, worker._journal
+                    lock, lease = worker._lock, worker._lock.acquisition_id
+
+                    def require_fixture_owner(worker=worker, assembly=assembly, node=node,
+                            client=client, runtime=runtime, controller=controller,
+                            run_task=run_task, stop_task=stop_task, stores=stores, lock=lock, lease=lease):
+                        assert worker._assembly is assembly and assembly.node is node
+                        assert assembly.execution_client is client and worker._runtime is runtime
+                        assert worker._monitoring is controller and worker._node_task is run_task
+                        assert worker._node_stop_task is stop_task
+                        assert all(current is original for current, original in zip(
+                            (worker._history_store, worker._store, worker._journal), stores, strict=True))
+                        assert worker._lock is lock and lock.acquired and lock.acquisition_id == lease
+
+                    require_fixture_owner()
+                    if run_task is not None and not run_task.done():
+                        coroutine = run_task.get_coro()
+                        assert coroutine.cr_code is MonitoringResume._run_node.__code__
+                        assert coroutine.cr_frame.f_locals.get("self") is controller
+                        assert controller.worker is worker and controller.assembly is assembly
+                        assert controller.node is node
                     if client._monitor_stream is not None:
                         await client._monitor_stream.close()
+                        require_fixture_owner()
                     if client._monitor_reports is not None:
                         client._monitor_reports.retire()
-                    await assembly.node.stop_async()
-                    if h.worker._node_task is not None:
-                        await asyncio.wait_for(asyncio.shield(h.worker._node_task), 12)
+                    await node.stop_async()
+                    require_fixture_owner()
+                    assert not node.is_running()
+                    assembly.require_quiesced()
+                    if run_task is not None:
+                        # The pinned connection waiter ignores concurrent stop.
+                        # End only this captured fixture producer after real stop.
+                        if not run_task.done():
+                            run_task.cancel()
+                        await asyncio.wait_for(asyncio.shield(run_task), 12)
+                        require_fixture_owner()
                         await assembly.settle_owned_tasks()
-                    assert not assembly.node.is_running()
+                        require_fixture_owner()
+                    assert not node.is_running()
                     assembly.require_quiesced()
                     assembly.require_monitoring_tasks_quiesced()
                     # Test-owned temporary handles only, after all producers ended.
                     assembly.close_event_channel()
                     assembly.dispose_local()
-                    for store in (h.worker._history_store, h.worker._store, h.worker._journal):
+                    for store in stores:
                         if store is not None:
                             store.close()
-                    if h.worker._lock.acquired:
-                        h.worker._lock.release()
+                    lock.release()
             finally:
                 await h.session.aclose()
         await asyncio.sleep(0)
