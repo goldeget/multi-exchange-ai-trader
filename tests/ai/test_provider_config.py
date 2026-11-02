@@ -27,6 +27,18 @@ def test_explicit_openrouter_is_key_free_frozen_and_unverified():
         result.registered = False
 
 
+@pytest.mark.parametrize("length,registered,status", [
+    (489, True, "REGISTERED_UNVERIFIED"), (490, False, "INVALID_CONFIGURATION")
+])
+def test_openrouter_key_length_matches_metadata_client_boundary(length, registered, status):
+    key = "sk-or-v1-" + "x" * (length - 9)
+    result = load({"AI_PROVIDER": "OPENROUTER", "OPENROUTER_API_KEY": key,
+                   "OPENROUTER_MODEL": MODEL})
+    assert result.registered is registered
+    assert result.status == status
+    assert key not in repr(result)
+
+
 @pytest.mark.parametrize("key,expected", [("", "NOT_CONFIGURED"), (ANT_KEY, "INVALID_CONFIGURATION"),
                                         ("sk-or-v1-line\nbreak", "INVALID_CONFIGURATION")])
 def test_selected_openrouter_never_falls_back_to_anthropic(key, expected):
@@ -135,6 +147,44 @@ def test_shared_file_model_rejects_trailing_tab_before_whitespace_normalization(
     assert result.status == "INVALID_CONFIGURATION"
     assert result.registered is False
     assert result.model_id is None
+
+
+@pytest.mark.parametrize("prefix", ["", "export "])
+@pytest.mark.parametrize("control", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e"])
+def test_shared_file_model_rejects_trailing_control_line_separators(tmp_path, prefix, control):
+    path = tmp_path / "fake-openrouter.env"
+    path.write_bytes((f"AI_PROVIDER=OPENROUTER\nOPENROUTER_API_KEY={OR_KEY}\n"
+                      f"{prefix}OPENROUTER_MODEL={MODEL}{control}\n").encode())
+    result = load({"AI_ENV_FILE": str(path)})
+    assert result.status == "INVALID_CONFIGURATION"
+    assert result.registered is False
+    assert result.model_id is None
+
+
+@pytest.mark.parametrize("newline", ["\r", "\n", "\r\n"])
+def test_shared_file_accepts_standard_line_endings_at_line_limit(tmp_path, newline):
+    path = tmp_path / "fake-openrouter.env"
+    lines = ["AI_PROVIDER=OPENROUTER", f"OPENROUTER_API_KEY={OR_KEY}",
+             f"OPENROUTER_MODEL={MODEL}"] + ["# comment"] * 253
+    path.write_bytes((newline.join(lines) + newline).encode())
+    result = load({"AI_ENV_FILE": str(path)})
+    assert result.status == "REGISTERED_UNVERIFIED"
+    assert result.registered is True
+    assert result.model_id == MODEL
+
+
+@pytest.mark.parametrize("control", ["\x0b", "\x0c", "\x1c", "\x1d", "\x1e"])
+def test_legacy_file_retains_control_line_separator_behavior(tmp_path, control):
+    from multi_exchange_trader.ai.config import load_anthropic_config
+
+    path = tmp_path / "fake-legacy.env"
+    path.write_bytes((f"ANTHROPIC_API_KEY={ANT_KEY}{control}"
+                      "export ANTHROPIC_MODEL=claude-test\n").encode())
+    source = {"ANTHROPIC_ENV_FILE": str(path)}
+    expected = load_anthropic_config(source)
+    assert expected.status == "REGISTERED_UNVERIFIED"
+    assert asdict(load(source)) == {"provider": "ANTHROPIC", **asdict(expected)}
+    assert load(source).model_id == "claude-test"
 
 
 @pytest.mark.parametrize("model", ["https://example.test/model", "anthropic/model?key=x",

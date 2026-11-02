@@ -18,7 +18,7 @@ _LEGACY_KEYS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"})
 _CREDENTIAL_KEYS = ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY")
 _DISABLED = frozenset({"", "off", "none", "0"})
 _MAX_BYTES = 16_384
-_OPENROUTER_KEY = re.compile(r"sk-or-v1-[A-Za-z0-9_-]{8,503}", re.ASCII)
+_OPENROUTER_KEY = re.compile(r"sk-or-v1-[A-Za-z0-9_-]{8,480}", re.ASCII)
 _OPENROUTER_MODEL = re.compile(
     r"[a-z0-9][a-z0-9_-]{0,63}/[a-z0-9][a-z0-9._-]{0,127}", re.ASCII
 )
@@ -49,11 +49,16 @@ def _file_values(raw: str, *, shared: bool) -> dict[str, str]:
     if len(content) > _MAX_BYTES:
         raise ValueError("Invalid AI configuration")
     text = content.decode("utf-8-sig")
-    if "\x00" in text or len(text.splitlines()) > 256:
+    # Shared files retain other control separators for field validation, while
+    # legacy files keep splitlines() compatibility. Do not count a final EOL twice.
+    lines = re.split(r"\r\n|\r|\n", text) if shared else text.splitlines()
+    if shared and lines[-1] == "":
+        lines.pop()
+    if "\x00" in text or len(lines) > 256:
         raise ValueError("Invalid AI configuration")
     values: dict[str, str] = {}
     recognized_keys = _KEYS if shared else _LEGACY_KEYS
-    for line in text.splitlines():
+    for line in lines:
         # Retain the assignment's trailing characters until validation. In
         # particular, an unquoted model must not silently lose a trailing TAB.
         item_text = line.lstrip()

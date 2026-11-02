@@ -9,13 +9,15 @@
 | 항목 | 의미 |
 | --- | --- |
 | `AI_PROVIDER=OPENROUTER` | OpenRouter를 명시적으로 선택 |
-| `OPENROUTER_API_KEY` | 운영자가 별도로 보관하는 OpenRouter 키. `sk-or-v1-` 접두사와 제한된 문자 형식을 검사 |
+| `OPENROUTER_API_KEY` | 운영자가 별도로 보관하는 OpenRouter 키. `sk-or-v1-` 접두사 뒤 영문·숫자·밑줄·하이픈 8~480자(총 17~489자)를 등록 로더와 메타데이터 클라이언트에서 동일하게 검사 |
 | `OPENROUTER_MODEL=anthropic/claude-haiku-5.5` | OpenRouter의 `author/slug` 모델 식별자. 직접 Anthropic의 `claude-haiku-5-5`와 구별 |
 | `AI_ENV_FILE` | 필요한 경우 명시적으로 지정하는 서버 전용 공유 설정 파일 경로 |
 
 `AI_ENV_FILE` 파일 안에도 `AI_PROVIDER`, 두 공급자의 키·모델 항목을 둘 수 있습니다. 비어 있지 않은 프로세스 환경값이 파일값보다 우선합니다. 빈 환경값은 기존 파일값을 지우지 않습니다. 같은 인식 항목이 파일에 두 번 나오면 환경값으로 덮어쓰더라도 설정 오류입니다. 다른 공급자의 항목은 선택한 공급자의 자격 증명으로 사용하지 않습니다.
 
 `AI_ENV_FILE`이 없으면 현재 작업 디렉터리의 `.env`를 찾지 않습니다. 명시적인 빈 문자열, `off`, `none`, `0`은 파일 읽기를 끕니다. 이 항목을 명시적으로 끄면 기존 `ANTHROPIC_ENV_FILE`도 읽지 않습니다. 파일은 UTF-8 또는 UTF-8 BOM, 최대 16 KiB와 256줄의 일반 파일이어야 하며, 심볼릭 링크·디렉터리 정션을 경유하지 않아야 합니다. 공유 파일의 다른 서비스 설정은 무시하며 환경에 내보내지 않습니다.
+
+공유 파일의 줄 구분은 CR, LF, CRLF만 인정합니다. `OPENROUTER_MODEL` 값에 붙은 VT(U+000B), FF(U+000C), FS(U+001C), GS(U+001D), RS(U+001E)는 줄바꿈이나 공백으로 제거하지 않고 제어문자로 거부합니다. 따옴표 없는 값과 `export` 접두사가 있는 항목에도 같은 검사를 적용합니다. `ANTHROPIC_ENV_FILE`만 사용하는 기존 파일의 줄 구분 동작은 유지합니다.
 
 ## 기존 Anthropic 설정
 

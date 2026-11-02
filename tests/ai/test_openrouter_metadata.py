@@ -303,6 +303,23 @@ def test_configuration_rejects_unsafe_values_without_echo(
     assert KEY not in str(error.value)
 
 
+@pytest.mark.parametrize("length,accepted", [(489, True), (490, False)])
+def test_key_length_boundary_is_validated_without_network(length: int, accepted: bool) -> None:
+    module = importlib.import_module("multi_exchange_trader.ai.openrouter_metadata")
+    key = "sk-or-v1-" + "x" * (length - 9)
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        pytest.fail("Configuration validation must not contact the provider")
+
+    if accepted:
+        api = module.OpenRouterMetadataClient(key, MODEL, transport=httpx.MockTransport(handler))
+        assert key not in repr(api)
+    else:
+        with pytest.raises(ValueError, match="^Invalid metadata configuration$") as error:
+            module.OpenRouterMetadataClient(key, MODEL, transport=httpx.MockTransport(handler))
+        assert key not in str(error.value)
+
+
 def test_expiry_and_management_are_metadata_only() -> None:
     body = key_payload()
     body["data"].update(is_management_key=True, expires_at="2026-01-01T00:00:00Z")
