@@ -26,10 +26,12 @@ from test_runtime import selection
 from multi_exchange_trader.execution.account_binding import BybitDemoAccountSession
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.modes import AutomaticMode
+from multi_exchange_trader.execution.monitoring_models import MonitoringError
 from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
 from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import assess_entry
+from multi_exchange_trader.execution.runtime import RuntimeBlocked
 from multi_exchange_trader.execution.runtime_policy import RuntimePolicyBook
 from multi_exchange_trader.execution.worker import (
     ExecutionWorker,
@@ -369,6 +371,63 @@ async def seed_baseline(h, *, filled=False):
     assert decode_document((h.worker.directory / "native-restart.json").read_bytes())["state"] == "sealed"
 
 
+def cleanup_contract(owner, reason):
+    """Capture a specific owner's original resources before the deliberate fault."""
+    if reason not in ("gap", "lease"):
+        raise ValueError("unsupported fixture cleanup contract")
+    worker = owner.worker if hasattr(owner, "worker") else None
+    runtime = worker._runtime if worker is not None else None
+    lock = worker._lock if worker is not None else None
+    return SimpleNamespace(owner=owner, reason=reason, runtime=runtime, lock=lock,
+        assembly=worker._assembly if worker is not None else None,
+        stores=(worker._history_store, worker._store, worker._journal) if worker is not None else None,
+        path=lock.path.resolve() if lock is not None else None,
+        scope=worker.scope if worker is not None else None,
+        lease=runtime._lease if runtime is not None else None)
+
+
+def classify_cleanup(contract, owner, error, evidence):
+    if contract is None or contract.owner is not owner or not evidence:
+        return None
+    pairs = {
+        "gap": ((MonitoringError, "MONITORING_DELIVERY_GAP_RETAINS_RESOURCES"),
+                (RuntimeBlocked, "MONITORING_DELIVERY_GAP_RETAINS_RESOURCES")),
+        "lease": ((RuntimeBlocked, "ACCOUNT_WORKER_LEASE_REQUIRED"),),
+    }
+    for kind, code in pairs[contract.reason]:
+        if type(error) is kind and error.args == (code,):
+            return (kind, code, contract.reason)
+    return None
+
+
+def cleanup_evidence(contract, owner):
+    if contract is None or contract.owner is not owner:
+        return False
+    worker, runtime, lock = owner.worker, contract.runtime, contract.lock
+    if (worker._runtime is not runtime or worker._lock is not lock
+            or worker._assembly is not contract.assembly or worker.scope != contract.scope
+            or any(current is not original for current, original in zip(
+                (worker._history_store, worker._store, worker._journal), contract.stores, strict=True))
+            or not lock.acquired or worker._channel_closed or worker._stopped
+            or not worker.monitoring_status.resources_retained
+            or decode_document((worker.directory / "native-restart.json").read_bytes())["state"] != "active"):
+        return False
+    # Actual readable temporary stores, not merely captured object references.
+    if worker.runtime.journal.get("entry") is None or worker.runtime.store.get_position("position-1") is None:
+        return False
+    if contract.reason == "gap":
+        stamp = owner.assembly.monitoring_stamp()
+        retained = worker.monitoring_status.retained_stamp
+        return (stamp.received > stamp.delivered and retained is not None
+            and retained.received > retained.delivered and lock.acquisition_id == contract.lease)
+    return (runtime.worker_lock is lock and not runtime._closed
+        and lock.path.resolve() == contract.path == runtime._lock_path
+        and lock.matches_scope(account_id=contract.scope.account_id, environment=contract.scope.environment)
+        and runtime.journal.scope.account_id == contract.scope.account_id
+        and runtime.journal.scope.environment == contract.scope.environment
+        and runtime._lease == contract.lease and lock.acquisition_id != contract.lease)
+
+
 @asynccontextmanager
 async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
     """Own every session, native task, fixture gate and temporary store in finally."""
@@ -398,8 +457,17 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
             try:
                 if not h.worker._stopped:
                     await h.worker.stop()
-            except (RuntimeError, ValueError, TimeoutError) as error:
-                cleanup_errors.append(type(error).__name__)
+            except Exception as error:  # noqa: BLE001 - report any failure after owned cleanup.
+                contract = getattr(h, "cleanup_contract", None)
+                try:
+                    evidence = cleanup_evidence(contract, h)
+                except Exception:  # noqa: BLE001 - preserve teardown and reject unproved evidence.
+                    evidence = False
+                classified = classify_cleanup(contract, h, error, evidence)
+                if classified is None:
+                    cleanup_errors.append((type(error).__name__, "unexpected cleanup failure"))
+                else:
+                    h.cleanup_classification = classified
                 # Failure tests may intentionally leave an observed delivery gap.
                 # Quiesce the genuine socket/node; never change stamps or publish a seal.
                 worker, assembly = h.worker, h.assembly
@@ -461,6 +529,9 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
                         if store is not None:
                             store.close()
                     lock.release()
+            else:
+                if getattr(h, "cleanup_contract", None) is not None:
+                    cleanup_errors.append(("no retained failure", "expected production retention"))
             finally:
                 await h.session.aclose()
         await asyncio.sleep(0)
@@ -469,8 +540,7 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
         assert all(wire.is_closed() for wire in io.wires)
         extra = [task for task in asyncio.all_tasks() - initial_tasks if not task.done()]
         assert not extra, [task.get_coro().__qualname__ for task in extra]
-        if cleanup_errors:
-            assert getattr(io, "allow_retained_cleanup", False), cleanup_errors
+        assert not cleanup_errors, cleanup_errors
 
 
 def assert_liabilities(h, *, candidates=0):

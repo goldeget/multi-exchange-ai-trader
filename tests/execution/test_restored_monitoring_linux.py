@@ -10,6 +10,7 @@ import asyncio
 import copy
 import inspect
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
@@ -22,6 +23,7 @@ from restored_monitoring_io_support import (
     SECRET,
     admit,
     assert_liabilities,
+    cleanup_contract,
     deliver,
     eventually,
     make_worker,
@@ -33,8 +35,10 @@ from test_bybit_native_linux import isolated_native_runtime, module  # noqa: F40
 from multi_exchange_trader.account.bybit_readonly import BybitReadError
 from multi_exchange_trader.execution.account_binding import BybitDemoAccountSession
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+from multi_exchange_trader.execution.monitoring_models import MonitoringError
 from multi_exchange_trader.execution.monitoring_receipts import AuthenticatedMonitoringReceipt
 from multi_exchange_trader.execution.native_restart_store import decode_document
+from multi_exchange_trader.execution.runtime import RuntimeBlocked
 
 
 async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkeypatch):
@@ -85,7 +89,6 @@ async def test_readonly_binding_without_capital_or_trading_permission(tmp_path, 
         assert h.assembly.node.cache.instrument(instrument.id) is instrument
         assert_liabilities(h)
     async with restored_case(tmp_path / "drift", monkeypatch) as h:
-        h.io.allow_retained_cleanup = True
         h.io.fee["makerFeeRate"] = "0.0003"
         with pytest.raises((ValueError, RuntimeError)):
             await h.worker.resume_restored_monitoring()
@@ -214,6 +217,17 @@ async def test_all_financial_and_reconciliation_fences(tmp_path, monkeypatch):
     async with restored_case(tmp_path, monkeypatch) as h:
         await admit(h)
         client, cache = h.assembly.execution_client, h.assembly.node.cache
+        engine = h.assembly.node.kernel.exec_engine
+        assert engine.get_reconciliation_task() is None
+        assert engine.get_own_books_audit_task() is None
+        assert not set(h.assembly.node.kernel.clock.timer_names) & {
+            "ExecEngine_SNAPSHOT_POSITIONS", "ExecEngine_PURGE_CLOSED_ORDERS",
+            "ExecEngine_PURGE_CLOSED_POSITIONS", "ExecEngine_PURGE_ACCOUNT_EVENTS",
+        }
+        assert engine.get_cmd_queue_task() is not None and not engine.get_cmd_queue_task().done()
+        assert engine.get_evt_queue_task() is not None and not engine.get_evt_queue_task().done()
+        await client._repay_task
+        assert client._repay_task.done() and client._repay_queues == {} and client._repay_enqueuers == {}
         before = [event.to_dict(event) for event in cache.order(h.order_id).events]
         sends, commands = len(h.io.sends), h.assembly.node.kernel.exec_engine.command_count
         names = (
@@ -254,7 +268,8 @@ async def test_all_financial_and_reconciliation_fences(tmp_path, monkeypatch):
 async def test_ack_pong_modes_and_transport_epoch_are_required(tmp_path, monkeypatch):
     for defect in ("negative", "duplicate", "wrong-connection", "failed-topics", "missing-auth", "public-pong", "missing-pong"):
         async with restored_case(tmp_path / defect, monkeypatch) as h:
-            h.io.allow_retained_cleanup = True
+            if defect not in ("missing-auth", "missing-pong"):
+                h.cleanup_contract = cleanup_contract(h, "gap")
 
             async def change(wire, packet, ack, defect=defect):
                 if defect == "missing-auth" and packet["op"] == "auth":
@@ -368,7 +383,7 @@ async def test_pending_applied_duplicates_and_original_field_guards(tmp_path, mo
         await deliver(h, [first, second])
         assert_liabilities(h, candidates=2)
         assert len(h.assembly.node.cache.position_for_order(h.order_id).events) == 2
-        h.io.allow_retained_cleanup = True
+        h.cleanup_contract = cleanup_contract(h, "gap")
         h.io.wires[-1].emit("execution.linear", [{**first, "execPrice": "101.00"}])
         await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
         assert_liabilities(h, candidates=2)
@@ -377,7 +392,7 @@ async def test_pending_applied_duplicates_and_original_field_guards(tmp_path, mo
                         ("feeCurrency", "BTC"), ("execType", "BustTrade"), ("execQty", "2"),
                         ("orderType", "Limit"), ("execTime", "1")):
         async with restored_case(tmp_path / f"{field}-{value}", monkeypatch) as h:
-            h.io.allow_retained_cleanup = True
+            h.cleanup_contract = cleanup_contract(h, "gap")
             await admit(h)
             row = await h.io.ledger.execution("invalid", apply=False)
             h.io.wires[-1].emit("execution.linear", [{**row, field: value}])
@@ -393,7 +408,7 @@ async def test_pending_applied_duplicates_and_original_field_guards(tmp_path, mo
             assert h.assembly.node.cache.order(h.order_id).filled_qty.as_decimal() == 0
     for raw in (b'{"topic":"execution.linear","data":NaN}', b"{" * 1_048_577):
         async with restored_case(tmp_path / str(len(raw)), monkeypatch) as h:
-            h.io.allow_retained_cleanup = True
+            h.cleanup_contract = cleanup_contract(h, "gap")
             await admit(h)
             h.io.wires[-1].callbacks["handler"](raw)
             await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
@@ -420,7 +435,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
         assert order.status.name == "PARTIALLY_FILLED"
         assert_liabilities(h, candidates=1)
         terminal = {**h.io.ledger.order, "category": "linear", "orderStatus": "Filled", "cumExecQty": "1", "leavesQty": "0"}
-        h.io.allow_retained_cleanup = True
+        h.cleanup_contract = cleanup_contract(h, "gap")
         h.io.wires[-1].emit("order.linear", [terminal])
         await asyncio.sleep(5.1)
         await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
@@ -429,7 +444,7 @@ async def test_partial_terminal_ordering_never_infers_execution(tmp_path, monkey
     for change in ({"qty": "2"}, {"orderStatus": "Untriggered"}, {"orderStatus": "Triggered"},
                    {"orderStatus": "Deactivated"}, {"orderLinkId": "external"}, {"triggerPrice": "90"}):
         async with restored_case(tmp_path / str(len(str(change))) / next(iter(change)) / str(next(iter(change.values()))), monkeypatch) as h:
-            h.io.allow_retained_cleanup = True
+            h.cleanup_contract = cleanup_contract(h, "gap")
             await admit(h)
             h.io.wires[-1].emit("order.linear", [{**h.io.ledger.order, "category": "linear", **change}])
             await eventually(lambda: h.assembly.execution_client.monitoring_fault is not None)
@@ -557,7 +572,8 @@ async def test_cancel_stop_reauthentication_and_lease_fences(tmp_path, monkeypat
     for phase in ("PRE", "CONNECT", "POST"):
         for action in ("cancel", "stop", "reauth", "close", "lease"):
             async with restored_case(tmp_path / phase / action, monkeypatch) as h:
-                h.io.allow_retained_cleanup = True
+                if action == "lease":
+                    h.cleanup_contract = cleanup_contract(h, "lease")
                 gate = h.io.gate()
 
                 async def hold(path, params, response, phase=phase, gate=gate):
@@ -573,7 +589,7 @@ async def test_cancel_stop_reauthentication_and_lease_fences(tmp_path, monkeypat
                 if action == "cancel":
                     task.cancel()
                 elif action == "stop":
-                    with pytest.raises((ValueError, RuntimeError)):
+                    with pytest.raises(RuntimeBlocked, match="^AWAIT_INFLIGHT_OPERATION_BEFORE_STOP$"):
                         await h.worker.stop()
                 elif action == "reauth":
                     await h.session.authenticate(expected_uid="12345", expected_parent_uid="0", expected_is_master=False)
@@ -597,7 +613,7 @@ async def test_cancel_stop_reauthentication_and_lease_fences(tmp_path, monkeypat
             worker = h.worker
             original = worker._lock.acquisition_id if attribute == "lease" else getattr(worker, attribute)
             if attribute == "lease":
-                h.io.allow_retained_cleanup = True
+                h.cleanup_contract = cleanup_contract(h, "lease")
             replaced = asyncio.Event()
             holder = []
 
@@ -637,8 +653,9 @@ async def test_cancel_stop_reauthentication_and_lease_fences(tmp_path, monkeypat
             stopping = asyncio.create_task(worker.stop())
             holder.append(stopping)
             try:
-                with pytest.raises((ValueError, RuntimeError)):
+                with pytest.raises((MonitoringError, RuntimeBlocked), match="^MONITORING_CLEANUP_OWNER_CHANGED$") as failure:
                     await stopping
+                assert type(failure.value) in (MonitoringError, RuntimeBlocked)
                 await asyncio.wait_for(watcher, 12)
                 assert replaced.is_set()
                 if attribute == "lease":
@@ -745,23 +762,90 @@ async def test_real_shutdown_quiesces_without_closing_shared_loop(tmp_path, monk
         assert h.worker._node_stop_task is original_stop
 
 
-async def test_live_fill_stales_proof_fault_requires_new_admission_and_seals(tmp_path, monkeypatch):
+async def test_live_fill_stales_proof_fault_requires_new_admission_and_seals(tmp_path, monkeypatch, record_property):
     async with restored_case(tmp_path / "expired", monkeypatch, binding_age=3) as h:
-        await admit(h)
-        source = h.session._attested
+        initial = await admit(h)
+        worker, assembly = h.worker, h.assembly
+        controller, budget = worker._monitoring, worker._monitoring.budget
+        binding, source = worker.binding, h.session._attested
+        old_client, old_wire = assembly.execution_client, h.io.wires[-1]
+        run_task, stream = worker._node_task, old_client._monitor_stream
+        deadline, started = budget.deadline, budget.deadline - 60.0
+        stamp = assembly.monitoring_stamp()
+        epoch, connection = stamp.epoch, stamp.conn_id
+        proof = initial.reconciled_at, initial.reconciliation_fingerprint
+        reads, pings = len(h.io.sends), old_wire.sent.count("ping")
         await asyncio.sleep(3.05)
         with pytest.raises(ValueError):
-            h.session.require_binding(h.worker.binding, scope=SCOPE)
+            h.session.require_binding(binding, scope=SCOPE)
         assert h.session._attested is source
-        assert h.worker.monitoring_status.phase == "MONITORING"
-        assert not h.worker.monitoring_status.fresh_read_authority
-        row = await h.io.ledger.execution("expired-binding-original")
-        order = await deliver(h, [row])
+        assert worker.monitoring_status.phase == "MONITORING"
+        assert not worker.monitoring_status.fresh_read_authority
+        first = await h.io.ledger.execution("expired-binding-original", "0.400")
+        order = await deliver(h, [first])
         assert_liabilities(h, candidates=1)
-        assert h.worker.monitoring_status.phase == "MONITORING"
-        assert not h.worker.monitoring_status.reconciliation_current
+        after_first = worker.monitoring_status
+        assert after_first.phase == "MONITORING" and not after_first.reconciliation_current
+        assert after_first.current_revision != initial.current_revision
+        assert order.filled_qty.as_decimal() == Decimal("0.400")
+
+        # Cross the original admission budget using the real monotonic clock and
+        # the same live stream. Status/readiness checks consume real pong state.
+        async with asyncio.timeout(65):
+            while time.monotonic() <= deadline + 0.25:
+                status = worker.monitoring_status
+                assert status.phase == "MONITORING" and not status.fresh_read_authority
+                assert not any((status.trading_enabled, status.credit_authorized,
+                    status.production_supported, status.venue_event_complete))
+                assert (status.reconciled_at, status.reconciliation_fingerprint) == proof
+                assert worker._monitoring is controller and controller.budget is budget
+                assert budget.deadline == deadline and worker.binding is binding
+                assert h.session._binding is binding and h.session._attested is source
+                assert worker._assembly is assembly and assembly.execution_client is old_client
+                assert old_client._monitor_stream is stream
+                assert worker._node_task is run_task and not run_task.done()
+                assert h.io.wires == [old_wire] and len(h.io.sends) == reads
+                live_stamp = assembly.monitoring_stamp()
+                assert (live_stamp.epoch, live_stamp.conn_id) == (epoch, connection)
+                assert assembly.node.is_running() and old_client.is_connected and assembly.strategy.is_running
+                assembly.require_monitoring_ready()
+                await asyncio.sleep(0.25)
+        elapsed = time.monotonic() - started
+        record_property("original_budget_elapsed_seconds", f"{elapsed:.3f}")
+        assert time.monotonic() > deadline + 0.25 and elapsed > 60.0
+        assert old_wire.sent.count("ping") - pings >= 2
+        assembly.require_monitoring_ready()
+        await assembly.monitoring_barrier()
+        stamp = assembly.monitoring_stamp()
+        assert stamp.received == stamp.delivered and (stamp.epoch, stamp.conn_id) == (epoch, connection)
+        assert stamp.received >= after_first.stream_stamp.received + 2
+        assert worker.monitoring_status.phase == "MONITORING" and h.session._binding is binding
+        second = await h.io.ledger.execution("past-deadline-original", "0.600")
+        order = await deliver(h, [second])
+        fills = [event for event in order.events if type(event) is module("model.events.order").OrderFilled]
+        assert [str(fill.trade_id) for fill in fills] == [first["execId"], second["execId"]]
+        for fill, row in zip(fills, (first, second), strict=True):
+            assert fill.ts_event == int(row["execTime"]) * 1_000_000
+            assert fill.last_qty.as_decimal() == Decimal(row["execQty"])
+            assert fill.last_px.as_decimal() == Decimal(row["execPrice"])
+            assert fill.commission.as_decimal() == Decimal(row["execFee"])
+        position = assembly.node.cache.position_for_order(h.order_id)
+        assert order.filled_qty.as_decimal() == position.quantity.as_decimal() == Decimal(1)
+        assert position.events == fills
+        assert_liabilities(h, candidates=2)
+        candidates = worker.runtime.monitoring_state().candidates
+        assert {candidate.fill.execution_id for candidate in candidates} == {first["execId"], second["execId"]}
+        status = worker.monitoring_status
+        assert status.phase == "MONITORING" and not status.reconciliation_current and not status.fresh_read_authority
+        assert status.current_revision != after_first.current_revision
+        assert (status.reconciled_at, status.reconciliation_fingerprint) == proof
+        assert not any((status.trading_enabled, status.credit_authorized,
+            status.production_supported, status.venue_event_complete))
+        assert not worker.runtime._active and len(h.io.sends) == reads and h.session._attested is source
+        stamp = assembly.monitoring_stamp()
+        assert stamp.received == stamp.delivered and (stamp.epoch, stamp.conn_id) == (epoch, connection)
         events = [event.to_dict(event) for event in order.events]
-        old_client, old_wire = h.assembly.execution_client, h.io.wires[-1]
+        row = second
         old_wire.callbacks["post_reconnection"]()
         assert h.worker.monitoring_status.phase == "ATTENTION"
         with pytest.raises((ValueError, RuntimeError)):
@@ -792,7 +876,7 @@ async def test_live_fill_stales_proof_fault_requires_new_admission_and_seals(tmp
             assert next_owner.assembly.execution_client is not old_client and h.io.wires[-1] is not old_wire
             assert len(h.io.sends) > before and len(h.io.wires) == 2
             assert [event.to_dict(event) for event in next_owner.assembly.node.cache.order(h.order_id).events] == events
-            assert_liabilities(next_owner, candidates=1)
+            assert_liabilities(next_owner, candidates=2)
             stamp, reads = next_owner.assembly.monitoring_stamp(), len(h.io.sends)
             old_wire.emit("execution.linear", [row])
             await asyncio.sleep(0.05)
