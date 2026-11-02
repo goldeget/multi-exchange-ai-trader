@@ -6,7 +6,10 @@ import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from ..credential_resolution import CredentialResolver
 
 _KEYS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL"})
 _MAX_BYTES = 16_384
@@ -67,14 +70,28 @@ def _file_values(raw: str) -> dict[str, str]:
     return values
 
 
-def load_anthropic_config(environ: Mapping[str, str] | None = None) -> AnthropicConfig:
+def load_anthropic_config(environ: Mapping[str, str] | None = None, *,
+                          resolver: "CredentialResolver | None" = None) -> AnthropicConfig:
     """Read an explicit file plus nonblank environment overrides without exporting them.
 
     No default .env search. Empty/off/none/0 disables ANTHROPIC_ENV_FILE.
     Invalid input returns only a safe status; raw values and paths never escape.
     Presence and model syntax cannot establish provider access or paid permission.
     """
-    source = os.environ if environ is None else environ
+    if environ is None:
+        from ..credential_resolution import CredentialResolver, InvalidAIConfiguration
+        from ..credentials import CredentialStoreError
+
+        try:
+            context = resolver if resolver is not None else CredentialResolver.from_environment()
+            environ = context.ai_values()
+        except InvalidAIConfiguration as exc:
+            config = exc.config
+            return (AnthropicConfig(config.registered, config.status, config.model_id)
+                    if config.provider == "ANTHROPIC" else AnthropicConfig())
+        except CredentialStoreError:
+            return AnthropicConfig(status="INVALID_CONFIGURATION")
+    source = environ
     try:
         raw_path = source.get("ANTHROPIC_ENV_FILE", "off").strip()
         values = {} if raw_path.lower() in {"", "off", "none", "0"} else _file_values(raw_path)

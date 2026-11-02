@@ -26,6 +26,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from ..credential_resolution import CredentialResolver
 from .config import (
     EnvironmentName,
     MissingBybitCredentials,
@@ -197,6 +198,7 @@ class BybitReadOnlyClient:
         self.base_url = base_url
         self._api_key = key
         self._api_secret = secret
+        self._credential_check: Callable[[str], bool] | None = None
         self._server_ms: int | None = None
         self._mono: float | None = None
         self.retry_waits = (0.4, 0.8)
@@ -217,32 +219,46 @@ class BybitReadOnlyClient:
 
     @classmethod
     def from_environment(
-        cls, transport: httpx.AsyncBaseTransport | None = None
+        cls, transport: httpx.AsyncBaseTransport | None = None, *,
+        resolver: CredentialResolver | None = None,
     ) -> "BybitReadOnlyClient":
-        key, secret = require_bybit_credentials()
-        environment, base_url = resolve_environment()
-        return cls(
+        context = resolver if resolver is not None else CredentialResolver.from_environment()
+        key, secret = require_bybit_credentials(resolver=context)
+        environment, base_url = resolve_environment(resolver=context)
+        client = cls(
             api_key=key,
             api_secret=secret,
             base_url=base_url,
             environment=environment,
             transport=transport,
         )
+        client._credential_check = context._bybit_publication_check()
+        return client
 
     @classmethod
-    def for_demo(cls, transport: httpx.AsyncBaseTransport | None = None) -> "BybitReadOnlyClient":
+    def for_demo(cls, transport: httpx.AsyncBaseTransport | None = None, *,
+                 resolver: CredentialResolver | None = None) -> "BybitReadOnlyClient":
         """Practice-account reads. The host is fixed and the live key is refused."""
-        key, secret = require_demo_credentials()
-        return cls(
+        context = resolver if resolver is not None else CredentialResolver.from_environment()
+        key, secret = require_demo_credentials(resolver=context)
+        client = cls(
             api_key=key,
             api_secret=secret,
             base_url=allowed_host("demo"),
             environment="demo",
             transport=transport,
         )
+        client._credential_check = context._bybit_publication_check()
+        return client
 
     def __repr__(self) -> str:
         return f"BybitReadOnlyClient(environment={self.environment}, base_url={self.base_url})"
+
+    def _contains_credential(self, text: str) -> bool:
+        """Private guard for this pair and all startup-selected Bybit namespaces."""
+        return any(value and value in text for value in (self._api_key, self._api_secret)) or (
+            self._credential_check is not None and self._credential_check(text)
+        )
 
     async def aclose(self) -> None:
         for logger in self._loggers:

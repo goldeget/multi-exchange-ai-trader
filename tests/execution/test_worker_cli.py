@@ -21,6 +21,7 @@ def test_default_dry_check_never_reads_credentials_or_starts_worker(
         raise AssertionError("default must remain local and inert")
 
     monkeypatch.setattr(worker_cli, "os", SimpleNamespace(environ=SimpleNamespace(get=forbidden)))
+    monkeypatch.setattr(worker_cli.CredentialResolver, "from_environment", forbidden)
     monkeypatch.setattr(worker_cli, "_run", forbidden)
     assert worker_cli.main([]) == 0
     result = json.loads(capsys.readouterr().out)

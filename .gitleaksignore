@@ -13,3 +13,8 @@
 # The field was renamed from key to screenId; see docs/implementation/SECRET_SCAN_REVIEW.md.
 3e46477ce2c7d9db8f6eda2f5d32da7c98082b76:apps/web/tests/ui-browser/routes.ts:generic-api-key:17
 3e46477ce2c7d9db8f6eda2f5d32da7c98082b76:apps/web/tests/ui-browser/offline.spec.ts:generic-api-key:39
+
+# Exact historical synthetic credential-validation fixtures, not issued credentials.
+# Negative tests use temporary stores; see docs/implementation/SECRET_SCAN_REVIEW.md, Managed credential validation fixtures.
+a456c7ec24aaba3993d6c85d41c073591bd3e56d:tests/credentials/test_store.py:generic-api-key:175
+1fd6e996988f02b0113b67b063122a0364f0f617:tests/credentials/test_import.py:generic-api-key:80
