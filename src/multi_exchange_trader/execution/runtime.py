@@ -24,6 +24,7 @@ from . import codec, modes
 from . import protection as p
 from . import risk as r
 from .bybit_native import AttachedProtection, NativeBybitBridge, NativeOrderRequest
+from .execution_provenance import FillQuarantineRecord, NativeExecutionCandidate
 from .journal import (
     CommandJournal,
     CommandKind,
@@ -247,18 +248,20 @@ class NativeExecutionRuntime:
                                                persisted.instrument_id, persisted.entry_side)
                 for item in self.store.list_position_events(record.position_id):
                     state = self._reduce_event(state, codec.decode(item.payload_json), identities)
-                # Older reducers did not flag changed price/fee identities. Preserve
-                # their quantities and original conflicts, and retain newly found conflicts.
+                # Retain the aggregate's original conflicts. Any legacy fill
+                # tuple above has already failed closed without a recovery write.
                 if (replace(state, conflicts=persisted.conflicts) != persisted
                         or any(item not in state.conflicts for item in persisted.conflicts)):
                     raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
             elif (type(persisted) is tuple and len(persisted) == 11
-                  and persisted[0] == "RUNTIME_POSITION_V1"):
+                  and persisted[0] == "RUNTIME_POSITION_V1") or (
+                      type(persisted) is tuple and len(persisted) == 13
+                      and persisted[0] == "RUNTIME_POSITION_V2"):
                 state = p.ProtectionProjection(persisted[1], persisted[2],
                                                persisted[3], persisted[4])
                 for item in self.store.list_position_events(record.position_id):
                     state = self._reduce_event(state, codec.decode(item.payload_json), identities)
-                if self._summary(state) != persisted:
+                if self._summary(state, identities) != persisted:
                     raise RuntimeBlocked("INVALID_DURABLE_PROJECTION_HISTORY")
             else:
                 raise RuntimeBlocked("INVALID_DURABLE_PROJECTION")
@@ -270,18 +273,60 @@ class NativeExecutionRuntime:
         return tuple(states)
 
     @staticmethod
-    def _summary(state: p.ProtectionProjection) -> tuple[object, ...]:
+    def _summary(state: p.ProtectionProjection,
+                 identities: dict[str, tuple[object, ...]] | None = None) -> tuple[object, ...]:
         """Bounded current state; immutable event rows hold all historical evidence."""
-        return ("RUNTIME_POSITION_V1", state.scope, state.position_id, state.instrument_id,
+        summary = ("RUNTIME_POSITION_V1", state.scope, state.position_id, state.instrument_id,
                 state.entry_side, state.signed_quantity, state.latest_fill_at,
                 len(state.orders), len(state.executions), len(state.cancelled_order_ids),
                 len(state.conflicts))
+        if not identities:
+            return summary
+        keys = sorted(str(key) for values in identities.values() for key in values)
+        digest = hashlib.sha256("".join(keys).encode()).hexdigest()
+        return ("RUNTIME_POSITION_V2", *summary[1:], len(keys), digest)
+
+    @staticmethod
+    def _candidate_identity(candidate: NativeExecutionCandidate) -> str:
+        """Canonical candidate content; receipt/init times never create executions."""
+        fill = candidate.fill
+        # Decimal scale is representation, not economic content. Use sufficient
+        # precision to retain every validated digit, including negative rebates.
+        with localcontext() as context:
+            context.prec = 256
+            canonical = replace(candidate, fill=replace(fill, ts_init_ns=0, received_at_ns=0,
+                quantity=fill.quantity.normalize(), price=fill.price.normalize(),
+                commission=fill.commission.normalize() if fill.commission else Decimal(0)))
+        return hashlib.sha256(codec.encode(canonical).encode()).hexdigest()
 
     @staticmethod
     def _reduce_event(state: p.ProtectionProjection, event: object,
                       identities: dict[str, tuple[object, ...]]) -> p.ProtectionProjection:
         if type(event) is p.OwnedOrder:
             return p.register_order(state, event)
+        if type(event) is FillQuarantineRecord:
+            event.__post_init__()
+            fill = event.candidate.fill
+            order = next((item for item in state.orders
+                          if item.client_order_id == fill.client_order_id), None)
+            if (order is None or fill.scope != state.scope
+                    or fill.position_id != state.position_id
+                    or fill.instrument_id != state.instrument_id or fill.side != order.side):
+                raise RuntimeBlocked("QUARANTINE_OWNERSHIP_REQUIRED")
+            identity = NativeExecutionRuntime._candidate_identity(event.candidate)
+            previous = identities.get(fill.execution_id, ())
+            if identity in previous:
+                return state
+            conflicts = list(state.conflicts)
+            incomplete = p.ProjectionConflict(event.reason, client_order_id=fill.client_order_id)
+            if incomplete not in conflicts:
+                conflicts.append(incomplete)
+            if previous:
+                conflict = p.ProjectionConflict("EXECUTION_ID_CONFLICT", event=fill.to_owned_fill())
+                if conflict not in conflicts:
+                    conflicts.append(conflict)
+            identities[fill.execution_id] = (*previous, identity)
+            return replace(state, conflicts=tuple(conflicts))
         if type(event) is not tuple:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
         if len(event) == 3 and event[0] == "READBACK":
@@ -295,18 +340,10 @@ class NativeExecutionRuntime:
         if len(event) != 6:
             raise RuntimeBlocked("INVALID_DURABLE_EVENT")
         fill_identity = event[5]
-        if fill_identity is not None:
-            if (type(fill_identity) is not tuple or len(fill_identity) != 5
-                    or type(fill_identity[0]) is not p.FillEvent):
-                raise RuntimeBlocked("INVALID_DURABLE_EVENT")
-            fill = fill_identity[0]
-            previous = identities.get(fill.execution_id)
-            if previous is not None and previous != fill_identity:
-                conflict = p.ProjectionConflict("EXECUTION_ID_CONFLICT", event=fill)
-                return (state if conflict in state.conflicts else
-                        replace(state, conflicts=state.conflicts + (conflict,)))
-            identities.setdefault(fill.execution_id, fill_identity)
-            return p.apply_fill(state, fill)
+        if event[0] == "FILL" or fill_identity is not None:
+            # Old tuples contain no transport/source provenance. Refuse restore
+            # before recovery writes, retaining both their bytes and quantities.
+            raise RuntimeBlocked("LEGACY_NATIVE_FILL_PROVENANCE_REQUIRED")
         if event[0] in ("CANCELED", "EXPIRED"):
             return p.record_order_cancelled(state, event[1])
         return state
@@ -321,17 +358,23 @@ class NativeExecutionRuntime:
 
     def _persist(self, event: object, state: p.ProtectionProjection) -> None:
         self._guard()
+        cached = self._projections.get(state.position_id)
+        identities = {} if cached is None else dict(cached[2])
         encoded = codec.encode(event)
         key = "native:" + hashlib.sha256(encoded.encode()).hexdigest()
+        if type(event) is FillQuarantineRecord:
+            identity = self._candidate_identity(event.candidate)
+            if identity in identities.get(event.candidate.fill.execution_id, ()):
+                return  # Keep the first durable observation, including its original receipt times.
+            key = "native:" + identity
+        self._reduce_event(state, event, identities)
         current = self.store.get_position(state.position_id)
         saved = self.store.apply_position_event(key, json.loads(encoded), state.position_id,
-            0 if current is None else current.revision, json.loads(codec.encode(self._summary(state))))
+            0 if current is None else current.revision,
+            json.loads(codec.encode(self._summary(state, identities))))
         # Cache only after the atomic inbox/projection commit. A duplicate event
         # returns the current revision, so cannot replace it with an older reduction.
         if saved.revision == (0 if current is None else current.revision) + 1:
-            cached = self._projections.get(state.position_id)
-            identities = {} if cached is None else dict(cached[2])
-            self._reduce_event(state, event, identities)
             self._projections[state.position_id] = (saved.revision, state, identities)
 
     def _find_owned(self, client_id: str) -> p.ProtectionProjection | None:
@@ -795,6 +838,21 @@ class NativeExecutionRuntime:
             state = self._find_owned(evidence.client_order_id)
             if record is None or state is None:
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            if evidence.kind == "FILL":
+                # Pause and revoke all readbacks before any candidate validation
+                # or persistence attempt. Failure must never restore authority.
+                self._readbacks.pop(state.position_id, None)
+                self._leverage_readbacks.clear()
+                self._active = False
+                if evidence.fill is None or evidence.venue_order_id is None:
+                    raise RuntimeBlocked("NATIVE_FILL_CANDIDATE_REQUIRED")
+                quarantine = FillQuarantineRecord(
+                    NativeExecutionCandidate(evidence.fill, evidence.venue_order_id),
+                    "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED")
+                reduced = self._reduce_event(state, quarantine,
+                    dict(self._projections[state.position_id][2]))
+                self._persist(quarantine, reduced)
+                return evidence  # No ACK, accounting, terminal conclusion or reservation release.
             if record.state is CommandState.PENDING:
                 self._active = False
                 raise RuntimeBlocked("UNSENT_COMMAND_HAS_NATIVE_EVENT")
@@ -815,23 +873,15 @@ class NativeExecutionRuntime:
                                                   "NATIVE_CANCEL_IDENTITY_UNVERIFIED")
                 self._active = False
                 return evidence
-            if evidence.fill is not None:
-                self._readbacks.pop(state.position_id, None)
-                self._leverage_readbacks.clear()
-                self._active = False  # Every fill invalidates previous protection/readback.
-            # Receipt time varies on replay; retain source event time, execution fee/price
-            # identity and native status. Exact duplicate events do not rewind projections.
-            fill_identity = None if evidence.fill is None else (
-                evidence.fill.to_owned_fill(), evidence.fill.price, evidence.fill.commission,
-                evidence.fill.commission_currency, evidence.fill.ts_event_ns)
+            # Non-fill observations retain their independent acknowledgement guards.
             identity = (evidence.kind, evidence.client_order_id, evidence.venue_order_id,
-                        evidence.ts_event_ns, evidence.native_status, fill_identity)
+                        evidence.ts_event_ns, evidence.native_status, None)
             reduced = self._reduce_event(state, identity,
                 dict(self._projections[state.position_id][2]))
             self._persist(identity, reduced)
             if reduced.conflicts:
                 self._active = False
-            accepted = evidence.kind in ("ACCEPTED", "FILL", "CANCELED", "EXPIRED") or (
+            accepted = evidence.kind in ("ACCEPTED", "CANCELED", "EXPIRED") or (
                 evidence.kind == "STATUS" and evidence.native_status in (
                     "ACCEPTED", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED"))
             rejected = evidence.kind in ("DENIED", "REJECTED") or (

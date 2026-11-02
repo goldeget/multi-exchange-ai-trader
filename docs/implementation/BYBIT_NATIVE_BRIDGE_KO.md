@@ -17,7 +17,7 @@
 | `NativeBybitBridge.register_owned(request)` | 외부에서 이미 영속화한 정확한 소유권 매핑을 복구한다. 주문을 보내지 않는다. |
 | `NativeBybitBridge.submit(request)` | 실제 `OrderFactory.market/limit`로 만든 후 `Strategy.submit_order(order, params=...)`를 호출한다. |
 | `NativeSubmission` | 호출 후 `SUBMITTING`, 호출 예외 후 `UNKNOWN`만 반환한다. 접수 ACK가 아니다. |
-| `NativeEventContext(scope, native_account_id, received_at_ns)` | 이미 분리·검증된 계정 채널의 출처를 호출자가 명시한다. |
+| `NativeEventContext(scope, native_account_id, received_at_ns)` | 호출자가 제공하는 범위 데이터다. 객체 생성은 채널 출처를 인증하지 않는다. |
 | `consume(event, context)` | 정확한 등록 ID·instrument·account label·scope와 native type을 검사하고 별도 증거를 반환한다. |
 | `consume_reports(..., query_succeeded, query_complete)` | 유효한 일부 증거를 보존하되 오류·부분·빈 결과는 incomplete로 남긴다. |
 
@@ -43,7 +43,21 @@
 
 `BYBIT-UNIFIED`는 native adapter의 account label이며 인증된 Bybit UID가 아니다. 실제 UID·subaccount·환경은 미래의 계정 검증·연결 계층에서 별도로 검증하고 이 context에 결합해야 한다. 현재 객체를 만들거나 임의 context를 제공하는 것만으로 실제 계정 출처가 인증되지 않는다.
 
-`NativeFillEvidence`는 execution/trade ID, client ID, position 매핑, instrument, side, 개별 수량·가격, 수수료와 통화, `ts_event_ns`, native `ts_init_ns`, 수신 `received_at_ns`를 보존한다. 음수 maker rebate도 손실 없이 보존한다. `.to_owned_fill()`은 기존 순수 `FillEvent`로 투영하며 원본 ns와 비용 정보는 native 증거에 계속 남는다. 기존 owned reducer의 execution ID 중복·충돌 검사를 적용할 수 있으나 이 패치에서 coordinator에 자동 적용하지 않는다.
+`NativeFillEvidence`는 execution/trade ID, client ID, position 매핑, instrument, side, 개별 수량·가격, 수수료와 통화, `ts_event_ns`, native `ts_init_ns`, 수신 `received_at_ns`를 보존한다. 음수 maker rebate도 손실 없이 보존한다. `source_kind`로 OrderFilled와 FillReport를 구별한다. OrderFilled의 `native_reconciliation`은 실제 bool만 허용하고 FillReport는 해당 필드가 없어 None이다. False도 실제 거래소 체결 인증이 아니며 True도 추정 체결만을 뜻하지 않는다. `.to_owned_fill()`은 순수 계산용 변환이며 런타임 반영 권한이 아니다.
+
+`execution_provenance.py`의 후보와 관찰 기록은 신원·수량·가격·수수료·통화·사건 시각을 정확히 비교한다. MATCH여도 `credit_authorized=False`다. 저장된 binding/history 참조 문자열, 대조 결과 또는 복사한 데이터 객체는 인증 영수증이 아니다. 실제 인증 GET 세션이 얻은 원래 execution ID와 소유 명령·거래소 주문 ID를 결합하는 발급자 및 원자적 반영·재시작 중복 방지는 별도 구현·검증 대상이다.
+
+현재 런타임은 모든 소유 native FILL을 `FillQuarantineRecord`로 먼저 영속 보존한다. 보유 수량·확정 체결 목록·ACK·예약 해제·종료 판단에 반영하지 않으며, 저장 시도 전에 신규 진입을 멈추고 기존 포지션·레버리지 조회 증거를 무효화한다. 첫 후보부터 미완료 충돌이 남으므로 보유 수량 0을 무노출로 판정하지 않는다. 출처 비교가 MATCH여도 검증 대기를 해제하지 않는다.
+
+재수신·초기화 시각만 다른 같은 후보는 첫 기록을 유지한다. 동일 execution ID의 수량·가격·수수료·통화·거래소 주문 ID·사건 시각이 달라지면 각각 보존하고 충돌을 표시한다. 후보 수와 정규 내용 해시를 포함한 유계 V2 요약은 재시작 때 이력과 다시 대조한다. 저장 실패도 실행을 재개하거나 보유 수량을 만들지 않는다. 기존 출처 없는 여섯 필드 체결 기록은 `LEGACY_NATIVE_FILL_PROVENANCE_REQUIRED`로 복구를 거절하며 원본과 수량을 바꾸지 않는다. 자동 삭제·0으로 재작성·암묵 이행은 없다.
+
+## 이번 오프라인 준비 단계의 완료 기준
+
+이번 단계는 매개변수 전달 사실, 체결 출처 데이터, 검증 대기 체결의 영속 보존, 읽기 전용 복구 진단을 각각 구현·독립 검토하고 최종 통합 검사를 통과하는 범위다. 실제 DEMO 체결·익절·손절·복구 시험 또는 최종 자동매매 프로그램의 완성을 뜻하지 않는다. 투자금·위험 한도는 미정으로 유지할 수 있으며 이번 단계에 유료 AI·서버 구매가 필요하지 않다.
+
+최종 제품에는 인증 조회 세션이 직접 발급하는 실제 execution 영수증과 원자적 반영, 검증 가능한 보호 주문 경로, 네이티브 캐시 영속 복구, 계좌 전체 위험·정산 대조, 실제 전략 신호 및 자동 실행 주기의 연결이 더 필요하다. 이어서 독립 확인한 계좌 신원·허용 권한·DEMO 시험 한도와 실제 수명주기 증거를 확인해야 한다. PC 종료 후 운영은 별도의 상주 서버 배포·비용 한도·연속 운용 검증이 완료돼야 성립한다.
+
+현재 기능을 켜거나 테스트 객체를 전달해 이 요구 사항을 대체하지 않는다. 공개 설정은 운용 STOPPED, 실행 자격 차단은 유지한다. 다음 개발 단위는 인증 조회 소유의 execution 영수증 발급·중복 방지 반영으로 구분하며, 보호 기능의 경로·소유권 제약을 해소하기 전에 보호 수리를 지원한다고 표시하지 않는다.
 
 이벤트·수송 예외와 거래소 거절 원문은 고정 오류 코드로 대체한다. 임의 provider reason·info·응답 body를 이 증거 객체에 복사하지 않는다. 수량·가격은 float 변환 없이 bounded Decimal로 검증한다.
 
@@ -63,7 +77,15 @@ Linux 전용 테스트는 `REQUIRE_NATIVE_CONTRACTS=1`과 `NATIVE_NETWORK_ISOLAT
 
 인터페이스 목록은 `socket.if_nameindex()`로 현재 프로세스의 network namespace를 커널에 조회한다. `unshare --net` 뒤에도 `/sys/class/net`은 공유된 sysfs mount의 기존 namespace를 보여줄 수 있어 격리 검사의 근거로 사용하지 않는다.
 
-실제 native `OrderFactory`, 등록된 `Strategy`, native `SubmitOrder`의 RiskEngine 메시지 경계, 실제 Bybit adapter의 `_submit_order`·validity·position resolver·position cache·PyO3 `BybitNativeTpSlParams`를 사용한다. HTTP/event emission 경계만 fake로 교체한다. 실제 native 설정·OrderSubmitted/Accepted/Rejected/Denied/Canceled/Filled·OrderStatusReport/FillReport/PositionStatusReport 객체도 사용한다. native node나 execution client를 생성·시작·연결하지 않는다. CI는 총 테스트 수 양수와 skip 0을 별도로 확인한다.
+실제 native `OrderFactory`, 등록된 `Strategy`, native `SubmitOrder`의 RiskEngine 메시지 경계, 실제 Bybit adapter의 `_submit_order`·validity·position resolver·position cache·PyO3 `BybitNativeTpSlParams`를 사용한다. HTTP/event emission 경계만 fake로 교체한다. 실제 native 설정·OrderSubmitted/Accepted/Rejected/Denied/Canceled/Filled·OrderStatusReport/FillReport/PositionStatusReport 객체도 사용한다. 기본 브리지 검사는 native node나 execution client를 연결하지 않는다. 별도 기존 작업자 수명주기 검사는 실제 node를 만들되 OS 네트워크 차단을 유지한다. CI는 기존 19개와 추가 17개, 총 36개 전부의 성공 및 skip 0을 요구하며 추가 모듈별 12/3/2개도 확인한다.
+
+## 주문 기능 및 복구 진단의 추가 경계
+
+`native_capabilities.py`는 고정 버전·소스 커밋·DEMO/LINEAR·명령·트리거 기준별 매개변수 전달 사실만 반환한다. 부착 TP/SL의 세 기준은 전달되지만 독립 StopMarket/MarketIfTouched의 명시적 trigger source는 현재 공개 Python→Rust 경로에서 전달되지 않는다. 일반 `trigger_by`를 넣어도 무시되는 것을 지원으로 취급하지 않는다. `production_supported=False`이며 다른 기준으로 자동 대체하지 않는다. 실제 adapter와 fake Rust HTTP 경계의 검사는 실제 HTTP 직렬화·거래소 수락·원자적 보호·자식 주문 소유권 증명이 아니다.
+
+`native_recovery.py`는 현재 캐시의 정확한 주문 클래스·소유 ID·계좌·trader/strategy·주문 조건·상태·NETTING ID와 체크포인트·관찰 revision을 읽어 비교한다. NETTING ID는 `instrument_id-strategy_id`이며 앱의 논리 포지션 ID를 대신 넣지 않는다. 추가 수동 주문, 빈 캐시, initialized placeholder, 누락·충돌·관찰 중 변경은 차단 사유다. `register_owned`만으로 새 캐시가 복구되지는 않는다.
+
+진단 결과 CONSISTENT는 입력 데이터의 일치만 뜻하며 항상 `production_supported=False`다. 동일한 체크포인트 이름은 백업 진위·영속 캐시 복원·독점 스냅샷·실제 노출·거래 자격을 입증하지 않는다. 이 검사는 캐시를 변경하거나 Redis를 설치하거나 주문·대조·복원을 실행하지 않는다. 실제 캐시 영속 복원과 보호 주문 수리는 후속 과제다.
 
 이 문서는 테스트 설계와 구현 범위를 설명한다. 최종 exact-head Linux 성공 여부와 전체 회귀 결과는 해당 변경의 CI 증거로 확인해야 한다. 테스트 통과가 실제 DEMO의 주문 접수·체결·TP/SL 유효성이나 MAINNET 운용 자격을 뜻하지 않는다.
 

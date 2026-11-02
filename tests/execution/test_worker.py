@@ -15,7 +15,9 @@ from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import NOW, inputs
 from test_runtime import SCOPE, selection
 
+from multi_exchange_trader.execution import codec
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
+from multi_exchange_trader.execution.execution_provenance import FillQuarantineRecord
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.modes import AutomaticMode, select_all_in_one
 from multi_exchange_trader.execution.native_events import NativeEventDecoder
@@ -77,8 +79,13 @@ def fill(client_id: str) -> SimpleNamespace:
     return SimpleNamespace(account_id="BYBIT-UNIFIED", client_order_id=client_id,
         instrument_id="BTCUSDT-LINEAR.BYBIT", venue_order_id="venue-1",
         ts_event=int(NOW.timestamp()) * 10**9, ts_init=int(NOW.timestamp()) * 10**9,
-        order_side="BUY", trade_id="fill-1", last_qty=Decimal("0.4"), last_px=Decimal(100),
+        order_side="BUY", reconciliation=False, trade_id="fill-1", last_qty=Decimal("0.4"), last_px=Decimal(100),
         commission=SimpleNamespace(as_decimal=lambda: Decimal("0.01"), currency="USDT"))
+
+
+def quarantines(worker: Any) -> tuple[FillQuarantineRecord, ...]:
+    return tuple(value for item in worker.runtime.store.list_position_events("position-1")
+                 if type(value := codec.decode(item.payload_json)) is FillQuarantineRecord)
 
 
 async def test_passive_start_and_stage_never_activate_or_send(tmp_path: Path) -> None:
@@ -109,14 +116,17 @@ async def test_foreign_thread_fill_survives_expired_metadata_and_restart(tmp_pat
     thread.join()
     await asyncio.sleep(0)
     assert h.worker.callback_failures == 0
-    assert h.worker.runtime.projection("position-1").owned_quantity == Decimal("0.4")
-    assert h.worker.runtime.journal.get("entry").state is CommandState.ACKNOWLEDGED
+    assert h.worker.runtime.projection("position-1").owned_quantity == 0
+    assert len(quarantines(h.worker)) == 1
+    assert h.worker.runtime.journal.get("entry").state is CommandState.SENDING
     with pytest.raises(ValueError, match="STALE"):
         await stage(h)
     await h.worker.stop()
     restarted = harness_existing(tmp_path, h)
     await restarted.start_passive()
-    assert restarted.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+    assert restarted.runtime.projection("position-1").owned_quantity == 0
+    assert len(quarantines(restarted)) == 1
+    assert restarted.runtime.projection("position-1").entries_blocked
     restarted.post_native(h.assembly.channel, fill(record.client_order_id))
     await asyncio.sleep(0)
     assert restarted.rejected_channels == 1
@@ -235,7 +245,8 @@ async def test_paid_dispatch_does_not_block_owned_fill_callbacks(tmp_path: Path)
         assert await asyncio.to_thread(entered.wait, 5)
         h.worker.post_native(h.assembly.channel, fill(record.client_order_id))
         await asyncio.sleep(0)
-        assert h.worker.runtime.projection("position-1").owned_quantity == Decimal("0.4")
+        assert h.worker.runtime.projection("position-1").owned_quantity == 0
+        assert len(quarantines(h.worker)) == 1
         with pytest.raises(RuntimeBlocked, match="INFLIGHT_SELECTION"):
             await h.worker.stop()
     finally:

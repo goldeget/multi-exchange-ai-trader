@@ -66,7 +66,7 @@ jobs:
       - name: Require OS network isolation and actual native contracts
         run: |
           command -v unshare
-          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_bybit_native_linux.py tests/execution/test_native_node_linux.py --junitxml=native-contracts.xml
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_bybit_native_linux.py tests/execution/test_native_node_linux.py tests/execution/test_native_capabilities_linux.py tests/execution/test_execution_provenance_linux.py tests/execution/test_native_recovery_linux.py --junitxml=native-contracts.xml
       - name: Reject empty or skipped native qualification
         run: |
           .venv/bin/python - <<'PY'
@@ -75,8 +75,20 @@ jobs:
           total = sum(int(s.attrib.get("tests", 0)) for s in suites)
           skipped = sum(int(s.attrib.get("skipped", 0)) for s in suites)
           failures = sum(int(s.attrib.get("failures", 0)) + int(s.attrib.get("errors", 0)) for s in suites)
-          if total != 19 or skipped or failures:
-              raise SystemExit("Native contracts require all 19 unskipped passing cases")
+          if total != 36 or skipped or failures:
+              raise SystemExit("Native contracts require all 36 unskipped passing cases")
+          expected_modules = {
+              "test_native_capabilities_linux": 12,
+              "test_execution_provenance_linux": 3,
+              "test_native_recovery_linux": 2,
+          }
+          for module_name, expected in expected_modules.items():
+              observed = sum(
+                  case.attrib.get("classname", "").split(".")[-1] == module_name
+                  for suite in suites for case in suite.iter("testcase")
+              )
+              if observed != expected:
+                  raise SystemExit(f"{module_name} requires exactly {expected} passing cases")
           print(f"Verified {total} actual native contract tests without network access")
           PY
 

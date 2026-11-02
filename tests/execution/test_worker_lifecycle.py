@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_worker import fill, harness, harness_existing, stage
+from test_worker import fill, harness, harness_existing, quarantines, stage
 
 from multi_exchange_trader.execution import worker_cli
 from multi_exchange_trader.execution.journal import CommandState
@@ -89,7 +89,9 @@ async def test_failed_native_stop_preserves_sink_stores_lease_and_unknown_liabil
     await h.worker.stop()
     restarted = harness_existing(tmp_path, h)
     await restarted.start_passive()
-    assert str(restarted.runtime.projection("position-1").owned_quantity) == "0.4"
+    assert restarted.runtime.projection("position-1").owned_quantity == 0
+    assert len(quarantines(restarted)) == 1
+    assert restarted.runtime.projection("position-1").entries_blocked
     await restarted.stop()
 
 

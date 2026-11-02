@@ -102,7 +102,8 @@ def enable_fake_handoff(worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
 def consume(worker: Any, client_id: str, kind: str, **changes: object) -> Any:
     fields: dict[str, object] = {"account_id": "BYBIT-UNIFIED", "client_order_id": client_id,
         "instrument_id": "BTCUSDT-LINEAR.BYBIT", "venue_order_id": "venue-1", "ts_event": NS,
-        "ts_init": NS, "order_side": "BUY", "trade_id": "fill-1", "last_qty": Decimal("0.4"),
+        "ts_init": NS, "reconciliation": False, "order_side": "BUY", "trade_id": "fill-1",
+        "last_qty": Decimal("0.4"),
         "last_px": Decimal(100), "commission": SimpleNamespace(
             as_decimal=lambda: Decimal("0.01"), currency="USDT")}
     fields.update(changes)
@@ -161,17 +162,17 @@ def test_partial_fill_duplicate_conflict_and_restart_survive_in_normalized_store
     consume(worker, record.client_order_id, "OrderFilled", trade_id="fill-2",
             last_qty=Decimal("0.1"))
     consume(worker, record.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.5")
+    assert worker.projection("position-1").owned_quantity == 0
     assert worker.status.entries_paused
     assert journal.get("entry").reservation is not None
     consume(worker, record.client_order_id, "OrderFilled", last_qty=Decimal("0.3"))
     worker.shutdown()
     restarted = module.NativeExecutionRuntime(**kwargs)
     state = restarted.projection("position-1")
-    assert state.owned_quantity == Decimal("0.5")
+    assert state.owned_quantity == 0
     assert state.conflicts
     assert restarted.status.entries_paused
-    assert restarted.dispatch("entry").state is CommandState.ACKNOWLEDGED
+    assert restarted.dispatch("entry").state is CommandState.UNKNOWN
     assert len(strategy.commands) == 1
 
 
@@ -310,12 +311,14 @@ def test_readback_never_invents_attached_order_ownership_or_releases_reservation
     result = worker.consume_readback("position-1", snapshot)
     assert result.entries_blocked
     assert result.status != "OPEN_PROTECTED"
-    assert result.unprotected_quantity == Decimal("0.4")
+    assert result.unprotected_quantity == 0
+    assert result.status == "ATTENTION"
+    assert worker.projection("position-1").entries_blocked
     assert journal.get("entry").terminal_confirmed is False
     assert len(worker.projection("position-1").orders) == 1
     worker.shutdown()
     restarted = module.NativeExecutionRuntime(**kwargs)
-    assert restarted.projection("position-1").owned_quantity == Decimal("0.4")
+    assert restarted.projection("position-1").owned_quantity == 0
 
 
 def test_late_native_fill_after_rejection_is_retained_without_release(
@@ -327,7 +330,7 @@ def test_late_native_fill_after_rejection_is_retained_without_release(
     worker.dispatch("entry")
     consume(worker, record.client_order_id, "OrderRejected")
     consume(worker, record.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
+    assert worker.projection("position-1").owned_quantity == 0
     assert journal.get("entry").reservation is not None
     assert not journal.get("entry").terminal_confirmed
 
@@ -380,23 +383,24 @@ def test_exit_requires_current_exact_readback_and_refuses_manual_exposure(
     row = VenuePosition("BTCUSDT", 0, "BUY", Decimal("0.4"), Decimal(2), None, None, None)
     snapshot = VenueSnapshot(SCOPE, "BTCUSDT", "exit-cycle", NOW, NOW, True, (row,), (), ())
     worker.consume_readback("position-1", snapshot)
-    exiting = worker.queue_exit("exit", "position-1", Decimal("0.4"), Decimal(100))
-    # External activity arrives after staging and must be checked again before send.
+    with pytest.raises(module.RuntimeBlocked, match="READBACK"):
+        worker.queue_exit("exit", "position-1", Decimal("0.4"), Decimal(100))
+    # Even matching venue quantity cannot release an uncorroborated candidate.
     worker.consume_readback("position-1", replace(snapshot, cycle_id="external-cycle",
         positions=(replace(row, quantity=Decimal("1.4")),)))
     with pytest.raises(module.RuntimeBlocked, match="READBACK"):
-        worker.dispatch("exit")
-    assert journal.get("exit").state is CommandState.PENDING
+        worker.queue_exit("exit", "position-1", Decimal("0.4"), Decimal(100))
+    assert journal.get("exit") is None
     assert len(strategy.commands) == 1
     worker.consume_readback("position-1", replace(snapshot, cycle_id="clean-cycle"))
-    assert worker.dispatch("exit").state is CommandState.SENDING
-    order = strategy.commands[-1][0]
-    assert order.client_order_id == exiting.client_order_id
-    assert order.is_reduce_only is True
-    assert order.quantity == "0.4"
+    with pytest.raises(module.RuntimeBlocked, match="READBACK"):
+        worker.queue_exit("exit", "position-1", Decimal("0.4"), Decimal(100))
+    assert worker.projection("position-1").entries_blocked
+    assert worker.projection("position-1").executions == ()
+    assert len(strategy.commands) == 1
 
 
-def test_projection_commit_before_ack_survives_ack_failure_and_duplicate_replay(
+def test_quarantine_commit_never_attempts_ack_and_survives_duplicate_replay(
     setup: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker, journal, _, _, kwargs, module = setup
@@ -406,9 +410,8 @@ def test_projection_commit_before_ack_survives_ack_failure_and_duplicate_replay(
     with sqlite3.connect(kwargs["lock_directory"] / "journal.sqlite3") as conn:
         conn.execute("CREATE TRIGGER fail_ack BEFORE INSERT ON audit "
             "WHEN NEW.action='ACKNOWLEDGED' BEGIN SELECT RAISE(ABORT,'storage failure'); END")
-    with pytest.raises(sqlite3.IntegrityError):
-        consume(worker, record.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
+    consume(worker, record.client_order_id, "OrderFilled")
+    assert worker.projection("position-1").owned_quantity == 0
     assert journal.get("entry").state is CommandState.SENDING
     worker.shutdown()
     with sqlite3.connect(kwargs["lock_directory"] / "journal.sqlite3") as conn:
@@ -416,8 +419,8 @@ def test_projection_commit_before_ack_survives_ack_failure_and_duplicate_replay(
     recovered = module.NativeExecutionRuntime(**kwargs)
     assert journal.get("entry").state is CommandState.UNKNOWN
     consume(recovered, record.client_order_id, "OrderFilled")
-    assert recovered.projection("position-1").owned_quantity == Decimal("0.4")
-    assert journal.get("entry").state is CommandState.ACKNOWLEDGED
+    assert recovered.projection("position-1").owned_quantity == 0
+    assert journal.get("entry").state is CommandState.UNKNOWN
 
 
 def test_bad_exit_price_does_not_poison_durable_restart(
@@ -448,15 +451,15 @@ def test_thousand_partial_fills_restart_and_early_execution_identity(
     for index in range(1100):
         consume(worker, record.client_order_id, "OrderFilled", trade_id=f"execution-{index}",
                 last_qty=Decimal("0.0005"))
-    assert worker.projection("position-1").owned_quantity == Decimal("0.55")
+    assert worker.projection("position-1").owned_quantity == 0
     assert len(store.get_position("position-1").payload_json.encode()) < 2048
     assert len(store.list_position_events("position-1")) == 1101
-    assert journal.get("entry").state is CommandState.ACKNOWLEDGED
+    assert journal.get("entry").state is CommandState.SENDING
     worker.shutdown()
     # A genuinely separate connection/cache must reconstruct the durable event rows.
     with RuntimeStateStore(kwargs["lock_directory"] / "runtime-state.sqlite3", store.scope) as opened:
         restarted = module.NativeExecutionRuntime(**{**kwargs, "store": opened})
-        assert restarted.projection("position-1").owned_quantity == Decimal("0.55")
+        assert restarted.projection("position-1").owned_quantity == 0
         before = opened.get_position("position-1").revision
         consume(restarted, record.client_order_id, "OrderFilled", trade_id="execution-0",
                 last_qty=Decimal("0.0005"))
@@ -468,14 +471,15 @@ def test_thousand_partial_fills_restart_and_early_execution_identity(
                                                        currency="BTC")}):
             consume(restarted, record.client_order_id, "OrderFilled",
                 **{"trade_id": "execution-0", "last_qty": Decimal("0.0005"), **changes})
-            assert restarted.projection("position-1").owned_quantity == Decimal("0.55")
+            assert restarted.projection("position-1").owned_quantity == 0
             assert restarted.projection("position-1").conflicts
         consume(restarted, record.client_order_id, "OrderFilled", trade_id="execution-1100",
                 last_qty=Decimal("0.0005"))
         restarted.shutdown()
     again = module.NativeExecutionRuntime(**kwargs)
-    assert again.projection("position-1").owned_quantity == Decimal("0.5505")
-    assert len(again.projection("position-1").executions) == 1101
+    assert again.projection("position-1").owned_quantity == 0
+    assert again.projection("position-1").executions == ()
+    assert len(store.list_position_events("position-1")) == 1106
     assert again.projection("position-1").conflicts
     assert len(strategy.commands) == 1
     assert journal.get("entry").reservation == record.reservation
@@ -502,8 +506,8 @@ def test_fill_history_and_summary_roll_back_together_before_ack(
     with sqlite3.connect(kwargs["lock_directory"] / "runtime-state.sqlite3") as conn:
         conn.execute("DROP TRIGGER fail_event")
     consume(worker, record.client_order_id, "OrderFilled")
-    assert worker.projection("position-1").owned_quantity == Decimal("0.4")
-    assert journal.get("entry").state is CommandState.ACKNOWLEDGED
+    assert worker.projection("position-1").owned_quantity == 0
+    assert journal.get("entry").state is CommandState.SENDING
 
 
 @pytest.mark.parametrize("changed", ["price", "fee", "currency"])
@@ -517,17 +521,18 @@ def test_changed_execution_economics_conflict_after_restart(
     consume(worker, record.client_order_id, "OrderFilled")
     worker.shutdown()
     recovered = module.NativeExecutionRuntime(**kwargs)
-    assert not recovered.projection("position-1").conflicts
+    assert {c.reason for c in recovered.projection("position-1").conflicts} == {
+        "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED"}
     changes = ({"last_px": Decimal(101)} if changed == "price" else
                {"commission": SimpleNamespace(
                    as_decimal=lambda: Decimal("0.02" if changed == "fee" else "0.01"),
                    currency="BTC" if changed == "currency" else "USDT")})
     consume(recovered, record.client_order_id, "OrderFilled", **changes)
-    assert recovered.projection("position-1").owned_quantity == Decimal("0.4")
-    assert recovered.projection("position-1").conflicts[0].reason == "EXECUTION_ID_CONFLICT"
+    assert recovered.projection("position-1").owned_quantity == 0
+    assert "EXECUTION_ID_CONFLICT" in {c.reason for c in recovered.projection("position-1").conflicts}
     recovered.shutdown()
     again = module.NativeExecutionRuntime(**kwargs)
-    assert again.projection("position-1").conflicts[0].reason == "EXECUTION_ID_CONFLICT"
+    assert "EXECUTION_ID_CONFLICT" in {c.reason for c in again.projection("position-1").conflicts}
 
 
 def test_missing_normalized_execution_history_fails_closed_on_restart(
@@ -581,7 +586,7 @@ def test_expired_orphan_entry_recovers_immutable_mapping_without_dispatch(
     assert not strategy.commands
 
 
-def test_legacy_projection_normalizes_without_losing_durable_fill_history(
+def test_aggregate_projection_normalizes_without_losing_durable_quarantine_history(
     setup: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from multi_exchange_trader.execution import codec
@@ -599,6 +604,6 @@ def test_legacy_projection_normalizes_without_losing_durable_fill_history(
     consume(recovered, record.client_order_id, "OrderFilled", trade_id="next", last_qty=Decimal("0.1"))
     recovered.shutdown()
     again = module.NativeExecutionRuntime(**kwargs)
-    assert again.projection("position-1").owned_quantity == Decimal("0.5")
+    assert again.projection("position-1").owned_quantity == 0
     consume(again, record.client_order_id, "OrderFilled")
-    assert again.projection("position-1").owned_quantity == Decimal("0.5")
+    assert again.projection("position-1").owned_quantity == 0

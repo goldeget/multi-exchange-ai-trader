@@ -13,8 +13,10 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal, Union, get_args, get_origin, get_type_hints
 
+from . import execution_provenance as e
 from . import protection as p
 from . import risk as r
+from .native_events import NativeFillEvidence
 
 _RECORDS: tuple[type[object], ...] = (
     p.ProtectionScope, p.OwnedOrder, p.FillEvent, p.ProjectionConflict,
@@ -23,6 +25,8 @@ _RECORDS: tuple[type[object], ...] = (
     r.RiskScope, r.UserRiskPolicy, r.EntryProposal, r.MarketEvidence,
     r.InstrumentEvidence, r.RiskTier, r.TierEvidence, r.AccountEvidence,
     r.ReservationTotals, r.LiquidationEvidence, r.LeverageReadback, r.EntryDecision,
+    NativeFillEvidence, e.NativeExecutionCandidate, e.VenueExecutionObservation,
+    e.ExecutionComparison, e.FillQuarantineRecord,
 )
 _REGISTRY = {cls.__name__: cls for cls in _RECORDS}
 

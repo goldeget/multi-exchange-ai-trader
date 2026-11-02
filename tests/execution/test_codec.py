@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -40,3 +41,34 @@ def test_complete_conflict_history_roundtrips_without_losing_decimal_or_utc() ->
 def test_invalid_restored_state_fails_closed(payload: str) -> None:
     with pytest.raises((ValueError, TypeError)):
         decode(payload)
+
+
+def test_untrusted_execution_records_roundtrip_with_rebate_and_provenance() -> None:
+    from test_execution_provenance import api, candidate, observation
+
+    original = candidate()
+    records = (original.fill, original, observation(),
+        api().compare_execution_candidate(original, observation()),
+        api().FillQuarantineRecord(original, "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED"))
+    for record in records:
+        assert decode(encode(record)) == record
+        extra = json.loads(encode(record))
+        extra["fields"]["authenticated"] = True
+        with pytest.raises(ValueError, match="missing or extra record fields"):
+            decode(json.dumps(extra))
+    restored = decode(encode(records[-1]))
+    assert restored.candidate.fill.native_reconciliation is False
+    assert str(restored.candidate.fill.commission) == "-0.010"
+
+
+def test_codec_cannot_restore_authorizing_comparison_or_invalid_metadata() -> None:
+    from test_execution_provenance import api, candidate, observation
+
+    comparison = json.loads(encode(api().compare_execution_candidate(candidate(), observation())))
+    comparison["fields"]["credit_authorized"] = True
+    with pytest.raises(ValueError):
+        decode(json.dumps(comparison))
+    fill = json.loads(encode(candidate().fill))
+    fill["fields"]["native_reconciliation"] = 0
+    with pytest.raises(ValueError):
+        decode(json.dumps(fill))
