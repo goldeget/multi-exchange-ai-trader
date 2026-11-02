@@ -1,5 +1,7 @@
 # Authenticated Execution Receipts and Durable Credit Implementation Plan
 
+Implementation status, 2026-11-02: Tasks 1, 2A/2B/2C and 3 are implemented and individually independently reviewed. This retained authoring checklist is historical, not a queue of unfinished implementation. The full product remains incomplete; [current runtime status](./AUTOMATIC_RUNTIME_STATUS_KO.md) describes its remaining gates. Positive local fixtures are synthetic, and actual authenticated transport and DEMO operation remain unverified. Whole-branch review and exact-source CI are separate integration gates recorded with the final PR/handoff.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Corroborate persisted native candidates against session-owned actual-history receipts and atomically credit accounting without enabling trading.
@@ -122,4 +124,3 @@ Sizes are review guides, not reasons to omit checks. Each task ends with focused
 Spec coverage maps issuer to Task 1, exact matching/atomicity/candidate resolution to Task 2, worker fencing/restore/status to Task 3. Five Review Focus items each have named assertions. Shared names/types above are the contract; Task 3 consumes Task 2 constructor dependencies and results verbatim. No task changes execution permission gates or requires actual observations to pass offline tests.
 
 Requested ledger: `.superpowers/sdd/2026-11-02-execution-receipts/progress.md`. The preflight table and rulings are recorded there. Project-conventional locations override skill defaults; the helper that creates a different workspace/marker is not run. Documentation authoring is complete only after root's design/builder check; this document does not claim implementation or final runtime qualification.
-

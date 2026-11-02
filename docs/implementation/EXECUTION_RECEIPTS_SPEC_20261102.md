@@ -1,5 +1,9 @@
 # Authenticated execution receipts and durable accounting credit
 
+Implementation status, 2026-11-02: the receipt issuer, durable credit/replay, and explicit worker/restore integration are implemented in this branch and have passed individual independent specification and quality reviews. Focused local tests use synthetic provider boundaries. Actual authenticated transport, the real DEMO lifecycle, protection, native-cache recovery, complete account qualification, strategy scheduling and hosting remain unverified or outside this package.
+
+The design below retains its original authoring context. Use [current runtime status](./AUTOMATIC_RUNTIME_STATUS_KO.md) for remaining product work; do not redispatch these completed implementation tasks. Whole-branch review and exact-source hosted CI are required integration gates, recorded with the final PR and handoff evidence.
+
 Date: 2026-11-02. Design only; no implementation, tests, provider requests, secrets or actual account observations performed while authoring.
 Base: `acb829a6481408b00dfc8189eb82ddd4e0b5dab6`, tree `6edf58bad8a76b7f7d73a4a14e3b679e9beaa96b`. PR #19 is merged; remote main verified 2026-11-02 before implementation.
 
@@ -77,4 +81,3 @@ Three sequential tasks: session receipt; atomic credit/replay; explicit worker/h
 Test new event backup/restore using the existing v3 snapshot contract and standard-library operation scripts, retaining original times, quantity, conflicts and BLOCKED/STOPPED. No restored token or re-credit arises. Keep existing native tests/count unchanged unless actual additions are explicitly reviewed; no new native behavior is proposed.
 
 Finish with focused task reviews, integrated required checks and accurate status documentation. Actual positive receipt issuance/transport observations remain unverified until operator-confirmed identity and an actual read are available. Existing permissions may permit read observations while still blocking execution. No investment amount, model, AI budget, hosting choice or account identity is fabricated to finish this package.
-
