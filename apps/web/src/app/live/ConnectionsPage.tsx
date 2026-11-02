@@ -30,6 +30,10 @@ export function ConnectionsPage({demo=false}:{demo?:boolean}){
   }finally{if(pending.current===controller)pending.current=null}
  }
  const practice=connections.data?.bybit_demo;
+ const ai=connections.data?.ai;
+ const selectedProvider=ai?.provider==='OPENROUTER'?'OpenRouter':ai?.provider==='ANTHROPIC'?'Anthropic':null;
+ const aiRegistration=ai?.registered&&ai.status==='REGISTERED_UNVERIFIED'?'등록됨 · 권한 미검증':
+  ai?.status==='NOT_CONFIGURED'?'제공자 미설정':'설정 확인 필요';
  const displayLimit=Number(budget.data?.monthly_limit??'0');
  const displayExposure=Number(budget.data?.used??'0')+Number(budget.data?.reserved??'0');
  const percent=displayLimit>0?Math.min(100,Math.max(0,displayExposure/displayLimit*100)):displayExposure>0?100:0;
@@ -38,7 +42,7 @@ export function ConnectionsPage({demo=false}:{demo?:boolean}){
    {connections.loading&&!connections.data?<p role="status">연결 설정을 확인하는 중입니다.</p>:connections.error?<p role="alert" className="warning">연결 상태를 확인하지 못했습니다.</p>:<>
     <div className="provider"><span className="provider-logo">B</span><div><h3>Bybit</h3><p>실계좌 읽기 전용</p><small>{connections.data?.bybit.registered?'등록됨 · 권한 미검증':'미등록'}</small></div><Badge>조회 전용</Badge></div>
     <div className="provider"><span className="provider-logo">B</span><div><h3>Bybit 연습계좌</h3><p>{practice?.registered?'등록됨 · 고정 연결 시험 권한 미검증':'미등록 · 연습 주문 꺼짐'}</p>{practice?.blocked_by_unresolved_attempt&&<p className="warning">미확정 요청이 있어 신규 시험을 차단했습니다.</p>}</div><Badge tone="warning">DEMO 별도 환경</Badge></div>
-    {['OpenRouter','NVIDIA'].map(name=><div className="provider" key={name}><span className="provider-logo">◇</span><div><h3>{name}</h3><p>제공자 미설정</p></div><Badge>호출 꺼짐</Badge></div>)}
+    {[...(selectedProvider==='Anthropic'?['Anthropic']:[]),'OpenRouter','NVIDIA'].map(name=><div className="provider" key={name}><span className="provider-logo">◇</span><div><h3>{name}</h3><p>{name===selectedProvider?aiRegistration:'제공자 미설정'}</p>{name===selectedProvider&&ai?.model_id&&<small>{ai.model_id}</small>}</div><Badge>호출 꺼짐</Badge></div>)}
    </>}
    <div className="rule-section"><h2>AI 사용 설정</h2><Definitions rows={[["현재 모드","오프라인 시험"],["유료 PAPER 분석","꺼짐"],["비밀키","로컬 서버에서만 관리"]]}/><p className="helper">규칙 추천은 외부 AI 없이 동작합니다. 키와 서명은 브라우저에 표시하지 않습니다.</p></div>
   </Panel>
