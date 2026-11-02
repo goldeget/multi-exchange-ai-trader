@@ -82,6 +82,44 @@ def test_original_history_variant_digest_is_unchanged() -> None:
         "62941d3096b99480825f415c63b8119211a426916b858d98c40af83569345367")
 
 
+def test_execution_identity_lookup_retains_original_members_conflicts_and_no_writes(tmp_path: Path) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        first = store.ingest(snapshot(executions=(execution(),)))
+        second = store.ingest(snapshot(snapshot_id="later", window=HistoryWindow(20000, 30000),
+            executions=(execution(time_ms=22000, client_order_id="foreign"),)))
+        third = store.ingest(snapshot(snapshot_id="blank", executions=(execution(
+            execution_id="e2", client_order_id=""),)))
+        store.ingest(snapshot())  # Original snapshot ID reused, independently restrictive.
+        before, changes = counts(store.path), store._db.total_changes
+        evidence = store.execution_identity_evidence(client_order_id="c1", venue_order_ids=())
+        assert len(evidence) == 1 and evidence[0].observation_key == first.observation_key
+        assert len(evidence[0].conflict_keys) == 2
+        all_evidence = store.execution_identity_evidence(client_order_id="absent", venue_order_ids=("o1",))
+        assert {item.observation_key for item in all_evidence} == {
+            first.observation_key, second.observation_key, third.observation_key}
+        assert {item.record.client_order_id for item in all_evidence} == {"c1", "foreign", ""}
+        assert all(item.variant_hash == history_store._variant(item.record)[2] for item in all_evidence)
+        assert store.execution_identity_evidence(client_order_id="absent", venue_order_ids=()) == ()
+        assert counts(store.path) == before and store._db.total_changes == changes
+
+
+@pytest.mark.parametrize("corruption", ["missing-member", "metadata", "variant"])
+def test_execution_identity_lookup_validates_original_provenance(tmp_path: Path, corruption: str) -> None:
+    with HistoryStore(tmp_path / "history.sqlite3", SCOPE) as store:
+        store.ingest(snapshot(executions=(execution(),)))
+        if corruption == "missing-member":
+            store._db.execute("DROP TRIGGER history_members_no_delete")
+            store._db.execute("DELETE FROM history_members")
+        elif corruption == "metadata":
+            store._db.execute("DROP TRIGGER history_snapshots_no_update")
+            store._db.execute("UPDATE history_snapshots SET transport_injected=0")
+        else:
+            store._db.execute("DROP TRIGGER history_variants_no_update")
+            store._db.execute("UPDATE history_variants SET payload='{}'")
+        with pytest.raises(HistoryError, match="HISTORY_DATABASE_INVALID"):
+            store.execution_identity_evidence(client_order_id="c1", venue_order_ids=())
+
+
 def test_order_evidence_retains_exact_global_variants_and_sources_without_writes(tmp_path: Path) -> None:
     path = tmp_path / "history.sqlite3"
     with HistoryStore(path, SCOPE) as store:

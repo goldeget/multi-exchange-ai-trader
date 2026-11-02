@@ -108,6 +108,9 @@ class NativeOwnedRequest:
     venue_order_ids: frozenset[str]
 
 
+NativeOwnershipResolver = Callable[[tuple[tuple[str, str], ...]], tuple[NativeOwnedRequest, ...]]
+
+
 @dataclass(frozen=True)
 class RuntimeStatus:
     state: Literal["BLOCKED", "PAUSED", "RUNNING"]
@@ -192,7 +195,7 @@ class NativeExecutionRuntime:
                  clock: Callable[[], datetime], max_evidence_age: timedelta,
                  receipt_session: BybitDemoAccountSession | None = None,
                  history_store: HistoryStore | None = None,
-                 _pre_recovery: Callable[[tuple[NativeOwnedRequest, ...]], None] | None = None,
+                 _pre_recovery: Callable[[NativeOwnershipResolver], None] | None = None,
                  ) -> None:
         if (type(journal) is not CommandJournal or type(store) is not RuntimeStateStore
                 or type(bridge) is not NativeBybitBridge
@@ -232,7 +235,7 @@ class NativeExecutionRuntime:
                 raise RuntimeBlocked("ACCOUNT_RUNTIME_ALREADY_RUNNING")
             self._states()  # Full replay before any recovery mutation.
             if _pre_recovery is not None:
-                _pre_recovery(self.native_owned_requests())
+                _pre_recovery(self.native_owned_requests)
             self.journal.recover_sending(exclusive_owner=True)
             self.store.recover(exclusive_owner=True)
             for record in journal.list_commands():
@@ -245,7 +248,8 @@ class NativeExecutionRuntime:
                     self.bridge.register_owned(self._request(record))
             _OWNERS[str(self._lock_path)] = self
 
-    def native_owned_requests(self) -> tuple[NativeOwnedRequest, ...]:
+    def native_owned_requests(self, native_venues: tuple[tuple[str, str], ...] = ()
+                              ) -> tuple[NativeOwnedRequest, ...]:
         """Read-only full replay seam shared by startup and quiesced capture."""
         self._guard()
         states = self._states()
@@ -265,6 +269,10 @@ class NativeExecutionRuntime:
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
             request = self._request_for_state(record, matches[0])
             venues = self._known_venues(record.client_order_id, candidates)
+            # Only the coordinator supplies seeds from fully validated detached
+            # native orders. They restrict identity, never grant event authority.
+            venues.update(venue for client, venue in native_venues
+                          if client == record.client_order_id)
             if self._history_store is not None:
                 while True:
                     if len(venues) > 16:
@@ -281,6 +289,16 @@ class NativeExecutionRuntime:
                                 or row.position_idx != 0):
                             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
                         venues.add(row.venue_order_id)
+                    for execution in self._history_store.execution_identity_evidence(
+                            client_order_id=record.client_order_id,
+                            venue_order_ids=tuple(sorted(queried_venues))):
+                        fill, owned = execution.record, request.owned
+                        if (execution.conflict_keys or fill.client_order_id != owned.client_order_id
+                                or fill.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                                or fill.side != ("Buy" if owned.side == "BUY" else "Sell")):
+                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                        # Partial fill quantity/price are not original order economics.
+                        venues.add(fill.venue_order_id)
                     if venues == queried_venues:
                         break
             if len(venues) > 1:

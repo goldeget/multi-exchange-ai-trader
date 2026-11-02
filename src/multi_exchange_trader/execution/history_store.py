@@ -661,6 +661,69 @@ class HistoryStore:
                 raise
             raise HistoryError("HISTORY_DATABASE_INVALID") from None
 
+    def execution_identity_evidence(self, *, client_order_id: str,
+            venue_order_ids: tuple[str, ...]) -> tuple[StoredExecutionEvidence, ...]:
+        """Restrictive original execution membership; never an execution credit.
+
+        Match either identity across all windows, including uncredited variants
+        and changed/blank clients. Validate complete original observations and
+        execution/snapshot conflicts within one read transaction.
+        """
+        self._check_open()
+        client_order_id = _text(client_order_id)
+        if (type(venue_order_ids) is not tuple or not 0 <= len(venue_order_ids) <= 16
+                or any(type(identity) is not str for identity in venue_order_ids)
+                or len(set(venue_order_ids)) != len(venue_order_ids)):
+            raise HistoryError("HISTORY_ORDER_IDENTITIES_INVALID")
+        for identity in venue_order_ids:
+            _text(identity)
+        db = self._db
+        try:
+            db.execute("BEGIN")
+            result: list[StoredExecutionEvidence] = []
+            snapshots: dict[str, HistorySnapshot] = {}
+            for raw in db.execute("SELECT * FROM history_variants WHERE kind='EXECUTION' "
+                                  "ORDER BY record_id,variant_hash").fetchall():
+                record = _decode_record("EXECUTION", raw[6])
+                if type(record) is not ExecutionRecord or tuple(raw) != _variant(record):
+                    _fail()
+                assert isinstance(record, ExecutionRecord)
+                if (record.client_order_id != client_order_id
+                        and record.venue_order_id not in venue_order_ids):
+                    continue
+                members = db.execute("SELECT observation_key FROM history_members "
+                    "WHERE kind='EXECUTION' AND record_id=? AND variant_hash=? ORDER BY observation_key",
+                    (record.execution_id, raw[2])).fetchall()
+                if not members:
+                    _fail()
+                for (key,) in members:
+                    if key not in snapshots:
+                        snapshots[key] = self._stored_observation(key)
+                    if record not in snapshots[key].executions:
+                        _fail()
+                    conflicts = tuple(HistoryConflict(*row) for row in db.execute(
+                        "SELECT * FROM history_conflicts WHERE (kind='EXECUTION' AND record_id=?) "
+                        "OR (kind='SNAPSHOT' AND (left_observation_key=? OR right_observation_key=?)) "
+                        "ORDER BY conflict_key", (record.execution_id, key, key)))
+                    for conflict in conflicts:
+                        if (conflict.reason != ("EVENT_CONTENT_CHANGED" if conflict.kind == "EXECUTION"
+                                                else "SNAPSHOT_ID_REUSED")
+                                or conflict.left_observation_key == conflict.right_observation_key
+                                or conflict != _conflict(conflict.kind, conflict.record_id,
+                                    conflict.left_observation_key, conflict.right_observation_key,
+                                    conflict.reason)):
+                            _fail()
+                    result.append(StoredExecutionEvidence(record, raw[2], key,
+                        tuple(item.conflict_key for item in conflicts)))
+            db.execute("COMMIT")
+            return tuple(result)
+        except Exception as error:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            if isinstance(error, HistoryError):
+                raise
+            raise HistoryError("HISTORY_DATABASE_INVALID") from None
+
     def order_evidence(self, *, client_order_id: str,
                        venue_order_ids: tuple[str, ...]) -> tuple[StoredOrderEvidence, ...]:
         """Read all relevant immutable order variants and original sources across windows.

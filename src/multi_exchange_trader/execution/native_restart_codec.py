@@ -54,6 +54,7 @@ class PreparedNativeRestart:
     _owners: tuple[OwnedCacheExpectation, ...] = field(repr=False)
     _allowed_missing_ids: frozenset[str] = field(repr=False)
     result: NativeRestartResult
+    venue_order_ids: tuple[tuple[str, str], ...]
 
 
 def _sdk() -> dict[str, Any]:
@@ -144,6 +145,7 @@ def _validate_order(order: Any, owner: OwnedCacheExpectation, sdk: dict[str, Any
         _require(order.status.name in {"INITIALIZED", "DENIED"})
     else:
         _same_id(order.account_id, "AccountId", owner.native_account_id, sdk)
+    _require(order.venue_order_id is None or type(order.venue_order_id) is sdk["VenueOrderId"])
     if owner.venue_order_id is not None:
         _same_id(order.venue_order_id, "VenueOrderId", owner.venue_order_id, sdk)
     init = order.events[0]
@@ -360,8 +362,13 @@ def prepare_native_cache(payload: dict[str, object], *, identity: NativeRestartI
                          owners: tuple[OwnedCacheExpectation, ...],
                          allowed_missing_ids: frozenset[str] = frozenset()) -> PreparedNativeRestart:
     try:
-        _, result = _stage(payload, identity, owners, allowed_missing_ids, _sdk())
-        return PreparedNativeRestart(canonical_bytes(payload), identity, owners, allowed_missing_ids, result)
+        candidate, result = _stage(payload, identity, owners, allowed_missing_ids, _sdk())
+        # Derive only after complete native type/event/immutable/cache validation;
+        # raw JSON summary fields are never ownership lookup seeds.
+        venues = tuple(sorted((str(order.client_order_id), str(order.venue_order_id))
+            for order in candidate.orders() if order.venue_order_id is not None))
+        return PreparedNativeRestart(canonical_bytes(payload), identity, owners,
+            allowed_missing_ids, result, venues)
     except Exception:  # noqa: BLE001 - native/path/provider details must stay redacted.
         raise NativeRestartError() from None
 

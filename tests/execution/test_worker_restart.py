@@ -395,3 +395,117 @@ async def test_learned_history_venue_closes_all_variants_before_capture_and_reco
     assert new.worker._runtime is None and new.trace == ["dispose"]
     with CommandJournal(tmp_path / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
         assert journal.get("entry").state is CommandState.SENDING
+
+
+@pytest.mark.parametrize("case", [
+    "execution-mismatch", "execution-missing", "execution-conflict",
+    "execution-learns-foreign-order", "order-learns-foreign-execution",
+    "native-order-foreign", "native-order-blank",
+    "native-execution-foreign", "native-execution-blank",
+])
+@pytest.mark.parametrize("phase", ["stop", "start"])
+async def test_restrictive_history_closure_refuses_stop_and_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, phase: str,
+) -> None:
+    from test_history_store import execution, order, snapshot
+
+    from multi_exchange_trader.execution.journal import CommandJournal, ExecutionScope
+    from multi_exchange_trader.execution.native_recovery import OwnedCacheExpectation
+    from multi_exchange_trader.execution.native_restart import NativeRestartCoordinator
+    from multi_exchange_trader.execution.native_restart_codec import capture_native_cache
+    h = real_cache_boundary(tmp_path, monkeypatch)
+    await h.worker.start_passive()
+    record = await stage(h)
+    request = h.worker.runtime._request(record)
+    native = None if case == "execution-missing" else add_original_native_order(h, record)
+    venue = "history-venue" if case == "execution-mismatch" else "native-venue"
+    fill = execution(client_order_id=record.client_order_id, venue_order_id=venue)
+    order_row = order(client_order_id=record.client_order_id, venue_order_id=venue,
+        quantity=request.owned.quantity)
+    history = h.worker._history_store
+    if case.startswith("native-"):
+        client = "" if case.endswith("blank") else "foreign-client"
+        rows = ({"orders": (replace(order_row, client_order_id=client),)}
+            if "order" in case else {"executions": (replace(fill, client_order_id=client),)})
+        history.ingest(replace(snapshot(**rows), scope=SCOPE))
+    else:
+        rows = {"orders": (order_row,)} if case.startswith("order-") else {"executions": (fill,)}
+        history.ingest(replace(snapshot(**rows), scope=SCOPE))
+        if case == "execution-conflict":
+            changed = replace(fill, price=fill.price + 1)
+            history.ingest(replace(snapshot(snapshot_id="changed", executions=(changed,)), scope=SCOPE))
+        elif case.endswith("foreign-order"):
+            history.ingest(replace(snapshot(snapshot_id="changed",
+                orders=(replace(order_row, client_order_id="foreign-client"),)), scope=SCOPE))
+        elif case.endswith("foreign-execution"):
+            history.ingest(replace(snapshot(snapshot_id="changed",
+                executions=(replace(fill, client_order_id="foreign-client"),)), scope=SCOPE))
+    marker = tmp_path / "native-restart.json"
+    if phase == "stop":
+        with pytest.raises((RuntimeBlocked, NativeRestartError)):
+            await h.worker.stop()
+        assert decode_document(marker.read_bytes())["state"] == "active"
+    else:
+        try:
+            await h.worker.stop()
+        except (RuntimeBlocked, NativeRestartError):
+            pass  # Startup fixture is independent of clean-stop refusal.
+    assert h.worker._stopped and "dispose" in h.trace
+
+    # Synthetic, digest-matching seal isolates ownership validation from stale
+    # digest and missing-cache blockers. No events are synthesized by recovery.
+    coordinator = NativeRestartCoordinator(tmp_path, h.assembly, h.worker.scope,
+        h.worker.symbols, h.worker.trader_id)
+    if decode_document(marker.read_bytes())["state"] == "sealed":
+        coordinator.store.mark_active(coordinator.identity, coordinator.store.load(coordinator.identity))
+    owner = OwnedCacheExpectation(request, "BYBIT-UNIFIED", "WORKER-001",
+        "OwnedExecution-001", None, None)
+    payload = capture_native_cache(h.assembly.node.cache, identity=coordinator.identity,
+        owners=(owner,), allowed_missing_ids=frozenset({record.client_order_id}))
+    assert len(payload["orders"]) == (0 if native is None else 1)
+    with CommandJournal(tmp_path / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        for kind in (CommandKind.CANCEL, CommandKind.LEVERAGE):
+            journal.register(kind.value.lower(), kind, {"entry_key": "entry"})
+        for key in ("entry", "cancel", "leverage"):
+            journal.claim(key)
+        before_commands = journal.list_commands()
+    coordinator.store.seal(coordinator.identity, payload)
+    before, sealed = application_digest(tmp_path), marker.read_bytes()
+    new = real_cache_boundary(tmp_path, monkeypatch)
+    with pytest.raises((RuntimeBlocked, NativeRestartError)):
+        await new.worker.start_passive()
+    assert application_digest(tmp_path) == before and marker.read_bytes() == sealed
+    assert new.worker._runtime is None and new.trace == ["dispose"]
+    assert new.assembly.node.cache.orders() == []
+    assert not new.assembly.bridge._submissions and not new.assembly.strategy.commands
+    with CommandJournal(tmp_path / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        assert journal.list_commands() == before_commands
+
+
+async def test_matching_uncredited_execution_identity_preserves_original_native_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from test_history_store import execution, snapshot
+    h = real_cache_boundary(tmp_path, monkeypatch)
+    await h.worker.start_passive()
+    record = await stage(h)
+    native = add_original_native_order(h, record)
+    original = [event.to_dict(event) for event in native.events]
+    h.worker._history_store.ingest(replace(snapshot(executions=(execution(
+        client_order_id=record.client_order_id, venue_order_id="native-venue"),)), scope=SCOPE))
+    before = application_digest(tmp_path)
+    assert h.worker.runtime.native_owned_requests()[0].venue_order_ids == frozenset({"native-venue"})
+    assert application_digest(tmp_path) == before
+    h.worker.runtime.journal.claim("entry")
+    reservation = h.worker.runtime.journal.get("entry").reservation
+    await h.worker.stop()
+    new = real_cache_boundary(tmp_path, monkeypatch)
+    await new.worker.start_passive()
+    restored = new.assembly.node.cache.order(native.client_order_id)
+    assert [event.to_dict(event) for event in restored.events] == original
+    assert new.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
+    assert new.worker.runtime.journal.get("entry").reservation == reservation
+    assert new.worker.runtime.projection("position-1").owned_quantity == 0
+    assert len(new.worker.runtime.store.list_position_events("position-1")) == 1
+    assert not new.assembly.strategy.commands and not new.assembly.bridge._submissions
+    await new.worker.stop()

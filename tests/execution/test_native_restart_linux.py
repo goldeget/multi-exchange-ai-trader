@@ -289,11 +289,15 @@ def test_real_original_orders_position_and_all_cache_indexes() -> None:
 
 
 async def test_actual_worker_clean_stop_v4_restore_new_lease_channel_no_callbacks(tmp_path: Path) -> None:
+    from test_history_store import execution, snapshot
     source = actual_worker(tmp_path / "source")
     await start(source)
     assert source.worker.native_restart_status.status == "FRESH_EMPTY_CACHE"
     record = await stage(source)
     original = seed_original_order(source, record)
+    source.worker.runtime.history_store.ingest(replace(snapshot(executions=(execution(
+        client_order_id=record.client_order_id, venue_order_id="native-venue"),)), scope=SCOPE))
+    assert source.worker.runtime.native_owned_requests()[0].venue_order_ids == frozenset({"native-venue"})
     original_position = seed_original_position(source.assembly.node.cache, original)
     original_instrument = source.assembly.node.cache.instrument(original.instrument_id)
     source.worker.runtime.journal.claim("entry")
@@ -501,6 +505,9 @@ def test_actual_foreign_manual_ambiguous_lifetime_and_unsupported_streams_redact
 
 
 async def test_actual_original_pending_closed_isolated_failure_and_missing_uncertainty(tmp_path: Path) -> None:
+    for case in ("execution-mismatch", "execution-missing", "native-order-foreign",
+                 "native-order-blank", "native-execution-foreign", "native-execution-blank"):
+        await assert_actual_history_identity_refusal(tmp_path / case, case)
     for state in ("INITIALIZED", "PENDING_CANCEL", "CANCELED"):
         source = fixture(state)
         target = assert_cache_roundtrip(source)
@@ -546,3 +553,55 @@ async def test_actual_original_pending_closed_isolated_failure_and_missing_uncer
     assert target.orders() == target.positions() == target.instruments() == []
     assert refused.worker._runtime is None and refused.worker._stopped
     assert refused.core.reads == [] and not refused.worker._assembly.node.is_running()
+
+
+async def assert_actual_history_identity_refusal(directory: Path, case: str) -> None:
+    """Both publication and consumption refuse using the untouched actual builder."""
+    from test_history_store import execution, order, snapshot
+
+    from multi_exchange_trader.execution.native_restart import NativeRestartCoordinator
+    source = actual_worker(directory)
+    await start(source)
+    record = await stage(source)
+    if case != "execution-missing":
+        seed_original_order(source, record)
+    coordinator = NativeRestartCoordinator(directory, source.assembly, SCOPE,
+        source.worker.symbols, source.worker.trader_id)
+    requests = source.worker.runtime.native_owned_requests()
+    owners, missing = coordinator._expectations(requests)
+    payload = capture_native_cache(source.assembly.node.cache, identity=coordinator.identity,
+        owners=owners, allowed_missing_ids=missing)
+    assert len(payload["orders"]) == (0 if case == "execution-missing" else 1)
+    venue = "history-venue" if case == "execution-mismatch" else "native-venue"
+    client = ("" if case.endswith("blank") else "foreign-client"
+        if case.startswith("native-") else record.client_order_id)
+    rows = ({"orders": (order(client_order_id=client, venue_order_id=venue,
+        quantity=requests[0].request.owned.quantity),)} if "order" in case else
+        {"executions": (execution(client_order_id=client, venue_order_id=venue),)})
+    source.worker.runtime.history_store.ingest(replace(snapshot(**rows), scope=SCOPE))
+    no_effects(source)
+    marker = directory / "native-restart.json"
+    with pytest.raises((NativeRestartError, RuntimeBlocked)):
+        await source.worker.stop()
+    assert source.worker._stopped and decode_document(marker.read_bytes())["state"] == "active"
+    with CommandJournal(directory / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        for kind in (CommandKind.CANCEL, CommandKind.LEVERAGE):
+            journal.register(kind.value.lower(), kind, {"entry_key": "entry"})
+        for key in ("entry", "cancel", "leverage"):
+            journal.claim(key)
+        commands = journal.list_commands()
+    # Matching application digest ensures historical identity is the blocker.
+    coordinator.store.seal(coordinator.identity, payload)
+    before, sealed = application_digest(directory), marker.read_bytes()
+    refused = actual_worker(directory, source)
+    with pytest.raises((NativeRestartError, RuntimeBlocked)):
+        await refused.worker.start_passive()
+    assert application_digest(directory) == before and marker.read_bytes() == sealed
+    assert refused.worker._runtime is None and refused.worker._stopped
+    target = refused.worker._assembly.node.cache
+    assert target.orders() == target.positions() == target.instruments() == []
+    assert refused.core.reads == [] and not refused.worker._assembly.node.is_running()
+    assert refused.worker._assembly.node.kernel.exec_engine.event_count == 0
+    assert refused.worker._assembly.node.kernel.exec_engine.command_count == 0
+    with CommandJournal(directory / "execution.sqlite3", ExecutionScope(SCOPE.account_id, "DEMO")) as journal:
+        assert journal.list_commands() == commands

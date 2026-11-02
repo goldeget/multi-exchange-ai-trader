@@ -23,7 +23,7 @@ from .native_restart_store import (
     application_digest,
 )
 from .protection import ProtectionScope
-from .runtime import NativeOwnedRequest
+from .runtime import NativeOwnedRequest, NativeOwnershipResolver
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,8 @@ class NativeRestartCoordinator:
                 missing.add(request.owned.client_order_id)
         return tuple(owners), frozenset(missing)
 
-    def restore(self, requests: tuple[NativeOwnedRequest, ...]) -> None:
+    def restore(self, resolve: NativeOwnershipResolver) -> None:
+        requests = resolve(())
         try:
             generation = self.store.load(self.identity)
             owners, missing = self._expectations(requests)
@@ -101,6 +102,9 @@ class NativeRestartCoordinator:
                     raise NativeRestartError()
             else:
                 payload = generation.payload
+            prepared = prepare_native_cache(payload, identity=self.identity,
+                owners=owners, allowed_missing_ids=missing)
+            owners, missing = self._expectations(resolve(prepared.venue_order_ids))
             prepared = prepare_native_cache(payload, identity=self.identity,
                 owners=owners, allowed_missing_ids=missing)
             cache = self.assembly.node.cache
@@ -118,8 +122,14 @@ class NativeRestartCoordinator:
             self.status = WorkerNativeRestartStatus("BLOCKED")
             raise NativeRestartError() from None
 
-    def seal(self, requests: tuple[NativeOwnedRequest, ...]) -> None:
+    def seal(self, resolve: NativeOwnershipResolver) -> None:
+        requests = resolve(())
         owners, missing = self._expectations(requests)
         payload = capture_native_cache(self.assembly.node.cache, identity=self.identity,
+            owners=owners, allowed_missing_ids=missing)
+        prepared = prepare_native_cache(payload, identity=self.identity,
+            owners=owners, allowed_missing_ids=missing)
+        owners, missing = self._expectations(resolve(prepared.venue_order_ids))
+        prepare_native_cache(payload, identity=self.identity,
             owners=owners, allowed_missing_ids=missing)
         self.store.seal(self.identity, payload)

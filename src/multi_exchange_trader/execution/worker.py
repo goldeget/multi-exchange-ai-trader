@@ -552,7 +552,7 @@ class ExecutionWorker:
             runtime.transport_lost()
             try:
                 if self._restart is not None:
-                    self._restart.seal(runtime.native_owned_requests())
+                    self._restart.seal(runtime.native_owned_requests)
             finally:
                 try:
                     runtime.shutdown()
