@@ -43,6 +43,7 @@ __all__ = [
     "NativeRestartGeneration",
     "NativeRestartIdentity",
     "NativeRestartStore",
+    "_require",
     "application_digest",
     "canonical_bytes",
     "decode_document",
