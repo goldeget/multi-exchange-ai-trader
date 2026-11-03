@@ -208,3 +208,32 @@ canonical 63개 전체는 미완료이며 scope v1.1의 DEMO 60·LIVE 61·전체
 공급자·네트워크를 사용하지 않는다. root가 보고한 실제 주문 0·새 서버 지출 0을 유지하며
 LIVE 주문은 계속 금지된다. 문서 갱신이나 순수 값·metadata 계약만으로 실제 매매·보호·
 PC를 끈 상태의 서버 운용 또는 전체 제품 완료를 선언하지 않는다.
+
+## 후속 A02·A04 계약과 계속되는 제품 개발
+
+다음 계약 변경은 검증된 main `46d4d13de3f990e875c34bba3b4c34ffc3f81609`를 기준으로
+`gpt/bybit-catalog-risk-contracts-20261103`에서 진행한다. 완료된 PR20~28의 계정·AI·체결
+이력·캐시·복원 후 모니터링·상품 신원 부품을 보존한다. 사용자는 모든 작업을 마쳐 바로
+사용할 수 있을 때만 작업을 끝내라고 재지시했다. 개별 계약 완료를 전체 작업 종료로
+취급하지 않는다.
+
+- A02는 공용 상품 key를 재사용하는 순수 정의/parser와 선언 종목 catalog를 추가한다.
+  현대 SPOT·LINEAR의 Limit/Market 수량 상한, Decimal 원문 scale, raw/지원 의미 hash,
+  선언 집합의 정확한 포함, 전체 관측의 무결성·신선도, 상품별 정확 선택을 검사한다.
+  오래된 catalog와 같은 expected revision은 정적 일관성일 뿐 현재 issuer 증명이 아니다.
+  공개 source를 실제로 읽는 collector와 DEMO/native source mapping은 아직 별도다.
+- A04는 기존 StrategyReference를 재사용하여 구현/config·승인 metadata와 상품 domain을
+  정확 revision으로 결속한다. 생성자와 build/require가 중첩값·전체 allowed를 재검사하고
+  고정 오류만 반환한다. 실제 승인 seed, 현재 세대 issuer, 정책 exact pin, worker/plan
+  생산자·실행 권한을 만들지는 않는다. 기존 schema1 문자열 정책과 실행 차단은 유지한다.
+- 로컬 covering A02 436개와 A04 282개가 통과했으며 각각 lint/type 검사를 보존했다.
+  A04 테스트 보조 함수 타입 표기 교정은 기존147개와 수정 파일 lint로 별도 검증했다.
+  구현별 독립 검토와 교정 검토, 전체 브랜치 검토·정확 hosted/main 결과는 각 작업
+  ledger와 별도 완료 영수증으로 판정한다. 이 문서가 현재 CI/main 통과를 대신하지 않는다.
+
+외부 `CURRENT_63_EXECUTION_REGISTER_20261103.md/.json`는 동일 tree의 고정 source를
+대조한63개 실행 지도다. A02→A04→A07, 실제 시장·계좌/계획/risk 생산자, 단일 writer의
+주문·보호·종결·crash 복구, 정책/worker/UI, 실제 DEMO·서버·실폰 수락이 이어진다.
+A07 V2·trusted producer·Windows 실행 준비안은 아직 설계 검토 입력이며 코드나 실제
+수락으로 세지 않는다. 사용자 금융값·서버·장치 입력을 임의로 만들지 않으며, 미정 입력은
+범용 구현·격리 검수 도구 개발을 멈추는 이유로 쓰지 않는다.
