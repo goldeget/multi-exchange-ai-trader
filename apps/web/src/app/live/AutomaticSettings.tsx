@@ -11,7 +11,14 @@ const emptyScope=():PolicyScope=>({section_version:1,account:null,mode:null,allo
 const emptyCaps=():PolicyCaps=>({max_order_admission_notional:null,max_account_admission_notional:null,valuation_rule:null,turnover_requirement:null,max_execution_quote_amount:null});
 const emptyRisk=():PolicyRisk=>({section_version:1,product:'LINEAR',caps:null,sizing_rule:null,margin_mode:null,position_mode:null,...Object.fromEntries([...policyRiskDecimals,...policyRiskCounts].map(key=>[key,null]))} as PolicyRisk);
 function envelope(data:AutomaticSettingsSnapshot):AutomaticPolicy{return data.schema_version===2?data.policy:{legacy_v1:data.policy,scope:null,strategy:null,risk_v2:null}}
-function instruments(text:string):PolicyInstrument[]|null{return text===''?null:text.split(',').map(token=>{const [venue,product,...symbol]=token.trim().split('/');return {venue,product,symbol:symbol.join('/')} as PolicyInstrument})}
+type InstrumentText={allowed_instruments:string;selected_instruments:string};
+function instrumentText(policy:AutomaticPolicy):InstrumentText{return {allowed_instruments:policy.scope?.allowed_instruments?.map(policyInstrumentName).join(', ')??'',selected_instruments:policy.scope?.selected_instruments?.map(policyInstrumentName).join(', ')??''}}
+function instruments(text:string):{valid:true;value:PolicyInstrument[]|null}|{valid:false}{
+ if(text==='')return {valid:true,value:null};
+ const tokens=text.split(',').map(token=>token.trim());
+ if(tokens.length>100||new Set(tokens).size!==tokens.length||tokens.some(token=>!/^BYBIT\/(SPOT|LINEAR)\/[A-Z0-9]{2,48}$/.test(token)))return {valid:false};
+ return {valid:true,value:tokens.map(token=>{const [,product,symbol]=token.split('/');return {venue:'BYBIT',product:product as PolicyProduct,symbol}})};
+}
 const containsRef=(refs:PolicyReference[]|null,ref:PolicyReference)=>!!refs?.some(item=>automaticPolicyEqual(item,ref));
 function toggleRef(refs:PolicyReference[]|null,ref:PolicyReference,checked:boolean){return checked?[...(refs??[]),ref]:(refs??[]).filter(item=>!automaticPolicyEqual(item,ref))}
 
@@ -23,16 +30,18 @@ export function AutomaticSettings(){
 function AutomaticSettingsEditor(){
  const [source,setSource]=useState<{data:AutomaticSettingsSnapshot|null;capable:boolean;loading:boolean;error:boolean}>({data:null,capable:false,loading:true,error:false});
  const [readNonce,setReadNonce]=useState(0);
- const [edit,setEdit]=useState<{revision:number;policy:AutomaticPolicy}|null>(null);
+ const [edit,setEdit]=useState<{revision:number;policy:AutomaticPolicy;instrumentText:InstrumentText}|null>(null);
  const [notice,setNotice]=useState('');const [saving,setSaving]=useState(false);const [uncertain,setUncertain]=useState(false);
  const [validation,setValidation]=useState<{policy:AutomaticPolicy;valid:boolean}|null>(null);
  const snapshot=useRef<AutomaticSettingsSnapshot|null>(null);const editRef=useRef<typeof edit>(null);
  const unresolved=useRef<{revision:number;policy:AutomaticPolicy}|null>(null);
  const pending=useRef<AbortController|null>(null);const mounted=useRef(false);const saveTimer=useRef<number|undefined>(undefined);
  const policy=useMemo(()=>edit?.policy??(source.data?envelope(source.data):undefined),[edit,source.data]);
+ const text=edit?.instrumentText??(policy?instrumentText(policy):{allowed_instruments:'',selected_instruments:''});
+ const rawInvalid=!instruments(text.allowed_instruments).valid||!instruments(text.selected_instruments).valid;
  const revision=edit?.revision??source.data?.revision;
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;pending.current?.abort();window.clearTimeout(saveTimer.current)}},[]);
- useEffect(()=>{let disposed=false;if(policy)void validateAutomaticPolicy(policy).then(value=>{if(!disposed)setValidation({policy,valid:value!==null})});return()=>{disposed=true}},[policy]);
+ useEffect(()=>{let disposed=false;if(policy&&!rawInvalid)void validateAutomaticPolicy(policy).then(value=>{if(!disposed)setValidation({policy,valid:value!==null})});return()=>{disposed=true}},[policy,rawInvalid]);
  useEffect(()=>{
   const controller=new AbortController();let disposed=false,timer:number|undefined;
   async function read(){
@@ -60,9 +69,16 @@ function AutomaticSettingsEditor(){
   void read();return()=>{disposed=true;controller.abort();window.clearTimeout(timer)};
  },[readNonce]);
  const disabled=saving||source.loading||source.error||!source.capable||uncertain;
- const invalid=!!policy&&validation?.policy===policy&&!validation.valid;
+ const invalid=rawInvalid||!!policy&&validation?.policy===policy&&!validation.valid;
  const typed=source.data?.schema_version===2;
- function update(next:AutomaticPolicy){if(revision!==undefined){const value={revision,policy:next};editRef.current=value;setEdit(value)}}
+ function update(next:AutomaticPolicy,nextText:InstrumentText=text){if(revision!==undefined){const value={revision,policy:next,instrumentText:nextText};editRef.current=value;setEdit(value)}}
+ function changeInstruments(name:keyof InstrumentText,value:string){
+  if(!policy)return;
+  const nextText={...text,[name]:value},allowed=instruments(nextText.allowed_instruments),selected=instruments(nextText.selected_instruments);
+  // Unfinished text never becomes malformed wire objects or stale ready arrays.
+  // Null here is only an internal candidate; rawInvalid blocks every write.
+  update({...policy,scope:{...(policy.scope??emptyScope()),allowed_instruments:allowed.valid?allowed.value:null,selected_instruments:selected.valid?selected.value:null}},nextText);
+ }
  function changeLegacy(key:string,value:LegacyPolicy[string]){if(policy)update({...policy,legacy_v1:{...policy.legacy_v1,[key]:value}})}
  function changeScope(change:Partial<PolicyScope>){if(policy)update({...policy,scope:{...(policy.scope??emptyScope()),...change}})}
  function changeRisk(key:string,value:string|number|null){if(policy?.risk_v2)update({...policy,risk_v2:{...policy.risk_v2,[key]:value}})}
@@ -74,7 +90,7 @@ function AutomaticSettingsEditor(){
  }
  async function save(migration=false){
   const stored=source.data;
-  if(!stored||!policy||revision===undefined||pending.current||disabled)return;
+  if(!stored||!policy||revision===undefined||pending.current||disabled||rawInvalid)return;
   if(migration?(stored.schema_version!==1||edit!==null):stored.schema_version!==2)return;
   const submitted={revision:migration?stored.revision:revision,policy:migration?envelope(stored):policy};
   const controller=new AbortController();pending.current=controller;setSaving(true);setNotice('');
@@ -95,7 +111,7 @@ function AutomaticSettingsEditor(){
  function select(label:string,value:string|null|undefined,options:Record<string,string>,onChange:(value:string)=>void){return <label className="field"><span>{label}</span><select value={value??''} disabled={disabled} onChange={event=>onChange(event.target.value)}><option value="">미정</option>{Object.entries(options).map(([key,text])=><option key={key} value={key}>{text}</option>)}</select></label>}
  function legacyInput(key:string,label:string){const value=policy?.legacy_v1[key];const isList=Object.hasOwn(lists,key);return <Field key={key} label={label} value={value===null||value===undefined?'':Array.isArray(value)?value.join(', '):String(value)} disabled={disabled} helper={isList?'쉼표로 구분합니다. 비워 두면 미설정입니다.':undefined} onChange={text=>changeLegacy(key,text===''?null:isList?text.split(',').map(x=>x.trim()):Object.hasOwn(counts,key)&&/^\d+$/.test(text)?Number(text):text)}/>}
  const scope=policy?.scope;const strategy=policy?.strategy;const risk=policy?.risk_v2;
- const pairs=policy&&validation?.policy===policy&&validation.valid?automaticPolicyPairs(policy):[];
+ const pairs=policy&&!rawInvalid&&validation?.policy===policy&&validation.valid?automaticPolicyPairs(policy):[];
  const incompatible=!!scope?.selected_product&&!!policy&&(!!risk&&scope.selected_product==='SPOT'||[...(scope.allowed_instruments??[]),...(scope.selected_instruments??[])].some(key=>key.product!==scope.selected_product));
  return <Panel title="자동매매 운용 한도" className="automatic-settings">
   <p className="info-box">현재 실제 주문은 차단되어 있습니다. 한도를 저장해도 자동매매·유료 AI 호출·서버 결제는 시작되지 않습니다.</p>
@@ -113,14 +129,14 @@ function AutomaticSettingsEditor(){
     <fieldset disabled={disabled}><legend>허용 거래 상품</legend>{(['SPOT','LINEAR'] as const).map(product=><label key={product} style={{display:'block',margin:'8px 0'}}><input type="checkbox" style={{width:24,height:24,marginRight:8,verticalAlign:'middle'}} checked={scope?.allowed_products?.includes(product)??false} onChange={event=>changeScope({allowed_products:event.target.checked?[...(scope?.allowed_products??[]),product]:(scope?.allowed_products??[]).filter(item=>item!==product)})}/>{product==='SPOT'?'SPOT 현물':'LINEAR 선형 파생상품'}</label>)}</fieldset>
     {select('선택 거래 상품',scope?.selected_product,{SPOT:'SPOT 현물',LINEAR:'LINEAR 선형 파생상품'},value=>changeScope({selected_product:(value||null) as PolicyProduct|null}))}
     {select('거래 권한 프로필',scope?.permission_profile_revision,{BYBIT_SPOT_LINEAR_NO_FUNDS_V1:'SPOT·LINEAR 거래 / 자금 이동 권한 없음'},value=>changeScope({permission_profile_revision:(value||null) as PolicyScope['permission_profile_revision']}))}
-    <Field label="허용 거래 대상 (거래소/상품/종목)" value={scope?.allowed_instruments?.map(policyInstrumentName).join(', ')??''} disabled={disabled} helper="예: BYBIT/LINEAR/BTCUSDT. 쉼표로 구분하며 입력 순서를 보관합니다." onChange={text=>changeScope({allowed_instruments:instruments(text)})}/>
-    <Field label="완전 자동 선택 거래 대상 (거래소/상품/종목)" value={scope?.selected_instruments?.map(policyInstrumentName).join(', ')??''} disabled={disabled} helper="FULL_AUTO는 선택 목록, ALL_IN_ONE은 허용 목록을 사용합니다. 자동 선택하지 않습니다." onChange={text=>changeScope({selected_instruments:instruments(text)})}/>
-    {incompatible&&<><p role="alert">선택한 거래 상품과 기존 거래 대상 또는 위험관리 값이 충돌합니다. 입력값을 그대로 보관했으며 저장할 수 없습니다.</p><p className="helper">아래 초기화는 허용·선택 거래 대상, 허용·선택 전략 참조, 위험관리 전체를 비웁니다. 계좌·운용 모드·허용 상품과 전체 과거 카탈로그는 보관합니다. 초기화 후 별도로 저장해야 합니다.</p><button className="secondary" disabled={disabled} onClick={()=>{if(policy&&scope){update({...policy,scope:{...scope,allowed_instruments:null,selected_instruments:null},strategy:strategy?{...strategy,allowed:null,selected:null}:null,risk_v2:null});setNotice('아직 저장하지 않은 초기화입니다. 변경 내용을 검토한 뒤 별도로 저장하세요.')}}}>거래 상품 변경에 맞춰 초안 비우기</button></>}
+    <Field label="허용 거래 대상 (거래소/상품/종목)" value={text.allowed_instruments} disabled={disabled} helper="예: BYBIT/LINEAR/BTCUSDT. 쉼표로 구분하며 입력 순서를 보관합니다." onChange={value=>changeInstruments('allowed_instruments',value)}/>
+    <Field label="완전 자동 선택 거래 대상 (거래소/상품/종목)" value={text.selected_instruments} disabled={disabled} helper="FULL_AUTO는 선택 목록, ALL_IN_ONE은 허용 목록을 사용합니다. 자동 선택하지 않습니다." onChange={value=>changeInstruments('selected_instruments',value)}/>
+    {incompatible&&<><p role="alert">선택한 거래 상품과 기존 거래 대상 또는 위험관리 값이 충돌합니다. 입력값을 그대로 보관했으며 저장할 수 없습니다.</p><p className="helper">아래 초기화는 허용·선택 거래 대상, 허용·선택 전략 참조, 위험관리 전체를 비웁니다. 계좌·운용 모드·허용 상품과 전체 과거 카탈로그는 보관합니다. 초기화 후 별도로 저장해야 합니다.</p><button className="secondary" disabled={disabled} onClick={()=>{if(policy&&scope){update({...policy,scope:{...scope,allowed_instruments:null,selected_instruments:null},strategy:strategy?{...strategy,allowed:null,selected:null}:null,risk_v2:null},{allowed_instruments:'',selected_instruments:''});setNotice('아직 저장하지 않은 초기화입니다. 변경 내용을 검토한 뒤 별도로 저장하세요.')}}}>거래 상품 변경에 맞춰 초안 비우기</button></>}
     <h3>정확한 전략 참조와 대상별 미리보기</h3>
     <p className="helper">전체 카탈로그의 정적 해시 일치만 확인합니다. 실제 전략 파일·승인 출처의 진위, 현재 승인·게시 세대는 확인되지 않았습니다.</p>
     {!strategy?.catalog?<><p className="info-box">전략 카탈로그 메타데이터가 아직 제공되지 않았습니다. 실제 승인된 전략·설정·거래 대상 입력은 대기 중입니다.</p>{!strategy&&<button className="secondary" disabled={disabled} onClick={()=>update({...policy,strategy:{section_version:1,catalog:null,allowed:null,selected:null}})}>전략 메타데이터 초안 만들기</button>}</>:<>
      <p className="helper" style={{overflowWrap:'anywhere'}}>보관된 카탈로그 참조: {strategy.catalog.revision}</p>
-     {strategy.catalog.entries.map(entry=>{const name=policyReferenceName(entry.reference);const eligible=entry.approval_status==='APPROVED'&&(!scope?.account?.environment||entry.approval_environments.includes(scope.account.environment));return <div key={name}><p style={{overflowWrap:'anywhere'}}>{name} — 정적 상태 {entry.approval_status}; 적용 대상 {entry.permitted_instruments.map(policyInstrumentName).join(', ')}</p><label style={{display:'block',margin:'8px 0'}}><input type="checkbox" style={{width:24,height:24,marginRight:8,verticalAlign:'middle'}} aria-label={'허용 전략 '+name} disabled={disabled||!eligible} checked={containsRef(strategy.allowed,entry.reference)} onChange={event=>update({...policy,strategy:{...strategy,allowed:toggleRef(strategy.allowed,entry.reference,event.target.checked)}})}/>허용 전략 {name}</label><label style={{display:'block',margin:'8px 0'}}><input type="checkbox" style={{width:24,height:24,marginRight:8,verticalAlign:'middle'}} aria-label={'선택 전략 '+name} disabled={disabled||!containsRef(strategy.allowed,entry.reference)} checked={containsRef(strategy.selected,entry.reference)} onChange={event=>update({...policy,strategy:{...strategy,selected:toggleRef(strategy.selected,entry.reference,event.target.checked)}})}/>선택 전략 {name}</label></div>})}
+     {strategy.catalog.entries.map(entry=>{const name=policyReferenceName(entry.reference);const eligible=entry.approval_status==='APPROVED'&&(!scope?.account?.environment||entry.approval_environments.includes(scope.account.environment));return <div key={name}><p style={{overflowWrap:'anywhere'}}>{name} — 정적 상태 {entry.approval_status}; 적용 대상 {entry.permitted_instruments.map(policyInstrumentName).join(', ')}</p><label style={{display:'block',margin:'8px 0'}}><input type="checkbox" style={{width:24,height:24,marginRight:8,verticalAlign:'middle'}} aria-label={'허용 전략 '+name} disabled={disabled||!eligible&&!containsRef(strategy.allowed,entry.reference)} checked={containsRef(strategy.allowed,entry.reference)} onChange={event=>update({...policy,strategy:{...strategy,allowed:toggleRef(strategy.allowed,entry.reference,event.target.checked)}})}/>허용 전략 {name}</label><label style={{display:'block',margin:'8px 0'}}><input type="checkbox" style={{width:24,height:24,marginRight:8,verticalAlign:'middle'}} aria-label={'선택 전략 '+name} disabled={disabled||!containsRef(strategy.selected,entry.reference)&&(!eligible||!containsRef(strategy.allowed,entry.reference))} checked={containsRef(strategy.selected,entry.reference)} onChange={event=>update({...policy,strategy:{...strategy,selected:toggleRef(strategy.selected,entry.reference,event.target.checked)}})}/>선택 전략 {name}</label></div>})}
      <p className="helper">대상별 미리보기는 저장 목록을 바꾸지 않습니다. 전체 허용·선택 참조와 카탈로그의 모든 핀은 원래 순서로 보관됩니다.</p>
      {pairs.map(pair=><div key={policyInstrumentName(pair.instrument)}>{pair.active.length===0?<p className="info-box">연결된 전략이 없는 거래 대상: {policyInstrumentName(pair.instrument)}</p>:<label className="field"><span>{pair.instrument.symbol}에 적용 가능한 전략</span><select defaultValue="" disabled={disabled}><option value="">미리보기 선택</option>{pair.active.map(ref=><option key={policyReferenceName(ref)} value={policyReferenceName(ref)}>{policyReferenceName(ref)}</option>)}</select></label>}</div>)}
     </>}
@@ -148,7 +164,7 @@ function AutomaticSettingsEditor(){
    {Object.entries(amounts).slice(0,5).map(([key,label])=>legacyInput(key,label))}
    {Object.entries(lists).map(([key,label])=>legacyInput(key,label))}
    <details><summary>상세 이전 위험관리 설정</summary>{Object.entries(amounts).slice(5).map(([key,label])=>legacyInput(key,label))}{Object.entries(counts).map(([key,label])=>legacyInput(key,label))}{['sizing_rule','margin_mode','position_mode'].map(key=><div key={key}>{select(choiceLabels[key],String(policy.legacy_v1[key]??''),choices[key],value=>changeLegacy(key,value||null))}</div>)}</details>
-   <p className="helper">저장된 설정 중 미정 항목: {source.data?.missing_fields.length??'확인 중'}개. 현재 초안 미정 항목: {typed&&validation?.policy===policy&&validation.valid?automaticPolicyMissing(policy).length:'확인 중'}개. 실제 운용에는 거래소·체결·보호 주문 검증과 서버 연결도 필요합니다.</p>
+   <p className="helper">저장된 설정 중 미정 항목: {source.data?.missing_fields.length??'확인 중'}개. 현재 초안 미정 항목: {typed&&!rawInvalid&&validation?.policy===policy&&validation.valid?automaticPolicyMissing(policy).length:'확인 중'}개. 실제 운용에는 거래소·체결·보호 주문 검증과 서버 연결도 필요합니다.</p>
    <button className="primary full" disabled={disabled||!typed||invalid||incompatible} onClick={()=>void save()}>{saving?'저장 결과 확인 중':'운용 한도 저장'}</button>
    <button className="secondary" disabled={saving||source.loading} onClick={()=>{if(!unresolved.current)setNotice('');reload()}}>{uncertain?'저장 결과 다시 확인하기':'저장된 설정 다시 불러오기'}</button>
   </>}

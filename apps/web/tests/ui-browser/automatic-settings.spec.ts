@@ -53,6 +53,24 @@ test('operator can save an unset partial policy without activating orders',async
  const typed={legacy_v1:Object.fromEntries(keys.map(key=>[key,null])),scope:{section_version:1,account:{account_id:'fixture-account',environment:'DEMO'},mode:'FULL_AUTO',allowed_products:['LINEAR','SPOT'],selected_product:'LINEAR',permission_profile_revision:'BYBIT_SPOT_LINEAR_NO_FUNDS_V1',allowed_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT'),instrument('SOLUSDT')],selected_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT'),instrument('SOLUSDT')]},strategy:{section_version:1,catalog,allowed:[reference('beta'),reference('alpha')],selected:[reference('alpha'),reference('beta')]},risk_v2:null};
  snapshot={...snapshot,revision:3,policy:typed,missing_fields:['risk_v2','strategy.eligible_pairs'],blockers:['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED','STRATEGY_CURRENT_PUBLICATION_REQUIRED']};
  await page.getByRole('button',{name:'저장된 설정 다시 불러오기'}).click();await expect(page.getByLabel('계좌 ID')).toHaveValue('fixture-account');
+ for(const [label,value] of [
+  ['허용 거래 대상 (거래소/상품/종목)','BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/SOLUSDT'],
+  ['완전 자동 선택 거래 대상 (거래소/상품/종목)','BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/SOLUSDT'],
+ ] as const){
+  const input=page.getByLabel(label),[first,...rest]=value.split(', ');
+  await input.fill('');await input.pressSequentially('B');await expect(input).toHaveValue('B');await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();
+  await input.pressSequentially('YBIT/');await expect(input).toHaveValue('BYBIT/');
+  await input.pressSequentially(first.slice(6));await input.pressSequentially(', ');await expect(input).toHaveValue(first+', ');await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();
+  await input.pressSequentially(rest.join(', '));await expect(input).toHaveValue(value);
+  await input.press('Backspace');await expect(input).toHaveValue(value.slice(0,-1));await input.pressSequentially(value.slice(-1));
+  await input.press('Home');for(let index=0;index<5;index++)await input.press('ArrowRight');await input.press('Delete');await expect(input).toHaveValue(value.slice(0,5)+value.slice(6));await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();await input.pressSequentially('/');await expect(input).toHaveValue(value);
+ }
+ const allowedAlpha=page.getByLabel('허용 전략 alpha / r1'),selectedAlpha=page.getByLabel('선택 전략 alpha / r1'),selectedBeta=page.getByLabel('선택 전략 beta / r1');
+ await allowedAlpha.uncheck();await expect(selectedAlpha).toBeChecked();await expect(selectedAlpha).toBeEnabled();await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();await selectedAlpha.uncheck();await expect(selectedAlpha).toBeDisabled();
+ await allowedAlpha.check();await selectedAlpha.check();await selectedBeta.uncheck();await selectedBeta.check();
+ await page.getByLabel('계좌 환경').selectOption('LIVE');await expect(allowedAlpha).toBeChecked();await expect(allowedAlpha).toBeEnabled();await expect(selectedAlpha).toBeEnabled();
+ await selectedAlpha.uncheck();await expect(selectedAlpha).toBeDisabled();await expect(allowedAlpha).toBeChecked();await allowedAlpha.uncheck();await expect(allowedAlpha).toBeDisabled();await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();
+ await page.getByLabel('계좌 환경').selectOption('DEMO');await allowedAlpha.check();await selectedAlpha.check();await selectedBeta.uncheck();await selectedBeta.check();
  await expect(page.getByLabel('BTCUSDT에 적용 가능한 전략')).toContainText('alpha / r1');await expect(page.getByLabel('BTCUSDT에 적용 가능한 전략')).not.toContainText('beta / r1');
  await expect(page.getByText('연결된 전략이 없는 거래 대상: BYBIT/LINEAR/SOLUSDT')).toBeVisible();
  await page.getByRole('button',{name:'LINEAR 위험관리 입력 시작'}).click();
@@ -63,7 +81,7 @@ test('operator can save an unset partial policy without activating orders',async
  await page.getByLabel('실제 체결 금액 상한 선택').selectOption('HARD_EXECUTION_QUOTE_CAP');
  await page.getByLabel('실제 체결 금액 상한 (USDT)').fill('300.00');
  delayRead=true;await page.getByRole('button',{name:'운용 한도 저장',exact:true}).click();await expect.poll(()=>writes.length).toBe(2);await expect.poll(()=>backgroundRead).toBe(true);
- expect(writes[1]).toMatchObject({revision:3,policy:{scope:typed.scope,strategy:typed.strategy,risk_v2:{per_trade_loss:null,caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'HARD_EXECUTION_QUOTE_CAP',max_execution_quote_amount:'300.00'}}}});
+ expect(writes[1]).toEqual({schema_version:2,revision:3,expected_strategy_generation:null,policy_sections_version:1,policy:{...typed,risk_v2:{section_version:1,product:'LINEAR',sizing_rule:null,margin_mode:null,position_mode:null,leverage_min:null,leverage_max:null,per_trade_loss:null,max_daily_loss:null,max_drawdown:null,max_total_risk:null,max_total_margin:null,margin_allocation:null,liquidation_buffer_fraction:null,max_quote_age_seconds:null,max_evidence_age_seconds:null,max_consecutive_losses:null,max_positions:null,caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'HARD_EXECUTION_QUOTE_CAP',max_execution_quote_amount:'300.00'}}}});
  await page.getByLabel('계좌 ID').fill('late-edit');releaseRead();await expect(page.getByLabel('계좌 ID')).toHaveValue('late-edit');
  await page.getByLabel('선택 거래 상품').selectOption('SPOT');await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();await expect(page.getByLabel('실제 체결 금액 상한 (USDT)')).toHaveValue('300.00');
  await page.getByRole('button',{name:'거래 상품 변경에 맞춰 초안 비우기'}).click();await expect(page.getByText(/아직 저장하지 않은 초기화/)).toBeVisible();await expect(page.getByText(/SPOT 위험관리.*E16/)).toBeVisible();

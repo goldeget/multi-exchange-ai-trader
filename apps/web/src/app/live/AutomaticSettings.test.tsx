@@ -358,8 +358,11 @@ it('keeps typed edits through missing-capability GET and releases uncertainty on
  expect(account).toHaveValue('submitted-typed');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();expect(fetcher.mock.calls.filter(call=>call[1]?.method==='PUT')).toHaveLength(1);
  await waitFor(()=>expect(screen.getByRole('button',{name:'저장 결과 다시 확인하기'})).toBeEnabled());
  fireEvent.click(screen.getByRole('button',{name:'저장 결과 다시 확인하기'}));await waitFor(()=>expect(reads).toBe(3));
+ const actualDigest=crypto.subtle.digest.bind(crypto.subtle);let finishMatchingRead!:()=>Promise<void>;
+ vi.spyOn(crypto.subtle,'digest').mockImplementationOnce((algorithm,data)=>new Promise<ArrayBuffer>(resolve=>{finishMatchingRead=async()=>{resolve(await actualDigest(algorithm,data))}}));
  await act(async()=>resolveRead(capable({...original,revision:8,policy:submitted})));
- expect(account).toHaveValue('submitted-typed');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled();expect(screen.getByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.')).toBeVisible();
+ await waitFor(()=>expect(finishMatchingRead).toBeDefined());expect(account).toHaveValue('submitted-typed');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();expect(screen.queryByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.')).not.toBeInTheDocument();
+ await act(async()=>finishMatchingRead());await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());expect(screen.getByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.')).toBeVisible();
  expect(submitted.strategy).toEqual(original.policy.strategy);expect(fetcher.mock.calls.filter(call=>call[1]?.method==='PUT')).toHaveLength(1);
 });
 
@@ -382,4 +385,131 @@ it('holds coverage counts pending until the entire edited catalog and global env
  fireEvent.change(screen.getByLabelText('계좌 환경'),{target:{value:'LIVE'}});
  expect(screen.getByText(/저장된 설정 중 미정 항목:/)).toHaveTextContent('현재 초안 미정 항목: 확인 중개');
  expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();
+});
+
+const universeLabels={allowed_instruments:'허용 거래 대상 (거래소/상품/종목)',selected_instruments:'완전 자동 선택 거래 대상 (거래소/상품/종목)'};
+function typeUniverse(input:HTMLInputElement,text:string){let expected=input.value;for(const character of text){expected+=character;fireEvent.change(input,{target:{value:input.value+character}});expect(input).toHaveValue(expected)}}
+function backspaceUniverse(input:HTMLInputElement,length:number){let expected=input.value;for(let index=0;index<length;index++){expected=expected.slice(0,-1);fireEvent.change(input,{target:{value:input.value.slice(0,-1)}});expect(input).toHaveValue(expected)}}
+
+it.each(['allowed_instruments','selected_instruments'] as const)('preserves sequential %s keystrokes, comma and backspace repair without serializing unfinished keys',async name=>{
+ const fetcher=vi.fn(()=>Promise.resolve(capable(typedSnapshot())));vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const field=await screen.findByLabelText(universeLabels[name],{exact:false}) as HTMLInputElement;
+ fireEvent.change(field,{target:{value:''}});typeUniverse(field,'B');expect(field).toHaveValue('B');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
+ typeUniverse(field,'YBIT/');expect(field).toHaveValue('BYBIT/');typeUniverse(field,'LINEAR/BTCUSDT');
+ typeUniverse(field,', ');expect(field).toHaveValue('BYBIT/LINEAR/BTCUSDT, ');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();
+ typeUniverse(field,'BYBIT/LINEAR/ETHUSDT');
+ backspaceUniverse(field,'LINEAR/ETHUSDT'.length);expect(field).toHaveValue('BYBIT/LINEAR/BTCUSDT, BYBIT/');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
+ typeUniverse(field,'LINEAR/ETHUSDT');const complete=field.value;
+ fireEvent.change(field,{target:{value:field.value.slice(0,5)+field.value.slice(6)}});expect(field).toHaveValue(complete.slice(0,5)+complete.slice(6));expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
+ fireEvent.change(field,{target:{value:field.value.slice(0,5)+'/'+field.value.slice(5)}});expect(field).toHaveValue(complete);
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it('allows explicit selected-ref removal after its parent allowed ref is removed',async()=>{
+ vi.stubGlobal('fetch',vi.fn(()=>Promise.resolve(capable(typedSnapshot()))));render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText('허용 전략 alpha / r1');const selected=screen.getByLabelText('선택 전략 alpha / r1');
+ fireEvent.click(allowed);expect(allowed).not.toBeChecked();expect(selected).toBeChecked();expect(selected).toBeEnabled();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled());expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();
+ fireEvent.click(selected);expect(selected).not.toBeChecked();expect(selected).toBeDisabled();expect(screen.getByLabelText('허용 전략 beta / r1')).toBeChecked();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());
+});
+
+it('allows checked environment-ineligible refs to be removed while refusing unchecked ineligible additions',async()=>{
+ const body=typedSnapshot();body.policy.strategy.catalog.entries[0].approval_status='REVOKED';body.policy.strategy.catalog.revision='sha256:adc2419a13c84b16d065c56820083e7169b35b44cfb7962ac76397f44953f3c3';body.policy.strategy.allowed=[reference('alpha')];body.policy.strategy.selected=[reference('alpha')];body.missing_fields.push('strategy.eligible_pairs');
+ vi.stubGlobal('fetch',vi.fn(()=>Promise.resolve(capable(body))));render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText('허용 전략 alpha / r1');const revoked=screen.getByLabelText('허용 전략 beta / r1');expect(revoked).not.toBeChecked();expect(revoked).toBeDisabled();
+ fireEvent.change(screen.getByLabelText('계좌 환경'),{target:{value:'LIVE'}});expect(allowed).toBeChecked();expect(allowed).toBeEnabled();expect(revoked).toBeDisabled();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled());expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();
+ fireEvent.click(allowed);expect(allowed).not.toBeChecked();expect(allowed).toBeDisabled();const selected=screen.getByLabelText('선택 전략 alpha / r1');expect(selected).toBeChecked();expect(selected).toBeEnabled();fireEvent.click(selected);expect(selected).not.toBeChecked();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());
+});
+
+it('saves exact complete text-derived arrays in independent orders with every hidden catalog pin',async()=>{
+ const original=typedSnapshot();const fetcher=vi.fn((_url:string,options?:RequestInit)=>Promise.resolve(capable(options?.method==='PUT'?{...original,revision:8,policy:JSON.parse(String(options.body)).policy}:original)));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText(universeLabels.allowed_instruments,{exact:false}) as HTMLInputElement;const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false}) as HTMLInputElement;
+ fireEvent.change(allowed,{target:{value:''}});typeUniverse(allowed,'BYBIT/LINEAR/BTCUSDT,  BYBIT/LINEAR/ETHUSDT');
+ fireEvent.change(selected,{target:{value:''}});typeUniverse(selected,'BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT');
+ fireEvent.change(screen.getByLabelText('계좌 ID'),{target:{value:'text-edited-account'}});expect(allowed).toHaveValue('BYBIT/LINEAR/BTCUSDT,  BYBIT/LINEAR/ETHUSDT');
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+ const puts=fetcher.mock.calls.filter(call=>call[1]?.method==='PUT');expect(puts).toHaveLength(1);
+ expect(JSON.parse(String(puts[0][1]?.body))).toEqual({schema_version:2,revision:7,expected_strategy_generation:null,policy_sections_version:1,policy:{...original.policy,scope:{...original.policy.scope,account:{account_id:'text-edited-account',environment:'DEMO'},allowed_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT')],selected_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT')]}}});
+ expect(allowed).toHaveValue('BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/ETHUSDT');expect(selected).toHaveValue('BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT');
+});
+
+it('keeps genuinely blank instrument partials savable after unfinished text is erased',async()=>{
+ const missing=['risk_v2','scope.account','scope.allowed_instruments','scope.allowed_products','scope.mode','scope.permission_profile_revision','scope.selected_instruments','scope.selected_product','strategy'];
+ const fetcher=vi.fn((_url:string,options?:RequestInit)=>Promise.resolve(capable(options?.method==='PUT'?{...fixture,revision:1,policy:JSON.parse(String(options.body)).policy,missing_fields:missing}:fixture)));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText(universeLabels.allowed_instruments,{exact:false}) as HTMLInputElement;const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false}) as HTMLInputElement;
+ typeUniverse(allowed,'B');backspaceUniverse(allowed,1);typeUniverse(selected,'BYBIT/');backspaceUniverse(selected,6);
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+ const put=fetcher.mock.calls.find(call=>call[1]?.method==='PUT')!;expect(JSON.parse(String(put[1]?.body)).policy).toEqual({...fixture.policy,scope:{section_version:1,account:null,mode:null,allowed_products:null,selected_product:null,permission_profile_revision:null,allowed_instruments:null,selected_instruments:null}});
+});
+
+it('retains exact raw spacing and text across 409 and unrelated edits without retry',async()=>{
+ const original=typedSnapshot();const fetcher=vi.fn((_url:string,options?:RequestInit)=>Promise.resolve(capable(original,options?.method==='PUT'?409:200)));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText(universeLabels.allowed_instruments,{exact:false}) as HTMLInputElement;const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false}) as HTMLInputElement;
+ const rawAllowed='BYBIT/LINEAR/BTCUSDT,  BYBIT/LINEAR/ETHUSDT',rawSelected='BYBIT/LINEAR/ETHUSDT,   BYBIT/LINEAR/BTCUSDT';
+ fireEvent.change(allowed,{target:{value:rawAllowed}});fireEvent.change(selected,{target:{value:rawSelected}});
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText(/다른 곳에서 설정이 변경/);
+ expect(allowed).toHaveValue(rawAllowed);expect(selected).toHaveValue(rawSelected);fireEvent.change(screen.getByLabelText('계좌 ID'),{target:{value:'unrelated-dirty'}});expect(allowed).toHaveValue(rawAllowed);expect(selected).toHaveValue(rawSelected);
+ expect(fetcher.mock.calls.filter(call=>call[1]?.method==='PUT')).toHaveLength(1);expect(fetcher.mock.calls.filter(call=>!call[1]?.method)).toHaveLength(1);
+});
+
+it.each([7,8])('keeps unfinished raw text across a late revision %s GET and discards it only on explicit reload',async lateRevision=>{
+ const original=typedSnapshot();let reads=0;let finishRead!:(response:Response)=>void;
+ const fetcher=vi.fn((_url:string,options?:RequestInit)=>options?.method==='PUT'?Promise.resolve(capable({...original,revision:8})):++reads===1?Promise.resolve(capable(original)):new Promise<Response>(resolve=>{finishRead=resolve}));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));await screen.findByLabelText('계좌 ID');fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');await waitFor(()=>expect(reads).toBe(2));
+ const allowed=screen.getByLabelText(universeLabels.allowed_instruments,{exact:false}) as HTMLInputElement;const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false}) as HTMLInputElement;
+ fireEvent.change(allowed,{target:{value:'BYBIT/'}});fireEvent.change(selected,{target:{value:'BYBIT/LINEAR/BTCUSDT, '}});fireEvent.change(screen.getByLabelText('계좌 ID'),{target:{value:'newer-raw-edit'}});
+ await act(async()=>finishRead(capable({...original,revision:lateRevision})));expect(allowed).toHaveValue('BYBIT/');expect(selected).toHaveValue('BYBIT/LINEAR/BTCUSDT, ');expect(screen.getByLabelText('계좌 ID')).toHaveValue('newer-raw-edit');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
+ fireEvent.click(screen.getByRole('button',{name:'저장된 설정 다시 불러오기'}));await waitFor(()=>expect(reads).toBe(3));await act(async()=>finishRead(capable({...original,revision:9})));
+ await waitFor(()=>expect(allowed).toHaveValue('BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT'));expect(selected).toHaveValue('BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/ETHUSDT');expect(screen.getByLabelText('계좌 ID')).toHaveValue('fixture-account');
+});
+
+it('retains raw text until a matching capable uncertainty GET confirms the committed arrays',async()=>{
+ const original=typedSnapshot();let reads=0;let submitted=original.policy;let finishRead!:(response:Response)=>void;
+ const fetcher=vi.fn((_url:string,options?:RequestInit)=>{
+  if(options?.method==='PUT'){submitted=JSON.parse(String(options.body)).policy;return Promise.resolve(new Response(JSON.stringify({...original,revision:8,policy:submitted})))}
+  return ++reads===1?Promise.resolve(capable(original)):new Promise<Response>(resolve=>{finishRead=resolve});
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText(universeLabels.allowed_instruments,{exact:false});const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false});
+ const rawAllowed='BYBIT/LINEAR/BTCUSDT,  BYBIT/LINEAR/ETHUSDT',rawSelected='BYBIT/LINEAR/ETHUSDT,   BYBIT/LINEAR/BTCUSDT';fireEvent.change(allowed,{target:{value:rawAllowed}});fireEvent.change(selected,{target:{value:rawSelected}});
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText(/저장 결과를 확인하지 못했습니다/);await waitFor(()=>expect(reads).toBe(2));expect(allowed).toHaveValue(rawAllowed);expect(selected).toHaveValue(rawSelected);
+ await act(async()=>finishRead(capable({...original,revision:8})));await waitFor(()=>expect(screen.getByRole('button',{name:'저장 결과 다시 확인하기'})).toBeEnabled());expect(allowed).toHaveValue(rawAllowed);expect(selected).toHaveValue(rawSelected);expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
+ fireEvent.click(screen.getByRole('button',{name:'저장 결과 다시 확인하기'}));await waitFor(()=>expect(reads).toBe(3));await act(async()=>finishRead(capable({...original,revision:8,policy:submitted})));
+ await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');expect(allowed).toHaveValue('BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/ETHUSDT');expect(selected).toHaveValue('BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT');expect(fetcher.mock.calls.filter(call=>call[1]?.method==='PUT')).toHaveLength(1);expect(submitted.strategy).toEqual(original.policy.strategy);
+});
+
+it('does not make unfinished raw text ready when an older complete policy validation finishes late',async()=>{
+ const fetcher=vi.fn(()=>Promise.resolve(capable(typedSnapshot())));vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));await screen.findByLabelText('BTCUSDT에 적용 가능한 전략');
+ const actualDigest=crypto.subtle.digest.bind(crypto.subtle);let finishValidation!:()=>Promise<void>;
+ vi.spyOn(crypto.subtle,'digest').mockImplementationOnce((algorithm,data)=>new Promise<ArrayBuffer>(resolve=>{finishValidation=async()=>{resolve(await actualDigest(algorithm,data))}}));
+ fireEvent.change(screen.getByLabelText('계좌 ID'),{target:{value:'older-complete-edit'}});await waitFor(()=>expect(finishValidation).toBeDefined());
+ const allowed=screen.getByLabelText(universeLabels.allowed_instruments,{exact:false}) as HTMLInputElement;const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false}) as HTMLInputElement;fireEvent.change(allowed,{target:{value:'B'}});fireEvent.change(selected,{target:{value:'BYBIT/'}});
+ await act(async()=>finishValidation());expect(allowed).toHaveValue('B');expect(selected).toHaveValue('BYBIT/');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();expect(screen.getByText(/저장된 설정 중 미정 항목:/)).toHaveTextContent('현재 초안 미정 항목: 확인 중개');fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it('clears both unfinished raw buffers only in the separately saved product reset and never restores financials',async()=>{
+ const fetcher=vi.fn(()=>Promise.resolve(capable(typedSnapshot())));vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));await screen.findByLabelText('계좌 ID');
+ fireEvent.click(screen.getByRole('button',{name:'LINEAR 위험관리 입력 시작'}));fireEvent.change(screen.getByLabelText('새 초안 거래당 최대 손실 (USDT)'),{target:{value:'2.500'}});
+ const allowed=screen.getByLabelText(universeLabels.allowed_instruments,{exact:false});const selected=screen.getByLabelText(universeLabels.selected_instruments,{exact:false});fireEvent.change(allowed,{target:{value:'BYBIT/'}});fireEvent.change(selected,{target:{value:'BYBIT/LINEAR/BTCUSDT, '}});
+ fireEvent.change(screen.getByLabelText('선택 거래 상품'),{target:{value:'SPOT'}});expect(allowed).toHaveValue('BYBIT/');expect(selected).toHaveValue('BYBIT/LINEAR/BTCUSDT, ');expect(screen.getByLabelText('새 초안 거래당 최대 손실 (USDT)')).toHaveValue('2.500');
+ fireEvent.click(screen.getByRole('button',{name:'거래 상품 변경에 맞춰 초안 비우기'}));expect(allowed).toHaveValue('');expect(selected).toHaveValue('');expect(screen.getByText(/아직 저장하지 않은 초기화/)).toBeVisible();expect(screen.getByLabelText('계좌 ID')).toHaveValue('fixture-account');expect(screen.getByText(/보관된 카탈로그 참조:/)).toHaveTextContent('sha256:9db4c2f5ec0a80264ce31538d239f4dd5f98d81d79305a213836220b8938cc1f');expect(fetcher).toHaveBeenCalledTimes(1);
+ fireEvent.change(screen.getByLabelText('선택 거래 상품'),{target:{value:'LINEAR'}});expect(screen.queryByLabelText('새 초안 거래당 최대 손실 (USDT)')).not.toBeInTheDocument();expect(allowed).toHaveValue('');expect(selected).toHaveValue('');
+});
+
+it('keeps checked-ref removals blocked under the existing read-only capability gate',async()=>{
+ vi.stubGlobal('fetch',vi.fn(()=>Promise.resolve(new Response(JSON.stringify(typedSnapshot())))));render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const allowed=await screen.findByLabelText('허용 전략 alpha / r1');const selected=screen.getByLabelText('선택 전략 alpha / r1');expect(allowed).toBeChecked();expect(allowed).toBeDisabled();expect(selected).toBeChecked();expect(selected).toBeDisabled();
+});
+
+it('blocks readding an unchecked selected ref while its checked allowed parent is environment-ineligible',async()=>{
+ const fetcher=vi.fn(()=>Promise.resolve(capable(typedSnapshot())));vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));await screen.findByLabelText('BTCUSDT에 적용 가능한 전략');
+ fireEvent.change(screen.getByLabelText('계좌 환경'),{target:{value:'LIVE'}});await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled());
+ const allowed=screen.getByLabelText('허용 전략 alpha / r1'),selected=screen.getByLabelText('선택 전략 alpha / r1');expect(allowed).toBeChecked();expect(allowed).toBeEnabled();expect(selected).toBeChecked();expect(selected).toBeEnabled();
+ fireEvent.click(selected);expect(selected).not.toBeChecked();expect(selected).toBeDisabled();expect(allowed).toBeChecked();expect(screen.getByLabelText('허용 전략 beta / r1')).toBeChecked();expect(screen.getByLabelText('선택 전략 beta / r1')).toBeChecked();expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();expect(fetcher).toHaveBeenCalledTimes(1);
 });
