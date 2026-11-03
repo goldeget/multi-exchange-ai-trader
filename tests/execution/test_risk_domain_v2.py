@@ -9,6 +9,14 @@ from decimal import Inexact, Rounded, localcontext
 from typing import Any, cast
 
 import pytest
+from risk_v2_support import (
+    DIGEST,
+    NOW,
+    computation_ref_v2,
+    instrument_v2,
+    observation_ref_v2,
+    policy_v2,
+)
 
 from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
 from multi_exchange_trader.execution import risk_domain_v2 as d
@@ -24,14 +32,6 @@ from multi_exchange_trader.market_data.instrument_definition import (
     parse_bybit_instrument_response,
 )
 from multi_exchange_trader.trading_product import InstrumentKey
-from tests.execution.risk_v2_support import (
-    DIGEST,
-    NOW,
-    computation_ref_v2,
-    instrument_v2,
-    observation_ref_v2,
-    policy_v2,
-)
 
 X = InstrumentKey("BYBIT", "LINEAR", "XAAUSDT")
 Y = InstrumentKey("BYBIT", "LINEAR", "YBBUSDT")
