@@ -1,0 +1,23 @@
+# B1 global foreign graph bound correction — root implementation adoption
+
+Scope: fix the confirmed Important independent CODE finding at frozen8ef92ed3ced9e4c5512910ccbde6f9f6210d64b9 runtime.py365–368, without editing the original frozen worktree or historical evidence. Root read the actual independent two-proved-foreign JSON and process receipt: both private proofs true, monitoring and cold constructor allowed, hook1, original SENDING became UNKNOWN. Foreign owned quantities0/0, strict NATIVE refused and strategy commands0 remain distinct safety observations; they do not satisfy the adopted GLOBAL ONE boundary. The independent child exited1 for its intended final boundary assertion, not setup/import failure.
+
+The original implementation final composed run08 is preserved as381PASS/4 exact local SDK-parameter deselections/434.90s exit0. It is not code acceptance with I1 open. The original final report/manifest and formal independent review are still being frozen when this correction adoption is written. Root must inspect them before final correction acceptance. They are mandatory evidence, not a reason to mutate the reviewed source in place.
+
+Root will create NEW worktree from exact8ef92ed3, with a NEW correction SDD and F temporary root. Only TWO implementation paths are owned: existing src/multi_exchange_trader/execution/runtime.py and tests/execution/test_runtime_observation_compatibility.py. Their original frozen bytes are135054/0a12ce7ae5f2a0de8fdf7c87006fab33d3530936464daec91e3e3bb83608df01 and20085/486a5da61c4d282d460c8d5a1c616b8ae77a614135acad362d72b09fdd3a8d31. Preserve both before-images and all other source/test/CI files. No agent Git/network/SDK/provider/order/AI/server/secret/operator-store actions.
+
+Adopted correction:
+
+1. In the new private _enumerate_requests only, after complete known command/V2 validation and before returning mapping/observation, reject MORE THAN ONE unknown-owner state in the complete captured view. Preserve exact existing unknown ENTRY/EXIT classification; do not create an ownership inference or count only predicates that succeed.
+2. For zero such state, behavior is identical. For exactly one, require the entire current strict private legacy predicate. Strict NATIVE retains its unconditional earlier unknown-owner refusal. No _states, _prior_credit, constructor/witness, _restore_rows, public native/capture/target or financial body changes.
+3. Keep captured monitoring view/cache/context semantics and every previous legacy-data amendment, original V2 canonical/history/Owned/reservation guard and output unchanged. No request registration, history edit, retry, credit or reservation release.
+
+Meaningful test-first boundary:
+
+- Construct TWO original foreign states each independently satisfying the exact existing predicate against an actual temp J/runtime and retained original V1 graph. Assert both individual proofs are True before asserting global mapping/observation refusal. A malformed second graph is insufficient.
+- Old source must fail the new global assertion. Corrected source must reject monitoring and cold construction before the constructor native hook or J SENDING recovery write. Preserve original SENDING and exact store rows on refusal. Strict NATIVE remains refused; no strategy command.
+- Keep original one-graph positive and absent-label compatibility, all six monitoring malformations and known V2 alongside/malformed-V2 negatives. Include missing original Owned independent negative as evidence if the reviewer has already supplied it; no additional broad feature scope.
+
+Verification: one final entire NEW35+added case module plus existing95B1 guard module and unchanged old six monitoring/cross-position nodes, with SDK import guard and previous five selectors off/current correction src FIRST/F temps. Narrowing the repeated broad old suite is intentional: original381PASS remains linked by exact unchanged bodies/unowned files; fresh exact hosted whole Python/native CI must run all original SDK nodes and1100-fill case later. Final owned Ruff/mypy2, exact source diff/AST and all unowned before-images, original implementation/new correction pins are required. No fixture/test weakening.
+
+Read FULL prior observation root adoption, legacy prior-data amendment, local SDK-node ruling, GLOBAL ONE clarification, this adoption, the original implementation report and independent formal I1 report once frozen. Preserve all failures and process receipts. Produce a bounded correction report<=12KB, pin manifest and receipt, then STOP WRITES for the same independent reviewer's fresh closure probes. Root owns commit/integration/exact whole CI/passing main. Full63 and all financial activation remain incomplete.

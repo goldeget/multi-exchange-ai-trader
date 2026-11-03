@@ -138,6 +138,9 @@ class _ReplayContext:
     history: HistoryRecoveryReplayState = field(default_factory=HistoryRecoveryReplayState)
 
 
+_CapturedContext = tuple[tuple[NativeExecutionCandidate, ...], CreditReplayState, HistoryRecoveryReplayState]
+
+
 def _record_digest(records: tuple[object, ...]) -> str:
     # Frame canonical complete records; sorting makes traversal order irrelevant.
     encoded = json.dumps(sorted(codec.encode(item) for item in records),
@@ -299,16 +302,31 @@ class NativeExecutionRuntime:
         records = self.journal.list_commands()  # Validate every row, including terminal/controls.
         self._projections.clear()
         states = self._states()
+        contexts = tuple((self._projections[state.position_id][3].candidates,
+                          self._projections[state.position_id][3].credit,
+                          self._projections[state.position_id][3].history) for state in states)
+        return self._enumerate_requests(records, states, contexts, native_venues, _phase=_phase)
+
+    def _enumerate_requests(self, records: tuple[CommandRecord, ...],
+                            states: tuple[p.ProtectionProjection, ...],
+                            contexts: tuple[_CapturedContext, ...],
+                            native_venues: tuple[tuple[str, str], ...], *,
+                            _phase: Literal["MAPPING", "NATIVE", "OBSERVATION"]) -> tuple[
+            tuple[tuple[CommandRecord, NativeRequest, bool], ...], tuple[NativeOwnedRequest, ...]]:
+        """Enumerate the captured view without replaying or changing its caches."""
+        if (type(_phase) is not str or _phase not in ("MAPPING", "NATIVE", "OBSERVATION")
+                or len(states) != len(contexts) or (_phase == "OBSERVATION" and native_venues != ())):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         if (type(native_venues) is not tuple or any(type(pair) is not tuple or len(pair) != 2
                 or any(type(value) is not str or not value.strip() or len(value) > 256
                        for value in pair) for pair in native_venues)):
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-        candidates = tuple(item for cached in self._projections.values()
-                           for item in cached[3].candidates)
+        candidates = tuple(item for context in contexts for item in context[0])
         clients = {record.client_order_id for record in records
                    if record.kind in (CommandKind.ENTRY, CommandKind.EXIT)}
-        if any(order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
-               for state in states for order in state.orders):
+        if _phase == "NATIVE" and any(
+                order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
+                for state in states for order in state.orders):
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         batch: list[tuple[CommandRecord, NativeRequest, bool]] = []
         result: list[NativeOwnedRequest] = []
@@ -344,7 +362,112 @@ class NativeExecutionRuntime:
                     raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
                 continue
             result.append(NativeOwnedRequest(request, record.state, venues))
+        foreign = tuple((state, context) for state, context in zip(states, contexts, strict=True)
+                        if any(order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
+                               for order in state.orders))
+        if len(foreign) > 1:
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        for state, context in foreign:
+            if not self._legacy_foreign_quarantine(state, context, records, tuple(batch)):
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         return tuple(batch), tuple(result)
+
+    def _legacy_foreign_quarantine(self, state: p.ProtectionProjection, context: _CapturedContext,
+                                   records: tuple[CommandRecord, ...],
+                                   batch: tuple[tuple[CommandRecord, NativeRequest, bool], ...]) -> bool:
+        """One retained legacy conflict graph is observation data, never a request."""
+        candidates, credit, history = context
+        if (type(state) is not p.ProtectionProjection or len(state.orders) != 1
+                or type(state.orders[0]) is not p.OwnedOrder or state.scope != self.bridge.scope
+                or state.owned_quantity != 0 or state.executions or state.cancelled_order_ids
+                or not state.entries_blocked or credit.credits or credit.resolved_candidate_ids
+                or history.credits or history.decisions or history.resolutions
+                or len(candidates) != 1 or type(candidates[0]) is not NativeExecutionCandidate
+                or len(credit.decisions) != 1
+                or type(credit.decisions[0]) is not ExecutionCorroborationConflict):
+            return False
+        order, candidate, decision = state.orders[0], candidates[0], credit.decisions[0]
+        order.__post_init__()
+        candidate.__post_init__()
+        decision.__post_init__()
+        fill = candidate.fill
+        if (order.role != "ENTRY" or order.reduce_only or order.trigger_price is not None
+                or order.trigger_source is not None
+                or any(record.client_order_id == order.client_order_id for record in records)
+                or order.position_id != state.position_id or order.instrument_id != state.instrument_id
+                or order.side != state.entry_side or fill.scope != state.scope
+                or fill.position_id != state.position_id or fill.client_order_id != order.client_order_id
+                or fill.instrument_id != state.instrument_id or fill.side != order.side
+                or decision.prior_credit_event_id is None):
+            return False
+        inbox = self.store.get_inbox_event(decision.prior_credit_event_id)
+        if inbox is None:
+            return False
+        prior = codec.decode(inbox.payload_json)
+        if type(prior) is not CorroboratedExecutionCredit:
+            return False
+        prior.__post_init__()
+        prior_fill = prior.candidate.fill
+        if (prior.candidate_id != candidate_identity(prior.candidate)
+                or codec.encode(prior) != inbox.payload_json
+                or inbox.position_id != prior_fill.position_id or prior_fill.scope != self.bridge.scope
+                or prior.source.scope != prior_fill.scope
+                or inbox.event_id != execution_guard(prior_fill.scope,
+                    prior_fill.instrument_id, prior_fill.execution_id)):
+            return False
+        matches = tuple((record, request) for record, request, _ in batch
+                        if record.kind is CommandKind.ENTRY and type(request) is NativeOrderRequest
+                        and self._entry_version(record) == 1 and request.scope == prior_fill.scope
+                        and request.owned.client_order_id == prior_fill.client_order_id
+                        and request.owned.position_id == prior_fill.position_id
+                        and request.owned.instrument_id == prior_fill.instrument_id
+                        and request.owned.side == prior_fill.side and not request.owned.reduce_only)
+        if len(matches) != 1:
+            return False
+        original_record, original_request = matches[0]
+        original = original_request.owned
+        # A missing historical label remains data. A different real command
+        # cannot be borrowed; all financial/NATIVE prior-credit checks stay strict.
+        if any(record.command_key == prior.command_key and record.command_key != original_record.command_key
+               for record in records):
+            return False
+        prior_events = self.store.list_position_events(inbox.position_id)
+        decoded = tuple(codec.decode(row.payload_json) for row in prior_events)
+        owners = tuple(item for item in decoded if type(item) is p.OwnedOrder
+                       and item.client_order_id == prior_fill.client_order_id)
+        quarantines = tuple(item for item in decoded if type(item) is FillQuarantineRecord
+                            and codec.encode(item.candidate) == codec.encode(prior.candidate))
+        if (len(owners) != 1 or codec.encode(owners[0]) != codec.encode(original)
+                or len(quarantines) != 1 or not any(
+                    row.event_id == "native:" + candidate_identity(prior.candidate)
+                    and row.payload_json == codec.encode(quarantines[0]) for row in prior_events)):
+            return False
+        if (original.position_id == order.position_id
+                or original.client_order_id == order.client_order_id
+                or candidate.venue_order_id == prior.candidate.venue_order_id
+                or codec.encode(order) != codec.encode(replace(original,
+                    position_id=order.position_id, client_order_id=order.client_order_id))
+                or codec.encode(fill) != codec.encode(replace(prior.candidate.fill,
+                    position_id=order.position_id, client_order_id=order.client_order_id))):
+            return False
+        expected = ExecutionCorroborationConflict(candidate_identity(candidate), state.scope,
+            fill.instrument_id, fill.execution_id, candidate.venue_order_id, order.client_order_id,
+            prior.source, prior.history_variant_hash, (), ("VENUE_ORDER_ID_MISMATCH",),
+            execution_guard(state.scope, fill.instrument_id, fill.execution_id))
+        conflicts = (p.ProjectionConflict("AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED",
+                                         client_order_id=order.client_order_id),
+                     p.ProjectionConflict("EXECUTION_CORROBORATION_CONFLICT",
+                         event=fill.to_owned_fill(), client_order_id=order.client_order_id))
+        if codec.encode(decision) != codec.encode(expected) or codec.encode(state.conflicts) != codec.encode(conflicts):
+            return False
+        events = self.store.list_position_events(state.position_id)
+        expected_events = {
+            "native:" + hashlib.sha256(codec.encode(order).encode()).hexdigest(): codec.encode(order),
+            "native:" + candidate_identity(candidate): codec.encode(
+                FillQuarantineRecord(candidate, "AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED")),
+            decision_event_id(decision): codec.encode(decision),
+        }
+        return (len(events) == 3 and {row.event_id: row.payload_json for row in events} == expected_events)
 
     def native_owned_requests(self, native_venues: tuple[tuple[str, str], ...] = ()
                               ) -> tuple[NativeOwnedRequest, ...]:
@@ -403,8 +526,12 @@ class NativeExecutionRuntime:
         """Typed read-only logical view; no order acknowledgement or fill promotion."""
         with self._mutex:
             self._guard()
+            records = self.journal.list_commands()
             states = self._states()
-            contexts = tuple(self._projections[state.position_id][3] for state in states)
+            contexts = tuple((self._projections[state.position_id][3].candidates,
+                              self._projections[state.position_id][3].credit,
+                              self._projections[state.position_id][3].history) for state in states)
+            owned = self._enumerate_requests(records, states, contexts, (), _phase="OBSERVATION")[1]
             connections = [self.journal._db, self.store._db]
             if self._history_store is not None:
                 connections.append(self._history_store._db)
@@ -421,14 +548,13 @@ class NativeExecutionRuntime:
             digest = hashlib.sha256(repr((ledgers, self._active, self._control_busy)).encode()).hexdigest()
             conflicts = tuple(sorted(
                 ["PROJECTION_CONFLICT" for state, context in zip(states, contexts, strict=True)
-                 if not self._monitorable_quarantine(state, context)]
+                 if not self._monitorable_quarantine(state, _ReplayContext(*context))]
                 + ["CREDIT_DECISION" for context in contexts
-                   if context.credit.decisions or context.history.decisions]))
-            return ApplicationMonitoringSummary(self.native_owned_requests(),
-                self.journal.list_commands(), states,
-                tuple(item for context in contexts for item in context.candidates),
-                tuple(item for context in contexts for item in context.credit.credits),
-                tuple(item for context in contexts for item in context.history.credits),
+                    if context[1].decisions or context[2].decisions]))
+            return ApplicationMonitoringSummary(owned, records, states,
+                tuple(item for context in contexts for item in context[0]),
+                tuple(item for context in contexts for item in context[1].credits),
+                tuple(item for context in contexts for item in context[2].credits),
                 conflicts, digest)
 
     @staticmethod
