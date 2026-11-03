@@ -326,9 +326,14 @@ async def test_exact_base_quantity_and_price() -> None:
     bridge = _bridge(h, request)
     bridge.submit_fixed_limit_v2(request)
     order = h.commands[0].order
-    assert order.quantity.as_decimal().as_tuple() == request.owned.quantity.as_tuple()
-    assert order.events[0].quantity.as_decimal().as_tuple() == request.envelope.base_quantity.as_tuple()
-    assert order.price.as_decimal().as_tuple() == request.limit_price.as_tuple()
+    for native_value, expected in ((order.quantity, request.owned.quantity),
+                                   (order.events[0].quantity, request.envelope.base_quantity),
+                                   (order.price, request.limit_price)):
+        actual = native_value.as_decimal()
+        text = format(expected, 'f')
+        assert type(actual) is Decimal and actual == expected
+        assert native_value.precision == len(text.partition('.')[2])
+        assert str(native_value) == text
     _assert_payload(await _payload(h), request)
     instrument = _instrument()
     h.cache.add_instrument(instrument)
@@ -339,7 +344,11 @@ async def test_exact_base_quantity_and_price() -> None:
     with pytest.raises(ValueError):
         _fill(h.cache, order, '0.400', '100.001')
         capture_native_cache(h.cache, identity=identity, owners=(owner,))
-    assert order.price.as_decimal().as_tuple() == request.limit_price.as_tuple()
+    actual_price = order.price.as_decimal()
+    price_text = format(request.limit_price, 'f')
+    assert type(actual_price) is Decimal and actual_price == request.limit_price
+    assert order.price.precision == len(price_text.partition('.')[2])
+    assert str(order.price) == price_text
     with pytest.raises(ValueError):
         replace(request, envelope=replace(request.envelope, limit_price=Decimal('100.000000001')))
 
