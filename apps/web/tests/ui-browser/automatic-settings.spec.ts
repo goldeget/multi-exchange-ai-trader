@@ -6,6 +6,8 @@ const instrument=(symbol:string)=>({venue:'BYBIT',product:'LINEAR',symbol});
 const reference=(strategy_id:string)=>({strategy_id,revision:'r1'});
 const descriptor=(name:string,symbol:string)=>({reference:reference(name),implementation_sha256:'a'.repeat(64),config_sha256:'b'.repeat(64),config_schema_version:1,engine_contract_version:'engine1',permitted_instruments:[instrument(symbol)],approval_reference:'approval1',approval_source_reference:'source1',approval_source_sha256:'c'.repeat(64),approval_environments:['DEMO'],approval_status:'APPROVED'});
 const catalog={schema_version:1,revision:'sha256:9db4c2f5ec0a80264ce31538d239f4dd5f98d81d79305a213836220b8938cc1f',entries:[descriptor('beta','ETHUSDT'),descriptor('alpha','BTCUSDT')]};
+const passiveMetadataPaths=new Set(['/api/v1/settings/ai','/api/v1/ai/budget']);
+function isPassiveMetadataRead(method:string,url:URL,origin:string){return method==='GET'&&url.origin===origin&&url.href===origin+url.pathname&&passiveMetadataPaths.has(url.pathname)}
 
 test('operator can save an unset partial policy without activating orders',async({page,context,baseURL},testInfo)=>{
  if(!baseURL||new URL(baseURL).hostname!=='127.0.0.1')throw new Error('Local test server required');
@@ -15,8 +17,10 @@ test('operator can save an unset partial policy without activating orders',async
  let snapshot:Record<string,unknown>={schema_version:1,revision:0,policy:Object.fromEntries(keys.map(key=>[key,null])),missing_fields:keys,desired_state:'STOPPED',live_order_enabled:false,worker_running:false,blockers:['POLICY_V1_MIGRATION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED']};
  const headers={'X-Automatic-Policy-Sections-Version':'1'};
  await context.route('**/*',async route=>{
-  const request=route.request(),url=new URL(request.url());requested.push(`${request.method()} ${url.pathname}`);
-  if(url.origin!==origin){blocked.push(url.origin);await route.abort();return}
+  const request=route.request(),url=new URL(request.url()),entry=`${request.method()} ${url.origin===origin&&url.href.startsWith(origin+'/')?url.href.slice(origin.length):url.href}`;requested.push(entry);
+  if(url.origin!==origin){blocked.push(entry);await route.abort();return}
+  if(isPassiveMetadataRead(request.method(),url,origin)){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
+  if(url.pathname.startsWith('/api/')&&(url.pathname.includes('%')||/\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control)/i.test(url.pathname))){blocked.push(entry);await route.abort();return}
   if(url.pathname==='/api/v1/automatic/settings/migrate'&&request.method()==='POST'){
    const body=request.postDataJSON();migrations.push(body);expect(body).toEqual({schema_version:1,revision:0});
    snapshot={...snapshot,schema_version:2,revision:1,policy:{legacy_v1:snapshot.policy,scope:null,strategy:null,risk_v2:null},missing_fields:['risk_v2','scope','strategy'],blockers:['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED']};
@@ -28,11 +32,11 @@ test('operator can save an unset partial policy without activating orders',async
     writes.push(body);const missing=writes.length===1?['risk_v2','scope','strategy']:writes.length===2?['leverage_min','leverage_max','per_trade_loss','max_daily_loss','max_drawdown','max_total_risk','max_total_margin','margin_allocation','liquidation_buffer_fraction','max_quote_age_seconds','max_evidence_age_seconds','max_consecutive_losses','max_positions','sizing_rule','margin_mode','position_mode'].map(key=>'risk_v2.'+key).concat('strategy.eligible_pairs').sort():['risk_v2','scope.allowed_instruments','scope.selected_instruments','strategy.allowed','strategy.selected'];
     const blockers=['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED'];if(body.policy.strategy)blockers.push('STRATEGY_CURRENT_PUBLICATION_REQUIRED');if(body.policy.scope?.selected_product==='SPOT')blockers.push('POLICY_SPOT_RISK_UNSUPPORTED');
     snapshot={...snapshot,revision:Number(snapshot.revision)+1,policy:body.policy,missing_fields:missing,blockers};
-   }else if(request.method()!=='GET'){blocked.push(request.method());await route.abort();return}
+   }else if(request.method()!=='GET'){blocked.push(entry);await route.abort();return}
    else if(delayRead){backgroundRead=true;delayRead=false;const stale=JSON.stringify(snapshot);await readGate;await route.fulfill({headers,contentType:'application/json',body:stale});return}
    await route.fulfill({headers,contentType:'application/json',body:JSON.stringify(snapshot)});return;
   }
-  if(request.method()!=='GET'){blocked.push(`${request.method()} ${url.pathname}`);await route.abort();return}
+  if(request.method()!=='GET'){blocked.push(entry);await route.abort();return}
   if(url.pathname==='/api/v1/connections/status'){
    await route.fulfill({contentType:'application/json',body:JSON.stringify({schema_version:1,bybit:{registered:false,status:'NOT_CONFIGURED'},bybit_demo:{registered:false,status:'NOT_CONFIGURED',order_submission_possible:false,blocked_by_unresolved_attempt:false},ai:{registered:false,status:'NOT_CONFIGURED',mode:'OFFLINE_TEST',external_calls:false}})});return;
   }
@@ -89,7 +93,7 @@ test('operator can save an unset partial policy without activating orders',async
  expect(writes[2]).toMatchObject({revision:4,policy:{scope:{account:{account_id:'late-edit',environment:'DEMO'},allowed_products:['LINEAR','SPOT'],selected_product:'SPOT',allowed_instruments:null,selected_instruments:null},strategy:{catalog,allowed:null,selected:null},risk_v2:null}});
  await page.getByLabel('선택 거래 상품').selectOption('LINEAR');await expect(page.getByRole('button',{name:'LINEAR 위험관리 입력 시작'})).toBeVisible();expect(writes).toHaveLength(3);
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);expect(blocked).toEqual([]);
- expect(requested.filter(value=>/\/(ai|native|orders?|worker|reservations?|provider|control)(?:\/|$)/i.test(value))).toEqual([]);
+ expect(requested.filter(value=>value!=='GET /api/v1/settings/ai'&&value!=='GET /api/v1/ai/budget'&&(/\/(ai|native|orders?|worker|reservations?|provider|control)(?:[/?]|$)/i.test(value)||/^[A-Z]+ (?:https?:\/\/[^/]+)?\/api\/[^?]*(?:%|\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control))/i.test(value)))).toEqual([]);
  await testInfo.attach('automatic-settings',{body:await page.screenshot({fullPage:true,animations:'disabled'}),contentType:'image/png'});
  await testInfo.attach('automatic-settings-network-audit',{body:Buffer.from(JSON.stringify({blocked,requested,writes,migrations})),contentType:'application/json'});
 });
