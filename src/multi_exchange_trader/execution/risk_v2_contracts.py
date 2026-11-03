@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, fields
-from datetime import UTC, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Literal, NoReturn, cast
@@ -15,7 +15,11 @@ from multi_exchange_trader.execution.protection import ProtectionScope
 from multi_exchange_trader.execution.risk_v2_math import (
     RiskV2Rejected as RiskV2Rejected,  # noqa: PLC0414 - explicit shared export
 )
-from multi_exchange_trader.execution.risk_v2_math import decimal_fraction_v2, decimal_text_v2
+from multi_exchange_trader.execution.risk_v2_math import (
+    decimal_fraction_v2,
+    decimal_text_v2,
+    finite_decimal_v2,
+)
 from multi_exchange_trader.market_data.instrument_definition import (
     LINEAR_SOURCE_RULE_REVISION,
     PARSER_REVISION,
@@ -223,6 +227,109 @@ class LinearSizedEntryV2:
     def __post_init__(self) -> None:
         _sizing_payload_v2(self)
         object.__setattr__(self, "assessed_at", _utc_v2(self.assessed_at))
+
+
+@dataclass(frozen=True)
+class ExposureQuantityV2:
+    component_id: str
+    instrument: InstrumentKey
+    origin: Literal["ACCOUNT_POSITION", "ACCOUNT_ENTRY_ORDER", "PENDING_ENTRY"]
+    side: Literal["BUY", "SELL"]
+    base_quantity: Decimal
+
+    def __post_init__(self) -> None:
+        _exposure_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearMarkQuoteV2:
+    instrument: InstrumentKey
+    reference: RiskObservationRefV2
+    mark_price: Decimal
+
+    def __post_init__(self) -> None:
+        _mark_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearAccountRiskSnapshotV2:
+    account: ProtectionScope
+    reference: RiskObservationRefV2
+    coverage_revision: str
+    components: tuple[ExposureQuantityV2, ...]
+    loss_accounting: Literal["UTC_REALIZED_NET_FEES_FUNDING"]
+    loss_day: date
+    equity: Decimal
+    available_margin: Decimal
+    total_risk: Decimal
+    total_margin: Decimal
+    position_count: int
+    daily_loss: Decimal
+    drawdown: Decimal
+    consecutive_losses: int
+    margin_mode: Literal["ISOLATED", "CROSS"]
+    position_mode: Literal["ONE_WAY"]
+    external_same_symbol_activity_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _account_snapshot_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearReservationSnapshotV2:
+    account: ProtectionScope
+    snapshot_id: str
+    owner_generation: str
+    journal_revision: int
+    held_quantity_sha256: str
+    observed_at: datetime
+    excluded_command_key: str | None
+    components: tuple[ExposureQuantityV2, ...]
+    risk_amount: Decimal
+    margin_amount: Decimal
+    position_count: int
+
+    def __post_init__(self) -> None:
+        _reservation_snapshot_payload_v2(self)
+        object.__setattr__(self, "observed_at", _utc_v2(self.observed_at))
+
+
+@dataclass(frozen=True)
+class LinearAdmissionValuationV2:
+    scope: RiskScopeV2
+    assessed_at: datetime
+    account_observation_id: str
+    reservation_snapshot_id: str
+    mark_observation_ids: tuple[str, ...]
+    account_gross_quote: Decimal
+    reserved_gross_quote: Decimal
+    proposed_mark_quote: Decimal
+    combined_gross_quote: Decimal
+    valuation_rule: Literal["LINEAR_MARK_GROSS_AT_ADMISSION_V1"]
+
+    def __post_init__(self) -> None:
+        _valuation_payload_v2(self)
+        object.__setattr__(self, "assessed_at", _utc_v2(self.assessed_at))
+
+
+def account_snapshot_sha256_v2(value: LinearAccountRiskSnapshotV2) -> str:
+    return _canonical_sha256_v2("LinearAccountRiskSnapshotV2", _account_snapshot_payload_v2(value))
+
+
+def reservation_snapshot_sha256_v2(value: LinearReservationSnapshotV2) -> str:
+    return _canonical_sha256_v2(
+        "LinearReservationSnapshotV2", _reservation_snapshot_payload_v2(value)
+    )
+
+
+def mark_set_sha256_v2(value: tuple[LinearMarkQuoteV2, ...]) -> str:
+    return _canonical_sha256_v2("LinearMarkQuoteSetV2", {"marks": _marks_payload_v2(value)})
+
+
+def valuation_sha256_v2(valuation: LinearAdmissionValuationV2) -> str:
+    payload = _valuation_payload_v2(valuation)
+    del payload["assessed_at"]
+    return _canonical_sha256_v2("LinearAdmissionValuationV2", payload)
 
 
 def pin_instrument_v2(
@@ -698,6 +805,272 @@ def _sizing_payload_v2(value: object) -> dict[str, object]:
     return payload
 
 
+def _account_payload_v2(value: object) -> dict[str, str]:
+    values = _fields_v2(value, ProtectionScope)
+    identifier = values["account_id"]
+    if (
+        type(identifier) is not str
+        or not 1 <= len(identifier) <= 256
+        or identifier != identifier.strip()
+        or any(ord(char) < 32 or ord(char) == 127 for char in identifier)
+    ):
+        _reject_v2()
+    return {
+        "account_id": identifier,
+        "environment": _literal_v2(values["environment"], ("DEMO", "LIVE")),
+    }
+
+
+def _count_v2(value: object) -> int:
+    if type(value) is not int or value < 0:
+        _reject_v2()
+    if value.bit_length() > 1_000_000:
+        _reject_v2("RISK_V2_RESOURCE_LIMIT")
+    return value
+
+
+def _tuple_v2(value: object, *, minimum: int, maximum: int) -> tuple[Any, ...]:
+    if type(value) is not tuple:
+        _reject_v2()
+    if len(value) > maximum:
+        _reject_v2("RISK_V2_RESOURCE_LIMIT")
+    if len(value) < minimum:
+        _reject_v2()
+    return value
+
+
+def _key_order_v2(key: InstrumentKey) -> tuple[str, str, str]:
+    # Callers have already fully validated every key before sorting or hashing.
+    return key.venue, key.product, key.symbol
+
+
+def _exposure_payload_v2(value: object) -> dict[str, object]:
+    values = _fields_v2(value, ExposureQuantityV2)
+    origin = _literal_v2(
+        values["origin"], ("ACCOUNT_POSITION", "ACCOUNT_ENTRY_ORDER", "PENDING_ENTRY")
+    )
+    key = _key_payload_v2(values["instrument"])
+    if key["product"] != "LINEAR":
+        _reject_v2("RISK_V2_UNSUPPORTED_PRODUCT")
+    return {
+        "component_id": _identifier_v2(values["component_id"]),
+        "instrument": key,
+        "origin": origin,
+        "side": _literal_v2(values["side"], ("BUY", "SELL")),
+        "base_quantity": _decimal_text_field_v2(
+            values, "base_quantity", source=origin != "PENDING_ENTRY"
+        ),
+    }
+
+
+def _components_payload_v2(value: object) -> tuple[dict[str, object], ...]:
+    components = _tuple_v2(value, minimum=0, maximum=1024)
+    payload = tuple(_exposure_payload_v2(item) for item in components)
+    ids = [item.component_id for item in components]
+    if len(set(ids)) != len(ids):
+        _reject_v2("RISK_V2_EXPOSURE_OVERLAP")
+    order = [(*_key_order_v2(item.instrument), item.component_id) for item in components]
+    if order != sorted(order):
+        _reject_v2()
+    return payload
+
+
+def _mark_payload_v2(value: object) -> dict[str, object]:
+    values = _fields_v2(value, LinearMarkQuoteV2)
+    key = _key_payload_v2(values["instrument"])
+    reference = _observation_payload_v2(values["reference"])
+    if key["product"] != "LINEAR":
+        _reject_v2("RISK_V2_UNSUPPORTED_PRODUCT")
+    if reference["source_environment"] not in ("PUBLIC_MAINNET", "PUBLIC_TESTNET", "FIXTURE"):
+        _reject_v2("RISK_V2_SOURCE_MISMATCH")
+    return {
+        "instrument": key,
+        "reference": reference,
+        "mark_price": _decimal_text_field_v2(values, "mark_price", source=True),
+    }
+
+
+def _marks_payload_v2(value: object) -> tuple[dict[str, object], ...]:
+    marks = _tuple_v2(value, minimum=1, maximum=100)
+    payload = tuple(_mark_payload_v2(item) for item in marks)
+    order = [_key_order_v2(item.instrument) for item in marks]
+    if order != sorted(order) or len(set(order)) != len(order):
+        _reject_v2("RISK_V2_MARK_COVERAGE_REQUIRED")
+    return payload
+
+
+def _account_snapshot_payload_v2(value: object) -> dict[str, object]:
+    values = _fields_v2(value, LinearAccountRiskSnapshotV2)
+    account = _account_payload_v2(values["account"])
+    reference = _observation_payload_v2(values["reference"])
+    components = _components_payload_v2(values["components"])
+    if reference["source_environment"] not in (account["environment"], "FIXTURE"):
+        _reject_v2("RISK_V2_SOURCE_MISMATCH")
+    if any(item.origin == "PENDING_ENTRY" for item in values["components"]):
+        _reject_v2("RISK_V2_EXPOSURE_OVERLAP")
+    if type(values["loss_day"]) is not date:
+        _reject_v2()
+    external = _tuple_v2(values["external_same_symbol_activity_ids"], minimum=0, maximum=1024)
+    for identifier in external:
+        _identifier_v2(identifier)
+    if tuple(sorted(set(external))) != external:
+        _reject_v2()
+    payload: dict[str, object] = {
+        "account": account,
+        "reference": reference,
+        "coverage_revision": _identifier_v2(values["coverage_revision"]),
+        "components": components,
+        "loss_accounting": _literal_v2(
+            values["loss_accounting"], ("UTC_REALIZED_NET_FEES_FUNDING",)
+        ),
+        "loss_day": values["loss_day"].isoformat(),
+        "external_same_symbol_activity_ids": external,
+        "margin_mode": _literal_v2(
+            values["margin_mode"], ("ISOLATED", "CROSS"), code="RISK_V2_UNSUPPORTED_MODE"
+        ),
+        "position_mode": _literal_v2(
+            values["position_mode"], ("ONE_WAY",), code="RISK_V2_UNSUPPORTED_MODE"
+        ),
+    }
+    for name in (
+        "equity",
+        "available_margin",
+        "total_risk",
+        "total_margin",
+        "daily_loss",
+        "drawdown",
+    ):
+        payload[name] = _decimal_text_field_v2(
+            values, name, source=False, sign="positive" if name == "equity" else "nonnegative"
+        )
+    for name in ("position_count", "consecutive_losses"):
+        payload[name] = _count_v2(values[name])
+    return payload
+
+
+def _reservation_snapshot_payload_v2(value: object) -> dict[str, object]:
+    values = _fields_v2(value, LinearReservationSnapshotV2)
+    payload: dict[str, object] = {
+        "account": _account_payload_v2(values["account"]),
+        "components": _components_payload_v2(values["components"]),
+        "journal_revision": _count_v2(values["journal_revision"]),
+        "held_quantity_sha256": _digest_v2(values["held_quantity_sha256"]),
+        "observed_at": _time_text_v2(values["observed_at"]),
+        "position_count": _count_v2(values["position_count"]),
+    }
+    if any(item.origin != "PENDING_ENTRY" for item in values["components"]):
+        _reject_v2("RISK_V2_EXPOSURE_OVERLAP")
+    for name in ("snapshot_id", "owner_generation"):
+        payload[name] = _identifier_v2(values[name])
+    payload["excluded_command_key"] = (
+        None
+        if values["excluded_command_key"] is None
+        else _identifier_v2(values["excluded_command_key"])
+    )
+    for name in ("risk_amount", "margin_amount"):
+        payload[name] = _decimal_text_field_v2(values, name, source=False, sign="nonnegative")
+    return payload
+
+
+def _valuation_payload_v2(value: object) -> dict[str, object]:
+    values = _fields_v2(value, LinearAdmissionValuationV2)
+    identifiers = _tuple_v2(values["mark_observation_ids"], minimum=1, maximum=100)
+    for identifier in identifiers:
+        _identifier_v2(identifier)
+    payload: dict[str, object] = {
+        "scope": _scope_payload_v2(values["scope"]),
+        "assessed_at": _time_text_v2(values["assessed_at"]),
+        "mark_observation_ids": identifiers,
+        "valuation_rule": _literal_v2(
+            values["valuation_rule"], ("LINEAR_MARK_GROSS_AT_ADMISSION_V1",)
+        ),
+    }
+    for name in ("account_observation_id", "reservation_snapshot_id"):
+        payload[name] = _identifier_v2(values[name])
+    for name in (
+        "account_gross_quote",
+        "reserved_gross_quote",
+        "proposed_mark_quote",
+        "combined_gross_quote",
+    ):
+        payload[name] = _decimal_text_field_v2(
+            values,
+            name,
+            source=False,
+            sign="positive" if name == "proposed_mark_quote" else "nonnegative",
+        )
+    if decimal_fraction_v2(values["combined_gross_quote"]) != sum(
+        (
+            decimal_fraction_v2(values[name])
+            for name in ("account_gross_quote", "reserved_gross_quote", "proposed_mark_quote")
+        ),
+        Fraction(0),
+    ):
+        _reject_v2()
+    return payload
+
+
+def _fresh_v2(observed: datetime, *, now: datetime, maximum: Fraction) -> None:
+    observed = _utc_v2(observed)
+    if observed > now:
+        raise RiskV2Rejected("RISK_V2_FUTURE_EVIDENCE")
+    age = now - observed
+    microseconds = (age.days * 86400 + age.seconds) * 1_000_000 + age.microseconds
+    if microseconds > maximum * 1_000_000:
+        raise RiskV2Rejected("RISK_V2_STALE_EVIDENCE")
+
+
+def _mark_values_v2(
+    marks: tuple[LinearMarkQuoteV2, ...],
+    *,
+    required: tuple[InstrumentKey, ...],
+    now: datetime,
+    max_age_seconds: Decimal,
+) -> dict[InstrumentKey, Decimal]:
+    _marks_payload_v2(marks)
+    _tuple_v2(required, minimum=1, maximum=100)
+    for key in required:
+        _key_payload_v2(key)
+    now = _utc_v2(now)
+    maximum = decimal_fraction_v2(_decimal_v2(max_age_seconds, source=True, sign="nonnegative"))
+    order = [_key_order_v2(key) for key in required]
+    if order != sorted(set(order)):
+        _reject_v2()
+    if tuple(mark.instrument for mark in marks) != required:
+        _reject_v2("RISK_V2_MARK_COVERAGE_REQUIRED")
+    for mark in marks:
+        _fresh_v2(mark.reference.server_observed_at, now=now, maximum=maximum)
+        _fresh_v2(mark.reference.received_at, now=now, maximum=maximum)
+    return {mark.instrument: mark.mark_price for mark in marks}
+
+
+def _gross_components_v2(
+    components: tuple[ExposureQuantityV2, ...], *, prices: dict[InstrumentKey, Decimal]
+) -> Decimal:
+    _components_payload_v2(components)
+    if type(prices) is not dict:
+        _reject_v2()
+    if len(prices) > 100:
+        _reject_v2("RISK_V2_RESOURCE_LIMIT")
+    for key, price in prices.items():
+        payload = _key_payload_v2(key)
+        if payload["product"] != "LINEAR":
+            _reject_v2("RISK_V2_UNSUPPORTED_PRODUCT")
+        _decimal_v2(price, source=True, sign="positive")
+    if any(item.instrument not in prices for item in components):
+        _reject_v2("RISK_V2_MARK_COVERAGE_REQUIRED")
+    return finite_decimal_v2(
+        sum(
+            (
+                decimal_fraction_v2(item.base_quantity)
+                * decimal_fraction_v2(prices[item.instrument])
+                for item in components
+            ),
+            Fraction(0),
+        )
+    )
+
+
 def _json_size_v2(value: object) -> int:
     """Bound only the closed, already validated scalar tree before encoding."""
     if value is None:
@@ -729,6 +1102,13 @@ def _json_size_v2(value: object) -> int:
             if size > _MAX_CANONICAL_BYTES_V2:
                 _reject_v2("RISK_V2_RESOURCE_LIMIT")
         return max(size, 1)
+    if type(value) is tuple:
+        size = 2
+        for index, item in enumerate(value):
+            size += int(index > 0) + _json_size_v2(item)
+            if size > _MAX_CANONICAL_BYTES_V2:
+                _reject_v2("RISK_V2_RESOURCE_LIMIT")
+        return size
     if type(value) is dict:
         mapping = cast(dict[str, object], value)
         size = 2
@@ -769,6 +1149,8 @@ def _json_text_v2(value: object) -> str:
             number, digit = divmod(number, 10)
             digits.append(chr(48 + digit))
         return ("-" if value < 0 else "") + ("".join(reversed(digits)) if digits else "0")
+    if type(value) is tuple:
+        return "[" + ",".join(_json_text_v2(item) for item in value) + "]"
     if type(value) is dict:
         mapping = cast(dict[str, object], value)
         return (

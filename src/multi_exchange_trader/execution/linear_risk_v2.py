@@ -1,4 +1,4 @@
-"""Exact non-authoritative fixed-limit Linear sizing.
+"""Exact non-authoritative Linear sizing and fresh-mark admission valuation.
 
 Catalog selection and actual source/model/owner qualification belong to the
 producer. This calculation grants no minimum-amount or submission eligibility.
@@ -16,6 +16,7 @@ from multi_exchange_trader.execution.risk_v2_contracts import (
     LinearRiskPolicyV2,
     LinearSizedEntryV2,
     RiskV2Rejected,
+    _fresh_v2,
 )
 from multi_exchange_trader.execution.risk_v2_math import (
     decimal_fraction_v2,
@@ -28,14 +29,95 @@ from multi_exchange_trader.market_data.instrument_definition import (
 )
 
 
-def _fresh_v2(observed: datetime, *, now: datetime, maximum: Fraction) -> None:
-    observed = c._utc_v2(observed)
-    if observed > now:
-        raise RiskV2Rejected("RISK_V2_FUTURE_EVIDENCE")
-    age = now - observed
-    microseconds = (age.days * 86400 + age.seconds) * 1_000_000 + age.microseconds
-    if microseconds > maximum * 1_000_000:
-        raise RiskV2Rejected("RISK_V2_STALE_EVIDENCE")
+def value_linear_admission_v2(
+    *,
+    policy: LinearRiskPolicyV2,
+    sizing: LinearSizedEntryV2,
+    account: c.LinearAccountRiskSnapshotV2,
+    reservations: c.LinearReservationSnapshotV2,
+    marks: tuple[c.LinearMarkQuoteV2, ...],
+    now: datetime,
+) -> c.LinearAdmissionValuationV2:
+    # Validate all supplied records before cross-record keys, hashes or caps.
+    policy_payload = c._policy_payload_v2(policy)
+    sizing_payload = c._sizing_payload_v2(sizing)
+    account_payload = c._account_snapshot_payload_v2(account)
+    reservation_payload = c._reservation_snapshot_payload_v2(reservations)
+    c._marks_payload_v2(marks)
+    now = c._utc_v2(now)
+    if (
+        policy_payload["scope"] != sizing_payload["scope"]
+        or c._account_payload_v2(policy.scope.product_scope.account) != account_payload["account"]
+        or account_payload["account"] != reservation_payload["account"]
+    ):
+        raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+    if (
+        sizing.policy_sha256 != c.risk_policy_sha256_v2(policy)
+        or sizing.envelope.policy_revision != policy.revision
+    ):
+        raise RiskV2Rejected("RISK_V2_REVISION_MISMATCH")
+    account_ids = {item.component_id for item in account.components}
+    if account_ids.intersection(item.component_id for item in reservations.components):
+        raise RiskV2Rejected("RISK_V2_EXPOSURE_OVERLAP")
+    required = tuple(
+        sorted(
+            {
+                policy.scope.instrument,
+                *(item.instrument for item in account.components),
+                *(item.instrument for item in reservations.components),
+            },
+            key=c._key_order_v2,
+        )
+    )
+    prices = c._mark_values_v2(
+        marks, required=required, now=now, max_age_seconds=policy.max_quote_age_seconds
+    )
+    maximum = _fraction_v2(policy.max_evidence_age_seconds)
+    for observed in (
+        account.reference.server_observed_at,
+        account.reference.received_at,
+        reservations.observed_at,
+        sizing.cost_reference.computed_at,
+        sizing.envelope.instrument_pin.response_time,
+        sizing.envelope.instrument_pin.received_at,
+    ):
+        _fresh_v2(observed, now=now, maximum=maximum)
+    if c._utc_v2(sizing.cost_reference.computed_at) < c._utc_v2(
+        sizing.envelope.instrument_pin.received_at
+    ):
+        raise RiskV2Rejected("RISK_V2_CAUSAL_ORDER_INVALID")
+    if now >= c._utc_v2(sizing.envelope.valid_until):
+        raise RiskV2Rejected("RISK_V2_EXPIRED")
+    # assessed_at is an audit instant, not a source or economic completion age.
+    account_gross = c._gross_components_v2(account.components, prices=prices)
+    reserved_gross = c._gross_components_v2(reservations.components, prices=prices)
+    quantity = _fraction_v2(sizing.envelope.base_quantity)
+    proposed = quantity * _fraction_v2(prices[policy.scope.instrument])
+    combined = _fraction_v2(account_gross) + _fraction_v2(reserved_gross) + proposed
+    if proposed > _fraction_v2(policy.caps.max_order_admission_notional):
+        raise RiskV2Rejected("RISK_V2_ORDER_ADMISSION_LIMIT")
+    if combined > _fraction_v2(policy.caps.max_account_admission_notional):
+        raise RiskV2Rejected("RISK_V2_ACCOUNT_ADMISSION_LIMIT")
+    if policy.caps.turnover_requirement == "HARD_EXECUTION_QUOTE_CAP":
+        if sizing.envelope.side == "SELL":
+            raise RiskV2Rejected("RISK_V2_SELL_EXECUTION_UPPER_UNAVAILABLE")
+        # The validated HARD policy necessarily carries its explicit cap.
+        cap = policy.caps.max_execution_quote_amount
+        assert cap is not None
+        if quantity * _fraction_v2(sizing.envelope.limit_price) > _fraction_v2(cap):
+            raise RiskV2Rejected("RISK_V2_EXECUTION_QUOTE_LIMIT")
+    return c.LinearAdmissionValuationV2(
+        policy.scope,
+        now,
+        account.reference.observation_id,
+        reservations.snapshot_id,
+        tuple(mark.reference.observation_id for mark in marks),
+        account_gross,
+        reserved_gross,
+        finite_decimal_v2(proposed),
+        finite_decimal_v2(combined),
+        policy.caps.valuation_rule,
+    )
 
 
 def _fraction_v2(value: Decimal) -> Fraction:
