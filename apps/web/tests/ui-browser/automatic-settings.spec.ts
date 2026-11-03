@@ -20,7 +20,7 @@ test('operator can save an unset partial policy without activating orders',async
   const request=route.request(),url=new URL(request.url()),entry=`${request.method()} ${url.origin===origin&&url.href.startsWith(origin+'/')?url.href.slice(origin.length):url.href}`;requested.push(entry);
   if(url.origin!==origin){blocked.push(entry);await route.abort();return}
   if(isPassiveMetadataRead(request.method(),url,origin)){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
-  if(url.pathname.startsWith('/api/')&&(url.pathname.includes('%')||/\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control)/i.test(url.pathname))){blocked.push(entry);await route.abort();return}
+  if(url.pathname.startsWith('/api')&&(url.pathname.includes('%')||/\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control)/i.test(url.pathname))){blocked.push(entry);await route.abort();return}
   if(url.pathname==='/api/v1/automatic/settings/migrate'&&request.method()==='POST'){
    const body=request.postDataJSON();migrations.push(body);expect(body).toEqual({schema_version:1,revision:0});
    snapshot={...snapshot,schema_version:2,revision:1,policy:{legacy_v1:snapshot.policy,scope:null,strategy:null,risk_v2:null},missing_fields:['risk_v2','scope','strategy'],blockers:['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED']};
@@ -40,7 +40,7 @@ test('operator can save an unset partial policy without activating orders',async
   if(url.pathname==='/api/v1/connections/status'){
    await route.fulfill({contentType:'application/json',body:JSON.stringify({schema_version:1,bybit:{registered:false,status:'NOT_CONFIGURED'},bybit_demo:{registered:false,status:'NOT_CONFIGURED',order_submission_possible:false,blocked_by_unresolved_attempt:false},ai:{registered:false,status:'NOT_CONFIGURED',mode:'OFFLINE_TEST',external_calls:false}})});return;
   }
-  if(url.pathname.startsWith('/api/')){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
+  if(url.pathname.startsWith('/api')){await route.fulfill({status:503,contentType:'application/json',body:'{}'});return}
   await route.continue();
  });
  await openOffline(page,'view=settings&tab=connections');
@@ -93,7 +93,7 @@ test('operator can save an unset partial policy without activating orders',async
  expect(writes[2]).toMatchObject({revision:4,policy:{scope:{account:{account_id:'late-edit',environment:'DEMO'},allowed_products:['LINEAR','SPOT'],selected_product:'SPOT',allowed_instruments:null,selected_instruments:null},strategy:{catalog,allowed:null,selected:null},risk_v2:null}});
  await page.getByLabel('선택 거래 상품').selectOption('LINEAR');await expect(page.getByRole('button',{name:'LINEAR 위험관리 입력 시작'})).toBeVisible();expect(writes).toHaveLength(3);
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);expect(blocked).toEqual([]);
- expect(requested.filter(value=>value!=='GET /api/v1/settings/ai'&&value!=='GET /api/v1/ai/budget'&&(/\/(ai|native|orders?|worker|reservations?|provider|control)(?:[/?]|$)/i.test(value)||/^[A-Z]+ (?:https?:\/\/[^/]+)?\/api\/[^?]*(?:%|\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control))/i.test(value)))).toEqual([]);
+ expect(requested.filter(value=>value!=='GET /api/v1/settings/ai'&&value!=='GET /api/v1/ai/budget'&&(/\/(ai|native|orders?|worker|reservations?|provider|control)(?:[/?]|$)/i.test(value)||/^[A-Z]+ (?:https?:\/\/[^/]+)?\/api[^?]*(?:%|\/(ai|generat(?:e|ion)|native|orders?|worker|reservations?|provider|control))/i.test(value)))).toEqual([]);
  await testInfo.attach('automatic-settings',{body:await page.screenshot({fullPage:true,animations:'disabled'}),contentType:'image/png'});
  await testInfo.attach('automatic-settings-network-audit',{body:Buffer.from(JSON.stringify({blocked,requested,writes,migrations})),contentType:'application/json'});
 });
