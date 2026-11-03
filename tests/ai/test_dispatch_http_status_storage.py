@@ -27,6 +27,7 @@ LEGACY_METADATA = [
     (7, "updated_at", "TEXT", 1, None, 0, 0),
 ]
 V2_METADATA = [*LEGACY_METADATA, (8, "http_status", "INTEGER", 0, None, 0, 0)]
+V3_METADATA = [*V2_METADATA, (9, "selection_rejection_code", "TEXT", 0, None, 0, 0)]
 ROWS = [
     ("legacy-uncertain", "binding-u", "0.01000000", "UNCERTAIN", "HTTP_ERROR", None,
      "2026-11-02T00:00:00+00:00", "2026-11-02T00:00:00+00:00"),
@@ -53,14 +54,16 @@ def legacy_store(path, version=1, *, create=LEGACY_CREATE, rows=ROWS):
         db.execute(f"PRAGMA user_version={version}")
 
 
-def assert_layout(path, *, version=2, metadata=V2_METADATA, rows=ROWS):
+def assert_layout(path, *, version=3, metadata=V3_METADATA, rows=ROWS):
     with sqlite3.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == version
         assert db.execute("PRAGMA table_xinfo(ai_dispatches)").fetchall() == metadata
         actual = db.execute("SELECT * FROM ai_dispatches ORDER BY request_id DESC").fetchall()
     assert [row[:8] for row in actual] == rows
-    if version == 2:
+    if version in (2, 3):
         assert all(row[8] is None for row in actual)
+    if version == 3:
+        assert all(row[9] is None for row in actual)
 
 
 def forbid_accounting(monkeypatch, budget):
@@ -111,11 +114,16 @@ def test_v0_empty_and_interrupted_legacy_create_are_supported(tmp_path, interrup
     assert_layout(path, rows=ROWS if interrupted else [])
 
 
-@pytest.mark.parametrize("version", [None, 0, 1])
+@pytest.mark.parametrize("version", [None, 0, 1, 2, 3])
 def test_concurrent_dispatcher_open_migrates_once(tmp_path, monkeypatch, version):
     path = tmp_path / "dispatch.sqlite3"
     if version is not None:
         legacy_store(path, version)
+        if version >= 2:
+            with sqlite3.connect(path) as db:
+                db.execute("ALTER TABLE ai_dispatches ADD COLUMN http_status INTEGER")
+                if version == 3:
+                    db.execute("ALTER TABLE ai_dispatches ADD COLUMN selection_rejection_code TEXT")
     budget, client = local_dependencies(tmp_path)
     before = budget.path.read_bytes()
     forbid_accounting(monkeypatch, budget)
@@ -151,18 +159,22 @@ def test_migration_lock_timeout_fails_closed(tmp_path, monkeypatch):
     assert_layout(path, version=1, metadata=LEGACY_METADATA)
 
 
-def test_migration_failure_rolls_back_schema_and_version(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", [0, 1, 2])
+def test_migration_failure_rolls_back_schema_and_version(tmp_path, monkeypatch, version):
     path = tmp_path / "dispatch.sqlite3"
-    legacy_store(path)
+    legacy_store(path, version)
+    if version == 2:
+        with sqlite3.connect(path) as db:
+            db.execute("ALTER TABLE ai_dispatches ADD COLUMN http_status INTEGER")
     budget, client = local_dependencies(tmp_path)
     forbid_accounting(monkeypatch, budget)
     connect = sqlite3.connect
 
     class RejectVersion(sqlite3.Connection):
         def execute(self, sql, parameters=()):
-            if sql.replace(" ", "").upper() == "PRAGMAUSER_VERSION=2":
+            if sql.replace(" ", "").upper() == "PRAGMAUSER_VERSION=3":
                 # Failure is injected only after the transactional ALTER took effect.
-                assert len(super().execute("PRAGMA table_xinfo(ai_dispatches)").fetchall()) == 9
+                assert len(super().execute("PRAGMA table_xinfo(ai_dispatches)").fetchall()) == 10
                 raise sqlite3.OperationalError("injected migration failure")
             return super().execute(sql, parameters)
 
@@ -175,7 +187,7 @@ def test_migration_failure_rolls_back_schema_and_version(tmp_path, monkeypatch):
         patch.setattr(sqlite3, "connect", reject_version)
         with pytest.raises(sqlite3.OperationalError, match="injected migration failure"):
             AIDispatcher(path, budget, client)
-    assert_layout(path, version=1, metadata=LEGACY_METADATA)
+    assert_layout(path, version=version, metadata=V2_METADATA if version == 2 else LEGACY_METADATA)
     AIDispatcher(path, budget, client)
     assert_layout(path)
 
