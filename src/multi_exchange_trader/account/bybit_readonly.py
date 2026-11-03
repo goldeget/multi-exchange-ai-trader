@@ -54,7 +54,7 @@ from .instrument_envelope import (
 )
 
 if TYPE_CHECKING:
-    from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
+    from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken, _ReceiptBudget
     from .risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
 
 READ_ONLY_PATHS = frozenset(
@@ -213,6 +213,20 @@ class _RiskRoute(_InstrumentRoute):
     deadline: float | None = None
     last_mono: float = 0.0
     risk_envelope: "BybitRiskLimitEnvelopeReadV1 | None" = None
+    receipt_context: "ContextVar[_ReceiptBudget | None] | None" = None
+    receipt: "_ReceiptBudget | None" = None
+
+    def _group_check(self) -> None:
+        from ..execution.monitoring_budget import ReadGroupToken, _ReceiptBudget
+
+        # Callback-free proof of the originally selected receipt. A guard may
+        # end it or replace the ContextVar/receipt while retaining the token.
+        context, receipt = self.receipt_context, self.receipt
+        if (type(context) is not ContextVar or self.budget._receipt is not context
+                or type(receipt) is not _ReceiptBudget or context.get() is not receipt
+                or type(self.group) is not ReadGroupToken or receipt.token is not self.group
+                or receipt.active is not True):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_GROUP_REQUIRED")
 
     def _owner_check(self) -> None:
         assert self.owner is not None and self.client is not None
@@ -244,9 +258,11 @@ class _RiskRoute(_InstrumentRoute):
 
     def check(self) -> None:
         self._owner_check()
+        self._group_check()
         self.budget.require_active_group(self.group)
         # Budget guards are arbitrary owner callbacks. Check again after them.
         self._owner_check()
+        self._group_check()
 
     def request_origin(self, request: httpx.Request) -> HttpsOrigin:
         origin = _exact_origin(request)
@@ -571,6 +587,7 @@ class BybitReadOnlyClient:
                 source_environment=self._public_source_environment,
                 source_id=self._risk_source_id, generation=self._risk_generation,
                 observation_id=uuid4().hex, params=params, deadline=deadline, last_mono=started,
+                receipt_context=budget._receipt, receipt=budget._receipt.get(),
             )
             route.check()
             with self._monitoring_operation(budget):
@@ -778,6 +795,7 @@ class BybitReadOnlyClient:
             route.budget.before_attempt(route.attempt)
             if isinstance(route, _RiskRoute):
                 route._owner_check()
+                route._group_check()
         response = await self._client.send(request, stream=True)
         primary: BaseException | None = None
         try:

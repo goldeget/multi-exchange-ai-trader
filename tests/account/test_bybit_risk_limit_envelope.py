@@ -862,3 +862,79 @@ async def test_unknown_budget_owner_error_is_not_fallback_translated() -> None:
         await read(client, budget, group)
     await client.aclose()
     assert caught.value is defect and stream.closes == 1
+
+@pytest.mark.parametrize("stage", ["send", "return"])
+@pytest.mark.parametrize("guard_owner", ["budget", "receipt"])
+@pytest.mark.parametrize("mutation", ["end", "replace", "context", "token"])
+async def test_guard_group_loss_rejects_send_and_final_return(
+    stage: str, guard_owner: str, mutation: str,
+) -> None:
+    import inspect
+    from contextvars import ContextVar, copy_context
+
+    from multi_exchange_trader.execution.monitoring_budget import _ReceiptBudget
+
+    fired = False
+    sends: list[bool] = []
+    original: _ReceiptBudget | None = None
+    replacement: _ReceiptBudget | None = None
+    budget: MonitoringReadBudget
+
+    def guard() -> None:
+        nonlocal fired
+        names = {frame.function for frame in inspect.stack()}
+        selected = ("before_attempt" in names if stage == "send" else
+                    budget.physical_attempts == 1 and "_read" not in names)
+        if fired or not selected or original is None:
+            return
+        fired = True
+        if mutation == "end":
+            original.active = False
+        elif mutation == "replace":
+            assert replacement is not None
+            # An actually issued replacement can retain the old token after an
+            # arbitrary guard mutates it. Receipt object identity still matters.
+            replacement.token = original.token
+            budget._receipt.set(replacement)
+        elif mutation == "context":
+            budget._receipt = ContextVar("replaced_receipt_context", default=original)
+        else:
+            assert replacement is not None
+            original.token = replacement.token
+
+    budget = MonitoringReadBudget(guard=guard if guard_owner == "budget" else lambda: None)
+    original_context = budget._receipt
+    stream = Stream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        current = budget._receipt.get()
+        sends.append(current is original and current is not None and current.active)
+        return httpx.Response(200, stream=stream)
+
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    replacement_context = copy_context()
+    replacement_scope = budget.receipt()
+    replacement_context.run(replacement_scope.__enter__)
+    replacement = replacement_context.run(budget._receipt.get)
+    assert replacement is not None
+    try:
+        with budget.receipt(guard=guard if guard_owner == "receipt" else lambda: None), \
+                budget.reuse_or_open_receipt() as group:
+            original = budget._receipt.get()
+            assert original is not None and original is not replacement
+            try:
+                with pytest.raises(InstrumentSourceError) as caught:
+                    await read(client, budget, group)
+                assert caught.value.code == "INSTRUMENT_SOURCE_GROUP_REQUIRED"
+                assert caught.value.__context__ is None and caught.value.__cause__ is None
+            finally:
+                budget._receipt = original_context
+    finally:
+        replacement_context.run(replacement_scope.__exit__, None, None, None)
+        await client.aclose()
+    assert fired
+    assert sends == ([] if stage == "send" else [True])
+    # before_attempt already charged the failed send boundary; there is no refund.
+    assert budget.physical_attempts == 1
+    assert stream.closes == (0 if stage == "send" else 1)
