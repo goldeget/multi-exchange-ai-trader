@@ -18,3 +18,5 @@
 # Negative tests use temporary stores; see docs/implementation/SECRET_SCAN_REVIEW.md, Managed credential validation fixtures.
 a456c7ec24aaba3993d6c85d41c073591bd3e56d:tests/credentials/test_store.py:generic-api-key:175
 1fd6e996988f02b0113b67b063122a0364f0f617:tests/credentials/test_import.py:generic-api-key:80
+# Exact historical Risk V2 schema projection notation, not authentication material.
+a1320a0e69ec6accef6aa07d5918afb4fbd74144:docs/superpowers/specs/2026-11-03-risk-v2-portable-storage-adoption.md:generic-api-key:95
