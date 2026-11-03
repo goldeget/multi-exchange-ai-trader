@@ -149,6 +149,33 @@ def _context_snapshot() -> tuple[object, ...]:
 
 @pytest.mark.parametrize("rounding", [ROUND_UP, ROUND_DOWN, ROUND_HALF_EVEN])
 @pytest.mark.parametrize("capitals", [0, 1])
+def test_nonterminating_display_beyond_finite_scale_limit(rounding: str, capitals: int) -> None:
+    expected = Decimal(
+        "8.3186512034198824427650957986887419956244617372012790269041733893605217152987316E-19730"
+    )
+    int_string_limit = sys.get_int_max_str_digits()
+    with localcontext() as context:
+        context.prec = 1
+        context.rounding = rounding
+        context.Emin = -1
+        context.Emax = 1
+        context.capitals = capitals
+        context.clamp = 1
+        context.traps[Inexact] = True
+        context.traps[Rounded] = True
+        context.flags[Inexact] = True
+        before = _context_snapshot()
+        actual = display_ratio_v2(Fraction(1), Fraction(3 * 2**65537))
+        assert actual.as_tuple() == expected.as_tuple()
+        assert _context_snapshot() == before
+        with pytest.raises(RiskV2Rejected, match="^RISK_V2_RESOURCE_LIMIT$"):
+            display_ratio_v2(Fraction(1), Fraction(2**65537))
+        assert _context_snapshot() == before
+    assert sys.get_int_max_str_digits() == int_string_limit
+
+
+@pytest.mark.parametrize("rounding", [ROUND_UP, ROUND_DOWN, ROUND_HALF_EVEN])
+@pytest.mark.parametrize("capitals", [0, 1])
 def test_pathological_ambient_context_untouched(rounding: str, capitals: int) -> None:
     with localcontext() as context:
         context.prec = 1
