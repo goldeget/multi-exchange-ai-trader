@@ -48,6 +48,7 @@ async def test_health_and_route_inventory_have_no_exchange_access():
             ("/api/v1/diagnostics", ("GET",)),
             ("/api/v1/connections/status", ("GET",)),
             ("/api/v1/automatic/settings", ("GET", "PUT")),
+            ("/api/v1/automatic/settings/migrate", ("POST",)),
             ("/api/v1/settings/ai", ("GET", "PUT")),
             ("/api/v1/ai/budget", ("GET",)),
             ("/api/v1/paper/order-previews", ("POST",)),

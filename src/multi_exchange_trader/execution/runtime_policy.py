@@ -41,7 +41,7 @@ def parse_json(raw: bytes | str) -> object:
 
     try:
         return cast(object, json.loads(raw, object_pairs_hook=pairs, parse_constant=constant))
-    except (UnicodeError, RecursionError) as exc:
+    except (UnicodeError, RecursionError, json.JSONDecodeError) as exc:
         raise ValueError("invalid policy JSON") from exc
 
 
@@ -91,23 +91,53 @@ def missing_fields(draft: dict[str, Any]) -> list[str]:
     return sorted(key for key in required if draft[key] is None or draft[key] == [])
 
 
+MAX_REVISION = 2**53 - 1
+V2_SECTIONS = {"legacy_v1", "scope", "strategy", "risk_v2"}
+TABLE_LAYOUT = "(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL," \
+               "payload TEXT NOT NULL,desired_state TEXT NOT NULL CHECK(desired_state='STOPPED'))"
+
+
+def validate_revision(value: object, *, increment: bool = False) -> int:
+    if type(value) is not int or not 0 <= value <= MAX_REVISION - int(increment):
+        raise ValueError("policy revision")
+    return value
+
+
+def validate_v2(value: object) -> dict[str, Any]:
+    if (type(value) is not dict or set(value) != V2_SECTIONS
+            or any(value[key] is not None for key in ("scope", "strategy", "risk_v2"))):
+        raise ValueError("policy v2 fields")
+    return {"legacy_v1": validate_draft(value["legacy_v1"]),
+            "scope": None, "strategy": None, "risk_v2": None}
+
+
+def _fences() -> dict[str, str]:
+    return {f"{table}_immutable_{action.lower()}":
+            f"CREATE TRIGGER {table}_immutable_{action.lower()} BEFORE {action} ON {table} "
+            "BEGIN SELECT RAISE(ABORT,'policy immutable'); END"
+            for table in ("runtime_policy", "runtime_policy_v1_archive")
+            for action in ("INSERT", "UPDATE", "DELETE")}
+
+
 class RuntimePolicyBook:
     def __init__(self, path: Path) -> None:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self.connect()) as db:
-            if db.execute("PRAGMA user_version").fetchone()[0] not in {0, 1}:
-                raise ValueError("policy schema version")
-            db.execute("CREATE TABLE IF NOT EXISTS runtime_policy (id INTEGER PRIMARY KEY "
-                       "CHECK(id=1),revision INTEGER NOT NULL,payload TEXT NOT NULL,"
-                       "desired_state TEXT NOT NULL CHECK(desired_state='STOPPED'))")
-            db.execute("INSERT OR IGNORE INTO runtime_policy VALUES(1,0,?,'STOPPED')",
-                       (json.dumps(dict.fromkeys(KEYS)),))
-            db.execute("PRAGMA user_version=1")
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                if db.execute("SELECT 1 FROM sqlite_master").fetchone() is not None:
+                    raise ValueError("policy storage")
+                db.execute("CREATE TABLE runtime_policy_v2 " + TABLE_LAYOUT)
+                draft = {"legacy_v1": dict.fromkeys(KEYS), "scope": None,
+                         "strategy": None, "risk_v2": None}
+                db.execute("INSERT INTO runtime_policy_v2 VALUES(1,0,?,'STOPPED')",
+                           (json.dumps(draft),))
+                db.execute("PRAGMA user_version=2")
+            self._read(db)
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("policy corruption")
-            db.commit()
-        self.read()
 
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10)
@@ -116,43 +146,109 @@ class RuntimePolicyBook:
         return db
 
     @staticmethod
-    def _read(db: sqlite3.Connection) -> dict[str, Any]:
-        row = db.execute("SELECT * FROM runtime_policy WHERE id=1").fetchone()
-        if row is None or type(row["revision"]) is not int or row["revision"] < 0:
+    def _row(db: sqlite3.Connection, table: str) -> sqlite3.Row:
+        expected = [("id", "INTEGER", 0, 1), ("revision", "INTEGER", 1, 0),
+                    ("payload", "TEXT", 1, 0), ("desired_state", "TEXT", 1, 0)]
+        actual = [(row[1], row[2], row[3], row[5])
+                  for row in db.execute(f"PRAGMA table_info({table})")]
+        if actual != expected:
+            raise ValueError("policy storage layout")
+        rows = db.execute(f"SELECT * FROM {table}").fetchall()
+        if (len(rows) != 1 or rows[0]["id"] != 1 or type(rows[0]["payload"]) is not str
+                or rows[0]["desired_state"] != "STOPPED"):
             raise ValueError("policy storage")
-        draft = validate_draft(parse_json(row["payload"]))
-        if row["desired_state"] != "STOPPED":
-            raise ValueError("policy authority")
-        return {"schema_version": 1, "revision": row["revision"], "policy": draft,
-                "missing_fields": missing_fields(draft), "desired_state": "STOPPED",
+        validate_revision(rows[0]["revision"])
+        return cast(sqlite3.Row, rows[0])
+
+    @classmethod
+    def _read(cls, db: sqlite3.Connection) -> dict[str, Any]:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if version not in {1, 2}:
+            raise ValueError("policy schema version")
+        historical = {"runtime_policy", "runtime_policy_v1_archive"}
+        if version == 1:
+            if tables & (historical | {"runtime_policy_v2"}) != {"runtime_policy"}:
+                raise ValueError("policy storage layout")
+            row = cls._row(db, "runtime_policy")
+            draft = validate_draft(parse_json(row["payload"]))
+            missing = missing_fields(draft)
+            blocker = "POLICY_V1_MIGRATION_REQUIRED"
+        else:
+            if "runtime_policy_v2" not in tables or tables & historical not in (set(), historical):
+                raise ValueError("policy storage layout")
+            if tables & historical:
+                original = cls._row(db, "runtime_policy")
+                archive = cls._row(db, "runtime_policy_v1_archive")
+                if tuple(original) != tuple(archive):
+                    raise ValueError("policy archive mismatch")
+                validate_draft(parse_json(original["payload"]))
+                triggers = {row[0]: row[1] for row in db.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='trigger'")}
+                if any(triggers.get(name) != sql for name, sql in _fences().items()):
+                    raise ValueError("policy archive fence")
+            row = cls._row(db, "runtime_policy_v2")
+            if tables & historical and row["revision"] <= original["revision"]:
+                raise ValueError("policy archive revision")
+            draft = validate_v2(parse_json(row["payload"]))
+            missing = ["risk_v2", "scope", "strategy"]
+            blocker = "POLICY_V2_ADMISSION_REQUIRED"
+        return {"schema_version": version, "revision": row["revision"], "policy": draft,
+                "missing_fields": missing, "desired_state": "STOPPED",
                 "live_order_enabled": False, "worker_running": False,
-                "blockers": ["NATIVE_RUNTIME_NOT_QUALIFIED", "WORKER_NOT_CONNECTED"]}
+                "blockers": [blocker, "NATIVE_RUNTIME_NOT_QUALIFIED", "WORKER_NOT_CONNECTED"]}
 
     def read(self) -> dict[str, Any]:
-        db = self.connect()
-        try:
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN")
             return self._read(db)
-        finally:
-            db.close()
 
     def save(self, revision: object, draft: object) -> dict[str, Any]:
-        if type(revision) is not int or revision < 0:
-            raise ValueError("policy revision")
-        payload = json.dumps(validate_draft(draft), sort_keys=True, separators=(",", ":"))
-        db = self.connect()
-        try:
-            with db:
-                db.execute("BEGIN IMMEDIATE")
-                self._read(db)
-                if db.execute("UPDATE runtime_policy SET revision=revision+1,payload=? "
-                              "WHERE id=1 AND revision=?", (payload, revision)).rowcount != 1:
-                    raise ValueError("policy revision conflict")
-                return self._read(db)
-        finally:
-            db.close()
+        raise ValueError("POLICY_V1_MIGRATION_REQUIRED")
+
+    def migrate_v1(self, expected_revision: int) -> dict[str, Any]:
+        revision = validate_revision(expected_revision, increment=True)
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            current = self._read(db)
+            if current["schema_version"] != 1 or current["revision"] != revision:
+                raise ValueError("policy revision conflict")
+            # Preserve the original TEXT; decoding is validation, never archival serialization.
+            original = self._row(db, "runtime_policy")
+            db.execute("CREATE TABLE runtime_policy_v1_archive " + TABLE_LAYOUT)
+            db.execute("INSERT INTO runtime_policy_v1_archive VALUES(?,?,?,?)", tuple(original))
+            db.execute("CREATE TABLE runtime_policy_v2 " + TABLE_LAYOUT)
+            draft = {"legacy_v1": current["policy"], "scope": None,
+                     "strategy": None, "risk_v2": None}
+            db.execute("INSERT INTO runtime_policy_v2 VALUES(1,?,?,'STOPPED')",
+                       (revision + 1, json.dumps(draft)))
+            for sql in _fences().values():
+                db.execute(sql)
+            db.execute("PRAGMA user_version=2")
+            return self._read(db)
+
+    def save_v2(self, revision: object, draft: object, *,
+                expected_strategy_generation: object) -> dict[str, Any]:
+        revision = validate_revision(revision, increment=True)
+        if expected_strategy_generation is not None:
+            raise ValueError("policy strategy generation")
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            # This older writer must not erase pins introduced by a future capable writer.
+            current = self._read(db)
+            policy = validate_v2(draft)
+            if current["schema_version"] != 2 or current["revision"] != revision:
+                raise ValueError("policy revision conflict")
+            payload = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            if db.execute("UPDATE runtime_policy_v2 SET revision=revision+1,payload=? "
+                          "WHERE id=1 AND revision=?", (payload, revision)).rowcount != 1:
+                raise ValueError("policy revision conflict")
+            return self._read(db)
 
     def risk_policy(self, scope: RiskScope) -> UserRiskPolicy:
         snapshot = self.read()
+        if snapshot["schema_version"] == 2:
+            raise ValueError("POLICY_V2_ADMISSION_REQUIRED")
         draft = snapshot["policy"]
         if snapshot["missing_fields"] or scope.environment != draft["environment"]:
             raise ValueError("policy incomplete or environment mismatch")
