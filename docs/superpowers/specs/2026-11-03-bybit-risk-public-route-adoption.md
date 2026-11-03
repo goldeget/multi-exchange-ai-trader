@@ -1,3 +1,5 @@
+Binding constructor amendment: read 2026-11-03-bybit-risk-public-route-constructor-ruling.md FIRST. It supersedes ONE decoder invocation only; accepted pages use maximum TWO invocations of the same immutable bounded A0 decoder, preserving mandatory constructor validation.
+
 # Adopted M2-E1 public raw risk-limit route — 2026-11-03
 
 Root adopts sections3,5(E1),6(E1),7 of the independently inspected entry preflight as the binding E1 implementation contract. The full exact preflight follows this adoption. This is technical implementation authority, not actual source qualification or product readiness. E2 and Task9/13 remain deferred.
