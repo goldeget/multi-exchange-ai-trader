@@ -25,7 +25,7 @@ from .native_events import (
     bounded_decimal,
     load_native_event_decoder,
 )
-from .product_scope import ProductScope
+from .product_scope import ProductScope, _validate_account, _validate_scope
 from .protection import OwnedOrder, ProtectionScope
 
 NATIVE_VERSION = "1.231.0"
@@ -96,6 +96,25 @@ class NativeBindings:
     price: Callable[[str], object]
     order_side: Callable[[str], object]
     fixed_limit_v2: FixedLimitBindingsV2 | None = None
+
+
+@dataclass(frozen=True)
+class _FixedLimitContextV2:
+    """One bridge's original associations; structural labels grant no authority."""
+    bindings: NativeBindings
+    fixed: FixedLimitBindingsV2
+    selection: tuple[object, ...]
+    converters: tuple[Callable[[str], object], ...]
+    scope_values: tuple[str, str]
+    native_account_id: str
+    factory: NativeOrderFactory
+    strategy: NativeStrategy
+
+    def verifier_binding(self) -> FixedLimitBindingsV2:
+        # A fresh verifier view never reads the original mutable record's fields.
+        return FixedLimitBindingsV2(cast(type[object], self.selection[0]),
+            cast(type[object], self.selection[1]), cast(type[object], self.selection[2]),
+            self.selection[3], self.selection[4])
 
 
 @dataclass(frozen=True)
@@ -203,8 +222,7 @@ def _fixed_limit_identity_v2(request: LinearFixedLimitNativeOrderRequestV2) -> t
     digest = c.envelope_sha256_v2(request.envelope)
     scope, owned, envelope, attached = (
         request.product_scope, request.owned, request.envelope, request.attached)
-    c._fields_v2(scope, ProductScope)
-    c._fields_v2(scope.account, ProtectionScope)
+    _validate_scope(scope)
     c._fields_v2(owned, OwnedOrder)
     c._fields_v2(attached, AttachedProtection)
     if (type(scope) is not ProductScope or scope != envelope.scope.product_scope
@@ -353,6 +371,7 @@ class NativeBybitBridge:
         self._cancellations: dict[str, NativeSubmission] = {}
         self._identities_v2: dict[str, tuple[object, ...]] = {}
         self._building_v2: set[str] = set()
+        self._context_v2: _FixedLimitContextV2 | None = None
         self._lock = RLock()
 
     def register_owned(self, request: NativeOrderRequest) -> None:
@@ -367,7 +386,41 @@ class NativeBybitBridge:
                 raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
             self._requests[key] = request
 
+    def _current_context_v2(self) -> _FixedLimitContextV2:
+        native = self._bindings
+        c._fields_v2(native, NativeBindings)
+        fixed = _fixed_limit_bindings_v2(native.fixed_limit_v2)
+        converters = (native.instrument_id, native.client_order_id, native.quantity,
+                      native.price, native.order_side)
+        if not all(callable(converter) for converter in converters):
+            raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
+        _validate_account(self.scope)
+        if type(self.native_account_id) is not str:
+            raise ValueError("NATIVE_EVENT_ID_REQUIRED")
+        NativeEventContext(self.scope, self.native_account_id, 0)
+        return _FixedLimitContextV2(native, fixed,
+            (fixed.limit_order_type, fixed.initialized_event_type, fixed.updated_event_type,
+             fixed.order_type_limit, fixed.time_in_force_ioc), converters,
+            (self.scope.account_id, self.scope.environment), self.native_account_id,
+            self._factory, self._strategy)
+
+    def _checked_context_v2(self) -> _FixedLimitContextV2:
+        original = self._context_v2
+        current = self._current_context_v2()
+        if (original is None or current.bindings is not original.bindings
+                or current.fixed is not original.fixed
+                or any(actual is not expected for actual, expected in
+                       zip(current.selection, original.selection, strict=True))
+                or any(actual is not expected for actual, expected in
+                       zip(current.converters, original.converters, strict=True))
+                or current.scope_values != original.scope_values
+                or current.native_account_id != original.native_account_id
+                or current.factory is not original.factory or current.strategy is not original.strategy):
+            raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
+        return original
+
     def _registered_identity_v2(self, key: str) -> None:
+        self._checked_context_v2()
         request = self._requests[key]
         if type(request) is not LinearFixedLimitNativeOrderRequestV2:
             raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
@@ -375,6 +428,7 @@ class NativeBybitBridge:
             identity = _fixed_limit_identity_v2(request)
             if request.owned.client_order_id != key or identity != self._identities_v2[key]:
                 raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
+            self._checked_context_v2()
         except Exception:  # noqa: BLE001 - mutable/forged request details stay private.
             raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT") from None
 
@@ -382,9 +436,11 @@ class NativeBybitBridge:
         """Mapping only; the durable caller still owns admission and claim."""
         with self._lock:
             identity = _fixed_limit_identity_v2(request)
+            current_context = self._current_context_v2()
             if request.scope != self.scope:
                 raise ValueError("MATCHING_NATIVE_SCOPE_REQUIRED")
-            _fixed_limit_bindings_v2(self._bindings.fixed_limit_v2)
+            if self._context_v2 is not None:
+                self._checked_context_v2()
             key = request.owned.client_order_id
             for original_key, original in self._requests.items():
                 if original is request and original_key != key:
@@ -395,6 +451,8 @@ class NativeBybitBridge:
                 if identity != self._identities_v2[key]:
                     raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
                 return  # Keep the original owner; clones never hide its later mutation.
+            if self._context_v2 is None:
+                self._context_v2 = current_context
             self._requests[key] = request
             self._identities_v2[key] = identity
 
@@ -409,24 +467,25 @@ class NativeBybitBridge:
             self._building_v2.add(key)
             try:
                 try:
-                    native, owned = self._bindings, request.owned
-                    binding = _fixed_limit_bindings_v2(native.fixed_limit_v2)
+                    context, owned = self._checked_context_v2(), request.owned
+                    binding = context.verifier_binding()
+                    instrument_id, client_id, quantity, price, side = context.converters
                     arguments: _FactoryArguments = {
-                        "instrument_id": native.instrument_id(owned.instrument_id),
-                        "order_side": native.order_side(owned.side),
-                        "quantity": native.quantity(format(owned.quantity, "f")),
-                        "client_order_id": native.client_order_id(key), "reduce_only": False}
-                    order = cast(_FixedLimitFactoryV2, self._factory).limit(**arguments,
-                        price=native.price(format(request.limit_price, "f")),
+                        "instrument_id": instrument_id(owned.instrument_id),
+                        "order_side": side(owned.side),
+                        "quantity": quantity(format(owned.quantity, "f")),
+                        "client_order_id": client_id(key), "reduce_only": False}
+                    order = cast(_FixedLimitFactoryV2, context.factory).limit(**arguments,
+                        price=price(format(request.limit_price, "f")),
                         time_in_force=binding.time_in_force_ioc)
                     for value in (request.attached.stop_loss, request.attached.take_profit):
-                        if bounded_decimal(str(native.price(format(value, "f")))) != value:
+                        if bounded_decimal(str(price(format(value, "f")))) != value:
                             raise ValueError("NATIVE_PROTECTION_PRECISION_CHANGED")
                     self._registered_identity_v2(key)
                     if _fixed_limit_identity_v2(request) != self._identities_v2[key]:
                         raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
                     params = _fixed_limit_params_v2(request)
-                    _verify_fixed_limit_order_v2(order, request, binding, self._strategy,
+                    _verify_fixed_limit_order_v2(order, request, binding, context.strategy,
                                                 building=True)
                     self._registered_identity_v2(key)
                     if _fixed_limit_identity_v2(request) != self._identities_v2[key]:
@@ -436,7 +495,7 @@ class NativeBybitBridge:
                 result = NativeSubmission(key, "SUBMITTING", "NATIVE_SUBMIT_INVOKED")
                 self._submissions[key] = result
                 try:
-                    self._strategy.submit_order(order, params=params)
+                    context.strategy.submit_order(order, params=params)
                 except Exception:  # noqa: BLE001 - outer failure supersedes reentrant observation.
                     result = NativeSubmission(key, "UNKNOWN", "NATIVE_SUBMIT_AMBIGUOUS")
                     self._submissions[key] = result
@@ -507,24 +566,32 @@ class NativeBybitBridge:
             request = self._requests.get(client_order_id)
             if request is None:
                 raise ValueError("NATIVE_CANCEL_EXACT_OWNERSHIP_REQUIRED")
+            context = None
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
                 self._registered_identity_v2(client_order_id)
-            cache = getattr(self._strategy, "cache", None)
-            order = cache.order(self._bindings.client_order_id(client_order_id)) if cache else None
+                context = self._checked_context_v2()
+            strategy = self._strategy if context is None else context.strategy
+            converter = self._bindings.client_order_id if context is None else context.converters[1]
+            cache = getattr(strategy, "cache", None)
+            order = cache.order(converter(client_order_id)) if cache else None
+            if context is not None:
+                self._checked_context_v2()
             if order is None:
                 raise ValueError("NATIVE_CANCEL_CACHED_ORDER_REQUIRED")
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
                 try:
+                    assert context is not None
                     _verify_fixed_limit_order_v2(order, request,
-                        _fixed_limit_bindings_v2(self._bindings.fixed_limit_v2), self._strategy,
+                        context.verifier_binding(), context.strategy,
                         building=False)
                 except Exception:  # noqa: BLE001 - native fields are untrusted.
                     raise ValueError("NATIVE_ORDER_CHANGED") from None
                 self._registered_identity_v2(client_order_id)
             else:
                 _verify_built_order(order, cast(NativeOrderRequest, request))
+                strategy = self._strategy
             if (str(getattr(order, "account_id", None)) != self.native_account_id
-                    or getattr(order, "strategy_id", None) != getattr(self._strategy, "id", None)
+                    or getattr(order, "strategy_id", None) != getattr(strategy, "id", None)
                     or getattr(order, "strategy_id", None) is None
                     or getattr(order, "is_closed", None) is not False
                     or getattr(order, "is_pending_cancel", None) is not False):
@@ -543,8 +610,10 @@ class NativeBybitBridge:
             if previous is not None:
                 return previous
             order = self.cached_owned_order(client_order_id)
+            strategy = self._strategy
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
                 self._registered_identity_v2(client_order_id)
+                strategy = self._checked_context_v2().strategy
                 # A converter/cache callback may have completed the same cancellation.
                 previous = self._cancellations.get(client_order_id)
                 if previous is not None:
@@ -552,7 +621,7 @@ class NativeBybitBridge:
             result = NativeSubmission(client_order_id, "SUBMITTING", "NATIVE_SUBMIT_INVOKED")
             self._cancellations[client_order_id] = result
             try:
-                self._strategy.cancel_order(order, params={})
+                strategy.cancel_order(order, params={})
             except Exception:  # noqa: BLE001 - a cancel can race a fill or a disconnect.
                 result = NativeSubmission(client_order_id, "UNKNOWN", "NATIVE_SUBMIT_AMBIGUOUS")
                 self._cancellations[client_order_id] = result

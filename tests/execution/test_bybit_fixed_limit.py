@@ -466,16 +466,18 @@ def test_build_reentrancy_guard_is_owned_until_outer_build_finishes() -> None:
 def test_guard_is_installed_before_id_converter_and_removed_after_build_failure() -> None:
     b, f, s = setup()
     r = request()
+    fail = True
     def converter(value: str) -> str:
+        if not fail:
+            return value
         with pytest.raises(ValueError, match='NATIVE_ORDER_BUILD_IN_PROGRESS'):
             b.submit_fixed_limit_v2(r)
         raise RuntimeError('untrusted')
-    old = b._bindings
-    b._bindings = replace(old, instrument_id=converter)
+    b._bindings = replace(b._bindings, instrument_id=converter)
     with pytest.raises(ValueError, match='NATIVE_ORDER_BUILD_FAILED'):
         b.submit_fixed_limit_v2(r)
     assert not s.submits and not b._submissions
-    b._bindings = old
+    fail = False
     b.submit_fixed_limit_v2(r)
     assert len(f.calls) == len(s.submits) == 1
 
@@ -747,3 +749,354 @@ def test_cancel_writer_reentry_and_outer_error_preserve_unknown_without_resendin
     f.order.is_closed = True
     assert b.cancel_owned(ID) is result
     assert len(s.cancels) == 1
+
+
+class FixTextSubclass(str):
+    pass
+
+
+class FixEqualAccountText(str):
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+@pytest.mark.parametrize('case', ['ioc', 'class', 'cancel_nested'])
+def test_fix_review_original_binding_drift_rejects_before_new_memo_or_writer(case: str) -> None:
+    b, f, s = setup()
+    selected = b._bindings.fixed_limit_v2
+    class ForeignLimit(Limit):
+        pass
+    class ForeignInit(Init):
+        pass
+    class ForeignUpdated(Updated):
+        pass
+    if case == 'cancel_nested':
+        b.submit_fixed_limit_v2(request())
+        activate(f)
+        replacement = n.FixedLimitBindingsV2(ForeignLimit, ForeignInit, ForeignUpdated,
+                                              Kind.LIMIT, Tif.IOC)
+        def callback() -> None:
+            s.cache_callback = None
+            object.__setattr__(b._bindings, 'fixed_limit_v2', replacement)
+            f.order.__class__ = ForeignLimit
+            f.order.events[0].__class__ = ForeignInit
+        s.cache_callback = callback
+        with pytest.raises(ValueError):
+            b.cancel_owned(ID)
+        assert not s.cancels and not b._cancellations
+        assert len(s.submits) == 1
+    else:
+        def transform(order: Any) -> None:
+            if case == 'ioc':
+                object.__setattr__(selected, 'time_in_force_ioc', Tif.GTC)
+                order.time_in_force = Tif.GTC
+                order.events[0].time_in_force = Tif.GTC
+            else:
+                object.__setattr__(selected, 'limit_order_type', ForeignLimit)
+                order.__class__ = ForeignLimit
+        f.transform = transform
+        with pytest.raises(ValueError):
+            b.submit_fixed_limit_v2(request())
+        assert not s.submits and not b._submissions
+    assert not b._building_v2
+
+
+@pytest.mark.parametrize('text_type,raw', [
+    (FixTextSubclass, 'FIXTURE_ACCOUNT'), (FixEqualAccountText, 'FOREIGN_ACCOUNT'),
+])
+def test_fix_review_independent_request_scope_rejects_nonbase_account_strings(
+    text_type: type[str], raw: str,
+) -> None:
+    b, f, s = setup()
+    original = request()
+    account = type(original.scope)(raw, 'DEMO')
+    product = type(original.product_scope)(account, 'LINEAR')
+    object.__setattr__(account, 'account_id', text_type(raw))
+    with pytest.raises(ValueError):
+        incoming = replace(original, product_scope=product)
+        b.submit_fixed_limit_v2(incoming)
+    assert not f.calls and not s.submits and not b._submissions
+
+
+@pytest.mark.parametrize('field', ['limit_order_type', 'initialized_event_type',
+    'updated_event_type', 'order_type_limit', 'time_in_force_ioc'])
+@pytest.mark.parametrize('operation', ['submit', 'cancel_replay'])
+def test_fix_original_selected_member_identities_stay_pinned_across_operations(
+    field: str, operation: str,
+) -> None:
+    b, f, s = setup()
+    b.submit_fixed_limit_v2(request())
+    activate(f)
+    if operation == 'cancel_replay':
+        b.cancel_owned(ID)
+        f.order.is_closed = True
+    class OtherLimit(Limit):
+        pass
+    class OtherInit(Init):
+        pass
+    class OtherUpdated(Updated):
+        pass
+    class OtherKind(IntEnum):
+        LIMIT = 2
+    class OtherTif(IntEnum):
+        IOC = 2
+    replacements: dict[str, object] = {'limit_order_type': OtherLimit,
+        'initialized_event_type': OtherInit, 'updated_event_type': OtherUpdated,
+        'order_type_limit': OtherKind.LIMIT, 'time_in_force_ioc': OtherTif.IOC}
+    object.__setattr__(b._bindings.fixed_limit_v2, field, replacements[field])
+    with pytest.raises(ValueError):
+        if operation == 'submit':
+            b.submit_fixed_limit_v2(request())
+        else:
+            b.cancel_owned(ID)
+    assert len(s.submits) == 1
+    assert len(s.cancels) == (1 if operation == 'cancel_replay' else 0)
+
+
+@pytest.mark.parametrize('field', ['instrument_id', 'client_order_id', 'quantity', 'price', 'order_side'])
+@pytest.mark.parametrize('operation', ['submit', 'cancel'])
+def test_fix_each_original_converter_identity_is_pinned_even_for_equal_outputs(
+    field: str, operation: str,
+) -> None:
+    b, f, s = setup()
+    b.register_fixed_limit_v2(request())
+    if operation == 'cancel':
+        b.submit_fixed_limit_v2(request())
+        activate(f)
+    object.__setattr__(b._bindings, field, lambda value: value)
+    with pytest.raises(ValueError):
+        b.submit_fixed_limit_v2(request()) if operation == 'submit' else b.cancel_owned(ID)
+    assert len(s.submits) == (1 if operation == 'cancel' else 0)
+    assert not s.cancels and not b._cancellations
+    assert not b._building_v2
+
+
+@pytest.mark.parametrize('boundary', ['converter', 'factory', 'protection', 'cache', 'native_getter'])
+@pytest.mark.parametrize('change', ['parent', 'nested', 'factory', 'strategy', 'scope', 'native_account'])
+def test_fix_context_substitution_during_callbacks_never_adds_new_handoff_or_memo(
+    boundary: str, change: str,
+) -> None:
+    b, f, s = setup()
+    other_factory, other_strategy = Factory(), Strategy(f)
+    parent = b._bindings
+    def mutate() -> None:
+        if change == 'parent':
+            b._bindings = replace(parent)
+        elif change == 'nested':
+            object.__setattr__(parent, 'fixed_limit_v2', replace(parent.fixed_limit_v2))
+        elif change == 'factory':
+            b._factory = other_factory
+        elif change == 'strategy':
+            b._strategy = other_strategy
+        elif change == 'scope':
+            b.scope = type(b.scope)('OTHER_ACCOUNT', 'DEMO')
+        else:
+            b.native_account_id = 'OTHER-NATIVE-ACCOUNT'
+    if boundary == 'converter':
+        def convert(value: str) -> str:
+            mutate()
+            return value
+        b._bindings = replace(parent, instrument_id=convert)
+        parent = b._bindings
+    elif boundary == 'factory':
+        f.callback = mutate
+    elif boundary == 'protection':
+        def price(value: str) -> str:
+            if value == '120':
+                mutate()
+            return value
+        b._bindings = replace(parent, price=price)
+        parent = b._bindings
+    elif boundary == 'native_getter':
+        class NativeLabel:
+            def __str__(self) -> str:
+                mutate()
+                return 'TRADER-001'
+            def __eq__(self, other: object) -> bool:
+                mutate()
+                return True
+            def __ne__(self, other: object) -> bool:
+                mutate()
+                return False
+        def transform(order: Any) -> None:
+            label = NativeLabel()
+            order.trader_id = label
+            order.events[0].trader_id = label
+        f.transform = transform
+    if boundary == 'cache':
+        b.submit_fixed_limit_v2(request())
+        activate(f)
+        s.cache_callback = mutate
+        with pytest.raises(ValueError):
+            b.cancel_owned(ID)
+        assert len(s.submits) == 1
+        assert not b._cancellations
+    else:
+        with pytest.raises(ValueError):
+            b.submit_fixed_limit_v2(request())
+        assert not s.submits and not b._submissions
+    assert not s.cancels and not other_strategy.submits and not other_strategy.cancels
+    assert not other_factory.calls
+    assert not b._building_v2
+
+
+@pytest.mark.parametrize('change', ['parent', 'nested', 'factory', 'strategy', 'scope', 'native_account'])
+def test_fix_memoized_submit_and_closed_cancel_replay_check_original_context(change: str) -> None:
+    b, f, s = setup()
+    submitted = b.submit_fixed_limit_v2(request())
+    assert b.submit_fixed_limit_v2(request()) is submitted
+    activate(f)
+    canceled = b.cancel_owned(ID)
+    f.order.is_closed = True
+    assert b.cancel_owned(ID) is canceled
+    if change == 'parent':
+        b._bindings = replace(b._bindings)
+    elif change == 'nested':
+        object.__setattr__(b._bindings, 'fixed_limit_v2', replace(b._bindings.fixed_limit_v2))
+    elif change == 'factory':
+        b._factory = Factory()
+    elif change == 'strategy':
+        b._strategy = Strategy(f)
+    elif change == 'scope':
+        object.__setattr__(b.scope, 'account_id', 'OTHER_ACCOUNT')
+    else:
+        b.native_account_id = 'OTHER-NATIVE-ACCOUNT'
+    with pytest.raises(ValueError):
+        b.submit_fixed_limit_v2(request())
+    with pytest.raises(ValueError):
+        b.cancel_owned(ID)
+    assert len(s.submits) == len(s.cancels) == 1
+
+
+def test_fix_failed_build_keeps_original_parent_pin_and_cleans_only_build_guard() -> None:
+    b, f, s = setup()
+    original = b._bindings
+    def fail() -> None:
+        raise RuntimeError('untrusted')
+    f.callback = fail
+    with pytest.raises(ValueError, match='NATIVE_ORDER_BUILD_FAILED'):
+        b.submit_fixed_limit_v2(request())
+    f.callback = None
+    b._bindings = replace(original)
+    with pytest.raises(ValueError):
+        b.submit_fixed_limit_v2(request())
+    assert not s.submits and not b._submissions and not b._building_v2
+    b._bindings = original
+    assert b.submit_fixed_limit_v2(request()).state == 'SUBMITTING'
+    assert len(s.submits) == 1
+
+
+@pytest.mark.parametrize('target,field,value', [
+    ('account', 'account_id', ' '), ('account', 'account_id', 'a' * 257),
+    ('account', 'account_id', 'BAD\nACCOUNT'), ('account', 'account_id', ' BAD'),
+    ('account', 'environment', FixTextSubclass('DEMO')),
+    ('account', 'environment', 'LIVE'), ('product', 'product', FixTextSubclass('LINEAR')),
+    ('product', 'product', 'OTHER'), ('product', 'account', None),
+])
+def test_fix_independent_scope_reuses_existing_scalar_domains(
+    target: str, field: str, value: object,
+) -> None:
+    b, f, s = setup()
+    r = request()
+    product = type(r.product_scope)(type(r.scope)('FIXTURE_ACCOUNT', 'DEMO'), 'LINEAR')
+    obj = product.account if target == 'account' else product
+    object.__setattr__(obj, field, value)
+    with pytest.raises(ValueError):
+        b.submit_fixed_limit_v2(replace(r, product_scope=product))
+    assert not f.calls and not s.submits
+
+
+@pytest.mark.parametrize('where', ['request', 'bridge'])
+def test_fix_post_registration_scope_scalar_subclass_cannot_enter_detached_identity(where: str) -> None:
+    b, _, s = setup()
+    r = request()
+    b.register_fixed_limit_v2(r)
+    account = r.scope if where == 'request' else b.scope
+    object.__setattr__(account, 'account_id', FixEqualAccountText('FOREIGN_ACCOUNT'))
+    with pytest.raises(ValueError):
+        b.submit_fixed_limit_v2(r)
+    assert not s.submits and not b._submissions
+
+
+def test_fix_existing_long_base_string_account_domain_is_preserved() -> None:
+    b, _, s = setup()
+    r = request()
+    account = type(r.scope)('A' * 256, 'DEMO')
+    product = type(r.product_scope)(account, 'LINEAR')
+    env = replace(r.envelope, scope=replace(r.envelope.scope, product_scope=product))
+    b.scope = account
+    valid = replace(r, product_scope=product, envelope=env)
+    assert b.submit_fixed_limit_v2(valid).state == 'SUBMITTING'
+    assert len(s.submits) == 1
+
+
+def test_fix_failed_scope_or_cross_version_registration_does_not_pin_invalid_context() -> None:
+    b, _, _ = setup()
+    r = request()
+    wrong = type(r.scope)('OTHER_ACCOUNT', 'DEMO')
+    b.scope = wrong
+    with pytest.raises(ValueError):
+        b.register_fixed_limit_v2(r)
+    b.scope = r.scope
+    b._bindings = replace(b._bindings)
+    b.register_fixed_limit_v2(r)
+    assert b.submit_fixed_limit_v2(request()).state == 'SUBMITTING'
+
+
+@pytest.mark.parametrize('change', ['parent', 'factory', 'strategy', 'native_account'])
+def test_fix_cancel_rechecks_context_after_active_account_string_conversion(change: str) -> None:
+    b, f, s = setup()
+    b.submit_fixed_limit_v2(request())
+    activate(f)
+    parent = b._bindings
+    other_factory, other_strategy = Factory(), Strategy(f)
+    class AccountLabel:
+        def __str__(self) -> str:
+            if change == 'parent':
+                b._bindings = replace(parent)
+            elif change == 'factory':
+                b._factory = other_factory
+            elif change == 'strategy':
+                b._strategy = other_strategy
+            else:
+                b.native_account_id = 'OTHER-NATIVE-ACCOUNT'
+            return 'BYBIT-UNIFIED'
+    f.order.account_id = AccountLabel()
+    with pytest.raises(ValueError):
+        b.cancel_owned(ID)
+    assert not s.cancels and not other_strategy.cancels and not b._cancellations
+    assert len(s.submits) == 1
+
+
+@pytest.mark.parametrize('change', ['subclass', 'incomplete', 'noncallable'])
+def test_fix_parent_binding_exact_complete_callable_shape_required_before_mapping(change: str) -> None:
+    b, f, s = setup()
+    if change == 'subclass':
+        class ParentSubclass(n.NativeBindings):
+            pass
+        parent: Any = ParentSubclass(str, str, str, str, str, b._bindings.fixed_limit_v2)
+        b._bindings = parent
+    elif change == 'incomplete':
+        object.__delattr__(b._bindings, 'quantity')
+    else:
+        object.__setattr__(b._bindings, 'quantity', 0)
+    with pytest.raises(ValueError):
+        b.register_fixed_limit_v2(request())
+    assert not b._requests and not f.calls and not s.submits
+
+
+@pytest.mark.parametrize('field', ['scope_account', 'scope_environment', 'native_account'])
+def test_fix_bridge_context_uses_base_string_metadata_before_initial_mapping(field: str) -> None:
+    b, f, s = setup()
+    if field == 'scope_account':
+        object.__setattr__(b.scope, 'account_id', FixTextSubclass('FIXTURE_ACCOUNT'))
+    elif field == 'scope_environment':
+        object.__setattr__(b.scope, 'environment', FixTextSubclass('DEMO'))
+    else:
+        b.native_account_id = FixTextSubclass('BYBIT-UNIFIED')
+    with pytest.raises(ValueError):
+        b.register_fixed_limit_v2(request())
+    assert not b._requests and not f.calls and not s.submits
