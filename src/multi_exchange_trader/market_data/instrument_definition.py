@@ -236,7 +236,7 @@ def _exact_fields(value: object, expected: type[object], code: str) -> dict[str,
     try:
         return {
             item.name: object.__getattribute__(value, item.name)
-            for item in fields(cast(DecimalField, value))
+            for item in fields(cast(type[DecimalField], expected))
         }
     except AttributeError:
         _reject(code)
@@ -434,7 +434,7 @@ def _parse_spec(
 
 def _spec_payload(spec: LinearInstrumentSpec | SpotInstrumentSpec) -> dict[str, object]:
     result: dict[str, object] = {}
-    for item in fields(spec):
+    for item in fields(type(spec)):
         value = object.__getattribute__(spec, item.name)
         if type(value) is DecimalField:
             result[item.name] = {"raw": value.raw, "value": value.raw, "scale": value.scale}

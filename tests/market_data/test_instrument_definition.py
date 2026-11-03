@@ -784,6 +784,34 @@ def test_missing_observation_field_is_rejected_independently_for_each_field():
         rejected("CATALOG_OBSERVATION_INVALID", validate_instrument_observation, corrupt)
 
 
+@pytest.mark.parametrize("product", ["SPOT", "LINEAR"])
+@pytest.mark.parametrize("target_name", ["observation", "spec", "decimal"])
+@pytest.mark.parametrize("metadata_kind", ["empty", "hook"])
+@pytest.mark.parametrize("missing_field", [False, True])
+def test_instance_dataclass_metadata_cannot_control_declared_observation_fields(
+    product, target_name, metadata_kind, missing_field
+):
+    class HostileMetadata:
+        def values(self):
+            raise AssertionError("METADATA_HOOK_EXECUTED")
+
+    observation = parse(product)
+    target, required_field = {
+        "observation": (observation, "key"),
+        "spec": (observation.spec, "price_tick"),
+        "decimal": (observation.spec.price_tick, "raw"),
+    }[target_name]
+    metadata = {} if metadata_kind == "empty" else HostileMetadata()
+    object.__setattr__(target, "__dataclass_fields__", metadata)
+    if missing_field:
+        object.__delattr__(target, required_field)
+        rejected("CATALOG_OBSERVATION_INVALID", validate_instrument_observation, observation)
+    else:
+        # Extra instance metadata is not a declared field or serialization input.
+        # In particular spec metadata must survive both validation and payload hashing.
+        validate_instrument_observation(observation)
+
+
 def test_source_labels_are_local_inputs_and_do_not_change_supported_semantics():
     original = parse("SPOT")
     for environment in ("PUBLIC_MAINNET", "PUBLIC_TESTNET", "FIXTURE"):
