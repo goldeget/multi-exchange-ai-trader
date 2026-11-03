@@ -7,6 +7,7 @@ observes that route without replacing SDK submit, factory or owner resolution.
 """
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -172,6 +173,9 @@ async def test_installed_node_owns_the_same_base_submit_route(tmp_path: Path) ->
             _assert_private(prepared, commands, initialized)
             prepared.submit_impl(*prepared.args)
             command = _assert_route(prepared, commands, initialized)
+            # The pinned enqueuer schedules its original callback even for an empty queue.
+            # Yield one fixed turn AFTER the SDK effect before observing that queue.
+            await asyncio.sleep(0)
             assert kernel.risk_engine.cmd_qsize() == 1
             assert kernel.risk_engine.command_count == 0  # Queued, never processed/accepted.
             assert kernel.exec_engine.command_count == kernel.exec_engine.event_count == 0
