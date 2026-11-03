@@ -402,25 +402,32 @@ class RuntimePolicyBook:
 
     @contextmanager
     def _bound_connection_scope_v2(self, *, timeout: float, commit: bool) -> Iterator[sqlite3.Connection]:
-        binding = self._require_bound_v2()
-        resources = _PolicyResourcesV2()
-        primary: BaseException | None = None
+        if not self._admission_gate_v2.acquire(blocking=False):
+            raise ValueError("policy operation already reserved")
         try:
-            _pin_policy_file_v2(binding.config_path, config=True, resources=resources)
-            _pin_policy_file_v2(binding.original_path, config=False, resources=resources)
-            self._verify_bound_pins_v2(resources)
-            self._open_bound_connection_v2(resources, timeout=timeout)
-            assert resources.db is not None
-            yield resources.db
-            self._verify_bound_pins_v2(resources)
-            if commit:
-                resources.db.commit()
+            if self._admission_poisoned_v2:
+                raise ValueError("policy admission owner retired")
+            binding = self._require_bound_v2()
+            resources = _PolicyResourcesV2()
+            primary: BaseException | None = None
+            try:
+                _pin_policy_file_v2(binding.config_path, config=True, resources=resources)
+                _pin_policy_file_v2(binding.original_path, config=False, resources=resources)
                 self._verify_bound_pins_v2(resources)
-        except BaseException as error:
-            primary = error
-            raise
+                self._open_bound_connection_v2(resources, timeout=timeout)
+                assert resources.db is not None
+                yield resources.db
+                self._verify_bound_pins_v2(resources)
+                if commit:
+                    resources.db.commit()
+                    self._verify_bound_pins_v2(resources)
+            except BaseException as error:
+                primary = error
+                raise
+            finally:
+                self._cleanup_bound_v2(resources, primary)
         finally:
-            self._cleanup_bound_v2(resources, primary)
+            self._admission_gate_v2.release()
 
     @contextmanager
     def _operation_v2(self) -> Iterator[sqlite3.Connection]:
@@ -438,22 +445,15 @@ class RuntimePolicyBook:
         if (type(expected_policy_sha256) is not str
                 or re.fullmatch("[0-9a-f]{64}", expected_policy_sha256) is None):
             raise ValueError("policy admission hash")
-        if not self._admission_gate_v2.acquire(blocking=False):
-            raise ValueError("policy admission already reserved")
-        try:
-            if self._admission_poisoned_v2:
-                raise ValueError("policy admission owner retired")
+        with self._bound_connection_scope_v2(timeout=0, commit=False) as db:
             binding = self._require_bound_v2()
-            with self._bound_connection_scope_v2(timeout=0, commit=False) as db:
-                db.execute("BEGIN IMMEDIATE")
-                snapshot = self._read(db)
-                policy = self._risk_policy_v2_from_snapshot(snapshot, scope)
-                digest = risk_policy_sha256_v2(policy)
-                if snapshot["revision"] != revision or digest != expected_policy_sha256:
-                    raise ValueError("policy admission revision conflict")
-                yield _PolicyAdmissionDataV2(self, binding, revision, policy, digest)
-        finally:
-            self._admission_gate_v2.release()
+            db.execute("BEGIN IMMEDIATE")
+            snapshot = self._read(db)
+            policy = self._risk_policy_v2_from_snapshot(snapshot, scope)
+            digest = risk_policy_sha256_v2(policy)
+            if snapshot["revision"] != revision or digest != expected_policy_sha256:
+                raise ValueError("policy admission revision conflict")
+            yield _PolicyAdmissionDataV2(self, binding, revision, policy, digest)
 
     @staticmethod
     def _row(db: sqlite3.Connection, table: str) -> sqlite3.Row:

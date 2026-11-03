@@ -366,3 +366,206 @@ def test_same_projection_preserves_financial_rejections(
         book._private_admission_snapshot_v2(scope, revision, "0" * 64),
     ):
         pytest.fail("projection rejection bypassed")
+
+
+
+def _lifetime_operation(
+    book: RuntimePolicyBook, operation: str, scope: RiskScopeV2, revision: int,
+    digest: str, policy: dict[str, Any],
+) -> int:
+    if operation == "admission":
+        with book._private_admission_snapshot_v2(scope, revision, digest) as data:
+            return data.revision
+    if operation == "save":
+        result = book.save_v2(revision, policy, expected_strategy_generation=None,
+                              policy_sections_version=1)
+    elif operation == "migrate":
+        result = book.migrate_v1(revision)
+    else:
+        assert operation == "read"
+        result = book.read()
+    return int(result["revision"])
+
+
+def _lifetime_book(
+    shared: SharedFixture, tmp_path: Path, active: str,
+) -> tuple[RuntimePolicyBook, RiskScopeV2, int, str, dict[str, Any]]:
+    book = shared.load()
+    policy = book.read()["policy"]
+    scope, revision, digest = pins(book)
+    if active == "migrate":
+        path, _, _, _ = legacy(tmp_path / "lifetime-legacy")  # type: ignore[no-untyped-call]
+        shared.config.write_text(
+            '{"schema_version":1,"policy_db":' + json.dumps(str(path)) + '}',
+            encoding="utf-8",
+        )
+        book, revision = shared.load(), 7
+    return book, scope, revision, digest, policy
+
+
+@pytest.mark.parametrize("second", ["read", "admission", "save", "migrate"])
+@pytest.mark.parametrize("active", ["read", "admission", "save", "migrate"])
+def test_configured_operation_lifetime_excludes_second_bundle_before_open(
+    shared_target: SharedFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    active: str, second: str,
+) -> None:
+    # A gate limited to admission or released before cleanup loses this contract.
+    book, scope, revision, digest, policy = _lifetime_book(shared_target, tmp_path, active)
+    entered, release = Event(), Event()
+    actual_read, actual_open = book._read, shared_target.metadata.open
+    opened: list[Path] = []
+    first = True
+
+    def opened_pin(path: str | Path, flags: int, mode: int = 0o777) -> int:
+        opened.append(Path(path))
+        return actual_open(path, flags, mode)
+
+    def held_read(db: sqlite3.Connection) -> dict[str, Any]:
+        nonlocal first
+        result = actual_read(db)
+        if first:
+            first = False
+            assert db.in_transaction
+            entered.set()
+            assert release.wait(5), "test did not release first actual operation"
+        return result
+
+    monkeypatch.setattr(shared_target.metadata, "open", opened_pin)
+    monkeypatch.setattr(book, "_read", held_read)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(_lifetime_operation, book, active, scope, revision, digest, policy)
+        try:
+            assert entered.wait(5), "first actual operation did not enter SQLite read"
+            assert len(opened) == 2 and len(shared_target.metadata.descriptors) == 2
+            with pytest.raises(ValueError, match="already reserved"):
+                _lifetime_operation(book, second, scope, revision, digest, policy)
+            assert len(opened) == 2, "rejected operation acquired a second pin bundle"
+        finally:
+            release.set()
+        expected = revision + 1 if active in {"save", "migrate"} else revision
+        assert future.result(timeout=5) == expected
+    assert not shared_target.metadata.descriptors
+    assert book.read()["revision"] == expected  # A fresh later operation remains usable.
+
+
+@pytest.mark.parametrize("active", ["read", "admission", "save", "migrate"])
+def test_configured_operation_lifetime_refuses_nested_operations_without_double_lock(
+    shared_target: SharedFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    active: str,
+) -> None:
+    book, scope, revision, digest, policy = _lifetime_book(shared_target, tmp_path, active)
+    actual_read, actual_open = book._read, shared_target.metadata.open
+    opened: list[Path] = []
+    checked = False
+
+    def opened_pin(path: str | Path, flags: int, mode: int = 0o777) -> int:
+        opened.append(Path(path))
+        return actual_open(path, flags, mode)
+
+    def nested_read(db: sqlite3.Connection) -> dict[str, Any]:
+        nonlocal checked
+        result = actual_read(db)
+        if not checked:
+            checked = True
+            for second in ("read", "admission", "save", "migrate"):
+                with pytest.raises(ValueError, match="already reserved"):
+                    _lifetime_operation(book, second, scope, revision, digest, policy)
+            assert len(opened) == 2
+        return result
+
+    monkeypatch.setattr(shared_target.metadata, "open", opened_pin)
+    monkeypatch.setattr(book, "_read", nested_read)
+    expected = revision + 1 if active in {"save", "migrate"} else revision
+    assert _lifetime_operation(book, active, scope, revision, digest, policy) == expected
+    assert checked and not shared_target.metadata.descriptors
+    assert book.read()["revision"] == expected
+
+
+def test_configured_gate_spans_uncertain_cleanup_and_retains_only_original_bundle(
+    shared_target: SharedFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Real SQLite read lock survives injected cleanup; disposal stays on its creator.
+    book = shared_target.load()
+    entered, release_body, cleaning, release_cleanup, cleaned, dispose = (
+        Event(), Event(), Event(), Event(), Event(), Event())
+    actual_connect, actual_read = sqlite3.connect, book._read
+    connections: list[sqlite3.Connection] = []
+    facts: dict[str, Any] = {}
+
+    class UncertainConnection(sqlite3.Connection):
+        def rollback(self) -> None:
+            cleaning.set()
+            assert release_cleanup.wait(5), "cleanup was not released"
+            raise sqlite3.OperationalError("injected original rollback uncertainty")
+
+        def close(self) -> None:
+            raise sqlite3.OperationalError("injected original close uncertainty")
+
+    def uncertain_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        kwargs["factory"] = UncertainConnection
+        connection: sqlite3.Connection = actual_connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    def failed_read(db: sqlite3.Connection) -> dict[str, Any]:
+        actual_read(db)
+        entered.set()
+        assert release_body.wait(5), "body was not released"
+        raise RuntimeError("original configured read failure")
+
+    def run_first() -> BaseException:
+        try:
+            book.read()
+        except BaseException as error:  # noqa: BLE001 - creator must dispose uncertain connection.
+            facts["in_transaction"] = connections[0].in_transaction
+            facts["select"] = connections[0].execute("SELECT 1").fetchone()[0]
+            cleaned.set()
+            try:
+                assert dispose.wait(5), "creator-thread disposal was not requested"
+            finally:
+                sqlite3.Connection.rollback(connections[0])
+                sqlite3.Connection.close(connections[0])
+                facts["explicit_same_thread_disposal"] = True
+            return error
+        raise AssertionError("first failure was swallowed")
+
+    monkeypatch.setattr(sqlite3, "connect", uncertain_connect)
+    monkeypatch.setattr(book, "_read", failed_read)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(run_first)
+        try:
+            assert entered.wait(5)
+            with pytest.raises(ValueError, match="already reserved"):
+                book.read()
+            assert len(connections) == 1
+            release_body.set()
+            assert cleaning.wait(5)
+            with pytest.raises(ValueError, match="already reserved"):
+                book.read()
+            assert len(connections) == 1 and len(shared_target.metadata.descriptors) == 2
+            release_cleanup.set()
+            assert cleaned.wait(5)
+            retained = book._quarantined_resources_v2
+            assert retained is not None and retained.db is connections[0]
+            assert retained.descriptors == [] and not shared_target.metadata.descriptors
+            assert book._admission_poisoned_v2
+            with pytest.raises(ValueError):
+                book.read()
+            assert book._quarantined_resources_v2 is retained and len(connections) == 1
+            assert facts["in_transaction"] and facts["select"] == 1
+            with (
+                closing(actual_connect(shared_target.db, timeout=0)) as writer,
+                pytest.raises(sqlite3.OperationalError, match="locked"),
+            ):
+                writer.execute("BEGIN EXCLUSIVE")
+        finally:
+            release_body.set()
+            release_cleanup.set()
+            dispose.set()
+        error = future.result(timeout=5)
+    assert type(error) is RuntimeError and str(error) == "original configured read failure"
+    assert vars(error)["_policy_cleanup_owner_v2"] is book
+    assert len(book._cleanup_failures_v2) == 2 and facts["explicit_same_thread_disposal"]
+    with closing(actual_connect(shared_target.db, timeout=0)) as writer:
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.rollback()
