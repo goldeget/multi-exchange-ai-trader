@@ -504,7 +504,7 @@ def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     assert restarted.status("request-1").selection is None
     assert len(calls) == 1
     with sqlite3.connect(dispatcher.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
         persisted = repr(db.execute("SELECT * FROM ai_dispatches").fetchall())
     for secret in (KEY, "private-account", "private-plan", "allowed candidate"):
         assert secret not in persisted
@@ -592,6 +592,7 @@ def test_migrated_consumed_dispatch_never_infers_status_or_replays(tmp_path, leg
     dispatcher, budget, calls = setup_dispatch(tmp_path)
     assert dispatch(dispatcher).http_status == 200
     with sqlite3.connect(dispatcher.path) as db:
+        db.execute("ALTER TABLE ai_dispatches DROP COLUMN selection_rejection_code")
         db.execute("ALTER TABLE ai_dispatches DROP COLUMN http_status")
         db.execute("UPDATE ai_dispatches SET status=?", (legacy_state,))
         db.execute("PRAGMA user_version=1")

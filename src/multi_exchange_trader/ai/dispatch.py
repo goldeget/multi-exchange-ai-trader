@@ -33,6 +33,32 @@ _LEGACY_COLUMNS = (
     (7, "updated_at", "TEXT", 1, None, 0, 0),
 )
 _V2_COLUMNS = (*_LEGACY_COLUMNS, (8, "http_status", "INTEGER", 0, None, 0, 0))
+_V3_COLUMNS = (*_V2_COLUMNS, (9, "selection_rejection_code", "TEXT", 0, None, 0, 0))
+_SELECTION_REJECTION_CODES = frozenset({
+    "INVALID_INPUT", "FUTURE_EVIDENCE", "STALE_EVIDENCE", "EXPIRED", "INVALID_TTL",
+    "SCOPE_MISMATCH", "RESOURCE_LIMIT", "DUPLICATE_ID", "REVISION_MISMATCH",
+    "DISABLED_CANDIDATE", "NO_CANDIDATE", "INVALID_JSON", "INVALID_PRIORITY", "AMBIGUOUS",
+    "INVALID_SCHEMA", "BINDING_MISMATCH", "UNKNOWN_CANDIDATE", "UNCLASSIFIED",
+})
+
+
+def _validate_selection_rejection_code(value: object) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str or value not in _SELECTION_REJECTION_CODES:
+        raise ValueError("Invalid selection rejection code")
+    return value
+
+
+def _capture_selection_rejection_code(value: object) -> str:
+    # Exception data is untrusted: do not format it or invoke non-exact-str hooks.
+    return value if type(value) is str and value in _SELECTION_REJECTION_CODES else "UNCLASSIFIED"
+
+
+def _stored_selection_rejection_code(row: sqlite3.Row) -> str | None:
+    if row["selection_rejection_code_type"] not in {"text", "null"}:
+        raise ValueError("Invalid selection rejection code")
+    return _validate_selection_rejection_code(row["selection_rejection_code"])
 
 
 def _columns(db: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
@@ -67,9 +93,11 @@ class DispatchResult:
     exact_cost_usd: str | None = None
     selection: SelectionResult | None = field(default=None, repr=False)
     http_status: int | None = None
+    selection_rejection_code: str | None = None
 
     def __post_init__(self) -> None:
         validate_http_status(self.http_status)
+        _validate_selection_rejection_code(self.selection_rejection_code)
 
 
 class AIDispatcher:
@@ -90,7 +118,7 @@ class AIDispatcher:
             # Lock the complete decision, including first create and version read.
             db.execute("BEGIN IMMEDIATE")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2):
+            if version not in (0, 1, 2, 3):
                 raise ValueError("Unsupported AI dispatch storage")
             objects = tuple(tuple(row) for row in db.execute(
                 """SELECT type,name FROM sqlite_schema
@@ -102,21 +130,30 @@ class AIDispatcher:
                     request_id TEXT PRIMARY KEY, binding_hash TEXT NOT NULL,
                     maximum TEXT NOT NULL, status TEXT NOT NULL, failure TEXT,
                     exact_cost TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                    http_status INTEGER)""")
+                    http_status INTEGER, selection_rejection_code TEXT)""")
             elif version in (0, 1):
                 if ((version == 0 and objects != (("table", "ai_dispatches"),))
                         or _columns(db) != _LEGACY_COLUMNS):
                     raise ValueError("Invalid AI dispatch storage")
                 db.execute("ALTER TABLE ai_dispatches ADD COLUMN http_status INTEGER")
-            if _columns(db) != _V2_COLUMNS:
+                db.execute("ALTER TABLE ai_dispatches ADD COLUMN selection_rejection_code TEXT")
+            elif version == 2:
+                if _columns(db) != _V2_COLUMNS:
+                    raise ValueError("Invalid AI dispatch storage")
+                db.execute("ALTER TABLE ai_dispatches ADD COLUMN selection_rejection_code TEXT")
+            if _columns(db) != _V3_COLUMNS:
                 raise ValueError("Invalid AI dispatch storage")
             if db.execute("""SELECT 1 FROM ai_dispatches WHERE http_status IS NOT NULL
                           AND (typeof(http_status) != 'integer'
                                OR http_status NOT BETWEEN 100 AND 599) LIMIT 1""").fetchone():
                 raise ValueError("Invalid HTTP status")
+            for row in db.execute("""SELECT selection_rejection_code,
+                                  typeof(selection_rejection_code) AS selection_rejection_code_type
+                                  FROM ai_dispatches"""):
+                _stored_selection_rejection_code(row)
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("AI dispatch storage corruption")
-            db.execute("PRAGMA user_version=2")
+            db.execute("PRAGMA user_version=3")
             db.commit()
 
     @contextmanager
@@ -134,27 +171,33 @@ class AIDispatcher:
 
     def _record(
         self, request_id: str, status: str, failure: str | None, cost: str | None = None,
-        *, http_status: int | None = None,
+        *, http_status: int | None = None, selection_rejection_code: str | None = None,
     ) -> None:
         validate_http_status(http_status)
+        _validate_selection_rejection_code(selection_rejection_code)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._record_locked(db, request_id, status, failure, cost, http_status=http_status)
+            self._record_locked(db, request_id, status, failure, cost, http_status=http_status,
+                                selection_rejection_code=selection_rejection_code)
             db.commit()
 
     def _record_locked(
         self, db: sqlite3.Connection, request_id: str, status: str,
         failure: str | None, cost: str | None = None,
-        *, http_status: int | None = None,
+        *, http_status: int | None = None, selection_rejection_code: str | None = None,
     ) -> None:
         validate_http_status(http_status)
+        _validate_selection_rejection_code(selection_rejection_code)
         db.execute("""UPDATE ai_dispatches SET status=?,failure=?,
                    exact_cost=COALESCE(?,exact_cost),http_status=COALESCE(?,http_status),
+                   selection_rejection_code=COALESCE(?,selection_rejection_code),
                    updated_at=? WHERE request_id=?""",
-                   (status, failure, cost, http_status, self.clock().isoformat(), request_id))
+                   (status, failure, cost, http_status, selection_rejection_code,
+                    self.clock().isoformat(), request_id))
 
     def _apply_charge_locked(self, db: sqlite3.Connection, row: sqlite3.Row) -> None:
         _stored_http_status(row)
+        _stored_selection_rejection_code(row)
         # The budget commit may outlive a dispatch-storage crash. settle is idempotent,
         # so retry only this local accounting operation, never generation or selection.
         if row["exact_cost"] is None:
@@ -165,12 +208,14 @@ class AIDispatcher:
     def status(self, request_id: str) -> DispatchResult | None:
         """No network, replay, automatic charge release, or selection reconstruction."""
         with self._connect() as db:
-            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type
+            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type,
+                             typeof(selection_rejection_code) AS selection_rejection_code_type
                              FROM ai_dispatches WHERE request_id=?""",
                              (request_id,)).fetchone()
         if row is None:
             return None
         http_status = _stored_http_status(row)
+        selection_rejection_code = _stored_selection_rejection_code(row)
         status = row["status"]
         if status not in {"CLAIMED", "DISPATCHING", "CHARGED", "SETTLED", "UNCERTAIN", "BLOCKED"}:
             raise ValueError("Invalid AI dispatch storage")
@@ -183,18 +228,21 @@ class AIDispatcher:
         if status in {"CLAIMED", "DISPATCHING"}:
             status = "UNCERTAIN"
         return DispatchResult(request_id, status, row["failure"], reservation, row["exact_cost"],
-                              http_status=http_status)
+                              http_status=http_status,
+                              selection_rejection_code=selection_rejection_code)
 
     def reconcile_charge(self, request_id: str) -> DispatchResult:
         """Apply already persisted exact provider charge after a settlement/storage crash."""
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type
+            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type,
+                             typeof(selection_rejection_code) AS selection_rejection_code_type
                              FROM ai_dispatches WHERE request_id=?""",
                              (request_id,)).fetchone()
             if row is None:
                 raise ValueError("AI dispatch not found")
             _stored_http_status(row)
+            _stored_selection_rejection_code(row)
             if row["exact_cost"] is not None:
                 self._apply_charge_locked(db, row)
             db.commit()
@@ -246,13 +294,15 @@ class AIDispatcher:
             stamp = self.clock().isoformat()
             db.execute("""INSERT INTO ai_dispatches
                        (request_id,binding_hash,maximum,status,failure,exact_cost,
-                        created_at,updated_at,http_status) VALUES (?,?,?,?,?,?,?,?,NULL)""",
+                        created_at,updated_at,http_status,selection_rejection_code)
+                        VALUES (?,?,?,?,?,?,?,?,NULL,NULL)""",
                        (request_id, binding, money(maximum), "CLAIMED", None, None, stamp, stamp))
             # All workers serialize known-liability repair and new reservation admission
             # under this writer lock. Provider I/O starts only after the lock is released.
             try:
                 pending = db.execute(
-                    """SELECT *,typeof(http_status) AS http_status_type
+                    """SELECT *,typeof(http_status) AS http_status_type,
+                       typeof(selection_rejection_code) AS selection_rejection_code_type
                        FROM ai_dispatches WHERE status='CHARGED'""",
                 ).fetchall()
                 for row in pending:
@@ -297,17 +347,21 @@ class AIDispatcher:
                      http_status=generated.http_status)
         self.budget.settle(reservation_id, generated.exact_cost_usd)
         selection = None
+        selection_rejection_code = None
         failure = generated.failure
         if failure is None:
             try:
                 selection = select_all_in_one(request=request, response=generated.output,
                                               now=self.clock())
-            except SelectionRejected:
+            except SelectionRejected as exc:
                 failure = "INVALID_SELECTION"
-        self._record(request_id, "SETTLED", failure)
+                selection_rejection_code = _capture_selection_rejection_code(exc.code)
+        self._record(request_id, "SETTLED", failure,
+                     selection_rejection_code=selection_rejection_code)
         # Even a paid valid selection cannot proceed after an observed ceiling overrun.
         if self.budget.summary()["overrun_hold"]:
             failure, selection = "BUDGET_OVERRUN_HOLD", None
             self._record(request_id, "SETTLED", failure)
         return DispatchResult(request_id, "SETTLED", failure, "settled",
-                              generated.exact_cost_usd, selection, http_status=generated.http_status)
+                              generated.exact_cost_usd, selection, http_status=generated.http_status,
+                              selection_rejection_code=selection_rejection_code)
