@@ -6,6 +6,7 @@ import { arch, cpus, platform, release } from "node:os";
 import { expect, type CDPSession, type Page, type TestInfo } from "@playwright/test";
 import { FIXED_TIME, demoUrl } from "./routes";
 import { observeProcCommandLine, observeRenderingArgv } from "./rendering-observation";
+import { observeFailureSamples } from "./failure-samples";
 
 export async function settleFrames(page: Page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -320,6 +321,7 @@ export async function capturePair(page: Page, testInfo: TestInfo, stem: string) 
     // Failure telemetry is attached in finally, including stabilization and
     // strict assertion failures. Existing capture waits/order remain intact.
     const diagnostic = await captureDiagnostics(page, testInfo, name).catch(() => undefined);
+    let strictComparisonPending = false;
     try {
       const options = { fullPage, animations: "disabled" as const, caret: "hide" as const, scale: "css" as const };
       const candidatePath = testInfo.outputPath(`baseline-${name}`);
@@ -364,10 +366,17 @@ export async function capturePair(page: Page, testInfo: TestInfo, stem: string) 
       if (!captureOnly) {
         // Compare the exact saved stable PNG; extra page captures would change the
         // viewport/full-page paint sequence between capture and strict modes.
+        strictComparisonPending = true;
         expect(stable.image).toMatchSnapshot(name, { maxDiffPixels: 0, threshold: 0 });
         expect(candidateSha256, "The saved PNG bytes must exactly match the reviewed baseline.").toBe(baselineSha256);
+        strictComparisonPending = false;
       }
       if (diagnostic) diagnostic.data.outcome = captureOnly ? "capture-only-needs-review" : "strict-comparison-passed";
+    } catch (originalError) {
+      if (strictComparisonPending) {
+        try { await observeFailureSamples(page, testInfo, name, fullPage); } catch { /* Optional observations cannot replace the strict failure. */ }
+      }
+      throw originalError;
     } finally {
       if (diagnostic) await diagnostic.finish().catch(() => undefined);
     }
