@@ -101,6 +101,120 @@ def dispatch(dispatcher, **changes):
     return dispatcher.dispatch(selection_request(), **arguments)
 
 
+@pytest.mark.parametrize("reasoning_enabled", [None, False, True])
+def test_reasoning_control_changes_only_explicit_prepared_request(reasoning_enabled, monkeypatch):
+    calls = []
+    priced = quote()
+
+    def receive(request):
+        calls.append(request)
+        return httpx.Response(200, json=completion())
+
+    def refuse(*args, **kwargs):
+        pytest.fail("Construction and prepare must not quote, reserve or generate")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(generation, "quote_from_metadata", refuse)
+        guarded.setattr(BudgetBook, "reserve", refuse)
+        guarded.setattr(OpenRouterGenerationClient, "generate", refuse)
+        client = OpenRouterGenerationClient(KEY, MODEL, transport=httpx.MockTransport(receive),
+                                            reasoning_enabled=reasoning_enabled)
+        # Default and explicit None must preserve the previous bytes, including price caps.
+        prepared = client.prepare(selection_request(), quote=priced, now=NOW)
+        baseline = OpenRouterGenerationClient(KEY, MODEL).prepare(
+            selection_request(), quote=priced, now=NOW)
+        assert calls == []
+    if reasoning_enabled is None:
+        assert prepared == baseline
+    else:
+        assert prepared == baseline[:-1] + (
+            b',"reasoning":{"enabled":' + (b"true" if reasoning_enabled else b"false") + b"}}")
+    payload = json.loads(prepared)
+    if reasoning_enabled is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload.pop("reasoning") == {"enabled": reasoning_enabled}
+    assert payload == json.loads(baseline)
+    assert client.model_id == MODEL and KEY not in repr(client)
+    result = client.generate(selection_request(), quote=priced, now=NOW)
+    assert result.failure is None and result.http_status == 200
+    assert len(calls) == 1 and calls[0].content == prepared
+    assert calls[0].headers["authorization"] == "Bearer " + KEY
+    assert str(calls[0].url) == "https://openrouter.ai/api/v1/chat/completions"
+
+
+@pytest.mark.parametrize("value", [0, 1, "", "false", KEY, 0.0, 1.0,
+                                  Decimal(0), [], {}, (), set()])
+def test_reasoning_control_rejects_non_boolean_configuration(value):
+    with pytest.raises(ValueError) as caught:
+        OpenRouterGenerationClient(KEY, MODEL, reasoning_enabled=value)
+    assert str(caught.value) == "Invalid generation configuration"
+    assert KEY not in str(caught.value)
+
+
+def test_null_refusal_accepts_valid_selection_and_settles_exact_charge(tmp_path):
+    response = completion(choices=[{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": output(), "refusal": None}}])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    assert result.status == "SETTLED" and result.failure is None
+    assert result.selection.candidate.plan_id == "private-plan"
+    assert result.http_status == 200 and result.exact_cost_usd == "0.0012"
+    assert_durable_status(dispatcher, 200)
+    assert budget.summary()["used"] == "0.00120000"
+    assert budget.summary()["reserved"] == "0.00000000"
+    assert len(calls) == 1 and KEY not in repr(result)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("refusal", value) for value in ("", "denied", False, True, 0, [], {})
+] + [(field, value) for field in ("tool_calls", "function_call")
+     for value in (None, "", False, [], {})])
+def test_non_null_refusal_and_any_tool_or_function_field_retain_exact_charge(
+    tmp_path, field, value,
+):
+    message = {"role": "assistant", "content": output(), "refusal": None, field: value}
+    response = completion(choices=[{"finish_reason": "stop", "message": message}])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    assert result.failure == "INVALID_RESPONSE" and result.selection is None
+    assert result.status == "SETTLED" and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200
+    assert budget.summary()["used"] == "0.00120000"
+    assert budget.summary()["reserved"] == "0.00000000"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("case", ["model", "role", "finish", "content-null", "content-list",
+                                  "secret", "candidate", "schema"])
+def test_null_refusal_does_not_weaken_other_response_or_selection_checks(tmp_path, case):
+    message = {"role": "assistant", "content": output(), "refusal": None}
+    choice = {"finish_reason": "stop", "message": message}
+    response = completion(choices=[choice])
+    if case == "model":
+        response["model"] = "other/model"
+    elif case == "role":
+        message["role"] = "user"
+    elif case == "finish":
+        choice["finish_reason"] = "length"
+    elif case.startswith("content-"):
+        message["content"] = None if case == "content-null" else []
+    else:
+        message["content"] = output(**{"secret": {"reason": KEY},
+                                     "candidate": {"candidate_id": "invented"},
+                                     "schema": {"leverage": 100}}[case])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    expected = "INVALID_SELECTION" if case in ("candidate", "schema") else "INVALID_RESPONSE"
+    assert result.failure == expected and result.selection is None
+    assert result.status == "SETTLED" and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200 and KEY not in repr(result)
+    assert budget.summary()["used"] == "0.00120000" and len(calls) == 1
+
+
 class StatusSubclass(int):
     pass
 

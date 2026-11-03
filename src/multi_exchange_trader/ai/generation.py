@@ -204,11 +204,12 @@ def _safe(value: object, key: str, depth: int = 0) -> int:
 class OpenRouterGenerationClient:
     """Retains key only for one fixed-host transport; no retries or redirects."""
 
-    __slots__ = ("__key", "__max_body", "__model", "__timeout", "__transport")
+    __slots__ = ("__key", "__max_body", "__model", "__reasoning_enabled", "__timeout", "__transport")
 
     def __init__(
         self, api_key: str, model_id: str, *, transport: httpx.BaseTransport | None = None,
         timeout_seconds: float = 10.0, max_body_bytes: int = 65_536,
+        reasoning_enabled: bool | None = None,
     ) -> None:
         if (not isinstance(api_key, str) or not _KEY.fullmatch(api_key)
                 or not isinstance(model_id, str) or not _MODEL.fullmatch(model_id)
@@ -216,10 +217,12 @@ class OpenRouterGenerationClient:
                 or type(timeout_seconds) not in (int, float)
                 or not 0.1 <= timeout_seconds <= 30 or not math.isfinite(timeout_seconds)
                 or type(max_body_bytes) is not int
-                or not 1024 <= max_body_bytes <= 65_536):
+                or not 1024 <= max_body_bytes <= 65_536
+                or reasoning_enabled is not None and type(reasoning_enabled) is not bool):
             raise ValueError("Invalid generation configuration") from None
         self.__key, self.__model, self.__transport = api_key, model_id, transport
         self.__timeout, self.__max_body = float(timeout_seconds), max_body_bytes
+        self.__reasoning_enabled = reasoning_enabled
 
     def __repr__(self) -> str:
         return "OpenRouterGenerationClient()"
@@ -246,6 +249,8 @@ class OpenRouterGenerationClient:
                                        "completion": "__COMPLETION_CAP__",
                                        "request": "__REQUEST_CAP__"}},
         }
+        if self.__reasoning_enabled is not None:
+            payload["reasoning"] = {"enabled": self.__reasoning_enabled}
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         # Validated plain decimals become exact JSON numbers without float rounding.
         for marker, price in (("__PROMPT_CAP__", quote.prompt_per_million_usd),
@@ -329,7 +334,8 @@ class OpenRouterGenerationClient:
             message = _object(choice["message"])
             output = message["content"]
             if (choice.get("finish_reason") != "stop" or message.get("role") != "assistant"
-                    or any(name in message for name in ("tool_calls", "function_call", "refusal"))
+                    or any(name in message for name in ("tool_calls", "function_call"))
+                    or message.get("refusal") is not None
                     or type(output) is not str or len(output.encode("utf-8")) > 65536):
                 raise ValueError
             return GenerationResult(None, cost, output)

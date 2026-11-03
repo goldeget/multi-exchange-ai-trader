@@ -26,7 +26,10 @@ class OpenRouterClients:
 
 def create_openrouter_clients(*, resolver: CredentialResolver, budget: BudgetBook,
                               dispatch_path: Path,
-                              transport: httpx.BaseTransport | None = None) -> OpenRouterClients:
+                              transport: httpx.BaseTransport | None = None,
+                              reasoning_enabled: bool | None = None) -> OpenRouterClients:
+    if reasoning_enabled is not None and type(reasoning_enabled) is not bool:
+        raise ValueError("Invalid generation configuration") from None
     values = resolver.ai_values()
     config = load_ai_provider_config(values)
     if (config.provider != "OPENROUTER" or not config.registered or
@@ -35,7 +38,8 @@ def create_openrouter_clients(*, resolver: CredentialResolver, budget: BudgetBoo
     # The same fixed provider/key/model selection is used by both existing clients.
     key = values["OPENROUTER_API_KEY"].strip()
     metadata = OpenRouterMetadataClient(key, config.model_id, transport=transport)
-    generation = OpenRouterGenerationClient(key, config.model_id, transport=transport)
+    generation = OpenRouterGenerationClient(key, config.model_id, transport=transport,
+                                            reasoning_enabled=reasoning_enabled)
     try:
         dispatcher = AIDispatcher(dispatch_path, budget, generation)
     except (OSError, ValueError, sqlite3.Error):
