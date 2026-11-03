@@ -142,19 +142,19 @@ def _risk_receipt(budget: MonitoringReadBudget) -> Iterator[ReadGroupToken]:
         raise
 
 
-type _RiskRefs = tuple[tuple[object, str, object], ...]
+type _RiskRefs = tuple[tuple[object, type[object], str, object], ...]
 
 
 def _risk_public_refs(current: _Current, instrument: InstrumentObservation) -> _RiskRefs:
     """Preserve the finite actual public catalog layout; no serialization/equality hooks."""
-    refs: list[tuple[object, str, object]] = []
+    refs: list[tuple[object, type[object], str, object]] = []
 
     def record(value: object, kind: type[object], names: str) -> None:
         if type(value) is not kind:
             raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
         for name in names.split():
             child = object.__getattribute__(value, name)
-            refs.append((value, name, child))
+            refs.append((value, kind, name, child))
 
     def key(value: InstrumentKey) -> None:
         record(value, InstrumentKey, "venue product symbol")
@@ -215,7 +215,7 @@ def _risk_public_refs(current: _Current, instrument: InstrumentObservation) -> _
                CurrentCatalogReceipt, CatalogReceiptView, InstrumentCatalog, InstrumentKey,
                InstrumentObservation, CatalogSource, LinearInstrumentSpec, SpotInstrumentSpec,
                DecimalField, KnownNotPublished, HttpsOrigin)
-    for _, _, value in refs:
+    for _, _, _, value in refs:
         if type(value) is datetime:
             if value.tzinfo is not UTC:
                 raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
@@ -230,6 +230,16 @@ class _RiskCaptureState:
     def __init__(self, owner: BybitInstrumentCatalogProducer, instrument: InstrumentObservation,
                  receipt: CurrentCatalogReceipt, revision: str, budget: MonitoringReadBudget,
                  max_age: timedelta, pending: object | None) -> None:
+        if type(owner) is not BybitInstrumentCatalogProducer:
+            _reject("INPUT_INVALID")
+        if type(budget) is not MonitoringReadBudget:
+            _reject("BUDGET_REQUIRED")
+        client = owner._client
+        if type(client) is not BybitReadOnlyClient or type(client._client) is not httpx.AsyncClient:
+            _reject("RETIRED")
+        self.owner_types = ((owner, type(owner)), (client, type(client)),
+                            (client._client, type(client._client)))
+        self.budget_type, self.receipt_type = type(budget), _ReceiptBudget
         self.owner, self.instrument, self.handle, self.revision = owner, instrument, receipt, revision
         self.budget, self.max_age, self.pending = budget, max_age, pending
         self.current, self.generation = owner._current, owner._generation
@@ -237,7 +247,7 @@ class _RiskCaptureState:
         self.source, self.testing, self.owner_loop = owner._source_environment, owner._testing, owner._owner_loop
         self.wall_clock, self.monotonic_clock = owner._wall_clock, owner._monotonic_clock
         self.risk_id, self.risk_generation = self.client._risk_source_id, self.client._risk_generation
-        self.client_refs = tuple((self.client, name, object.__getattribute__(self.client, name))
+        self.client_refs = tuple((self.client, type(self.client), name, object.__getattribute__(self.client, name))
                                 for name in ("environment", "base_url", "_api_key", "_api_secret",
                                              "_credential_check"))
         if (any(type(object.__getattribute__(self.client, name)) is not str
@@ -256,6 +266,8 @@ class _RiskCaptureState:
         self.budget_deadline, self.budget_guard = budget.deadline, budget._guard
         self.receipt_fields: tuple[object, object, object, object] | None = None
         if self.receipt is not None:
+            if type(self.receipt) is not self.receipt_type:
+                _reject("GROUP_REQUIRED")
             self.receipt_fields = (self.receipt.deadline, self.receipt.guard,
                                    self.receipt.owner_guard, self.receipt.token)
         self.group: ReadGroupToken | None = None
@@ -270,15 +282,28 @@ class _RiskCaptureState:
         self.page_refs: _RiskRefs = ()
 
     def retain_pages(self, pages: tuple[BybitRiskLimitEnvelopeReadV1, ...]) -> None:
-        self.page_refs = tuple((page, name, object.__getattribute__(page, name)) for page in pages
-                              for name in ("key", "method", "endpoint", "params", "sent_origin", "response_origin",
-                                           "response_status", "request_started_at", "received_at", "started_mono",
-                                           "received_mono", "response_time", "decoded_body_bytes", "decoded_body_sha256",
-                                           "accepted_attempt", "physical_start", "physical_end", "logical_ordinal",
-                                           "observation_id", "source_id", "source_generation", "source_environment"))
+        refs: list[tuple[object, type[object], str, object]] = []
+        for page in pages:
+            if type(page) is not BybitRiskLimitEnvelopeReadV1:
+                raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+            for record, kind, names in (
+                (page, BybitRiskLimitEnvelopeReadV1,
+                 ("key method endpoint params sent_origin response_origin response_status request_started_at "
+                 "received_at started_mono received_mono response_time decoded_body_bytes decoded_body_sha256 "
+                 "accepted_attempt physical_start physical_end logical_ordinal observation_id source_id "
+                 "source_generation source_environment")),
+                (page.key, InstrumentKey, "venue product symbol"),
+                (page.sent_origin, HttpsOrigin, "scheme host port"),
+                (page.response_origin, HttpsOrigin, "scheme host port"),
+            ):
+                if type(record) is not kind:
+                    raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+                for name in names.split():
+                    refs.append((record, kind, name, object.__getattribute__(record, name)))
+        self.page_refs = tuple(refs)
 
     def bind_group(self, group: ReadGroupToken) -> None:
-        if self.budget._receipt is not self.receipt_context:
+        if type(self.budget) is not self.budget_type or self.budget._receipt is not self.receipt_context:
             _reject("GROUP_REQUIRED")
         receipt = self.receipt_context.get()
         if self.receipt is not None and receipt is not self.receipt:
@@ -290,9 +315,9 @@ class _RiskCaptureState:
 
     def raw_group(self) -> None:
         receipt = self.receipt
-        if (type(self.receipt_context) is not ContextVar
+        if (type(self.budget) is not self.budget_type or type(self.receipt_context) is not ContextVar
                 or self.budget._receipt is not self.receipt_context
-                or type(receipt) is not _ReceiptBudget or self.receipt_context.get() is not receipt
+                or type(receipt) is not self.receipt_type or self.receipt_context.get() is not receipt
                 or type(self.group) is not ReadGroupToken or receipt.token is not self.group
                 or receipt.active is not True or self.receipt_fields is None
                 or type(receipt.deadline) is not float or not math.isfinite(receipt.deadline)
@@ -305,6 +330,13 @@ class _RiskCaptureState:
 
     def raw_owner(self) -> None:
         owner, client, raw = self.owner, self.client, self.raw_client
+        # Detached admission precedes every direct read: object.__getattribute__
+        # would still dispatch a descriptor on a later substituted class.
+        if any(type(record) is not kind for record, kind in self.owner_types):
+            _reject("RETIRED")
+        refs = (*self.refs, *self.client_refs, *self.page_refs)
+        if any(type(record) is not kind for record, kind, _, _ in refs):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
         if owner._closed is not False:
             _reject("CLOSED")
         if (type(owner) is not BybitInstrumentCatalogProducer or owner._owner_loop is not self.owner_loop
@@ -321,7 +353,7 @@ class _RiskCaptureState:
                 or client._injected_transport is not self.testing
                 or client._risk_source_id is not self.risk_id or client._risk_generation is not self.risk_generation):
             _reject("RETIRED")
-        for record, name, value in (*self.refs, *self.client_refs, *self.page_refs):
+        for record, _, name, value in refs:
             if object.__getattribute__(record, name) is not value:
                 raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
         if (self.client._operation is not self.operation_context

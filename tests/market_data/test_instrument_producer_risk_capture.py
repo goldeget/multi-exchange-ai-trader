@@ -626,3 +626,125 @@ async def test_each_original_member_source_pin_rejects_detached_changes(
         assert h.sends == 0
     finally:
         await h.owner.aclose()
+@pytest.mark.parametrize("target_name", [
+    "unchanged", "owner", "client", "raw_client", "current", "view", "catalog", "unused_key",
+    "unused_observation", "unused_source", "unused_spec", "decimal", "not_published",
+    "catalog_envelope", "catalog_origin", "risk_page", "risk_origin", "risk_key",
+])
+async def test_final_public_record_types_are_closed_before_descriptor_reads(
+    monkeypatch: pytest.MonkeyPatch, target_name: str,
+) -> None:
+    """Late compatible classes cannot retire a genuine producer during its raw proof."""
+    h = Harness(monkeypatch)
+    changed: object | None = None
+    original_kind: type[object] | None = None
+    calls: list[str] = []
+    armed = False
+    result: object = None
+    error: Exception | None = None
+    try:
+        await h.setup()
+        current = h.owner._current
+        assert current is not None
+        unused = next(item for item in h.view.catalog.observations if item.key == SPOT)
+        page_record: tuple[Any, ...] = ()
+        parse = models.parse_bybit_risk_limit_table_v1
+
+        def arm(pages: Any, **kwargs: Any) -> Any:
+            nonlocal armed, page_record
+            capture = parse(pages, **kwargs)
+            page_record = pages
+            armed = True
+            return capture
+
+        def guard() -> None:
+            nonlocal changed, original_kind, armed
+            if not armed or target_name == "unchanged":
+                return
+            armed = False
+            page = page_record[-1]
+            targets: dict[str, tuple[object, str]] = {
+                "owner": (h.owner, "_closed"), "client": (h.owner._client, "_client"),
+                "raw_client": (h.owner._client._client, "_state"),
+                "current": (current, "generation"), "view": (h.view, "issued_mono"),
+                "catalog": (h.view.catalog, "revision"), "unused_key": (unused.key, "symbol"),
+                "unused_observation": (unused, "raw_row_sha256"),
+                "unused_source": (unused.source, "received_at"),
+                "unused_spec": (unused.spec, "status"),
+                "decimal": (unused.spec.price_tick, "raw"),
+                "not_published": (unused.spec.max_quote_amount, "field"),
+                "catalog_envelope": (h.view.envelopes[0], "logical_ordinal"),
+                "catalog_origin": (h.view.envelopes[0].response_origin, "host"),
+                "risk_page": (page, "source_generation"),
+                "risk_origin": (page.response_origin, "host"), "risk_key": (page.key, "symbol"),
+            }
+            record, name = targets[target_name]
+            original_kind = type(record)
+            original = object.__getattribute__(record, name)
+
+            def descriptor(_: object) -> object:
+                calls.append(target_name)
+                if target_name != "owner":
+                    h.owner.retire()
+                return original
+
+            late_kind = type("LatePublicRecord", (original_kind,), {name: property(descriptor)})
+            object.__setattr__(record, "__class__", late_kind)
+            assert type(record) is late_kind
+            changed = record
+
+        monkeypatch.setattr(module, "parse_bybit_risk_limit_table_v1", arm)
+        try:
+            result = await h.capture(owner_guard=guard)
+        except (RiskV2Rejected, InstrumentSourceError) as caught:
+            error = caught
+        assert calls == []
+        if target_name == "unchanged":
+            assert error is None and type(result) is BybitRiskLimitCaptureV1
+        else:
+            assert changed is not None and result is None
+            assert type(error) in (RiskV2Rejected, InstrumentSourceError)
+        assert h.owner._current is current
+        assert h.sends == h.closes == 2
+        assert h.owner._client._operation.get() is None
+        assert h.budget._receipt.get() is None and h.owner._risk_pending is None
+    finally:
+        if changed is not None:
+            object.__setattr__(changed, "__class__", original_kind)
+        await h.owner.aclose()
+
+
+@pytest.mark.parametrize("target_name", ["budget", "receipt"])
+async def test_original_group_record_types_precede_direct_field_reads(
+    monkeypatch: pytest.MonkeyPatch, target_name: str,
+) -> None:
+    """A real group's final raw boundary rejects a class change without dispatch."""
+    h = Harness(monkeypatch)
+    calls: list[str] = []
+    try:
+        await h.setup()
+        with h.budget.reuse_or_open_receipt() as group:
+            state = module._RiskCaptureState(h.owner, h.member, h.handle, h.view.catalog.revision,
+                                             h.budget, TTL, h.owner._risk_pending)
+            state.bind_group(group)
+            receipt = h.budget._receipt.get()
+            assert receipt is not None
+            record, name = (h.budget, "deadline") if target_name == "budget" else (receipt, "token")
+            original_kind = type(record)
+            original = object.__getattribute__(record, name)
+
+            def descriptor(_: object) -> object:
+                calls.append(target_name)
+                return original
+
+            late_kind = type("LateGroupRecord", (original_kind,), {name: property(descriptor)})
+            object.__setattr__(record, "__class__", late_kind)
+            try:
+                with pytest.raises(InstrumentSourceError, match="GROUP_REQUIRED"):
+                    state.raw_group()
+                assert calls == []
+            finally:
+                object.__setattr__(record, "__class__", original_kind)
+        assert receipt.active is False and h.budget._receipt.get() is None
+    finally:
+        await h.owner.aclose()

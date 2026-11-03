@@ -633,3 +633,137 @@ async def test_post_e1_group_deadline_equality_prevents_capture_return(
         assert h.sends == 2 and h.budget._receipt.get() is None
     finally:
         await h.close()
+@pytest.mark.parametrize("record_kind", ["unused_spot_source", "authenticated_identity"])
+async def test_final_original_record_class_change_cannot_dispatch_after_projection(
+    monkeypatch: pytest.MonkeyPatch, record_kind: str,
+) -> None:
+    """A changed original record must be refused before its late descriptor runs."""
+    h = HistoryHarness(monkeypatch)
+    changed: object | None = None
+    original_kind: type[object] | None = None
+    calls: list[str] = []
+    result: object = None
+    error: Exception | None = None
+    try:
+        await h.setup()
+        record: object
+        if record_kind == "unused_spot_source":
+            record = next(item for item in h.view.catalog.observations if item.key == SPOT).source
+            name = "received_at"
+            effect = h.owner.retire
+        else:
+            record = h.session._identity
+            assert record is not None
+            name = "transport_injected"
+
+            def effect() -> None:
+                h.session._binding = None
+
+        original_kind = type(record)
+        original = object.__getattribute__(record, name)
+
+        def descriptor(_: object) -> object:
+            calls.append(record_kind)
+            effect()
+            return original
+
+        late_kind = type("LateOriginalRecord", (original_kind,), {name: property(descriptor)})
+
+        def swap() -> None:
+            nonlocal changed
+            h.reader_callback = lambda: None
+            object.__setattr__(record, "__class__", late_kind)
+            assert type(record) is late_kind
+            changed = record
+
+        project = models.project_bybit_tier_snapshot_v1
+
+        def arm(table: Any, *, instrument: Any) -> Any:
+            snapshot = project(table, instrument=instrument)
+            h.reader_callback = swap
+            return snapshot
+
+        monkeypatch.setattr(module, "project_bybit_tier_snapshot_v1", arm)
+        try:
+            result = await h.read()
+        except (RiskV2Rejected, AccountBindingError) as caught:
+            error = caught
+        assert changed is record
+        assert calls == []
+        assert result is None
+        if record_kind == "unused_spot_source":
+            assert type(error) is RiskV2Rejected and error.code == "RISK_V2_SOURCE_MISMATCH"
+        else:
+            assert type(error) is AccountBindingError
+        assert h.owner._current is not None and h.session._binding is h.binding
+        assert h.sends == h.closes == 2
+        assert h.owner._client._operation.get() is None
+        assert h.budget._receipt.get() is None and h.owner._risk_pending is None
+    finally:
+        if changed is not None:
+            object.__setattr__(changed, "__class__", original_kind)
+        await h.close()
+
+
+@pytest.mark.parametrize("target_name", ["unchanged", "reader", "session", "scope", "client", "raw_client"])
+async def test_final_history_direct_record_types_precede_descriptor_reads(
+    monkeypatch: pytest.MonkeyPatch, target_name: str,
+) -> None:
+    h = HistoryHarness(monkeypatch)
+    changed: object | None = None
+    original_kind: type[object] | None = None
+    calls: list[str] = []
+    result: object = None
+    error: Exception | None = None
+    try:
+        await h.setup()
+        targets: dict[str, tuple[object, str]] = {
+            "reader": (h.reader, "_session"), "session": (h.session, "_closed"),
+            "scope": (h.reader.scope, "environment"),
+            "client": (h.session._client, "_operation"),
+            "raw_client": (h.session._client._client, "_state"),
+        }
+
+        def swap() -> None:
+            nonlocal changed, original_kind
+            h.reader_callback = lambda: None
+            record, name = targets[target_name]
+            original_kind = type(record)
+            original = object.__getattribute__(record, name)
+
+            def descriptor(_: object) -> object:
+                calls.append(target_name)
+                h.session._binding = None
+                return original
+
+            late_kind = type("LateHistoryRecord", (original_kind,), {name: property(descriptor)})
+            object.__setattr__(record, "__class__", late_kind)
+            assert type(record) is late_kind
+            changed = record
+
+        project = models.project_bybit_tier_snapshot_v1
+
+        def arm(table: Any, *, instrument: Any) -> Any:
+            snapshot = project(table, instrument=instrument)
+            if target_name != "unchanged":
+                h.reader_callback = swap
+            return snapshot
+
+        monkeypatch.setattr(module, "project_bybit_tier_snapshot_v1", arm)
+        try:
+            result = await h.read()
+        except (RiskV2Rejected, AccountBindingError) as caught:
+            error = caught
+        assert calls == []
+        if target_name == "unchanged":
+            assert error is None and type(result) is LinearTierSnapshotV2
+        else:
+            assert changed is not None and result is None and type(error) is AccountBindingError
+        assert h.owner._current is not None and h.session._binding is h.binding
+        assert h.sends == h.closes == 2
+        assert h.owner._client._operation.get() is None
+        assert h.budget._receipt.get() is None and h.owner._risk_pending is None
+    finally:
+        if changed is not None:
+            object.__setattr__(changed, "__class__", original_kind)
+        await h.close()

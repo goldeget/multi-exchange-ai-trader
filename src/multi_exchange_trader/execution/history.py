@@ -434,6 +434,8 @@ class _RiskHistoryState:
     """Original session/reader references; raw checks issue no authority."""
 
     def __init__(self, reader: BybitHistoryReader) -> None:
+        if type(reader) is not BybitHistoryReader:
+            raise AccountBindingError("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED")
         session, binding, scope = reader._session, reader._binding, reader.scope
         if (type(reader) is not BybitHistoryReader or type(session) is not BybitDemoAccountSession
                 or type(binding) is not AuthenticatedAccountBinding or type(scope) is not ProtectionScope
@@ -450,6 +452,9 @@ class _RiskHistoryState:
                 or type(client._operation) is not ContextVar):
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
         self.raw_client: httpx.AsyncClient = client._client
+        self.record_types: tuple[tuple[object, type[object]], ...] = tuple(
+            (record, type(record)) for record in
+            (reader, session, binding, scope, client, self.raw_client, identity))
         # References stay in memory only. No credentials are normalized/copied,
         # hashed, logged or persisted by this risk operation.
         self.refs: tuple[tuple[object, str, object], ...] = (
@@ -479,6 +484,10 @@ class _RiskHistoryState:
         self.last_wall: datetime | None = None
 
     def raw(self) -> None:
+        # A substituted class can introduce data descriptors even through
+        # object.__getattribute__. Admit every original record before any read.
+        if any(type(record) is not kind for record, kind in self.record_types):
+            raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
         if self.session._closed is not False or self.session._binding_freshness_revoked is not False:
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
         state = self.raw_client._state
