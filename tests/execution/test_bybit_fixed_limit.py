@@ -1,12 +1,17 @@
 """Independent fake-only tests. No native dependency, provider, or activation."""
 from __future__ import annotations
 
-import builtins
 import importlib
+import json
+import os
+import subprocess
+import sys
+import textwrap
 from collections.abc import Callable
 from dataclasses import fields, replace
 from decimal import Decimal
 from enum import IntEnum
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
@@ -184,14 +189,80 @@ def test_loader_is_lazy_and_legacy_default_has_only_original_three_imports(
         assert value.fixed_limit_v2 is None
 
 
-def test_offline_reload_does_not_import_native(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = builtins.__import__
-    def guard(name: str, *args: Any, **kwargs: Any) -> Any:
-        assert not name.startswith('nautilus_trader')
-        return original(name, *args, **kwargs)
-    with monkeypatch.context() as patch:
-        patch.setattr(builtins, '__import__', guard)
-        importlib.reload(n)
+def test_offline_reload_does_not_import_native(tmp_path: Path) -> None:
+    from datetime import UTC, datetime
+
+    from multi_exchange_trader.execution import native_recovery, runtime
+
+    # Consumers retain these exact classes. A reload probe must not replace
+    # them in the shared pytest interpreter used by all later tests.
+    originals = (n.NativeBindings, n.NativeBybitBridge, n.NativeOrderRequest,
+                 n.AttachedProtection)
+    source = Path(__file__).resolve().parents[2] / 'src'
+    code = textwrap.dedent('''
+        import builtins
+        import importlib
+        import json
+        import os
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        original = builtins.__import__
+        def guard(name, *args, **kwargs):
+            assert not name.startswith('nautilus_trader')
+            return original(name, *args, **kwargs)
+        builtins.__import__ = guard
+        try:
+            module = importlib.import_module('multi_exchange_trader.execution.bybit_native')
+            importlib.reload(module)
+            assert Path(module.__file__).resolve() == (
+                Path(sys.argv[1]) / 'multi_exchange_trader/execution/bybit_native.py').resolve()
+        finally:
+            builtins.__import__ = original
+        print(json.dumps({'pid': os.getpid(), 'argv': sys.orig_argv,
+                          'cwd': os.getcwd(), 'source': module.__file__,
+                          'status': 'OFFLINE_IMPORT_AND_RELOAD_PASSED'}))
+    ''')
+    env = os.environ.copy()
+    selectors = ('TRADER_CREDENTIAL_FILE', 'TRADER_ACCOUNT_PROFILE_FILE',
+                 'BYBIT_ENV_FILE', 'AI_ENV_FILE', 'ANTHROPIC_ENV_FILE')
+    env.update({name: 'off' for name in selectors})
+    child_temp = tmp_path / 'offline-reload-child'
+    child_temp.mkdir()
+    env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONIOENCODING='utf-8',
+               PYTHONUTF8='1', PYTHONPATH=str(source), TEMP=str(child_temp),
+               TMP=str(child_temp), TMPDIR=str(child_temp))
+    argv = [sys.executable, '-B', '-c', code, str(source)]
+    started = datetime.now(UTC).isoformat()
+    process = subprocess.Popen(argv, cwd=source.parent, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, encoding='utf-8')
+    timed_out = False
+    try:
+        stdout, stderr = process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        process.kill()
+        stdout, stderr = process.communicate()
+    (tmp_path / 'offline-reload.stdout').write_text(stdout, encoding='utf-8')
+    (tmp_path / 'offline-reload.stderr').write_text(stderr, encoding='utf-8')
+    (tmp_path / 'offline-reload-receipt.json').write_text(json.dumps({
+        'argv': argv, 'pid': process.pid, 'cwd': str(source.parent),
+        'utc_start': started, 'utc_end': datetime.now(UTC).isoformat(),
+        'exit': process.returncode, 'timed_out': timed_out,
+        'selectors': {name: 'off' for name in selectors},
+        'TEMP_TMP_TMPDIR': str(child_temp),
+    }, indent=2), encoding='utf-8')
+    assert not timed_out
+    assert process.returncode == 0, stderr
+    assert json.loads(stdout)['status'] == 'OFFLINE_IMPORT_AND_RELOAD_PASSED'
+    assert all(current is original for current, original in zip(
+        (n.NativeBindings, n.NativeBybitBridge, n.NativeOrderRequest, n.AttachedProtection),
+        originals, strict=True))
+    assert vars(native_recovery)['NativeBindings'] is n.NativeBindings
+    assert (vars(native_recovery)['NativeOrderRequest']
+            is vars(runtime)['NativeOrderRequest'] is n.NativeOrderRequest)
+    assert vars(runtime)['NativeBybitBridge'] is n.NativeBybitBridge
+    assert vars(runtime)['AttachedProtection'] is n.AttachedProtection
 
 
 @pytest.mark.parametrize('side,stop,tp', [('BUY', '90', '120'), ('SELL', '120', '90')])
