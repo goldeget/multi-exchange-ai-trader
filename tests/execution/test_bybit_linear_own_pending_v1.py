@@ -1202,3 +1202,664 @@ def test_exact_derivation_does_not_change_ambient_decimal_context(tmp_path: Path
             )
     finally:
         graph["journal"].close()
+
+
+def task3_pending_graph(
+    tmp_path: Path,
+    *,
+    allocation: str = "100",
+    original_available: str = "60",
+    current_available: str = "100",
+    other: bool = False,
+) -> dict[str, Any]:
+    """Genuine original M2 PLAN; synthetic refreshed requirements are consistency data."""
+    from unittest.mock import patch
+
+    base = retune(full_d_graph(allocation=allocation), available=original_available)
+    # Adapt only the existing fixture factory. PLAN/calculation/J registration stay real.
+    with patch.dict(globals(), {"full_d_graph": lambda: base}):
+        graph = pending_graph(tmp_path, other=other, prepare_full=False)
+    before = graph["journal"].get("COMMAND").payload_json
+    graph = retune(graph, available=current_available, prepare=False)
+    graph["full_venue"] = replace(
+        a.BybitVenueStateV1(*graph["venue_fields"]),
+        selected_profile=graph["full_venue"].selected_profile,
+    )
+    graph["inputs"] = replace(
+        graph["inputs"],
+        requirements=replace(
+            graph["inputs"].requirements,
+            margin_model_revision="BYBIT_LINEAR_OWN_PENDING_MARGIN_V1",
+            liquidation_model_revision="BYBIT_LINEAR_OWN_PENDING_LIQUIDATION_V1",
+        ),
+    )
+    assert graph["journal"].get("COMMAND").payload_json == before
+    assert graph["intent"].envelope == graph["original_bound"].point.envelope
+    return graph
+
+
+def test_task3_actual_search_uses_original_hold_before_selecting_leverage(tmp_path: Path) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        inputs = bind(graph)
+        assert inputs.evaluation.point.capacity_quote == Decimal(100)
+        assert inputs.point.capacity_quote == Decimal("48.66666667")
+        uncapped = m.select_smallest_bybit_leverage_v1(inputs.evaluation.point, now=graph["now"])
+        assert type(uncapped) is m.BybitLeverageSearchV1
+        assert uncapped.selected.leverage == Decimal(2)
+        assert uncapped.selected.reserve.required_reservation_quote == Decimal(72)
+        api = adapter()
+        assert callable(getattr(api, "calculate_bybit_own_pending_v1", None)), (
+            "Task3 calculator absent"
+        )
+        calculation = api.calculate_bybit_own_pending_v1(
+            inputs, journal=graph["journal"], view=graph["view"], now=graph["now"]
+        )
+        assert type(calculation) is api.BybitOwnPendingCalculationV1
+        assert calculation.search.selected.leverage == Decimal(3)
+        assert calculation.search.selected.reserve.required_reservation_quote == Decimal(
+            "48.66666667"
+        )
+        assert tuple(item.failure_codes for item in calculation.search.evaluated_prefix) == (
+            ("CAPACITY",),
+            ("CAPACITY",),
+            (),
+        )
+        assert calculation.model_input_sha256 == api.bybit_own_pending_model_inputs_sha256_v1(
+            inputs
+        )
+        assert calculation.exact_calculation_sha256 == api.bybit_own_pending_calculation_sha256_v1(
+            calculation
+        )
+    finally:
+        graph["journal"].close()
+
+
+def task3_calculate(graph: dict[str, Any], *, inputs: Any = None, now: Any = None) -> Any:
+    value = bind(graph) if inputs is None else inputs
+    result = adapter().calculate_bybit_own_pending_v1(
+        value,
+        journal=graph["journal"],
+        view=graph["view"],
+        now=graph["now"] if now is None else now,
+    )
+    assert type(result) is adapter().BybitOwnPendingCalculationV1
+    return result
+
+
+def task3_readback(inputs: Any, margin: Any) -> Any:
+    """Synthetic supplied consistency data, not an actual control/readback receipt."""
+    account = inputs.evaluation.risk_inputs.account.reference
+    return e.LinearLeverageReadbackV2(
+        margin.binding_sha256,
+        replace(account, observation_id="OWN_PENDING_READBACK"),
+        account.observation_id,
+        "SYNTHETIC_OWN_PENDING_CONTROL",
+        account.server_observed_at,
+        inputs.evaluation.risk_inputs.proposal.side,
+        margin.leverage,
+        inputs.evaluation.risk_inputs.policy.margin_mode,
+        inputs.evaluation.risk_inputs.policy.position_mode,
+    )
+
+
+def test_task3_projects_new_outer_hashes_and_evaluation_refs_into_pure_submit(
+    tmp_path: Path,
+) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        api = adapter()
+        inputs = bind(graph)
+        calculation = task3_calculate(graph, inputs=inputs)
+        journal = graph["journal"]
+        before, changes = tuple(journal._db.iterdump()), journal._db.total_changes
+        binding = e.binding_sha256_v2(inputs.evaluation.preparation.binding)
+        reference = c.RiskComputationRefV2(
+            "OWN_MARGIN", "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1", "FIXTURE", graph["now"], binding
+        )
+        assert callable(getattr(api, "build_bybit_own_pending_margin_v1", None)), (
+            "Task3 margin absent"
+        )
+        margin = api.build_bybit_own_pending_margin_v1(
+            calculation,
+            inputs=inputs,
+            journal=journal,
+            view=graph["view"],
+            reference=reference,
+            now=graph["now"],
+        )
+        assert margin.reference is reference
+        assert margin.binding_sha256 == reference.input_sha256 == binding
+        assert margin.model_revision == "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1"
+        assert margin.model_input_sha256 == calculation.model_input_sha256
+        assert margin.exact_calculation_sha256 == calculation.exact_calculation_sha256
+        assert margin.initial_margin_quote == Decimal("46.66666667")
+        lp_reference = c.RiskComputationRefV2(
+            "OWN_LP",
+            "BYBIT_LINEAR_OWN_PENDING_LIQUIDATION_V1",
+            "FIXTURE",
+            graph["now"],
+            e.margin_assessment_sha256_v2(margin),
+        )
+        liquidation = api.build_bybit_own_pending_liquidation_v1(
+            calculation,
+            inputs=inputs,
+            journal=journal,
+            view=graph["view"],
+            margin=margin,
+            reference=lp_reference,
+            now=graph["now"],
+        )
+        assert liquidation.reference is lp_reference
+        assert liquidation.reference.input_sha256 == e.margin_assessment_sha256_v2(margin)
+        assert liquidation.model_input_sha256 == calculation.model_input_sha256
+        assert type(liquidation.outcome) is e.LiquidationPositiveRootV2
+        assert liquidation.outcome.exact_price.numerator == Decimal(40000)
+        assert liquidation.outcome.exact_price.denominator == Decimal(597)
+        assessed = api.assess_bybit_own_pending_submit_v1(
+            inputs,
+            calculation=calculation,
+            journal=journal,
+            view=graph["view"],
+            margin=margin,
+            liquidation=liquidation,
+            leverage_readback=task3_readback(inputs, margin),
+            now=graph["now"],
+        )
+        assert assessed.stage == "SUBMIT" and assessed.blockers == ()
+        assert assessed.required_reservation_quote == Decimal("48.66666667")
+        assert (
+            assessed.preparation.binding.reservation_snapshot_id
+            == inputs.evaluation.risk_inputs.reservations.snapshot_id
+        )
+        assert (
+            assessed.preparation.binding.reservation_snapshot_id
+            != inputs.full_risk_inputs.reservations.snapshot_id
+        )
+        assert tuple(journal._db.iterdump()) == before and journal._db.total_changes == changes
+        assert journal.get("COMMAND").state.value == "PENDING"
+    finally:
+        graph["journal"].close()
+
+
+def task3_projections(
+    graph: dict[str, Any],
+    *,
+    inputs: Any = None,
+    margin_at: Any = None,
+    lp_at: Any = None,
+    now: Any = None,
+) -> tuple[Any, Any, Any, Any]:
+    api = adapter()
+    value = bind(graph) if inputs is None else inputs
+    audit = graph["now"] if now is None else now
+    calculation = task3_calculate(graph, inputs=value, now=audit)
+    margin = api.build_bybit_own_pending_margin_v1(
+        calculation,
+        inputs=value,
+        journal=graph["journal"],
+        view=graph["view"],
+        reference=c.RiskComputationRefV2(
+            "OWN_MARGIN",
+            "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1",
+            "FIXTURE",
+            graph["now"] if margin_at is None else margin_at,
+            e.binding_sha256_v2(value.evaluation.preparation.binding),
+        ),
+        now=audit,
+    )
+    liquidation = api.build_bybit_own_pending_liquidation_v1(
+        calculation,
+        inputs=value,
+        journal=graph["journal"],
+        view=graph["view"],
+        margin=margin,
+        reference=c.RiskComputationRefV2(
+            "OWN_LP",
+            "BYBIT_LINEAR_OWN_PENDING_LIQUIDATION_V1",
+            "FIXTURE",
+            graph["now"] if lp_at is None else lp_at,
+            e.margin_assessment_sha256_v2(margin),
+        ),
+        now=audit,
+    )
+    return value, calculation, margin, liquidation
+
+
+def task3_submit(graph: dict[str, Any], bundle: Any, **changes: Any) -> Any:
+    inputs, calculation, margin, liquidation = bundle
+    args = {
+        "calculation": calculation,
+        "journal": graph["journal"],
+        "view": graph["view"],
+        "margin": margin,
+        "liquidation": liquidation,
+        "leverage_readback": task3_readback(inputs, margin),
+        "now": graph["now"],
+    }
+    value = changes.pop("inputs", inputs)
+    args.update(changes)
+    return adapter().assess_bybit_own_pending_submit_v1(value, **args)
+
+
+def test_task3_calculation_hash_has_independent_recipe_and_closed_self_hash(tmp_path: Path) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        api = adapter()
+        value = bind(graph)
+        calculation = task3_calculate(graph, inputs=value)
+        fields = {
+            "model_input_sha256": api.bybit_own_pending_model_inputs_sha256_v1(value),
+            "point_input_sha256": a.bybit_point_input_sha256_v1(value.point),
+            "search": m.bybit_leverage_search_sha256_v1(calculation.search),
+            "valid_until": "2026-11-03T00:00:01.000000+00:00",
+        }
+        wire = json.dumps(
+            {
+                "schema": "RISK_V2_CANONICAL_V1",
+                "record_type": "BybitOwnPendingCalculationV1",
+                "fields": fields,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+        assert calculation.exact_calculation_sha256 == hashlib.sha256(wire).hexdigest()
+        for changes in (
+            {"model_input_sha256": True},
+            {"exact_calculation_sha256": "f" * 64},
+            {"point_input_sha256": "c" * 64},
+            {"search": object()},
+            {"valid_until": value.valid_until + timedelta(microseconds=1)},
+        ):
+            with pytest.raises(c.RiskV2Rejected):
+                replace(calculation, **changes)
+        later = task3_calculate(graph, inputs=value, now=graph["now"] + timedelta(microseconds=1))
+        assert later.exact_calculation_sha256 == calculation.exact_calculation_sha256
+    finally:
+        graph["journal"].close()
+
+
+@pytest.mark.parametrize("kind", ["source", "member", "archive"])
+def test_task3_replay_refuses_equal_point_borrowed_full_preimages(
+    tmp_path: Path, kind: str
+) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        inputs = bind(graph)
+        calculation = task3_calculate(graph, inputs=inputs)
+        if kind == "archive":
+            changed = replace(inputs, archived_intent_sha256="c" * 64)
+        else:
+            domain = graph["domain"]
+            if kind == "source":
+                domain = replace(domain, source_record_sha256s=("c" * 64,))
+            else:
+                member = domain.members[1]
+                member = replace(
+                    member,
+                    account_risk_reference=replace(
+                        member.account_risk_reference, calculation_id="DIFFERENT_MEMBER_RISK"
+                    ),
+                )
+                domain = replace(domain, members=(domain.members[0], member))
+            changed = bind(
+                graph,
+                full_domain=domain,
+                full_inputs=replace(
+                    graph["inputs"], risk_domain_sha256=d.risk_domain_sha256_v2(domain)
+                ),
+            )
+            assert a.bybit_point_input_sha256_v1(changed.point) == a.bybit_point_input_sha256_v1(
+                inputs.point
+            )
+        with pytest.raises(c.RiskV2Rejected, match="SOURCE_MISMATCH"):
+            adapter().build_bybit_own_pending_margin_v1(
+                calculation,
+                inputs=changed,
+                journal=graph["journal"],
+                view=graph["view"],
+                reference=c.RiskComputationRefV2(
+                    "MARGIN",
+                    "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1",
+                    "FIXTURE",
+                    graph["now"],
+                    e.binding_sha256_v2(changed.evaluation.preparation.binding),
+                ),
+                now=graph["now"],
+            )
+    finally:
+        graph["journal"].close()
+
+
+@pytest.mark.parametrize("kind", ["before-pair", "outer-ref", "old-revision", "future"])
+def test_task3_margin_completion_preserves_exact_owner_rules(tmp_path: Path, kind: str) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        value = bind(graph)
+        calc = task3_calculate(graph, inputs=value)
+        ref = c.RiskComputationRefV2(
+            "MARGIN",
+            "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1",
+            "FIXTURE",
+            graph["now"],
+            e.binding_sha256_v2(value.evaluation.preparation.binding),
+        )
+        code = "MARGIN_UNVERIFIED"
+        if kind == "before-pair":
+            ref, code = (
+                replace(ref, computed_at=graph["now"] - timedelta(microseconds=1)),
+                "CAUSAL_ORDER_INVALID",
+            )
+        elif kind == "outer-ref":
+            ref = replace(ref, input_sha256=calc.model_input_sha256)
+        elif kind == "old-revision":
+            ref = replace(ref, model_revision="margin-v1")
+        else:
+            ref, code = (
+                replace(ref, computed_at=graph["now"] + timedelta(microseconds=1)),
+                "FUTURE_EVIDENCE",
+            )
+        with pytest.raises(c.RiskV2Rejected, match=code):
+            adapter().build_bybit_own_pending_margin_v1(
+                calc,
+                inputs=value,
+                journal=graph["journal"],
+                view=graph["view"],
+                reference=ref,
+                now=graph["now"],
+            )
+    finally:
+        graph["journal"].close()
+
+
+@pytest.mark.parametrize("kind", ["before-margin", "binding-ref", "old-revision", "changed-margin"])
+def test_task3_lp_completion_and_original_margin_replay(tmp_path: Path, kind: str) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        audit = graph["now"] + timedelta(microseconds=2)
+        value, calc, margin, liquidation = task3_projections(
+            graph, margin_at=graph["now"] + timedelta(microseconds=1), lp_at=audit, now=audit
+        )
+        ref, code = liquidation.reference, "LIQUIDATION_UNVERIFIED"
+        if kind == "before-margin":
+            ref, code = replace(ref, computed_at=graph["now"]), "CAUSAL_ORDER_INVALID"
+        elif kind == "binding-ref":
+            ref = replace(ref, input_sha256=margin.binding_sha256)
+        elif kind == "old-revision":
+            ref = replace(ref, model_revision="lp-v1")
+        else:
+            margin, code = (
+                replace(margin, initial_margin_quote=Decimal("46.66666668")),
+                "MARGIN_UNVERIFIED",
+            )
+        with pytest.raises(c.RiskV2Rejected, match=code):
+            adapter().build_bybit_own_pending_liquidation_v1(
+                calc,
+                inputs=value,
+                journal=graph["journal"],
+                view=graph["view"],
+                margin=margin,
+                reference=ref,
+                now=audit,
+            )
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_no_root_uses_actual_selected_proof_and_rejects_borrowing(tmp_path: Path) -> None:
+    graph = task3_pending_graph(
+        tmp_path, allocation="200", original_available="200", current_available="200"
+    )
+    try:
+        bundle = task3_projections(graph)
+        _inputs, calc, _margin, liquidation = bundle
+        assert calc.search.selected.leverage == Decimal(1)
+        assert type(liquidation.outcome) is e.LiquidationNoPositiveRootV2
+        assert liquidation.outcome.model_input_sha256 == calc.model_input_sha256
+        assert liquidation.outcome.proof_sha256 == calc.search.selected.liquidation.proof_sha256
+        assessed = task3_submit(graph, bundle)
+        assert assessed.liquidation_buffer_result == "MODEL_NO_POSITIVE_TRIGGER"
+        assert assessed.required_reservation_quote == Decimal(142)
+        for outcome in (
+            replace(liquidation.outcome, proof_sha256="c" * 64),
+            replace(liquidation.outcome, full_table_sha256="d" * 64),
+        ):
+            with pytest.raises(c.RiskV2Rejected, match="LIQUIDATION_UNVERIFIED"):
+                task3_submit(graph, bundle, liquidation=replace(liquidation, outcome=outcome))
+    finally:
+        graph["journal"].close()
+
+
+@pytest.mark.parametrize("kind", ["readback", "lp-table", "margin-model", "lp-model"])
+def test_task3_submit_refuses_borrowed_projection_and_readback(tmp_path: Path, kind: str) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        bundle = task3_projections(graph)
+        inputs, _calc, margin, liquidation = bundle
+        changes: dict[str, Any] = {}
+        code = "LIQUIDATION_UNVERIFIED"
+        if kind == "readback":
+            changes["leverage_readback"] = replace(
+                task3_readback(inputs, margin), applied_leverage=Decimal(2)
+            )
+            code = "LEVERAGE_READBACK_UNVERIFIED"
+        elif kind == "lp-table":
+            changes["liquidation"] = replace(
+                liquidation, outcome=replace(liquidation.outcome, full_table_sha256="d" * 64)
+            )
+        elif kind == "margin-model":
+            changes["margin"] = replace(margin, model_input_sha256="c" * 64)
+            code = "MARGIN_UNVERIFIED"
+        else:
+            changes["liquidation"] = replace(liquidation, model_input_sha256="c" * 64)
+        before = tuple(graph["journal"]._db.iterdump())
+        with pytest.raises(c.RiskV2Rejected, match=code):
+            task3_submit(graph, bundle, **changes)
+        assert tuple(graph["journal"]._db.iterdump()) == before
+        assert graph["journal"].get("COMMAND").state.value == "PENDING"
+    finally:
+        graph["journal"].close()
+
+
+@pytest.mark.parametrize("kind", ["copy-journal", "other-view", "claimed", "closed", "expiry"])
+def test_task3_calculation_requires_same_current_original_lifetime(
+    tmp_path: Path, kind: str
+) -> None:
+    graph = task3_pending_graph(
+        tmp_path,
+        other=kind == "other-view",
+        original_available="500" if kind == "other-view" else "60",
+    )
+    try:
+        value = bind(graph)
+        journal, view, now = graph["journal"], graph["view"], graph["now"]
+        if kind == "copy-journal":
+            journal = copy.copy(journal)
+        elif kind == "other-view":
+            other = journal.get("OTHER")
+            from multi_exchange_trader.execution.risk_v2_codec import decode_entry_intent_v2
+
+            intent = decode_entry_intent_v2(other.payload_json)
+            identity = v.entry_command_identity_sha256_v2(
+                intent.envelope.scope.product_scope.account, "OTHER", intent, other.reservation_v2
+            )
+            view = journal._own_pending_view_v2(
+                intent.envelope.scope,
+                command_key="OTHER",
+                owner_epoch="OWNER_1",
+                expected_command_identity_sha256=identity,
+                now=now,
+            )
+        elif kind == "claimed":
+            full = graph["data"].full
+            journal.claim_entry_v2(
+                "COMMAND",
+                owner_epoch="OWNER_1",
+                expected_journal_revision=full.journal_revision,
+                expected_held_quantity_sha256=full.held_quantity_sha256,
+                expected_command_identity_sha256=graph["identity"],
+            )
+        elif kind == "closed":
+            journal.close()
+        else:
+            now = value.valid_until
+        with pytest.raises(c.RiskV2Rejected, match="LOCAL_ADMISSION_CONFLICT|SCOPE_MISMATCH"):
+            adapter().calculate_bybit_own_pending_v1(value, journal=journal, view=view, now=now)
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_real_failed_claim_during_search_is_detected_after_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = task3_pending_graph(tmp_path)
+    owner = m.select_smallest_bybit_leverage_v1
+    try:
+        value = bind(graph)
+
+        def retire(point: Any, *, now: Any) -> Any:
+            result = owner(point, now=now)
+            full = graph["data"].full
+            with pytest.raises(c.RiskV2Rejected):
+                graph["journal"].claim_entry_v2(
+                    "COMMAND",
+                    owner_epoch="OWNER_1",
+                    expected_journal_revision=full.journal_revision,
+                    expected_held_quantity_sha256=full.held_quantity_sha256,
+                    expected_command_identity_sha256="c" * 64,
+                )
+            return result
+
+        monkeypatch.setattr(m, "select_smallest_bybit_leverage_v1", retire)
+        before = tuple(graph["journal"]._db.iterdump())
+        with pytest.raises(c.RiskV2Rejected, match="LOCAL_ADMISSION_CONFLICT"):
+            task3_calculate(graph, inputs=value)
+        assert tuple(graph["journal"]._db.iterdump()) == before
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_genuine_selector_rejection_owner_is_preserved(tmp_path: Path) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        graph = retune(graph, mark="300", prepare=False)
+        value = bind(graph)
+        rejected = adapter().calculate_bybit_own_pending_v1(
+            value, journal=graph["journal"], view=graph["view"], now=graph["now"]
+        )
+        assert type(rejected) is m.BybitModelRejectedV1
+        assert rejected.public_code == "RISK_V2_LEVERAGE_UNSATISFIABLE"
+        with pytest.raises(c.RiskV2Rejected, match="^RISK_V2_LEVERAGE_UNSATISFIABLE$"):
+            adapter().build_bybit_own_pending_margin_v1(
+                rejected,
+                inputs=value,
+                journal=graph["journal"],
+                view=graph["view"],
+                reference=c.RiskComputationRefV2(
+                    "MARGIN",
+                    "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1",
+                    "FIXTURE",
+                    graph["now"],
+                    e.binding_sha256_v2(value.evaluation.preparation.binding),
+                ),
+                now=graph["now"],
+            )
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_submit_detects_real_failed_claim_after_generic_assessment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        bundle = task3_projections(graph)
+        owner = r.assess_entry_v2
+
+        def retire(*args: Any, **kwargs: Any) -> Any:
+            result = owner(*args, **kwargs)
+            assert kwargs["stage"] == "SUBMIT"
+            full = graph["data"].full
+            with pytest.raises(c.RiskV2Rejected):
+                graph["journal"].claim_entry_v2(
+                    "COMMAND",
+                    owner_epoch="OWNER_1",
+                    expected_journal_revision=full.journal_revision,
+                    expected_held_quantity_sha256=full.held_quantity_sha256,
+                    expected_command_identity_sha256="c" * 64,
+                )
+            return result
+
+        monkeypatch.setattr(r, "assess_entry_v2", retire)
+        before = tuple(graph["journal"]._db.iterdump())
+        with pytest.raises(c.RiskV2Rejected, match="LOCAL_ADMISSION_CONFLICT"):
+            task3_submit(graph, bundle)
+        assert tuple(graph["journal"]._db.iterdump()) == before
+        assert graph["journal"].get("COMMAND").state.value == "PENDING"
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_submit_final_capacity_uses_original_intent_and_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    graph = task3_pending_graph(tmp_path)
+    try:
+        bundle = task3_projections(graph)
+        owner = v._check_capacity
+        calls: list[tuple[str, bool, bool, bool]] = []
+
+        def observe(intent: Any, held: Any, admission: Any, snapshot: Any) -> None:
+            calls.append(
+                (
+                    sys._getframe(1).f_code.co_name,
+                    intent is graph["data"].intent,
+                    held is graph["data"].reservation,
+                    snapshot is graph["data"].evaluation,
+                )
+            )
+            owner(intent, held, admission, snapshot)
+
+        monkeypatch.setattr(v, "_check_capacity", observe)
+        result = task3_submit(graph, bundle)
+        assert result.required_reservation_quote == Decimal("48.66666667")
+        assert calls[-1] == ("assess_bybit_own_pending_submit_v1", True, True, True)
+        assert all(
+            own_intent and own_hold and own_snapshot
+            for _, own_intent, own_hold, own_snapshot in calls
+        )
+        assert graph["journal"].get("COMMAND").reservation_v2.margin_amount == Decimal(
+            "48.66666667"
+        )
+    finally:
+        graph["journal"].close()
+
+
+def test_task3_calculation_replays_stale_source_owner_without_relabel(tmp_path: Path) -> None:
+    graph = task3_pending_graph(tmp_path)
+    try:
+        value = bind(graph)
+        stamp = graph["now"] - timedelta(seconds=11)
+        old = value.full_risk_inputs.costs
+        stale = replace(
+            old,
+            reference=replace(old.reference, computed_at=stamp),
+            fee_reference=replace(old.fee_reference, server_observed_at=stamp, received_at=stamp),
+            funding_reference=replace(
+                old.funding_reference, server_observed_at=stamp, received_at=stamp
+            ),
+        )
+        changed = replace(
+            value,
+            full_risk_inputs=replace(value.full_risk_inputs, costs=stale),
+            evaluation=replace(
+                value.evaluation, risk_inputs=replace(value.evaluation.risk_inputs, costs=stale)
+            ),
+        )
+        with pytest.raises(c.RiskV2Rejected, match="^RISK_V2_STALE_EVIDENCE$"):
+            task3_calculate(graph, inputs=changed)
+    finally:
+        graph["journal"].close()
