@@ -22,9 +22,16 @@ from weakref import WeakValueDictionary
 
 from . import codec, modes
 from . import protection as p
+from . import reservations_v2 as reservations
 from . import risk as r
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
-from .bybit_native import AttachedProtection, NativeBybitBridge, NativeOrderRequest
+from .bybit_native import (
+    AttachedProtection,
+    LinearFixedLimitNativeOrderRequestV2,
+    NativeBybitBridge,
+    NativeOrderRequest,
+    NativeRequest,
+)
 from .execution_credit import (
     CorroboratedExecutionCredit,
     CreditReplayState,
@@ -78,6 +85,8 @@ from .native_controls import (
 )
 from .native_events import NativeEventContext, NativeEventDecoder, NativeOrderEvidence
 from .ownership import AccountWorkerLock
+from .product_scope import _validate_account
+from .risk_v2_codec import DurableEntryIntentV2, decode_entry_intent_v2, encode_entry_intent_v2
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback, VenueSnapshot
 
@@ -104,7 +113,7 @@ class RuntimeBlocked(ValueError):
 class NativeOwnedRequest:
     """Validated immutable ownership, without recovery writes or fresh authority."""
 
-    request: NativeOrderRequest
+    request: NativeRequest
     command_state: CommandState
     venue_order_ids: frozenset[str]
 
@@ -234,78 +243,155 @@ class NativeExecutionRuntime:
             if (previous is not None and not previous._closed
                     and previous._lease == self._lease and previous.worker_lock.acquired):
                 raise RuntimeBlocked("ACCOUNT_RUNTIME_ALREADY_RUNNING")
-            self._states()  # Full replay before any recovery mutation.
+            batch, _ = self._restore_batch(_phase="MAPPING")
+            rows = self._restore_rows()
+            self._guard()
             if _pre_recovery is not None:
                 _pre_recovery(self.native_owned_requests)
+            self._guard()
+            if self._restore_rows() != rows:
+                raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
+            batch, _ = self._restore_batch(_phase="MAPPING")
+            if self._restore_rows() != rows:
+                raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
+            for _, request, _ in batch:
+                self._register_restored_request(request)
+            self._guard()
+            if self._restore_rows() != rows:
+                raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
             self.journal.recover_sending(exclusive_owner=True)
             self.store.recover(exclusive_owner=True)
-            for record in journal.list_commands():
-                if (record.kind is CommandKind.ENTRY and record.state is CommandState.PENDING
-                        and self._find_owned(record.client_order_id) is None):
+            for record, _, orphan in batch:
+                if orphan:
                     self._recover_entry_mapping(record)
-                # Restore immutable mapping for callbacks without submitting.
-                if (record.kind in (CommandKind.ENTRY, CommandKind.EXIT)
-                        and self._find_owned(record.client_order_id) is not None):
-                    self.bridge.register_owned(self._request(record))
             _OWNERS[str(self._lock_path)] = self
 
-    def native_owned_requests(self, native_venues: tuple[tuple[str, str], ...] = ()
-                              ) -> tuple[NativeOwnedRequest, ...]:
-        """Read-only full replay seam shared by startup and quiesced capture."""
+    def _restore_rows(self) -> tuple[object, ...]:
+        """Logical local rows only: detect callback changes, never issue authority."""
+        connections = [self.journal._db, self.store._db]
+        if self._history_store is not None:
+            connections.append(self._history_store._db)
+        result: list[object] = []
+        for connection in connections:
+            headers = (connection.execute("PRAGMA user_version").fetchone()[0],
+                       connection.execute("PRAGMA application_id").fetchone()[0])
+            content = []
+            for name, schema in connection.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").fetchall():
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows = tuple(sorted(repr(tuple(row)) for row in connection.execute("SELECT * FROM " + quoted)))
+                content.append((name, schema, rows))
+            result.append((headers, tuple(content)))
+        return tuple(result)
+
+    def _restore_batch(self, native_venues: tuple[tuple[str, str], ...] = (), *,
+                       _phase: Literal["MAPPING", "NATIVE"]) -> tuple[
+            tuple[tuple[CommandRecord, NativeRequest, bool], ...], tuple[NativeOwnedRequest, ...]]:
         self._guard()
+        if type(_phase) is not str or _phase not in ("MAPPING", "NATIVE"):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        records = self.journal.list_commands()  # Validate every row, including terminal/controls.
+        self._projections.clear()
         states = self._states()
+        if (type(native_venues) is not tuple or any(type(pair) is not tuple or len(pair) != 2
+                or any(type(value) is not str or not value.strip() or len(value) > 256
+                       for value in pair) for pair in native_venues)):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         candidates = tuple(item for cached in self._projections.values()
                            for item in cached[3].candidates)
-        result = []
-        for record in self.journal.list_commands():
+        clients = {record.client_order_id for record in records
+                   if record.kind in (CommandKind.ENTRY, CommandKind.EXIT)}
+        if any(order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
+               for state in states for order in state.orders):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        batch: list[tuple[CommandRecord, NativeRequest, bool]] = []
+        result: list[NativeOwnedRequest] = []
+        entry_positions: set[str] = set()
+        for record in records:
             if record.kind not in (CommandKind.ENTRY, CommandKind.EXIT):
                 continue
             matches = tuple(state for state in states if any(
                 order.client_order_id == record.client_order_id for order in state.orders))
-            if not matches and record.kind is CommandKind.ENTRY and record.state is CommandState.PENDING:
-                # Validate interrupted journal-before-mapping intent without creating a native owner.
-                self._entry_mapping(record)
+            orphan = not matches and record.kind is CommandKind.ENTRY and record.state is CommandState.PENDING
+            if orphan:
+                state, order = self._entry_mapping(record)
+                request = self._request_for_state(record, p.register_order(state, order))
+                if (type(request) is LinearFixedLimitNativeOrderRequestV2
+                        and self._history_store is None):
+                    raise RuntimeBlocked("V2_ORPHAN_HISTORY_REQUIRED")
+            elif len(matches) == 1:
+                request = self._request_for_state(record, matches[0])
+            else:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            if record.kind is CommandKind.ENTRY:
+                if request.owned.position_id in entry_positions:
+                    raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                entry_positions.add(request.owned.position_id)
+            batch.append((record, request, orphan))
+            if type(request) is NativeOrderRequest and (orphan or _phase == "MAPPING"):
+                # Legacy observation retains replayed conflict state. Only the
+                # public native resolver applies restrictive V1 venue admission.
                 continue
-            if len(matches) != 1:
+            venues, evidence = self._history_venues(request, native_venues, candidates)
+            if orphan:
+                if venues or evidence:
+                    raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                continue
+            result.append(NativeOwnedRequest(request, record.state, venues))
+        return tuple(batch), tuple(result)
+
+    def native_owned_requests(self, native_venues: tuple[tuple[str, str], ...] = ()
+                              ) -> tuple[NativeOwnedRequest, ...]:
+        """Read-only full replay seam shared by startup and quiesced capture."""
+        return self._restore_batch(native_venues, _phase="NATIVE")[1]
+
+    def _history_venues(self, request: NativeRequest, native_venues: tuple[tuple[str, str], ...],
+                        candidates: tuple[NativeExecutionCandidate, ...]) -> tuple[frozenset[str], bool]:
+        venues = self._known_venues(request.owned.client_order_id, candidates)
+        # Only the coordinator supplies seeds from fully validated detached
+        # native orders. They restrict identity, never grant event authority.
+        venues.update(venue for client, venue in native_venues
+                      if client == request.owned.client_order_id)
+        seen = bool(venues)
+        def validate_venues() -> None:
+            if (len(venues) > 16 or any(type(venue) is not str or not venue.strip()
+                                      or len(venue) > 256 for venue in venues)):
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-            request = self._request_for_state(record, matches[0])
-            venues = self._known_venues(record.client_order_id, candidates)
-            # Only the coordinator supplies seeds from fully validated detached
-            # native orders. They restrict identity, never grant event authority.
-            venues.update(venue for client, venue in native_venues
-                          if client == record.client_order_id)
-            if self._history_store is not None:
-                while True:
-                    if len(venues) > 16:
+        if type(request) is LinearFixedLimitNativeOrderRequestV2:
+            validate_venues()
+        if self._history_store is not None:
+            while True:
+                validate_venues()
+                queried_venues = frozenset(venues)
+                for evidence in self._history_store.order_evidence(
+                        client_order_id=request.owned.client_order_id,
+                        venue_order_ids=tuple(sorted(queried_venues))):
+                    row, owned = evidence.record, request.owned
+                    seen = True
+                    if (evidence.conflict_keys or row.client_order_id != owned.client_order_id
+                            or row.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                            or row.side != ("Buy" if owned.side == "BUY" else "Sell")
+                            or row.quantity != owned.quantity or row.reduce_only != owned.reduce_only
+                            or row.position_idx != 0 or not row.venue_order_id):
                         raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-                    queried_venues = frozenset(venues)
-                    for evidence in self._history_store.order_evidence(
-                            client_order_id=record.client_order_id,
-                            venue_order_ids=tuple(sorted(queried_venues))):
-                        row, owned = evidence.record, request.owned
-                        if (evidence.conflict_keys or row.client_order_id != owned.client_order_id
-                                or row.symbol + "-LINEAR.BYBIT" != owned.instrument_id
-                                or row.side != ("Buy" if owned.side == "BUY" else "Sell")
-                                or row.quantity != owned.quantity or row.reduce_only != owned.reduce_only
-                                or row.position_idx != 0):
-                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-                        venues.add(row.venue_order_id)
-                    for execution in self._history_store.execution_identity_evidence(
-                            client_order_id=record.client_order_id,
-                            venue_order_ids=tuple(sorted(queried_venues))):
-                        fill, owned = execution.record, request.owned
-                        if (execution.conflict_keys or fill.client_order_id != owned.client_order_id
-                                or fill.symbol + "-LINEAR.BYBIT" != owned.instrument_id
-                                or fill.side != ("Buy" if owned.side == "BUY" else "Sell")):
-                            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-                        # Partial fill quantity/price are not original order economics.
-                        venues.add(fill.venue_order_id)
-                    if venues == queried_venues:
-                        break
-            if len(venues) > 1:
-                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
-            result.append(NativeOwnedRequest(request, record.state, frozenset(venues)))
-        return tuple(result)
+                    venues.add(row.venue_order_id)
+                for execution in self._history_store.execution_identity_evidence(
+                        client_order_id=request.owned.client_order_id,
+                        venue_order_ids=tuple(sorted(queried_venues))):
+                    fill, owned = execution.record, request.owned
+                    seen = True
+                    if (execution.conflict_keys or fill.client_order_id != owned.client_order_id
+                            or fill.symbol + "-LINEAR.BYBIT" != owned.instrument_id
+                            or fill.side != ("Buy" if owned.side == "BUY" else "Sell")
+                            or not fill.venue_order_id):
+                        raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                    # Partial fill quantity/price are not original order economics.
+                    venues.add(fill.venue_order_id)
+                if venues == queried_venues:
+                    break
+        if len(venues) > 1:
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        return frozenset(venues), seen
 
     def monitoring_state(self) -> ApplicationMonitoringSummary:
         """Typed read-only logical view; no order acknowledgement or fill promotion."""
@@ -823,6 +909,12 @@ class NativeExecutionRuntime:
         event = codec.decode(inbox.payload_json)
         if type(event) is HistoryExecutionCredit:
             scope, owned = event.execution.source.scope, event.owned_order
+            record = self.journal.get(event.command_key)
+            if (record is not None and record.kind is CommandKind.ENTRY
+                    and self._entry_version(record) == 2):
+                expected = self._fixed_request_v2(record, self._entry_intent_v2(record)).owned
+                if not self._same_owned_v2(owned, expected):
+                    raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
             identity = event.execution.execution.execution_id
         elif type(event) is CorroboratedExecutionCredit:
             fill = event.candidate.fill
@@ -870,9 +962,14 @@ class NativeExecutionRuntime:
                                 state: p.ProtectionProjection) -> None:
         record = self.journal.get(event.command_key)
         if (record is None or record.payload_hash != event.command_payload_hash
-                or hashlib.sha256(record.payload_json.encode()).hexdigest() != record.payload_hash
-                or record.client_order_id != event.owned_order.client_order_id
-                or self._request_for_state(record, state).owned != event.owned_order):
+                or hashlib.sha256(record.payload_json.encode()).hexdigest() != record.payload_hash):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        request = self._request_for_state(record, state)
+        if ((type(request) is LinearFixedLimitNativeOrderRequestV2
+             and not self._same_owned_v2(event.owned_order, request.owned))
+                or (type(request) is NativeOrderRequest
+                    and (record.client_order_id != event.owned_order.client_order_id
+                         or request.owned != event.owned_order))):
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
 
     def _prior_execution_targets(self, execution_id: str) -> tuple[tuple[str, str, str], ...]:
@@ -1195,13 +1292,107 @@ class NativeExecutionRuntime:
             raise RuntimeBlocked("UNKNOWN_COMMAND")
         return record
 
+    def _entry_version(self, record: CommandRecord) -> Literal[1, 2]:
+        """Recognize only the reserved outer frame, never strings inside legacy data."""
+        duplicate = False
+        def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+            nonlocal duplicate
+            result: dict[str, object] = {}
+            for key, value in items:
+                duplicate |= key in result
+                result[key] = value
+            return result
+        try:
+            if type(record.payload_json) is not str or len(record.payload_json.encode("utf-8")) > 65536:
+                raise ValueError
+            raw = json.loads(record.payload_json, object_pairs_hook=pairs)
+        except (ValueError, TypeError, RecursionError):
+            raise RuntimeBlocked("INVALID_DURABLE_ENTRY_VERSION") from None
+        framed = type(raw) is dict and (
+            raw.get("schema") == "RISK_V2_DURABLE_INTENT"
+            or raw.get("record_type") == "DurableEntryIntentV2"
+            or ("wire_version" in raw and ("fields" in raw or "content_sha256" in raw))
+            or ("fields" in raw and "content_sha256" in raw))
+        if record.reservation_v2 is not None or framed:
+            if duplicate:
+                raise RuntimeBlocked("INVALID_DURABLE_ENTRY_VERSION")
+            return 2
+        if record.kind is CommandKind.ENTRY and (type(raw) is not dict
+                or not {"position_id", "plan", "protection_policy"}.issubset(raw)):
+            raise RuntimeBlocked("INVALID_DURABLE_ENTRY_VERSION")
+        return 1
+
+    def _entry_intent_v2(self, record: CommandRecord) -> DurableEntryIntentV2:
+        if (record.kind is not CommandKind.ENTRY or record.reservation is not None
+                or record.reservation_v2 is None):
+            raise RuntimeBlocked("DURABLE_V2_RESERVATION_REQUIRED")
+        intent = decode_entry_intent_v2(record.payload_json)
+        if (encode_entry_intent_v2(intent) != record.payload_json
+                or hashlib.sha256(record.payload_json.encode("utf-8")).hexdigest() != record.payload_hash):
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        reservations.entry_command_identity_sha256_v2(self.bridge.scope,
+            record.command_key, intent, record.reservation_v2)
+        return intent
+
+    def _fixed_request_v2(self, record: CommandRecord,
+                          intent: DurableEntryIntentV2) -> LinearFixedLimitNativeOrderRequestV2:
+        policy, envelope = intent.protection_policy, intent.envelope
+        try:
+            order = p.OwnedOrder(record.client_order_id, intent.position_id,
+                envelope.instrument_pin.native_instrument_id, envelope.side, "ENTRY",
+                envelope.base_quantity, False, policy.generation, policy.revision)
+            request = LinearFixedLimitNativeOrderRequestV2(envelope.scope.product_scope, order,
+                envelope, AttachedProtection(policy.stop_price, policy.take_profit_price,
+                                             policy.trigger_source), 0)
+            if request.scope != self.bridge.scope:
+                raise ValueError
+            return request
+        except ValueError:
+            raise RuntimeBlocked("DURABLE_NATIVE_V2_MAPPING_UNSUPPORTED") from None
+
+    @staticmethod
+    def _same_owned_v2(actual: p.OwnedOrder, expected: p.OwnedOrder) -> bool:
+        """Finite V2 leaf comparison, including the original Decimal representation."""
+        if type(actual) is not p.OwnedOrder or type(expected) is not p.OwnedOrder:
+            return False
+        names = ("client_order_id", "position_id", "instrument_id", "side", "role", "policy_revision")
+        identities = []
+        for owner in (actual, expected):
+            try:
+                values = {field.name: object.__getattribute__(owner, field.name)
+                          for field in fields(p.OwnedOrder)}
+            except AttributeError:
+                return False
+            quantity, generation = values["quantity"], values["generation"]
+            if (any(type(values[name]) is not str for name in names)
+                    or type(quantity) is not Decimal or not quantity.is_finite() or quantity <= 0
+                    or type(values["reduce_only"]) is not bool or type(generation) is not int
+                    or generation < 0 or generation.bit_length() > 63
+                    or values["trigger_price"] is not None or values["trigger_source"] is not None):
+                return False
+            identities.append((*(values[name] for name in names), quantity.as_tuple(),
+                               values["reduce_only"], generation, None, None))
+        return identities[0] == identities[1]
+
+    def _register_restored_request(self, request: NativeRequest) -> None:
+        if type(request) is LinearFixedLimitNativeOrderRequestV2:
+            self.bridge.register_fixed_limit_v2(request)
+        elif type(request) is NativeOrderRequest:
+            self.bridge.register_owned(request)
+        else:
+            raise RuntimeBlocked("UNSUPPORTED_NATIVE_COMMAND")
+
     def _plan(self, record: CommandRecord) -> r.EntryDecision:
+        if self._entry_version(record) == 2:
+            raise RuntimeBlocked("V2_FINANCIAL_DISPATCH_UNAVAILABLE")
         result = codec.decode(json.dumps(json.loads(record.payload_json)["plan"]))
         if type(result) is not r.EntryDecision:
             raise RuntimeBlocked("INVALID_DURABLE_PLAN")
         return result
 
     def _policy(self, record: CommandRecord) -> p.ProtectionPolicy:
+        if record.kind is CommandKind.ENTRY and self._entry_version(record) == 2:
+            return self._entry_intent_v2(record).protection_policy
         result = codec.decode(json.dumps(json.loads(record.payload_json)["protection_policy"]))
         if type(result) is not p.ProtectionPolicy:
             raise RuntimeBlocked("INVALID_DURABLE_PROTECTION_POLICY")
@@ -1214,6 +1405,13 @@ class NativeExecutionRuntime:
         self._register(state, order)
 
     def _entry_mapping(self, record: CommandRecord) -> tuple[p.ProtectionProjection, p.OwnedOrder]:
+        if self._entry_version(record) == 2:
+            request = self._fixed_request_v2(record, self._entry_intent_v2(record))
+            order = request.owned
+            if self.store.get_position(order.position_id) is not None:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            return p.ProtectionProjection(request.scope, order.position_id,
+                                          order.instrument_id, order.side), order
         raw = json.loads(record.payload_json)
         plan, policy = self._plan(record), self._policy(record)
         if (hashlib.sha256(record.payload_json.encode()).hexdigest() != record.payload_hash
@@ -1233,15 +1431,27 @@ class NativeExecutionRuntime:
         return p.ProtectionProjection(self.bridge.scope, order.position_id,
                                       order.instrument_id, order.side), order
 
-    def _request(self, record: CommandRecord) -> NativeOrderRequest:
+    def _request(self, record: CommandRecord) -> NativeRequest:
         state = self._find_owned(record.client_order_id)
         if state is None:
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         return self._request_for_state(record, state)
 
     def _request_for_state(self, record: CommandRecord,
-                           state: p.ProtectionProjection) -> NativeOrderRequest:
+                           state: p.ProtectionProjection) -> NativeRequest:
         """Check immutable journal intent without recursively replaying projections."""
+        v2 = record.kind is CommandKind.ENTRY and self._entry_version(record) == 2
+        if v2:
+            if (type(state) is not p.ProtectionProjection
+                    or any(type(value) is not str for value in
+                           (state.position_id, state.instrument_id, state.entry_side))
+                    or any(type(item) is not p.OwnedOrder or type(item.client_order_id) is not str
+                           for item in state.orders)):
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+            try:
+                _validate_account(state.scope)
+            except ValueError:
+                raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED") from None
         orders = tuple(item for item in state.orders if item.client_order_id == record.client_order_id)
         if len(orders) != 1 or state.scope != self.bridge.scope:
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
@@ -1250,6 +1460,15 @@ class NativeExecutionRuntime:
             raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         raw = json.loads(record.payload_json)
         if record.kind is CommandKind.ENTRY:
+            if v2:
+                request = self._fixed_request_v2(record, self._entry_intent_v2(record))
+                expected = request.owned
+                if (not self._same_owned_v2(order, expected)
+                        or state.position_id != expected.position_id
+                        or state.instrument_id != expected.instrument_id
+                        or state.entry_side != expected.side or state.scope != request.scope):
+                    raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+                return request
             plan, policy = self._plan(record), self._policy(record)
             expected = p.OwnedOrder(record.client_order_id, raw["position_id"],
                 plan.scope.symbol + "-LINEAR.BYBIT", "BUY" if plan.proposal.side == "LONG" else "SELL",
@@ -1358,7 +1577,7 @@ class NativeExecutionRuntime:
                 state = p.ProtectionProjection(self.bridge.scope, position_id,
                     dummy_order.instrument_id, dummy_order.side)
             self._register(state, replace(dummy_order, client_order_id=record.client_order_id))
-            self.bridge.register_owned(self._request(record))
+            self._register_restored_request(self._request(record))
             return record
 
     def _entry_gate(self, record: CommandRecord, final: r.EntryDecision) -> None:
@@ -1391,8 +1610,10 @@ class NativeExecutionRuntime:
 
     def _leverage_plan(self, entry_key: str, control_key: str) -> r.EntryDecision:
         self._guard()
-        self._require_qualification()
         record = self._required(entry_key)
+        if self._entry_version(record) == 2:
+            raise RuntimeBlocked("V2_FINANCIAL_DISPATCH_UNAVAILABLE")
+        self._require_qualification()
         if (record.kind is not CommandKind.ENTRY or record.state is not CommandState.PENDING
                 or any(state.owned_quantity != 0 or state.conflicts for state in self._states())
                 or any(item.command_key not in (entry_key, control_key)
@@ -1426,6 +1647,9 @@ class NativeExecutionRuntime:
         """
         with self._mutex:
             self._guard()
+            entry = self._required(entry_key)
+            if self._entry_version(entry) == 2:
+                raise RuntimeBlocked("V2_FINANCIAL_DISPATCH_UNAVAILABLE")
             self._require_qualification()
             if (type(control) is not NativeLeverageControl or control.scope != self.bridge.scope
                     or control.native_account_id != self.bridge.native_account_id
@@ -1605,8 +1829,12 @@ class NativeExecutionRuntime:
                 return record  # In particular, UNKNOWN never resubmits.
             if record.kind not in (CommandKind.ENTRY, CommandKind.EXIT):
                 raise RuntimeBlocked("EXPLICIT_CONTROL_DISPATCH_REQUIRED")
+            if record.kind is CommandKind.ENTRY and self._entry_version(record) == 2:
+                raise RuntimeBlocked("V2_FINANCIAL_DISPATCH_UNAVAILABLE")
             self._require_qualification()
             request = self._request(record)
+            if type(request) is not NativeOrderRequest:
+                raise RuntimeBlocked("UNSUPPORTED_NATIVE_COMMAND")
             if record.kind is CommandKind.ENTRY:
                 plan = self._plan(record)
                 reservations = self.reservation_totals(plan.scope, record.command_key)
@@ -1771,7 +1999,7 @@ class NativeExecutionRuntime:
                  "reference_price": str(reference_price), "policy_revision": policy})
             order = replace(dummy, client_order_id=record.client_order_id)
             self._register(state, order)
-            self.bridge.register_owned(self._request(record))
+            self._register_restored_request(self._request(record))
             return record
 
     async def poll_readback(self, adapter: BybitVenueReadback,
