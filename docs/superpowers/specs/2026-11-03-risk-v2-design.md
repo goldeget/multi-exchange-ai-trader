@@ -1,4 +1,16 @@
-# Root adoption — Risk V2 exact arithmetic foundation
+# Current root adoption — Risk V2 Task1 core value contracts
+
+Current worktree F:/자동매매프로그램/worktrees/risk-v2-core-20261103, branch gpt/bybit-risk-v2-core-20261103, source BASE3f130cfcbc77db61cb15bf145f227fad6bcf20a7; root records the seed commit separately. The accepted remote main is61ff7270100b0ad8fda42bb86e68b2f5bf8ed42b with CI125 success. The source branch's T2 is separately under correction/review; it is not consumed or modified by this task. Task0 math and frozen A02 definitions/shared types are the reviewed dependencies.
+
+CURRENT IMPLEMENTATION: Task1 ONLY (eleven core DTOs, four explicit hashes, A02 pin projection and minimal support fixture). The retained Task0 adoption below is historical. Tasks2–7 are subsequent independently reviewed pure tasks;8–13/E05 actual integration still required. Task1 fields in original §6 and plan Task1 are unchanged by the external E05-M1 adoption. That amendment affects later margin/liquidation Task4/6 representation and model basis, and must be read before those tasks start. It does not authorize pre-implementing their DTOs here.
+
+Root confirms: constructors and hash APIs validate static types/representation/relationships, not current expiry using an invented now. They normalize only exact datetime with exact standard timezone and enforce available static source/computation/validity order. Full instrument-receipt causal bounds and current freshness belong to later functions that receive full inputs and explicit now. Hashing must not read a clock. Trusted class fields and exact-type checks reject forged/missing/subclass values without invoking attacker hooks. RiskV2Rejected is explicitly re-exported as the SAME math0 class. Existing V1, A02, math0 and shared source files remain unchanged.
+
+Verification uses the existing fixed Python and five literal-off source-file variables below, meaningful importable-stub behavioral RED, focused Task1/product checks and touched Ruff/strict mypy. No dependency install, real I/O/native/order/paid AI/server action. Root alone owns Git and docs; source owners never stage/commit. User has authorized continuous implementation/review/passing-main merges and opted out of routine design questions. Preserve all work/evidence.
+
+---
+
+# Historical root adoption — Risk V2 exact arithmetic foundation
 
 ADOPTED FOR CURRENT IMPLEMENTATION: Task0 ONLY. Tasks1–7 are preflighted follow-on generic implementation, to begin from reviewed frozen Task0; Tasks8–13/E05-M1/M2/M3 remain subsequent actual policy/source/model/native/runtime plans. They are not completion tasks of the current Task0 foundation plan. Historical PROPOSED/preparation wording below records original authorship; this root adoption supersedes it for Task0 only. Full63/product work continues without intermediate final responses.
 
