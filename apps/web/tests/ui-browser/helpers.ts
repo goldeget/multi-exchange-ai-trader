@@ -5,6 +5,7 @@ import { basename } from "node:path";
 import { arch, cpus, platform, release } from "node:os";
 import { expect, type CDPSession, type Page, type TestInfo } from "@playwright/test";
 import { FIXED_TIME, demoUrl } from "./routes";
+import { observeProcCommandLine, observeRenderingArgv } from "./rendering-observation";
 
 export async function settleFrames(page: Page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -48,20 +49,6 @@ type ScreenshotOptions = NonNullable<Parameters<Page['screenshot']>[0]>;
 // request is optional, bounded, and uses this test's existing browser/page.
 const unavailable = (reason: string) => ({ status: "unavailable", reason });
 const textLimit = (value: unknown) => typeof value === "string" ? value.replace(/\p{Cc}/gu, " ").slice(0, 256) : null;
-const switchNames = ["disable-skia-runtime-opts", "disable-accelerated-2d-canvas", "disable-gpu", "disable-gpu-compositing", "disable-software-rasterizer", "enable-automation", "headless", "use-angle", "use-gl", "enable-features", "disable-features"] as const;
-function renderingSwitches(args: string[]) {
-  const values: Record<string, unknown> = {};
-  for (const name of switchNames) {
-    const matches = args.filter(arg => arg === `--${name}` || arg.startsWith(`--${name}=`));
-    values[name] = { present: matches.length > 0 };
-    // Never retain arbitrary switch values (feature lists can contain URLs).
-    if (["headless", "use-angle", "use-gl"].includes(name)) {
-      const mode = matches[0]?.split("=")[1];
-      values[name] = { present: matches.length > 0, mode: mode === undefined ? null : ["new", "old", "swiftshader", "swiftshader-webgl", "vulkan", "gl", "egl", "gles", "angle", "disabled", "default"].includes(mode) ? mode : "unavailable-not-allowlisted" };
-    }
-  }
-  return values;
-}
 
 type DiagnosticDeadline = { deadline: number; expired: boolean };
 function requireActive(scope: DiagnosticDeadline, deadline = scope.deadline) {
@@ -189,7 +176,7 @@ async function ownedProcesses(session: CDPSession, budgetMs = 2500) {
       const before = await processIdentity(item.id, scope);
       requireActive(scope);
       if (before.executable !== browserIdentity.executable || before.file !== browserIdentity.file) throw new Error("diagnostic-executable-mismatch");
-      const flags = renderingSwitches((await boundedRead(`/proc/${item.id}/cmdline`, 262144, scope)).split("\0"));
+      const flags = observeProcCommandLine(await boundedRead(`/proc/${item.id}/cmdline`, 262144, scope));
       requireActive(scope);
       const binary = await executableHash(before, scope);
       requireActive(scope);
@@ -247,7 +234,7 @@ async function captureDiagnostics(page: Page, testInfo: TestInfo, name: string) 
   });
   const stamp = () => ({ wallTime: new Date().toISOString(), monotonicMs: performance.now() });
   const data: Record<string, unknown> = {
-    schema: "u12-capture-renderer-v1", name, testId: testInfo.testId.slice(0, 256), project: testInfo.project.name.slice(0, 128),
+    schema: "u12-capture-renderer-v2", name, testId: testInfo.testId.slice(0, 256), project: testInfo.project.name.slice(0, 128),
     workerIndex: testInfo.workerIndex, parallelIndex: testInfo.parallelIndex, nodePid: process.pid, started: stamp(),
     cause: "UNDETERMINED", completeness: "diagnostic-incomplete-target-to-pid-unresolved", timingCaveat: "read-only-instrumentation-can-perturb-timing",
     job: Object.fromEntries(["GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "GITHUB_SHA", "ImageOS", "ImageVersion"].map(key => {
@@ -269,7 +256,7 @@ async function captureDiagnostics(page: Page, testInfo: TestInfo, name: string) 
       const version = await collect(() => session.send("Browser.getVersion"));
       data.browserVersion = "product" in version ? { product: textLimit(version.product), revision: textLimit(version.revision), protocolVersion: textLimit(version.protocolVersion), jsVersion: textLimit(version.jsVersion) } : version;
       const command = await collect(() => session.send("Browser.getBrowserCommandLine"));
-      data.browserFlags = "arguments" in command ? renderingSwitches(command.arguments) : command;
+      data.browserFlags = "arguments" in command ? observeRenderingArgv(command.arguments) : command;
       const info = await collect(() => session.send("SystemInfo.getInfo"));
       data.gpu = "gpu" in info ? { devices: info.gpu.devices.slice(0, 4).map(device => ({ vendorId: device.vendorId, deviceId: device.deviceId, vendorString: textLimit(device.vendorString), deviceString: textLimit(device.deviceString), driverVendor: textLimit(device.driverVendor), driverVersion: textLimit(device.driverVersion) })),
         auxiliary: Object.fromEntries(["glRenderer", "glVendor", "glVersion", "displayType", "skiaBackendType", "passthroughCmdDecoder", "sandboxed", "inProcessGpu"].map(key => { const value: unknown = info.gpu.auxAttributes?.[key]; return [key, typeof value === "boolean" || typeof value === "number" ? value : textLimit(value) ?? unavailable("not-returned")]; })) } : info;
