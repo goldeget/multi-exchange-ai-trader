@@ -156,7 +156,7 @@ def _decode(raw: bytes) -> tuple[dict[str, object], bytes, datetime]:
     code: str | None = None
     body: object = None
     try:
-        body = json.loads(raw, object_pairs_hook=pairs, parse_int=integer,
+        body = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs, parse_int=integer,
                           parse_float=forbidden, parse_constant=forbidden)
     except (ValueError, UnicodeError, RecursionError):
         code = _PREFIX + "JSON_INVALID"

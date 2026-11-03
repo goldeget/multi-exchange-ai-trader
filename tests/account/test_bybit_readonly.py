@@ -110,6 +110,8 @@ async def test_exact_route_rejects_original_response_request_mismatch(url: str) 
     ({"content-encoding": "identity, identity"}, "ENCODING_UNSUPPORTED"),
     ({"content-encoding": "IDENTITY"}, "ENCODING_UNSUPPORTED"),
     ({"content-length": "65537"}, "RESOURCE_LIMIT"),
+    ({"content-length": "000065537"}, "RESOURCE_LIMIT"),
+    ({"content-length": "9" * 5000}, "RESOURCE_LIMIT"),
     ({"content-length": "-1"}, "RESPONSE_INVALID"),
     ({"content-length": "1, 1"}, "RESPONSE_INVALID"),
 ])
@@ -119,6 +121,24 @@ async def test_exact_route_rejects_headers_before_stream_consumption(
     stream = ExactStream((EXACT_BODY,))
     await exact_failure(lambda _: httpx.Response(200, headers=headers, stream=stream), code)
     assert stream.closed and stream.consumed == 0
+
+
+@pytest.mark.parametrize("padding", [1, 6, 5000])
+async def test_exact_route_accepts_numeric_content_length_with_leading_zeros(padding: int) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=stream,
+                                     headers={"content-length": "0" * padding + str(len(EXACT_BODY))})))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert result.decoded_body_bytes == EXACT_BODY
+        assert budget.physical_attempts == 1 and stream.closed and stream.consumed == 1
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.parametrize(("status", "headers", "code"), [

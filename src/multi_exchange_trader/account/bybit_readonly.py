@@ -614,7 +614,8 @@ class BybitReadOnlyClient:
                     if (len(lengths) != 1 or not length or not length.isascii()
                             or not length.isdecimal()):
                         raise InstrumentSourceError("INSTRUMENT_SOURCE_RESPONSE_INVALID")
-                    if len(length) > 5 or int(length) > 65536:
+                    significant = length.lstrip("0") or "0"
+                    if len(significant) > 5 or int(significant) > 65536:
                         raise InstrumentSourceError("INSTRUMENT_SOURCE_RESOURCE_LIMIT")
             data = bytearray()
             async for chunk in response.aiter_bytes():

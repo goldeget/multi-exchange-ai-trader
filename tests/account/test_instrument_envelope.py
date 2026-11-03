@@ -79,6 +79,33 @@ def test_strict_decoder_rejects_wire_values(raw: bytes) -> None:
         module.decode_instrument_envelope(raw)
 
 
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-32", "utf-16-le", "utf-32-be"])
+def test_strict_decoder_rejects_non_utf8_encoding_without_error_context(encoding: str) -> None:
+    text = ('{"retCode":0,"retMsg":"café","result":{"category":"linear","list":[]},'
+            '"time":1700000000000}')
+    raw = text.encode(encoding)
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    with pytest.raises(module.InstrumentSourceError) as caught:
+        module.decode_instrument_envelope(raw)
+    assert caught.value.code == "INSTRUMENT_SOURCE_JSON_INVALID"
+    assert caught.value.args == ("INSTRUMENT_SOURCE_JSON_INVALID",)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+def test_valid_utf8_keeps_original_bytes_and_hash_separate_from_canonical_bytes() -> None:
+    raw = ('{ "retCode":0,"retMsg":"café","result":{"category":"linear","list":[]},'
+           '"time":1700000000000 }').encode()
+    body, canonical, _ = module.decode_instrument_envelope(raw)
+    envelope = replace(valid_envelope(), decoded_body_bytes=raw,
+                       decoded_body_sha256=hashlib.sha256(raw).hexdigest(),
+                       canonical_envelope_bytes=canonical)
+    assert body["retMsg"] == "café"
+    assert envelope.decoded_body_bytes == raw
+    assert envelope.decoded_body_sha256 == hashlib.sha256(raw).hexdigest()
+    assert canonical != raw and b"caf\\u00e9" in canonical
+
+
 def test_strict_decoder_applies_frozen_tree_resource_bounds() -> None:
     for raw in (b" " * 65537, b'{"x":"' + b"x" * 129 + b'"}',
                 b'{"x":' + b"[" * 9 + b"0" + b"]" * 9 + b"}"):
