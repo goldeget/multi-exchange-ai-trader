@@ -424,3 +424,92 @@ def test_external_connection_phase_change_is_detected(pending: Any, tmp_path: Pa
         db.execute("UPDATE commands SET state='SENDING' WHERE command_key='COMMAND'")
     with rejected(CONFLICT):
         require(journal, view, intent)
+
+
+def test_issuer_copy_before_capture_cannot_issue(pending: Any) -> None:
+    journal, intent = pending
+    alias = copy.copy(journal)
+    assert alias is not journal
+    statements: list[str] = []
+    journal._db.set_trace_callback(statements.append)
+    try:
+        with rejected(CONFLICT):
+            capture(alias, intent)
+        assert statements == []
+    finally:
+        journal._db.set_trace_callback(None)
+    data = require(journal, capture(journal, intent), intent)
+    assert data.full.position_count == 1 and data.evaluation.position_count == 0
+    assert data.full.risk_amount == Decimal(12) and data.full.margin_amount == Decimal(52)
+
+
+def test_issuer_copy_after_capture_cannot_consume(pending: Any) -> None:
+    journal, intent = pending
+    view = capture(journal, intent)
+    data = require(journal, view, intent)
+    alias = copy.copy(journal)
+    statements: list[str] = []
+    journal._db.set_trace_callback(statements.append)
+    try:
+        with rejected(CONFLICT):
+            require(alias, view, intent)
+        assert statements == []
+    finally:
+        journal._db.set_trace_callback(None)
+    assert require(journal, view, intent) is data
+
+
+def test_issuer_copy_cannot_revive_equal_recapture(pending: Any) -> None:
+    journal, intent = pending
+    old = capture(journal, intent)
+    alias = copy.copy(journal)
+    fresh = capture(journal, intent)
+    data = require(journal, fresh, intent)
+    assert fresh is not old
+    with rejected(CONFLICT):
+        require(alias, old, intent)
+    assert require(journal, fresh, intent) is data
+    with rejected(CONFLICT):
+        require(journal, old, intent)
+
+
+def test_issuer_copy_cannot_revive_failed_claim(pending: Any) -> None:
+    journal, intent = pending
+    old = capture(journal, intent)
+    alias = copy.copy(journal)
+    with rejected(CONFLICT):
+        claim(journal, intent, expected_command_identity_sha256="b" * 64)
+    assert journal.get("COMMAND").state is j.CommandState.PENDING
+    with rejected(CONFLICT):
+        require(alias, old, intent)
+    with rejected(CONFLICT):
+        require(journal, old, intent)
+    assert require(journal, capture(journal, intent), intent).full.position_count == 1
+
+
+@pytest.mark.parametrize("operation", ["capture", "require"])
+def test_issuer_copy_of_copy_is_not_an_original(pending: Any, operation: str) -> None:
+    journal, intent = pending
+    view = capture(journal, intent)
+    data = require(journal, view, intent)
+    alias = copy.copy(copy.copy(journal))
+    with rejected(CONFLICT):
+        if operation == "capture":
+            capture(alias, intent)
+        else:
+            require(alias, view, intent)
+    assert require(journal, view, intent) is data
+
+
+@pytest.mark.parametrize("operation", ["capture", "require"])
+def test_issuer_constructor_bypass_has_no_authority(pending: Any, operation: str) -> None:
+    journal, intent = pending
+    view = capture(journal, intent)
+    data = require(journal, view, intent)
+    uninitialized = object.__new__(j.CommandJournal)
+    with rejected(CONFLICT):
+        if operation == "capture":
+            capture(uninitialized, intent)
+        else:
+            require(uninitialized, view, intent)
+    assert require(journal, view, intent) is data

@@ -349,6 +349,7 @@ class CommandJournal:
     def __init__(self, path: Path, scope: ExecutionScope) -> None:
         self.scope = scope
         self._scope = (scope.account_id, scope.environment)
+        self._own_pending_issuer_v2: CommandJournal = self
         self._own_pending_closed_v2 = False
         self._own_pending_slot_v2: tuple[
             _OwnPendingViewV2, _OwnPendingDataV2, tuple[object, ...], tuple[object, ...]
@@ -1005,6 +1006,9 @@ class CommandJournal:
         """Capture one true local PENDING pair; no lease, source or financial authority."""
         from multi_exchange_trader.execution import risk_v2_contracts as c
 
+        issuer: object = getattr(self, "_own_pending_issuer_v2", None)
+        if issuer is not self:
+            c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
         # Even a failed/equal-value recapture cannot leave an older handle current.
         self._own_pending_slot_v2 = None
         if type(self) is not CommandJournal or self._own_pending_closed_v2:
@@ -1042,6 +1046,9 @@ class CommandJournal:
         from multi_exchange_trader.execution import risk_v2_contracts as c
 
         try:
+            issuer: object = getattr(self, "_own_pending_issuer_v2", None)
+            if issuer is not self:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
             slot = self._own_pending_slot_v2
             if (
                 type(self) is not CommandJournal
