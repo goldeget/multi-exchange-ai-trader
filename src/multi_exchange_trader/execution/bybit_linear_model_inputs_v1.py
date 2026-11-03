@@ -1949,6 +1949,8 @@ def _venue_links_v1(
         _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
     observations = {o.key: o for o in catalog.observations}
     for member, table in zip(domain.members, venue.tier_tables, strict=True):
+        if _pin_payload_v2(table.instrument_pin) != _pin_payload_v2(member.instrument_pin):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
         projected = project_bybit_tier_snapshot_v1(
             table, instrument=observations[member.instrument_pin.key]
         )

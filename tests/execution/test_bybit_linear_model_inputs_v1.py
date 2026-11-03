@@ -2836,3 +2836,71 @@ def test_d_venue_digest_independent_named_child_recipe() -> None:
         "valid_until": "2026-11-03T00:00:20.000000+00:00",
     }
     assert a1.bybit_venue_state_sha256_v1(venue) == expected_hash("BybitVenueStateV1", payload)
+
+
+def d_table_catalog_revision_substitution(index: int) -> dict[str, Any]:
+    """Keep the source payload and real generic graph coherent with a foreign table pin."""
+    graph = full_d_graph()
+    venue_fields = list(graph["venue_fields"])
+    tables = list(venue_fields[6])
+    original = tables[index]
+    pin = replace(original.instrument_pin, catalog_revision="f" * 64)
+    source_payload = _canonical_sha256_v2(
+        "BybitLinearTierSourcePayloadV1",
+        {
+            "instrument_pin": d_c._pin_payload_v2(pin),
+            "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+            "raw_manifest_sha256": original.raw_manifest_sha256,
+            "full_table_sha256": original.full_table_sha256,
+        },
+    )
+    table = replace(
+        original,
+        instrument_pin=pin,
+        reference=replace(original.reference, payload_sha256=source_payload),
+    )
+    tables[index] = table
+    venue_fields[6] = tuple(tables)
+    graph["venue_fields"] = tuple(venue_fields)
+    projected = a1.project_bybit_tier_snapshot_v1(
+        table, instrument=graph["catalog"].observations[index]
+    )
+    members = tuple(
+        replace(member, tiers=projected) if member_index == index else member
+        for member_index, member in enumerate(graph["domain"].members)
+    )
+    inputs = replace(graph["inputs"], tiers=projected) if index == 0 else graph["inputs"]
+    graph = d_reprepare(graph, inputs, members=members)
+    assert table.instrument_pin.catalog_revision == "f" * 64
+    assert graph["domain"].members[index].instrument_pin.catalog_revision == graph["catalog"].revision
+    assert graph["catalog"].revision != "f" * 64
+    assert len(a1.bybit_tier_table_sha256_v1(table)) == 64
+    assert d_domain.risk_domain_sha256_v2(graph["domain"]) == graph["inputs"].risk_domain_sha256
+    return graph
+
+
+@pytest.mark.parametrize("index", (0, 1), ids=("selected-x", "held-pending-y"))
+def test_d_full_binder_rejects_coherent_foreign_table_catalog_pin(index: int) -> None:
+    graph = d_table_catalog_revision_substitution(index)
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_SOURCE_MISMATCH$"):
+        bind_d_graph(graph)
+
+
+def test_d_calculate_rejects_coherent_foreign_y_table_pin_before_selector() -> None:
+    graph = d_table_catalog_revision_substitution(1)
+    original = bind_d_graph(full_d_graph())
+    bound = replace(
+        original,
+        risk_inputs=graph["inputs"],
+        preparation=graph["preparation"],
+        domain=graph["domain"],
+        venue=a1.BybitVenueStateV1(*graph["venue_fields"]),
+    )
+    assert len(a1.bybit_model_inputs_sha256_v1(bound)) == 64
+    # Selected X remains genuinely feasible; whole-held binding must reject Y
+    # before that local selector can stand in for catalog provenance.
+    assert type(c_model.select_smallest_bybit_leverage_v1(bound.point, now=graph["now"])) is (
+        c_model.BybitLeverageSearchV1
+    )
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_SOURCE_MISMATCH$"):
+        c_model.calculate_bound_bybit_model_v1(bound, now=graph["now"])
