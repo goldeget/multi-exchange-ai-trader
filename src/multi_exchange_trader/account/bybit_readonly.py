@@ -17,14 +17,16 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast
 from urllib.parse import urlencode
+from uuid import uuid4
 
 import httpx
 
@@ -53,6 +55,7 @@ from .instrument_envelope import (
 
 if TYPE_CHECKING:
     from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
+    from .risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
 
 READ_ONLY_PATHS = frozenset(
     {
@@ -198,6 +201,66 @@ class _InstrumentRoute:
         self.budget.require_active_group(self.group)
 
 
+@dataclass
+class _RiskRoute(_InstrumentRoute):
+    owner: "BybitReadOnlyClient | None" = None
+    client: httpx.AsyncClient | None = None
+    source_environment: Literal["PUBLIC_MAINNET", "PUBLIC_TESTNET"] = "PUBLIC_MAINNET"
+    source_id: str = ""
+    generation: str = ""
+    observation_id: str = ""
+    params: tuple[tuple[str, str], ...] = ()
+    deadline: float | None = None
+    last_mono: float = 0.0
+    risk_envelope: "BybitRiskLimitEnvelopeReadV1 | None" = None
+
+    def _owner_check(self) -> None:
+        assert self.owner is not None and self.client is not None
+        operation = self.owner._operation.get()
+        if operation is not None and operation is not self.budget:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
+        if self.owner._risk_generation is None:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
+        if self.client.is_closed:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_CLOSED")
+        if (self.owner._client is not self.client
+                or self.owner._risk_http_client is not self.client
+                or self.owner._risk_generation != self.generation
+                or self.owner._risk_source_id != self.source_id):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
+        environment = "mainnet" if self.source_environment == "PUBLIC_MAINNET" else "testnet"
+        if (self.owner._public_source_environment != self.source_environment
+                or self.owner.environment != environment
+                or self.owner.base_url != allowed_host(environment)
+                or self.owner._api_key != "" or self.owner._api_secret != ""
+                or self.owner._credential_check is not None):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        now = time.monotonic()
+        if type(now) is not float or not math.isfinite(now) or now < self.last_mono:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_CLOCK_INVALID")
+        self.last_mono = now
+        if self.deadline is not None and now >= self.deadline:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_TIMEOUT")
+
+    def check(self) -> None:
+        self._owner_check()
+        self.budget.require_active_group(self.group)
+        # Budget guards are arbitrary owner callbacks. Check again after them.
+        self._owner_check()
+
+    def request_origin(self, request: httpx.Request) -> HttpsOrigin:
+        origin = _exact_origin(request)
+        host = "api.bybit.com" if self.source_environment == "PUBLIC_MAINNET" else "api-testnet.bybit.com"
+        if (origin != HttpsOrigin("https", host, 443) or request.method != "GET"
+                or request.url.raw_path.split(b"?", 1)[0] != b"/v5/market/risk-limit"
+                or request.url.query != _query(list(self.params)).encode("ascii")
+                or request.url.fragment
+                or request.headers.get_list("accept-encoding") != ["identity"]
+                or any(name.lower().startswith("x-bapi") for name in request.headers)):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        return origin
+
+
 def _exact_origin(request: httpx.Request) -> HttpsOrigin:
     url = request.url
     if url.userinfo or (url.port is not None and url.port != 443):
@@ -216,6 +279,10 @@ def _check_exact_request(request: httpx.Request, key: InstrumentKey) -> HttpsOri
 
 class BybitReadOnlyClient:
     """GET-only Bybit client. It cannot place orders or change leverage."""
+
+    _risk_generation: str | None
+    _risk_source_id: str
+    _risk_http_client: httpx.AsyncClient
 
     def __init__(
         self,
@@ -289,6 +356,9 @@ class BybitReadOnlyClient:
         client._log_filter = _DropCredentialLogs(())
         client._loggers = []
         client._initialize_http(transport=transport, public=True)
+        client._risk_source_id = uuid4().hex
+        client._risk_generation = uuid4().hex
+        client._risk_http_client = client._client
         return client
 
     @classmethod
@@ -335,6 +405,9 @@ class BybitReadOnlyClient:
         )
 
     async def aclose(self) -> None:
+        if self._public_source_environment is not None:
+            # Revoke in-flight raw risk reads before awaiting transport cleanup.
+            self._risk_generation = None
         for logger in self._loggers:
             try:
                 logger.removeFilter(self._log_filter)
@@ -461,6 +534,91 @@ class BybitReadOnlyClient:
         assert route.envelope is not None
         return route.envelope
 
+    async def read_risk_limit_envelope(
+        self, key: InstrumentKey, *, cursor: str,
+        budget: "MonitoringReadBudget", group: "ReadGroupToken", deadline: float | None,
+    ) -> "BybitRiskLimitEnvelopeReadV1":
+        """Capture one public raw page; client lifetime IDs confer no source authority."""
+        from ..execution.monitoring_budget import MonitoringBudgetError, MonitoringReadBudget
+        from ..execution.risk_v2_contracts import _key_payload_v2
+        from ..execution.risk_v2_math import RiskV2Rejected
+        from .risk_limit_envelope import _reject_v1, _text_v1
+
+        if type(budget) is not MonitoringReadBudget:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_BUDGET_REQUIRED")
+        code: str | None = None
+        try:
+            if self._public_source_environment not in ("PUBLIC_MAINNET", "PUBLIC_TESTNET"):
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_SOURCE_UNSUPPORTED")
+            payload = _key_payload_v2(key)
+            if payload["product"] != "LINEAR":
+                _reject_v1("RISK_V2_UNSUPPORTED_PRODUCT")
+            _text_v1(cursor, 1024)
+            if deadline is not None and (type(deadline) is not float
+                    or not math.isfinite(deadline) or deadline < 0):
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_INPUT_INVALID")
+            started = time.monotonic()
+            if type(started) is not float or not math.isfinite(started) or started < 0:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_CLOCK_INVALID")
+            if self._risk_generation is None:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
+            params: tuple[tuple[str, str], ...] = (("category", "linear"), ("symbol", key.symbol))
+            if cursor:
+                params += (("cursor", cursor),)
+            route = _RiskRoute(
+                key, budget, group, datetime.now(UTC), started, budget.physical_attempts,
+                owner=self, client=self._risk_http_client,
+                source_environment=self._public_source_environment,
+                source_id=self._risk_source_id, generation=self._risk_generation,
+                observation_id=uuid4().hex, params=params, deadline=deadline, last_mono=started,
+            )
+            route.check()
+            with self._monitoring_operation(budget):
+                await self._read("/v5/market/risk-limit", list(params), signed=False,
+                                 deadline=deadline, route=route)
+                route.check()
+            assert route.risk_envelope is not None
+            return route.risk_envelope
+        except InstrumentSourceError as error:
+            code = error.code
+        except BybitBlocked:
+            code = "INSTRUMENT_SOURCE_ACCESS_RESTRICTED"
+        except BybitReadError as error:
+            translations = {
+                "timeout": "TIMEOUT", "proxy": "NETWORK", "dns": "NETWORK", "network": "NETWORK",
+                "response_too_large": "RESOURCE_LIMIT", "invalid_json": "JSON_INVALID",
+                "redirect": "ORIGIN_MISMATCH", "http_403": "ACCESS_RESTRICTED",
+                "http_451": "ACCESS_RESTRICTED", "ret_10006": "RATE_LIMITED",
+                "http_status": "HTTP_REJECTED", "monitoring_operation_overlap": "OVERLAP",
+            }
+            if error.code not in translations:
+                raise
+            code = "INSTRUMENT_SOURCE_" + translations[error.code]
+        except MonitoringBudgetError as error:
+            translations = {
+                "MONITORING_GROUP_REQUIRED": "GROUP_REQUIRED",
+                "MONITORING_DEADLINE_OR_CLOCK": "BUDGET_EXHAUSTED",
+                "MONITORING_LOGICAL_GET_LIMIT": "BUDGET_EXHAUSTED",
+                "MONITORING_PHYSICAL_ATTEMPTS": "BUDGET_EXHAUSTED",
+                "MONITORING_READ_FAILED": "BUDGET_EXHAUSTED",
+            }
+            if len(error.args) != 1 or error.args[0] not in translations:
+                raise
+            code = "INSTRUMENT_SOURCE_" + translations[error.args[0]]
+        except RiskV2Rejected:
+            try:
+                budget.read_failed()
+            except MonitoringBudgetError:
+                pass
+            raise
+        # Keep the primary finite error even when terminalizing an already failed parent.
+        try:
+            budget.read_failed()
+        except MonitoringBudgetError:
+            pass
+        assert code is not None
+        raise InstrumentSourceError(code) from None
+
     async def _read(
         self, path: str, params: list[tuple[str, str]], *, signed: bool,
         deadline: float | None = None, route: _InstrumentRoute | None = None,
@@ -471,6 +629,9 @@ class BybitReadOnlyClient:
         if operation is not None:
             bounded = operation.begin_read()
             deadline = bounded if deadline is None else min(deadline, bounded)
+        if isinstance(route, _RiskRoute):
+            route.deadline = deadline
+            route.check()
         if route is not None:
             route.logical_ordinal = route.budget.require_active_group(route.group).logical_gets
         attempt = 0
@@ -515,6 +676,8 @@ class BybitReadOnlyClient:
                 operation.response(response.status_code, response.headers)
             if response.status_code in _RETRY_STATUSES and attempt < len(self.retry_waits):
                 await response.aclose()
+                if isinstance(route, _RiskRoute):
+                    route.check()
                 self._raise_if_deadline(deadline)
                 await self._sleeper(self.retry_waits[attempt])
                 if route is not None:
@@ -526,6 +689,8 @@ class BybitReadOnlyClient:
             try:
                 if route is None:
                     accepted = self._accepted(response, require_time=path != "/v5/account/info")
+                elif isinstance(route, _RiskRoute):
+                    accepted = self._accepted_risk(response, route)
                 else:
                     if 300 <= response.status_code < 400:
                         raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
@@ -549,18 +714,72 @@ class BybitReadOnlyClient:
                 raise
             if operation is not None:
                 operation.validate_response(*accepted)
+                if isinstance(route, _RiskRoute):
+                    route.check()
                 operation.check()
+            if isinstance(route, _RiskRoute):
+                route.check()
             return accepted
+
+    def _accepted_risk(self, response: httpx.Response,
+                       route: _RiskRoute) -> tuple[dict[str, object], int]:
+        from .risk_limit_envelope import (
+            BybitRiskLimitEnvelopeReadV1,
+            _decode_risk_limit_json_v1,
+            _integer_token_v1,
+            _reject_v1,
+        )
+
+        route.check()
+        if 300 <= response.status_code < 400:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        if response.status_code != 200:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_HTTP_REJECTED")
+        body = _decode_risk_limit_json_v1(response.content)
+        route.check()
+        if _region_message(body.get("retMsg")):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ACCESS_RESTRICTED")
+        ret = _integer_token_v1(body.get("retCode"), -(2**31), 2**31 - 1)
+        if ret != 0:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_RATE_LIMITED" if ret == 10006
+                                        else "INSTRUMENT_SOURCE_PROVIDER_REJECTED")
+        stamp = _integer_token_v1(body.get("time"), 1, 253402300799999)
+        result = body.get("result")
+        if type(result) is not dict:
+            _reject_v1()
+        assert route.sent_origin is not None and route.response_origin is not None
+        assert route.received_at is not None and route.received_mono is not None
+        # Constructor independently revalidates the same original bytes. See root ruling.
+        route.risk_envelope = BybitRiskLimitEnvelopeReadV1(
+            key=route.key, method="GET", endpoint="/v5/market/risk-limit", params=route.params,
+            sent_origin=route.sent_origin, response_origin=route.response_origin,
+            response_status=200, request_started_at=route.started_at,
+            received_at=route.received_at, started_mono=route.started_mono,
+            received_mono=route.received_mono,
+            response_time=datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=stamp),
+            decoded_body_bytes=response.content,
+            decoded_body_sha256=hashlib.sha256(response.content).hexdigest(),
+            accepted_attempt=route.attempt + 1, physical_start=route.physical_start,
+            physical_end=route.budget.physical_attempts, logical_ordinal=route.logical_ordinal,
+            observation_id=route.observation_id, source_id=route.source_id,
+            source_generation=route.generation, source_environment=route.source_environment,
+        )
+        route.check()
+        return cast(dict[str, object], result), stamp
 
     async def _bounded_response(self, request: httpx.Request, *,
                                 route: _InstrumentRoute | None = None) -> httpx.Response:
         if route is not None:
             route.check()
-            route.sent_origin = _check_exact_request(request, route.key)
+            route.sent_origin = (route.request_origin(request) if isinstance(route, _RiskRoute)
+                                 else _check_exact_request(request, route.key))
             # wait_for schedules this coroutine. Charge only after the final
             # group proof, immediately before the one physical send.
             route.budget.before_attempt(route.attempt)
+            if isinstance(route, _RiskRoute):
+                route._owner_check()
         response = await self._client.send(request, stream=True)
+        primary: BaseException | None = None
         try:
             if route is not None:
                 # Quota/ban observation must precede any encoding/body/origin rejection.
@@ -581,8 +800,13 @@ class BybitReadOnlyClient:
                         quota_code = ("INSTRUMENT_SOURCE_ACCESS_RESTRICTED"
                                       if response.status_code in (403, 451)
                                       else "INSTRUMENT_SOURCE_RATE_LIMITED")
-                    else:
+                    elif (not isinstance(route, _RiskRoute) or error.args in (
+                        ("MONITORING_DEADLINE_OR_CLOCK",), ("MONITORING_LOGICAL_GET_LIMIT",),
+                        ("MONITORING_PHYSICAL_ATTEMPTS",), ("MONITORING_READ_FAILED",),
+                    )):
                         quota_code = "INSTRUMENT_SOURCE_BUDGET_EXHAUSTED"
+                    else:
+                        raise
                 except ValueError:
                     # Only a proven failure in that hook's integer conversion
                     # is expected here. A later owner's programming error must
@@ -602,7 +826,9 @@ class BybitReadOnlyClient:
                     pass
                 if actual_request is None or response.history:
                     raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
-                route.response_origin = _check_exact_request(actual_request, route.key)
+                route.response_origin = (route.request_origin(actual_request)
+                                         if isinstance(route, _RiskRoute)
+                                         else _check_exact_request(actual_request, route.key))
                 if route.response_origin != route.sent_origin:
                     raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
                 encodings = response.headers.get_list("content-encoding")
@@ -634,8 +860,22 @@ class BybitReadOnlyClient:
                 headers={key: value for key, value in response.headers.items()
                          if key.lower() in {"x-bapi-limit", "x-bapi-limit-status",
                                             "x-bapi-limit-reset-timestamp"}})
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            await response.aclose()
+            if isinstance(route, _RiskRoute):
+                try:
+                    await response.aclose()
+                except (httpx.HTTPError, TimeoutError):
+                    # Cleanup cannot conceal a fixed quota/ban/rejection, cancellation,
+                    # or an unexpected owner fault. Unknown cleanup faults still propagate.
+                    if primary is None:
+                        raise
+                if primary is None:
+                    route.check()
+            else:
+                await response.aclose()
 
     async def read_pages(
         self,
