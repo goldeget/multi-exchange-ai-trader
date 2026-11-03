@@ -6,10 +6,11 @@ import hmac
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -23,14 +24,450 @@ from multi_exchange_trader.account.bybit_readonly import (
 )
 from multi_exchange_trader.account.config import MissingBybitCredentials, require_bybit_credentials
 from multi_exchange_trader.account.freshness import order_decision_allowed
+from multi_exchange_trader.account.instrument_envelope import InstrumentSourceError
 from multi_exchange_trader.account.service import blank_view, build_account_view, publish
 from multi_exchange_trader.api import create_app
+from multi_exchange_trader.execution.monitoring_budget import (
+    MonitoringBudgetError,
+    MonitoringReadBudget,
+    ReadGroupToken,
+)
+from multi_exchange_trader.trading_product import InstrumentKey
 
 KEY = "test-bybit-key"
 SECRET = "test-bybit-secret"
 ENV_SECRET = "env-secret-should-win12"
 FILE_SECRET = "file-secret-should-not-win"
 KNOWN_SIGN = "d69709048bfcc6a949f2781d2c18d99b30ce2613ea4b762d9d3b0056b8f84e4b"
+EXACT_BODY = b'{"retCode":0,"result":{"category":"linear","list":[]},"time":1700000000000}'
+
+
+class ExactStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self.chunks = chunks
+        self.consumed = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self.chunks:
+            self.consumed += 1
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def exact_failure(
+    handler: Callable[[httpx.Request], httpx.Response], expected: str,
+    *, raw_send_boundary: bool = False,
+) -> MonitoringReadBudget:
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_TESTNET", transport=httpx.MockTransport(handler))
+    budget = MonitoringReadBudget()
+    patch = pytest.MonkeyPatch()
+    if raw_send_boundary:
+        # A malformed HTTPX-associated response can only be injected at this
+        # boundary: real AsyncClient normalizes transport response.request.
+        async def send(request: httpx.Request, *, stream: bool) -> httpx.Response:
+            assert stream
+            return handler(request)
+        patch.setattr(client._client, "send", send)
+    try:
+        with budget.reuse_or_open_receipt() as group, pytest.raises(InstrumentSourceError) as caught:
+            await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        error = caught.value
+        assert error.code == "INSTRUMENT_SOURCE_" + expected
+        assert error.args == (error.code,)
+        assert error.__context__ is None and error.__cause__ is None
+        return budget
+    finally:
+        patch.undo()
+        await client.aclose()
+
+
+@pytest.mark.parametrize("url", [
+    "https://api.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT",
+    "https://api-testnet.bybit.com:444/v5/market/instruments-info?category=linear&symbol=BTCUSDT",
+    "https://x@api-testnet.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT",
+    "https://api-testnet.bybit.com/v5/market/time?category=linear&symbol=BTCUSDT",
+    "https://api-testnet.bybit.com/v5/market/instruments-info?symbol=BTCUSDT&category=linear",
+    "https://api-testnet.bybit.com/v5/market/instruments-info?category=linear&symbol=ETHUSDT",
+    "http://api-testnet.bybit.com/v5/market/instruments-info?category=linear&symbol=BTCUSDT",
+])
+async def test_exact_route_rejects_original_response_request_mismatch(url: str) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    await exact_failure(lambda _: httpx.Response(
+        200, stream=stream, request=httpx.Request("GET", url)), "ORIGIN_MISMATCH",
+        raw_send_boundary=True)
+    assert stream.closed and stream.consumed == 0
+
+
+@pytest.mark.parametrize(("headers", "code"), [
+    ({"content-encoding": "gzip"}, "ENCODING_UNSUPPORTED"),
+    ({"content-encoding": "br"}, "ENCODING_UNSUPPORTED"),
+    ({"content-encoding": "deflate"}, "ENCODING_UNSUPPORTED"),
+    ({"content-encoding": "identity, identity"}, "ENCODING_UNSUPPORTED"),
+    ({"content-encoding": "IDENTITY"}, "ENCODING_UNSUPPORTED"),
+    ({"content-length": "65537"}, "RESOURCE_LIMIT"),
+    ({"content-length": "000065537"}, "RESOURCE_LIMIT"),
+    ({"content-length": "9" * 5000}, "RESOURCE_LIMIT"),
+    ({"content-length": "-1"}, "RESPONSE_INVALID"),
+    ({"content-length": "1, 1"}, "RESPONSE_INVALID"),
+])
+async def test_exact_route_rejects_headers_before_stream_consumption(
+    headers: dict[str, str], code: str,
+) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    await exact_failure(lambda _: httpx.Response(200, headers=headers, stream=stream), code)
+    assert stream.closed and stream.consumed == 0
+
+
+@pytest.mark.parametrize("padding", [1, 6, 5000])
+async def test_exact_route_accepts_numeric_content_length_with_leading_zeros(padding: int) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=stream,
+                                     headers={"content-length": "0" * padding + str(len(EXACT_BODY))})))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert result.decoded_body_bytes == EXACT_BODY
+        assert budget.physical_attempts == 1 and stream.closed and stream.consumed == 1
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(("status", "headers", "code"), [
+    (403, {"content-encoding": "gzip"}, "ACCESS_RESTRICTED"),
+    (451, {"content-length": "999999"}, "ACCESS_RESTRICTED"),
+    (429, {"content-encoding": "br"}, "RATE_LIMITED"),
+    (200, {"x-bapi-limit-status": "0", "content-encoding": "gzip"}, "RATE_LIMITED"),
+    (200, {"x-bapi-limit-status": "invalid"}, "RATE_LIMITED"),
+])
+async def test_exact_quota_cause_precedes_encoding_and_terminalizes_parent(
+    status: int, headers: dict[str, str], code: str,
+) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    budget = await exact_failure(lambda _: httpx.Response(status, headers=headers, stream=stream), code)
+    assert budget.physical_attempts == 1
+    assert stream.closed and stream.consumed == 0
+    with pytest.raises(MonitoringBudgetError, match="MONITORING_QUOTA_OR_BAN"):
+        budget.check()
+
+
+@pytest.mark.parametrize("quota", [b"\xb2", b"9" * 5000])
+async def test_exact_unparseable_quota_is_fixed_without_changing_legacy_hook(quota: bytes) -> None:
+    stream = ExactStream((EXACT_BODY,))
+    budget = await exact_failure(lambda _: httpx.Response(
+        200, headers=[(b"x-bapi-limit-status", quota)], stream=stream), "RATE_LIMITED")
+    assert stream.closed and stream.consumed == 0
+    with pytest.raises(MonitoringBudgetError, match="MONITORING_READ_FAILED"):
+        budget.check()
+
+
+@pytest.mark.parametrize("quota", [b"1", b"9" * 4300, "١".encode()])
+async def test_valid_quota_does_not_mask_a_programming_valueerror_from_owner_guard(
+    quota: bytes,
+) -> None:
+    def broken() -> None:
+        raise ValueError("owner programming defect")
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, content=EXACT_BODY,
+                                     headers=[(b"x-bapi-limit-status", quota)])))
+    budget = MonitoringReadBudget()
+    try:
+        with (budget.receipt(owner_guard=broken), budget.reuse_or_open_receipt() as group,
+              pytest.raises(ValueError, match="owner programming defect") as caught):
+            await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert type(caught.value) is ValueError
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(("raw", "code"), [
+    (b'{"retCode":0,"result":{},"time":1,"time":1}', "JSON_INVALID"),
+    (b'{"retCode":10006,"result":{},"time":1}', "RATE_LIMITED"),
+    (b'{"retCode":123456,"retMsg":"SECRET_MARKER","result":{},"time":1}', "PROVIDER_REJECTED"),
+    (b'{"retCode":0,"result":{"category":"linear","list":[]},"time":1.0}', "JSON_INVALID"),
+])
+async def test_exact_decoder_failure_is_safe_and_preserved_after_parent_failure(
+    raw: bytes, code: str,
+) -> None:
+    stream = ExactStream((raw,))
+    budget = await exact_failure(lambda _: httpx.Response(200, stream=stream), code)
+    assert stream.closed
+    with pytest.raises(MonitoringBudgetError, match="MONITORING_READ_FAILED"):
+        budget.check()
+
+
+async def test_exact_route_enforces_stream_limit_even_when_length_lies() -> None:
+    stream = ExactStream((b" " * 65536, b"x"))
+    await exact_failure(lambda _: httpx.Response(200, headers={"content-length": "1"},
+                                               stream=stream), "RESOURCE_LIMIT")
+    assert stream.closed and stream.consumed == 2
+
+
+async def test_exact_route_retry_uses_one_logical_read_and_closes_all_streams() -> None:
+    streams = [ExactStream((EXACT_BODY,)) for _ in range(3)]
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        status = 503 if calls < 2 else 200
+        stream = streams[calls]
+        calls += 1
+        return httpx.Response(status, stream=stream)
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    async def no_wait(_: float) -> None:
+        pass
+    client._sleeper = no_wait
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+            assert budget.require_active_group(group).logical_gets == 1
+        assert (result.accepted_attempt, result.physical_start, result.physical_end) == (2, 0, 3)
+        assert calls == 3 and all(stream.closed for stream in streams)
+    finally:
+        await client.aclose()
+
+
+async def test_shared_parent_interval_is_rejected_without_counter_rewriting() -> None:
+    budget = MonitoringReadBudget()
+    def handler(_: httpx.Request) -> httpx.Response:
+        # Three unrelated physical sends interleave in the same parent interval.
+        for _ in range(3):
+            budget.before_attempt(0)
+        return httpx.Response(200, content=EXACT_BODY)
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    try:
+        with (budget.reuse_or_open_receipt() as group,
+              pytest.raises(InstrumentSourceError, match="RESPONSE_INVALID")):
+            await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert budget.physical_attempts == 4
+    finally:
+        await client.aclose()
+
+
+async def test_exact_route_denies_missing_foreign_and_subclass_budget_before_send() -> None:
+    calls = 0
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=EXACT_BODY)
+
+    class SubBudget(MonitoringReadBudget):
+        pass
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    first, second = MonitoringReadBudget(), MonitoringReadBudget()
+    try:
+        with first.reuse_or_open_receipt() as group:
+            for budget, token, code in (
+                (None, group, "BUDGET_REQUIRED"), (SubBudget(), group, "BUDGET_REQUIRED"),
+                (second, group, "GROUP_REQUIRED"), (first, None, "GROUP_REQUIRED"),
+            ):
+                with pytest.raises(InstrumentSourceError, match=code):
+                    await client.read_instrument_envelope(
+                        InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"),
+                        budget=cast(MonitoringReadBudget, budget), group=cast(ReadGroupToken, token))
+        assert calls == 0 and first.physical_attempts == 0
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("kind", ["timeout", "network"])
+async def test_exact_transport_failure_drops_raw_exception_context(kind: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if kind == "timeout":
+            raise httpx.ReadTimeout("SECRET_MARKER", request=request)
+        raise httpx.ConnectError("SECRET_MARKER", request=request)
+
+    await exact_failure(handler, "TIMEOUT" if kind == "timeout" else "NETWORK")
+
+
+async def test_httpx_transport_response_request_is_application_association() -> None:
+    """HTTPX overwrites transport metadata; it is not an independent origin claim."""
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=EXACT_BODY, request=httpx.Request(
+            "GET", "https://api.bybit.com/not-the-request"))
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_TESTNET", transport=httpx.MockTransport(handler))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert result.response_origin.host == "api-testnet.bybit.com"
+    finally:
+        await client.aclose()
+
+
+async def test_exact_read_cancel_closes_original_stream_and_propagates_cancel() -> None:
+    waiting = asyncio.Event()
+    closed = False
+
+    class WaitingStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b"{"
+            waiting.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=WaitingStream())))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            task = asyncio.create_task(client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group))
+            await waiting.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert closed and budget.physical_attempts == 1
+    finally:
+        await client.aclose()
+
+
+async def test_exact_group_ending_before_send_does_not_charge_physical_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wait_for schedules a child: a scope may end before that child sends."""
+    import multi_exchange_trader.account.bybit_readonly as reads
+
+    ready, release = asyncio.Event(), asyncio.Event()
+    sends = 0
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal sends
+        sends += 1
+        return httpx.Response(200, content=EXACT_BODY)
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    original = client._bounded_response
+    async def scheduled(request: httpx.Request, *,
+                        route: reads._InstrumentRoute | None = None) -> httpx.Response:
+        ready.set()
+        await release.wait()
+        return await original(request, route=route)
+    monkeypatch.setattr(client, "_bounded_response", scheduled)
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            task = asyncio.create_task(client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group))
+            await ready.wait()
+        release.set()
+        with pytest.raises(InstrumentSourceError, match="GROUP_REQUIRED"):
+            await task
+        assert sends == 0 and budget.physical_attempts == 0
+    finally:
+        await client.aclose()
+
+
+async def test_exact_demo_client_keeps_real_demo_origin_and_legacy_decimal_decoder() -> None:
+    client = BybitReadOnlyClient(api_key=KEY, api_secret=SECRET,
+                               base_url="https://api-demo.bybit.com", environment="demo",
+                               transport=httpx.MockTransport(lambda _: httpx.Response(
+                                   200, content=EXACT_BODY)))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert result.response_origin.host == "api-demo.bybit.com"
+    finally:
+        await client.aclose()
+
+    legacy = BybitReadOnlyClient(api_key=KEY, api_secret=SECRET,
+                                base_url="https://api.bybit.com", environment="mainnet",
+                                transport=httpx.MockTransport(lambda _: httpx.Response(
+                                    200, content=b'{"retCode":0,"result":{"x":1.25},"time":1}')))
+    try:
+        assert await legacy.read("/v5/market/instruments-info", [], signed=False) == ({"x": 1.25}, 1)
+    finally:
+        await legacy.aclose()
+
+
+def test_public_factory_ignores_environment_proxy_ca_and_never_resolves_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import multi_exchange_trader.account.bybit_readonly as reads
+
+    def denied(*args: object, **kwargs: object) -> None:
+        raise AssertionError("credential resolution attempted")
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://unusable.invalid:1")
+    monkeypatch.setenv("SSL_CERT_FILE", "does-not-exist")
+    monkeypatch.setenv("SSL_CERT_DIR", "does-not-exist")
+    monkeypatch.setattr(reads, "require_bybit_credentials", denied)
+    monkeypatch.setattr(reads, "require_demo_credentials", denied)
+    options: list[dict[str, object]] = []
+    original = httpx.AsyncClient
+
+    def create(**kwargs: object) -> httpx.AsyncClient:
+        options.append(kwargs)
+        return original(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(httpx, "AsyncClient", create)
+    client = BybitReadOnlyClient.for_public_instruments(source_environment="PUBLIC_MAINNET")
+    assert options[0]["trust_env"] is False and options[0]["verify"] is True
+    assert client.environment == "mainnet" and client._injected_transport is False
+    asyncio.run(client.aclose())
+
+
+async def test_public_exact_route_captures_original_bytes_without_credentials() -> None:
+    from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
+    from multi_exchange_trader.trading_product import InstrumentKey
+
+    raw = b'{ "retCode":0,"result":{"category":"linear","list":[]},"time":1700000000000 }'
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert request.headers["accept-encoding"] == "identity"
+        assert not any(name.startswith("x-bapi-") for name in request.headers)
+        return httpx.Response(200, content=raw)
+
+    client = BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    budget = MonitoringReadBudget()
+    try:
+        with budget.reuse_or_open_receipt() as group:
+            result = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"), budget=budget, group=group)
+        assert result.decoded_body_bytes == raw
+        assert result.sent_origin == result.response_origin
+        assert result.response_origin.host == "api.bybit.com"
+        assert (result.physical_start, result.physical_end, result.logical_ordinal) == (0, 1, 1)
+        assert client._injected_transport is True
+        with pytest.raises(Exception, match="INSTRUMENT_SOURCE_INPUT_INVALID"):
+            await client.read("/v5/market/time", [], signed=False)
+        with pytest.raises(Exception, match="INSTRUMENT_SOURCE_INPUT_INVALID"):
+            client.anchor_server_time(1700000000000)
+        assert len(seen) == 1
+    finally:
+        await client.aclose()
 
 
 def query_text(request: httpx.Request) -> str:
