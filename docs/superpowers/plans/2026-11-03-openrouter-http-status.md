@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Preserve the actual nullable numeric response status from headers through generation, durable dispatch, restart, local charge reconciliation and the existing safe result.
+**Goal:** Preserve actual numeric HTTP status across restart and provide the small protocol controls required for the user's Haiku 5.5-only minimal test.
 
 **Architecture:** Append one optional scalar to both existing frozen result dataclasses and one nullable SQLite column. Capture status before reading a response body; persist it in the same transactional result updates as failure/cost. Migrate known local v1 storage under a constructor writer lock without changing accounting or provider behavior.
 
@@ -23,6 +23,7 @@
 - RED requires behavioral assertion failures after importable minimal interfaces/stubs; collection, dependencies and fixture/setup failures are not accepted RED.
 - Local Windows verification is focused synthetic tests/static checks only. Do not repeat the full Windows native/PAPER suite or a redundant full local suite before identical hosted coverage. Full suites run hosted/approved Linux; local Linux reruns are only for unresolved platform changes. Native 36/restart 6/restored 12 acceptance remains mandatory.
 - Invalid/malformed status evidence projects to safe None without bypassing bounded body processing, dropping independently known cost, changing existing failures or releasing uncertainty. A valid observed status survives later body/context exceptions.
+- Latest user authority: this key is Haiku5.5-only and a new minimal real Haiku test is authorized. Saved model is revision3. Task3 is the explicit compatibility extension below; workers make no real provider/operator calls. Root's separate post-main probe uses one attempt and an isolated <=USD0.11 internal reservation book, preserving prior unknown Qwen cost/hold. No fake pricing/context, purchase, automatic retry or alternate model.
 
 ## Review Focus
 
@@ -141,15 +142,28 @@ No worker/factory/operator/UI/workflow changes are expected: the worker consumes
 
   The worker reports changed files and focused verification without Git mutation. Root alone commits the Task 2 snapshot (`feat(ai): persist dispatch HTTP status across restart`) and provides exact committed base/head to a fresh reviewer. Review constructor transaction ordering/rollback and two-opener behavior; schema metadata/type validation; all writes and settlement reads; no status erasure; positional compatibility; and conservative accounting under failure. Workers fix findings and rerun affected checks without Git mutation; root commits fixes and provides the new exact head for re-review.
 
+### Task 3: Explicit reasoning control and nullable-refusal compatibility
+
+**Files:** Modify `src/multi_exchange_trader/ai/generation.py`, `src/multi_exchange_trader/ai/private_factory.py`, `tests/ai/test_generation_dispatch.py`, and `tests/credentials/test_integration.py` only. Do not alter dispatch/schema/metadata/budget/worker/credential persistence/dependencies/workflow.
+
+**Interfaces:** Append keyword-only `reasoning_enabled: bool | None = None` to `OpenRouterGenerationClient.__init__` and `create_openrouter_clients`; forward through the same private snapshot with exact bool/None runtime validation. Keep existing positional/keyword meanings and default payload unchanged. Store only in the private client; expose no new key/env/public settings field. Explicit bool adds only the documented `reasoning.enabled` boolean to prepare(). No automatic activation/model selection.
+
+- [ ] Read the latest design extension and approved Task1/Task2 contracts. Root owns amended docs and Git. Do not replay/reset the previous trial.
+- [ ] Meaningful behavioral RED after importable minimal signatures: default None leaves old payload unchanged; exact False/True reaches prepared fake POST; invalid 0/1/string/float/container values reject with fixed safe errors. Constructor/factory makes no network/quote/reservation/generation; same saved key/model remains selected. Valid `refusal:null` is accepted with exact cost/status retained; all non-null refusal values remain invalid; existing tool_calls/function_call presence, wrong model/role/finish/content, secret/duplicate/overflow/invalid selection still reject with original cost accounting.
+- [ ] Implement only optional private request control and narrow nullable-refusal compatibility. No registry/transport/context/pricing changes, no automatic reasoning choice, no broad relaxation of tool/function/refusal or output authority.
+- [ ] Cover with `tests/ai/test_generation_dispatch.py` and `tests/credentials/test_integration.py`, changed-file Ruff and strict mypy on generation/private_factory. Synthetic/default stores off/temp only; no full Windows/native/PAPER. Broader AI regression only if amended code leaves a real concern; exact hosted full CI remains mandatory.
+- [ ] Self-review owned diff, write SDD/task-3-report.md with exact RED/GREEN/static commands/output/source epoch. Root commits exact files and obtains fresh independent task review before final whole-change review. Worker makes no real Haiku call.
+
 ## Final release verification and handoff gate
 
 - [ ] Complete a fresh whole-change review against the committed design and exact committed final base/head supplied by root. Check no dependency/workflow/provider/model/privacy/spending or unrelated product change slipped in. Workers make no Git mutations; root commits any fixes before the corresponding exact-head re-review.
 - [ ] Keep Windows checks to the focused synthetic/static commands above; do not run the full Windows native/PAPER suite or duplicate the full hosted suite locally. Full verification uses existing hosted CI, which runs `uv sync --locked`, `uv run pytest -q`, `uv run ruff check src tests scripts`, and `uv run mypy src scripts` in Python 3.12 with the locked environment. Use an approved local Linux run only to resolve an actual platform uncertainty, then run only the relevant coverage. Record the exact head/results; skipped local native cases do not pass native acceptance.
 - [ ] Root alone pushes the reviewed new branch through the existing PR process. Require exact hosted CI for the final reviewed head, including unchanged Python checks, Linux operations checks, and the existing network-isolated native contract job: 36 actual native cases, 6 actual restart cases, and all 12 named restored-monitoring cases, with no skipped/failing/error cases and separate artifacts. Do not edit workflow assertions or counts to obtain green.
 - [ ] Root alone merges that reviewed passing head under existing user authority and reads back merged main SHA, source/diff and hosted main CI status. An older passing head or still-running main CI is not completion; wait or report the exact incomplete gate honestly.
-- [ ] Report code/CI acceptance separately from provider execution. The consumed original trial remains uncertain with unknown charge and intact reservation; status cannot be retrospectively recovered, and this slice authorizes no new paid smoke or retry. Root can later consume the new safe field without changing this implementation's scope.
+- [ ] Report code/CI acceptance separately from provider execution. The consumed original trial remains uncertain with unknown charge and intact reservation; status cannot be retrospectively recovered. The latest explicit user request separately authorizes one root-only Haiku5.5 minimal probe after reviewed CI/main gates; it does not authorize replay/reset of the earlier trial or any paid call by workers.
 
 ## Self-review result
 
-The two tasks cover every design requirement and all five Review Focus conditions. Task 2 consumes the exact Task 1 field/helper; no public calling signature is reordered. Constructor migration, initial positional INSERT, settled/overrun writes, status readback and local pending-charge repair are explicitly covered. No product implementation, test execution, Git operation or provider operation was performed by this draft.
+The original two tasks cover status preservation; Task3 explicitly extends the design for the latest Haiku-only minimum-test request. Task 2 consumes the exact Task 1 field/helper; no public calling signature is reordered. Constructor migration, initial positional INSERT, settled/overrun writes, status readback and local pending-charge repair are explicitly covered. No product implementation, test execution, Git operation or provider operation was performed by this draft.
+
 
