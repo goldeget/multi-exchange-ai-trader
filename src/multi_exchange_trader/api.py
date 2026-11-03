@@ -68,11 +68,20 @@ def create_app(service: MarketDataService | None = None, *,
         application.state.ai_budget = None
         application.state.runtime_policy = None
         try:
-            application.state.runtime_policy = RuntimePolicyBook(
-                Path(os.environ.get("RUNTIME_POLICY_DB_PATH", str(sidecar_root / "runtime-policy.sqlite3")))
-            )
-        except (ValueError, sqlite3.Error, OSError):
-            pass
+            if getattr(application.state, "_runtime_policy_cleanup_owner_v2", None) is not None:
+                raise ValueError("configured policy cleanup owner retained")
+            explicit_policy_path = os.environ.get("RUNTIME_POLICY_DB_PATH")
+            shared_policy = RuntimePolicyBook._from_shared_target_v2(
+                Path(explicit_policy_path) if explicit_policy_path is not None else None)
+            if shared_policy is None:
+                shared_policy = RuntimePolicyBook(
+                    Path(explicit_policy_path) if explicit_policy_path is not None
+                    else sidecar_root / "runtime-policy.sqlite3")
+            application.state.runtime_policy = shared_policy
+        except (ValueError, sqlite3.Error, OSError) as error:
+            cleanup_owner = getattr(error, "_policy_cleanup_owner_v2", None)
+            if isinstance(cleanup_owner, RuntimePolicyBook):
+                application.state._runtime_policy_cleanup_owner_v2 = cleanup_owner
         application.state.spot_paper_store = None
         application.state.spot_paper_qualified = SPOT_QUALIFIED
         try:

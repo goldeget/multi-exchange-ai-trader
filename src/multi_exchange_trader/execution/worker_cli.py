@@ -75,6 +75,9 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
 
 
 async def _run(args: argparse.Namespace) -> None:
+    # Validate a present shared target before any credential/account work. A
+    # missing target keeps the old passive constructor at its original point.
+    shared_policy = RuntimePolicyBook._from_shared_target_v2(Path(args.policy_db))
     # Resolve and freeze provenance before credentials. This private immutable
     # context stays alive for the worker and every refresh; files never hot-switch it.
     expectations = resolve_worker_expectations(uid=args.uid, parent_uid=args.parent_uid,
@@ -91,7 +94,8 @@ async def _run(args: argparse.Namespace) -> None:
             lock_directory=Path(args.lock_directory) if args.lock_directory is not None else None,
             scope=ProtectionScope(expectations._uid, "DEMO"), session=session, binding=binding,
             symbols=tuple(args.symbol), trader_id="MONITOR-001",
-            policy_book=RuntimePolicyBook(Path(args.policy_db)), registry=TrustedPlanRegistry(()),
+            policy_book=shared_policy if shared_policy is not None else RuntimePolicyBook(Path(args.policy_db)),
+            registry=TrustedPlanRegistry(()),
             entry_risk=_no_entry_risk, clock=lambda: datetime.now(UTC),
             max_age=timedelta(seconds=30))
 
