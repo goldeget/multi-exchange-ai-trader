@@ -63,23 +63,39 @@ function renderingSwitches(args: string[]) {
   return values;
 }
 
-async function optional<T>(operation: () => Promise<T>, milliseconds = 1500): Promise<T | ReturnType<typeof unavailable>> {
+type DiagnosticDeadline = { deadline: number; expired: boolean };
+function requireActive(scope: DiagnosticDeadline, deadline = scope.deadline) {
+  if (scope.expired || performance.now() >= Math.min(scope.deadline, deadline)) {
+    scope.expired = true;
+    throw new Error("diagnostic-expired");
+  }
+}
+
+async function optional<T>(operation: (scope: DiagnosticDeadline) => Promise<T>, milliseconds = 1500, absoluteDeadline = Infinity): Promise<T | ReturnType<typeof unavailable>> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const scope = { deadline: Math.min(performance.now() + milliseconds, absoluteDeadline), expired: false };
   try {
-    return await Promise.race([operation(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("diagnostic-timeout")), milliseconds); })]);
+    requireActive(scope);
+    return await Promise.race([operation(scope), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { scope.expired = true; reject(new Error("diagnostic-timeout")); }, Math.max(0, scope.deadline - performance.now()));
+    })]);
   } catch {
     // Do not reflect browser, filesystem or protocol error strings.
     return unavailable("unsupported-inaccessible-or-timed-out");
   } finally {
+    scope.expired = true;
     clearTimeout(timer);
   }
 }
 
-async function boundedRead(path: string, limit: number) {
+async function boundedRead(path: string, limit: number, scope: DiagnosticDeadline) {
+  requireActive(scope);
   const handle = await open(path, "r");
   try {
+    requireActive(scope);
     const buffer = Buffer.alloc(limit + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    requireActive(scope);
     if (bytesRead > limit) throw new Error("diagnostic-size-limit");
     return buffer.subarray(0, bytesRead).toString("utf8");
   } finally { await handle.close(); }
@@ -89,47 +105,67 @@ const binaryHashes = new Map<string, string>();
 function fileIdentity(value: Awaited<ReturnType<typeof binaryStat>>) {
   return [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(":");
 }
-const binaryStat = (path: string) => stat(path, { bigint: true });
-async function processIdentity(pid: number) {
+const binaryStat = async (path: string, scope: DiagnosticDeadline) => {
+  requireActive(scope);
+  const result = await stat(path, { bigint: true });
+  requireActive(scope);
+  return result;
+};
+async function processIdentity(pid: number, scope: DiagnosticDeadline) {
+  requireActive(scope);
   const prefix = `/proc/${pid}`;
-  const status = await boundedRead(`${prefix}/status`, 65536);
+  const status = await boundedRead(`${prefix}/status`, 65536, scope);
+  requireActive(scope);
   const uid = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m);
   if (!uid || !process.getuid || uid.slice(1).some(value => Number(value) !== process.getuid!())) throw new Error("diagnostic-uid");
-  const processStat = await boundedRead(`${prefix}/stat`, 65536);
+  const processStat = await boundedRead(`${prefix}/stat`, 65536, scope);
+  requireActive(scope);
   const end = processStat.lastIndexOf(")");
   if (!processStat.startsWith(`${pid} (`) || end < 0) throw new Error("diagnostic-process-identity");
   const startTicks = processStat.slice(end + 2).split(" ")[19];
   if (!/^\d+$/.test(startTicks ?? "")) throw new Error("diagnostic-start-identity");
+  requireActive(scope);
   const executable = await realpath(`${prefix}/exe`);
+  requireActive(scope);
   // Accept only the actual executed Playwright Chromium install; a familiar
   // process name by itself does not authorize reading another executable.
   if (!/\/(?:chromium|chromium_headless_shell)-\d+\//.test(executable) || !["chrome", "chrome-headless-shell", "headless_shell", "chromium"].includes(basename(executable))) throw new Error("diagnostic-executable");
-  const info = await binaryStat(`${prefix}/exe`);
+  const info = await binaryStat(`${prefix}/exe`, scope);
+  requireActive(scope);
   if (!info.isFile()) throw new Error("diagnostic-executable-file");
   return { pid, uid: Number(uid[1]), startTicks, executable, file: fileIdentity(info), size: info.size };
 }
 
-async function executableHash(identity: Awaited<ReturnType<typeof processIdentity>>) {
+async function executableHash(identity: Awaited<ReturnType<typeof processIdentity>>, scope: DiagnosticDeadline) {
+  const deadline = Math.min(scope.deadline, performance.now() + 1500);
+  requireActive(scope, deadline);
   const key = `${identity.executable}:${identity.file}`;
   const cached = binaryHashes.get(key);
-  if (cached) return { sha256: cached, cache: "verified-file-identity" };
+  if (cached) { requireActive(scope, deadline); return { sha256: cached, cache: "verified-file-identity" }; }
   if (identity.size > 512n * 1024n * 1024n) throw new Error("diagnostic-binary-size-limit");
   const handle = await open(`/proc/${identity.pid}/exe`, "r");
   try {
-    if (fileIdentity(await handle.stat({ bigint: true })) !== identity.file) throw new Error("diagnostic-file-changed");
+    requireActive(scope, deadline);
+    const before = await handle.stat({ bigint: true });
+    requireActive(scope, deadline);
+    if (fileIdentity(before) !== identity.file) throw new Error("diagnostic-file-changed");
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(1024 * 1024);
-    const deadline = performance.now() + 1500;
     let position = 0;
     while (BigInt(position) < identity.size) {
-      if (performance.now() > deadline) throw new Error("diagnostic-hash-time-limit");
+      requireActive(scope, deadline);
       const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, Number(identity.size) - position), position);
+      requireActive(scope, deadline);
       if (!bytesRead) throw new Error("diagnostic-short-binary");
       hash.update(buffer.subarray(0, bytesRead));
       position += bytesRead;
     }
-    if (fileIdentity(await handle.stat({ bigint: true })) !== identity.file) throw new Error("diagnostic-file-changed");
+    requireActive(scope, deadline);
+    const after = await handle.stat({ bigint: true });
+    requireActive(scope, deadline);
+    if (fileIdentity(after) !== identity.file) throw new Error("diagnostic-file-changed");
     const sha256 = hash.digest("hex");
+    requireActive(scope, deadline);
     // Only publish/cache after the caller rechecks PID/start/file identity.
     return { sha256, cache: "fresh", key };
   } finally { await handle.close(); }
@@ -143,26 +179,32 @@ async function ownedProcesses(session: CDPSession, budgetMs = 2500) {
   const selected = owned.slice(0, 12);
   const browserPid = selected.find(item => item.type === "browser")?.id;
   const browserIdentity = platform() === "linux" && Number.isSafeInteger(browserPid) && browserPid! > 0
-    ? await optional(() => processIdentity(browserPid!), Math.max(1, Math.min(400, deadline - performance.now()))) : unavailable("linux-owned-browser-pid-required");
+    ? await optional(scope => processIdentity(browserPid!, scope), 400, deadline) : unavailable("linux-owned-browser-pid-required");
   const identities = [];
   for (const item of selected) {
     if (performance.now() >= deadline) { identities.push({ type: item.type, pid: item.id, identity: unavailable("process-collection-time-budget") }); continue; }
     if (!Number.isSafeInteger(item.id) || item.id <= 0) { identities.push({ type: item.type, identity: unavailable("invalid-cdp-pid") }); continue; }
     if (!("executable" in browserIdentity)) { identities.push({ type: item.type, pid: item.id, identity: unavailable("validated-linux-browser-required") }); continue; }
-    identities.push({ type: item.type, pid: item.id, identity: await optional(async () => {
-      const before = await processIdentity(item.id);
+    identities.push({ type: item.type, pid: item.id, identity: await optional(async scope => {
+      const before = await processIdentity(item.id, scope);
+      requireActive(scope);
       if (before.executable !== browserIdentity.executable || before.file !== browserIdentity.file) throw new Error("diagnostic-executable-mismatch");
-      const flags = renderingSwitches((await boundedRead(`/proc/${item.id}/cmdline`, 262144)).split("\0"));
-      const binary = await executableHash(before);
-      const after = await processIdentity(item.id);
+      const flags = renderingSwitches((await boundedRead(`/proc/${item.id}/cmdline`, 262144, scope)).split("\0"));
+      requireActive(scope);
+      const binary = await executableHash(before, scope);
+      requireActive(scope);
+      const after = await processIdentity(item.id, scope);
+      requireActive(scope);
       if (before.startTicks !== after.startTicks || before.uid !== after.uid || before.executable !== after.executable || before.file !== after.file) throw new Error("diagnostic-process-changed");
       if ("key" in binary && binary.key) {
+        requireActive(scope);
         if (binaryHashes.size >= 16) binaryHashes.clear();
+        requireActive(scope);
         binaryHashes.set(binary.key, binary.sha256);
       }
       return { uid: after.uid, startTicks: after.startTicks,
         executable: { basename: basename(after.executable), canonicalPath: "withheld-path-privacy", fileIdentity: after.file, sha256: binary.sha256, hashSource: binary.cache }, flags };
-    }, Math.max(1, Math.min(2000, deadline - performance.now()))) });
+    }, 2000, deadline) });
   }
   return { source: "owned-browser-CDP", pageToRendererPid: unavailable("CDP-does-not-establish-target-to-OS-pid"), truncated: owned.length > selected.length, identities };
 }
@@ -254,8 +296,12 @@ async function captureDiagnostics(page: Page, testInfo: TestInfo, name: string) 
         for (const session of sessions) (data.detach as unknown[]).push(await optional(async () => { await session.detach(); return { status: "detached" }; }));
         data.finished = stamp();
         try {
+          data.attachment = { status: "pending-at-serialization" };
           const body = JSON.stringify(data, null, 2);
-          await testInfo.attach(`${name}-renderer-diagnostics`, { body: Buffer.from(Buffer.byteLength(body) <= 160 * 1024 ? body : JSON.stringify({ schema: data.schema, name, status: "unavailable", reason: "diagnostic-size-limit" })), contentType: "application/json" });
+          data.attachment = await optional(async () => {
+            await testInfo.attach(`${name}-renderer-diagnostics`, { body: Buffer.from(Buffer.byteLength(body) <= 160 * 1024 ? body : JSON.stringify({ schema: data.schema, name, status: "unavailable", reason: "diagnostic-size-limit" })), contentType: "application/json" });
+            return { status: "attached" };
+          }, 400);
         } catch { /* Optional telemetry must never replace the original failure. */ }
       }
     },
