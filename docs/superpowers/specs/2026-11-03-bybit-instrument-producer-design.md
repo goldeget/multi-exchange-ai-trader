@@ -206,6 +206,3 @@ public N<=16: N logical/max3N sends, no auth/time/fee/page/hidden refresh. nativ
 같은 group에 public N와 native2N+1을 이어 붙이면3N+1<=32와 남은 parent budget/deadline가 모두 필요하다. N10이면31 logical/max93 sends, auth refresh까지 포함한 열거 상한99 sends이나 전체 resume 성공 보장은 아니다. 역사적153 합산은 서로 다른 상한의 산술이며 group/native N16 실패와 PRE/POST/history 비용을 숨겨서는 안 된다. 부족하면 fail closed, budget reset/자동 group split/TTL 증가/partial universe 없음.
 
 source implementation/offline tests/whole CI/frozen adoption source 검증/실제 공개 응답 수락/DEMO-native 비교/E16 금융 자격/full63 제품 완료를 구분한다. 실운용 universe/TTL/선택 mapping/policy, native SPOT, A07 account fees/tiers/dynamic constraints, 실제 UI/server/DEMO acceptance는 후속 필수다. root가 adoption full SHA를 pin하고 새 independent preflight를 수행하기 전 이 후보는 PROPOSED다.
-
-
-

@@ -137,5 +137,3 @@ root가 source independent task/whole review→exact hosted CI와 기존 native3
 public collector N<=16: N logical/max3N sends. native startup N<=15:2N+wallet1 logical/max6N+3 sends. receipt capture/compare/currentlookup/retire extraGET0. same group public+native sameN은3N+1<=32(최대10)이며 이미 소비한 slots/parent200/60/20초 group deadline를 모두 검사한다. authrefresh2/max6, PRE/POST/history/stream 기존 비용은 별도다. 역사적153 sends 합은 full-budget success proof가 아니다.
 
 handoff는 actual adopted full SHA/tree/clientblob/frozen bytes, step별 changedfile ownership, exact API/constants/error whitelist/group semantics, focused and whole CI receipts, source/clock/budget/generation/retirement tests, actual vs fixture provenance, 운영입력 여부와 T4/T5 blockers를 기록한다. 새 independent R2 preflight가 끝나기 전 상태는 PROPOSED다. 이 문서 작성 시 구현/시험/CI/실제 source/native 수락은 모두 NOT_IMPLEMENTED/NOT_RUN이다.
-
-
