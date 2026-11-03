@@ -1,3 +1,9 @@
+# Current root adoption — M2-D ONLY
+
+C source-free selector and scoped P2 correction are accepted at47b29ad3 after full independent reviews. Qualified main dependencies are integrated at12e652668c93cefd59aae7990c02b7fe249d5a4c; actual generic preparation/assessment/domain interfaces now exist in E. Current ORIGINAL D scope follows the complete new 2026-11-03-bybit-linear-model-m2-d-adoption.md FIRST, including required catalog/raw-mark inputs, eighth catalog hash, exact eight-bound expiry and represented position quantity closure. Original retained D obligations still apply. Historical seven-key model framing below is superseded ONLY for unimplemented D. M2-E source route and actual M3/current issuer/native/DEMO/full63 remain gated.
+
+--- Preserved previous adoptions and original R2 text ---
+
 # Current root adoption — E05 M2-C ONLY
 
 Root accepted original source-free B835735b71d6e7aa166377dcdf51a38c86eccdd79 after full independent task-b-review.md17437B/SHA66e422aa2ff155f6357daf0fb8d050de35d1f4402177027a2eb4c86a6ceca54b, nofindings;191focused/Ruffmypy2 and actualsource/standaloneproof limits remain explicit. Pure domain candidate8656587b plus scopedconsole-importfixe104ee34 is also acceptedpure after full originalreview+6901B/SHAc6a7a2bee2304942ee378ff75cfbbcdbdc8800a90c24eb7936c7bd8b7a1a4d22closure; no actualissuer/model/mainqualification. CurrentCdoesNOTconsumedomain.
