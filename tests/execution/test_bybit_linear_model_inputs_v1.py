@@ -15,6 +15,7 @@ from test_bybit_linear_model_v1 import selector_point  # type: ignore[import-not
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
 from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a1
+from multi_exchange_trader.execution import bybit_linear_model_v1 as c_model
 from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     BybitDecimalFieldV1,
     BybitFeeDocumentRefV1,
@@ -174,6 +175,98 @@ def test_point_codec_does_not_invent_absent_mark_authority_or_rewrite_refs() -> 
         "max_quote_age_seconds",
         "valid_until",
         "model_rule_revision",
+    )
+
+
+_POLICY_RESOURCE_CASES: list[tuple[str, str, str, bool]] = []
+for _policy_field in (
+    "liquidation_buffer_fraction",
+    "max_evidence_age_seconds",
+    "max_quote_age_seconds",
+    "stop_price",
+):
+    _fractional = _policy_field in ("liquidation_buffer_fraction", "stop_price")
+    _POLICY_RESOURCE_CASES.extend(
+        [
+            (_policy_field, "coefficient256", ("0." if _fractional else "") + "1" * 256, True),
+            (_policy_field, "coefficient257", ("0." if _fractional else "") + "1" * 257, False),
+            (_policy_field, "negative-exponent1000", "1E-1000", True),
+            (_policy_field, "negative-exponent1001", "1E-1001", False),
+        ]
+    )
+    if not _fractional:
+        _POLICY_RESOURCE_CASES.extend(
+            [
+                (_policy_field, "positive-exponent1000", "1E+1000", True),
+                (_policy_field, "positive-exponent1001", "1E+1001", False),
+                (_policy_field, "adjusted-exponent1000", "11E+999", True),
+                (_policy_field, "adjusted-exponent1001", "11E+1000", False),
+            ]
+        )
+
+
+@pytest.mark.parametrize("gate", ["constructor", "digest", "selector"])
+@pytest.mark.parametrize(
+    "field,boundary,spelling,accepted",
+    _POLICY_RESOURCE_CASES,
+    ids=[f"{field}-{boundary}" for field, boundary, _, _ in _POLICY_RESOURCE_CASES],
+)
+def test_correction_policy_source_resource_boundaries(
+    gate: str, field: str, boundary: str, spelling: str, accepted: bool
+) -> None:
+    """The three public gates must agree on original policy source limits."""
+    point = selector_point(capacity="2000")
+    value = Decimal(spelling)
+    # Deliberately bypass construction for public digest/selector trust-boundary
+    # tests. Each gate must validate original Decimal spelling independently.
+    forged = object.__new__(type(point))
+    for item in fields(type(point)):
+        object.__setattr__(forged, item.name, getattr(point, item.name))
+    object.__setattr__(forged, field, value)
+    if gate == "constructor":
+        if accepted:
+            constructed = replace(point, **{field: value})
+            assert getattr(constructed, field).as_tuple() == value.as_tuple()
+        else:
+            with pytest.raises(RiskV2Rejected) as error:
+                replace(point, **{field: value})
+            assert error.value.code == "RISK_V2_RESOURCE_LIMIT"
+    elif gate == "digest":
+        if accepted:
+            assert len(a1.bybit_point_input_sha256_v1(forged)) == 64
+        else:
+            with pytest.raises(RiskV2Rejected) as error:
+                a1.bybit_point_input_sha256_v1(forged)
+            assert error.value.code == "RISK_V2_RESOURCE_LIMIT"
+    else:
+        result = c_model.select_smallest_bybit_leverage_v1(
+            forged, now=point.table.pages[0].received_at
+        )
+        if accepted:
+            assert isinstance(result, c_model.BybitLeverageSearchV1)
+            assert result.selected.leverage == Decimal(1)
+            assert result.selected.liquidation_buffer_result == "MODEL_NO_POSITIVE_TRIGGER"
+        else:
+            assert isinstance(result, c_model.BybitModelRejectedV1)
+            assert (result.phase, result.reason, result.public_code) == (
+                "SOURCE",
+                "RESOURCE_LIMIT",
+                "RISK_V2_RESOURCE_LIMIT",
+            )
+            assert result.candidate_leverage is None and result.evaluated_prefix == ()
+
+
+@pytest.mark.parametrize("cost,capacity", [("1" * 300, "2" * 300), ("1E+1001", "2E+1001")])
+def test_correction_planned_cost_capacity_keep_derived_roles(cost: str, capacity: str) -> None:
+    point = selector_point(cost=cost, capacity=capacity)
+    assert point.planned_cost_allowance_quote.as_tuple() == Decimal(cost).as_tuple()
+    assert point.capacity_quote.as_tuple() == Decimal(capacity).as_tuple()
+    assert len(a1.bybit_point_input_sha256_v1(point)) == 64
+    result = c_model.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert isinstance(result, c_model.BybitLeverageSearchV1)
+    assert result.selected.leverage == Decimal(1)
+    assert (
+        result.selected.reserve.planned_cost_allowance_quote.as_tuple() == Decimal(cost).as_tuple()
     )
 
 

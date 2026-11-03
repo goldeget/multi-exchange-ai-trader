@@ -1541,11 +1541,14 @@ def _point_payload_v1(value: BybitLinearPointInputV1) -> dict[str, object]:
     for amount in (
         value.planned_cost_allowance_quote,
         value.capacity_quote,
+    ):
+        _decimal_v2(amount, source=False, sign="nonnegative")
+    for amount in (
         value.liquidation_buffer_fraction,
         value.max_evidence_age_seconds,
         value.max_quote_age_seconds,
     ):
-        _decimal_v2(amount, source=False, sign="nonnegative")
+        _decimal_v2(amount, source=True, sign="nonnegative")
     for amount in (
         value.admission_upper_quote,
         value.continuous_leverage_lower,
