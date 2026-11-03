@@ -243,15 +243,18 @@ class NativeExecutionRuntime:
             if (previous is not None and not previous._closed
                     and previous._lease == self._lease and previous.worker_lock.acquired):
                 raise RuntimeBlocked("ACCOUNT_RUNTIME_ALREADY_RUNNING")
-            batch, _ = self._restore_batch(_phase="MAPPING")
             rows = self._restore_rows()
+            batch, _ = self._restore_batch(_phase="MAPPING")
             self._guard()
+            if self._restore_rows() != rows:
+                raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
             if _pre_recovery is not None:
                 _pre_recovery(self.native_owned_requests)
             self._guard()
             if self._restore_rows() != rows:
                 raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
             batch, _ = self._restore_batch(_phase="MAPPING")
+            self._guard()
             if self._restore_rows() != rows:
                 raise RuntimeBlocked("DURABLE_RESTORE_CHANGED")
             for _, request, _ in batch:
@@ -275,13 +278,16 @@ class NativeExecutionRuntime:
         for connection in connections:
             headers = (connection.execute("PRAGMA user_version").fetchone()[0],
                        connection.execute("PRAGMA application_id").fetchone()[0])
+            objects = tuple(tuple(row) for row in connection.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name,tbl_name,sql"))
             content = []
-            for name, schema in connection.execute(
-                    "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name").fetchall():
+            for object_type, name, _, _ in objects:
+                if object_type != "table":
+                    continue
                 quoted = '"' + name.replace('"', '""') + '"'
                 rows = tuple(sorted(repr(tuple(row)) for row in connection.execute("SELECT * FROM " + quoted)))
-                content.append((name, schema, rows))
-            result.append((headers, tuple(content)))
+                content.append((name, rows))
+            result.append((headers, objects, tuple(content)))
         return tuple(result)
 
     def _restore_batch(self, native_venues: tuple[tuple[str, str], ...] = (), *,

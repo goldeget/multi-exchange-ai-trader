@@ -962,3 +962,233 @@ def test_reader_callback_cannot_lose_original_lease_before_native_hook(core: Any
     with pytest.raises(RuntimeBlocked):
         NativeExecutionRuntime(**core.kwargs, _pre_recovery=lambda resolver: calls.append('hook'))
     assert not calls and logical(core) == before
+
+
+def test_witness_hook_schema_trigger_change_refuses_before_recovery(core: Any) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    claimed = claim(core.journal, data[0])
+    assert claimed is not None and claimed.state is CommandState.SENDING
+    hook_calls: list[str] = []
+    after_callback: list[Any] = []
+    def hook(resolver: Any) -> None:
+        resolver(())
+        core.journal._db.execute('DROP TRIGGER audit_no_update')
+        hook_calls.append('dropped_audit_immutability_trigger')
+        after_callback.append(logical(core))
+    runtime = None
+    refusal = None
+    try:
+        runtime = NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    except RuntimeBlocked as error:
+        refusal = str(error)
+    if runtime is not None:
+        runtime.shutdown()
+    assert refusal == 'DURABLE_RESTORE_CHANGED'
+    assert hook_calls == ['dropped_audit_immutability_trigger']
+    assert logical(core) == after_callback[0], 'runtime recovered rows after the hook changed the schema'
+    assert core.journal.get('ENTRY').state is CommandState.SENDING
+    assert core.journal._db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='audit_no_update'").fetchone() is None
+    assert not core.effects.calls
+
+
+def test_witness_initial_reader_data_change_refuses_before_optional_hook(
+    core: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    claimed = claim(core.journal, data[0])
+    assert claimed is not None and claimed.state is CommandState.SENDING
+    original_reader = core.history.order_evidence
+    after_callback: list[Any] = []
+    hook_calls: list[str] = []
+    def reader(**kwargs: Any) -> Any:
+        result = original_reader(**kwargs)
+        if not after_callback:
+            core.journal._db.execute('UPDATE reservation_meta_v2 SET schema_version=99')
+            after_callback.append(logical(core))
+        return result
+    monkeypatch.setattr(core.history, 'order_evidence', reader)
+    def hook(resolver: Any) -> None:
+        hook_calls.append('called_after_initial_reader_change')
+    refusal = None
+    try:
+        NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    except ValueError as error:
+        refusal = str(error)
+    assert after_callback
+    assert not hook_calls, 'initial reader changes reached the optional native hook'
+    assert refusal == 'DURABLE_RESTORE_CHANGED'
+    assert logical(core) == after_callback[0], 'runtime repaired or recovered callback-modified data'
+    assert core.journal._db.execute(
+        "SELECT state FROM commands WHERE command_key='ENTRY'").fetchone()[0] == 'SENDING'
+    assert core.journal._db.execute('SELECT schema_version FROM reservation_meta_v2').fetchone()[0] == 99
+    assert not core.effects.calls
+
+
+@pytest.mark.parametrize('object_type', ['table', 'trigger', 'index', 'view'])
+@pytest.mark.parametrize('operation', ['add', 'remove', 'sql_change'])
+def test_witness_schema_object_changes_remain_visible_without_recovery(
+    core: Any, object_type: str, operation: str,
+) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    claimed = claim(core.journal, data[0])
+    assert claimed is not None and claimed.state is CommandState.SENDING
+    definitions = {
+        'table': (core.history._db, 'CREATE TABLE witness_probe(value TEXT)',
+                  'CREATE TABLE witness_probe(value INTEGER)'),
+        'trigger': (core.journal._db, 'CREATE TRIGGER witness_probe AFTER UPDATE ON commands BEGIN SELECT 1; END',
+                    'CREATE TRIGGER witness_probe AFTER UPDATE ON commands BEGIN SELECT 2; END'),
+        'index': (core.store._db, 'CREATE INDEX witness_probe ON runtime_positions(position_id)',
+                  'CREATE INDEX witness_probe ON runtime_positions(revision)'),
+        'view': (core.history._db, 'CREATE VIEW witness_probe AS SELECT 1 AS value',
+                 'CREATE VIEW witness_probe AS SELECT 2 AS value'),
+    }
+    db, original_sql, changed_sql = definitions[object_type]
+    if operation != 'add':
+        db.execute(original_sql)
+    before = logical(core)
+    hook_calls: list[str] = []
+    injected: list[Any] = []
+    def hook(resolver: Any) -> None:
+        resolver(())
+        if operation != 'add':
+            db.execute('DROP ' + object_type.upper() + ' witness_probe')
+        if operation != 'remove':
+            db.execute(changed_sql if operation == 'sql_change' else original_sql)
+        hook_calls.append('changed')
+        injected.append(tuple(tuple(row) for row in db.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name='witness_probe'")))
+        injected.append(logical(core))
+    with pytest.raises(RuntimeBlocked, match='^DURABLE_RESTORE_CHANGED$'):
+        NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    assert hook_calls == ['changed']
+    assert tuple(tuple(row) for row in db.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name='witness_probe'")) == injected[0]
+    assert bool(injected[0]) is (operation != 'remove')
+    if operation == 'sql_change':
+        assert injected[0][0][3] == changed_sql
+    assert logical(core) == injected[1]
+    if object_type != 'table':
+        assert logical(core) == before
+    assert core.journal.get('ENTRY').state is CommandState.SENDING
+    assert not core.effects.calls
+
+
+@pytest.mark.parametrize(('phase', 'store_name'), [
+    ('INITIAL', 'store'), ('HOOK', 'journal'), ('SECOND', 'history'), ('REGISTER', 'store'),
+])
+def test_witness_original_data_is_not_rebased_at_callback_boundaries(
+    core: Any, monkeypatch: pytest.MonkeyPatch, phase: str, store_name: str,
+) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    claimed = claim(core.journal, data[0])
+    assert claimed is not None and claimed.state is CommandState.SENDING
+    db = getattr(core, store_name)._db
+    db.execute('CREATE TABLE witness_data(value TEXT)')
+    db.execute("INSERT INTO witness_data VALUES('original')")
+    original_reader = core.history.order_evidence
+    original_register = core.bridge.register_fixed_limit_v2
+    hook_calls: list[str] = []
+    injected: list[Any] = []
+    reader_calls = 0
+    def mutate() -> None:
+        assert not injected
+        db.execute("UPDATE witness_data SET value='callback changed'")
+        injected.append(logical(core))
+    def reader(**kwargs: Any) -> Any:
+        nonlocal reader_calls
+        result = original_reader(**kwargs)
+        reader_calls += 1
+        if (phase == 'INITIAL' and reader_calls == 1) or (phase == 'SECOND' and reader_calls == 2):
+            mutate()
+        return result
+    def registration(request: Any) -> None:
+        original_register(request)
+        if phase == 'REGISTER':
+            mutate()
+    def hook(resolver: Any) -> None:
+        hook_calls.append('hook')
+        if phase == 'HOOK':
+            mutate()
+    monkeypatch.setattr(core.history, 'order_evidence', reader)
+    monkeypatch.setattr(core.bridge, 'register_fixed_limit_v2', registration)
+    with pytest.raises(RuntimeBlocked, match='^DURABLE_RESTORE_CHANGED$'):
+        NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    assert hook_calls == ([] if phase == 'INITIAL' else ['hook'])
+    assert len(injected) == 1 and logical(core) == injected[0]
+    assert db.execute('SELECT value FROM witness_data').fetchone()[0] == 'callback changed'
+    assert core.journal.get('ENTRY').state is CommandState.SENDING
+    assert not core.effects.calls
+
+
+def test_witness_genuine_noop_callbacks_preserve_valid_v2_recovery(core: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    before_hold = claim(core.journal, data[0])
+    assert before_hold is not None and before_hold.state is CommandState.SENDING
+    core.history._db.execute('CREATE TABLE witness_data(value TEXT)')
+    core.history._db.execute("INSERT INTO witness_data VALUES('original')")
+    core.history._db.execute('CREATE VIEW witness_view AS SELECT 1 AS value')
+    before_audit = len(core.journal.audit_events())
+    before_revision = core.store.get_position('POSITION').revision
+    original_reader = core.history.order_evidence
+    reader_calls: list[str] = []
+    hook_calls: list[str] = []
+    def reader(**kwargs: Any) -> Any:
+        result = original_reader(**kwargs)
+        core.history._db.execute('UPDATE witness_data SET value=value')
+        reader_calls.append('no_op')
+        return result
+    def hook(resolver: Any) -> None:
+        assert len(resolver(())) == 1
+        core.history._db.execute('CREATE VIEW IF NOT EXISTS witness_view AS SELECT 1 AS value')
+        hook_calls.append('no_op')
+    monkeypatch.setattr(core.history, 'order_evidence', reader)
+    runtime = NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    try:
+        assert hook_calls == ['no_op'] and reader_calls == ['no_op', 'no_op', 'no_op']
+        assert core.journal.get('ENTRY') == replace(before_hold, state=CommandState.UNKNOWN)
+        assert len(core.journal.audit_events()) == before_audit + 1
+        assert core.store.get_position('POSITION').revision == before_revision + 1
+        assert core.history._db.execute('SELECT value FROM witness_data').fetchone()[0] == 'original'
+        assert not core.effects.calls
+    finally:
+        runtime.shutdown()
+
+
+def test_witness_second_batch_lease_loss_prevents_mapping_registration(core: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = values('ENTRY', 'POSITION')
+    record = register(core.journal, data)
+    mapped(core, record, data[0])
+    claim(core.journal, data[0])
+    before = logical(core)
+    original_reader = core.history.order_evidence
+    reader_calls = 0
+    hook_calls: list[str] = []
+    register_calls: list[str] = []
+    def reader(**kwargs: Any) -> Any:
+        nonlocal reader_calls
+        result = original_reader(**kwargs)
+        reader_calls += 1
+        if reader_calls == 2:
+            core.lock.release()
+        return result
+    def registration(request: Any) -> None:
+        register_calls.append('registered_after_lease_loss')
+    def hook(resolver: Any) -> None:
+        hook_calls.append('hook')
+    monkeypatch.setattr(core.history, 'order_evidence', reader)
+    monkeypatch.setattr(core.bridge, 'register_fixed_limit_v2', registration)
+    with pytest.raises(RuntimeBlocked):
+        NativeExecutionRuntime(**core.kwargs, _pre_recovery=hook)
+    assert hook_calls == ['hook'] and reader_calls == 2 and not register_calls
+    assert logical(core) == before and not core.effects.calls
