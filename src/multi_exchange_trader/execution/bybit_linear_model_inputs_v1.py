@@ -1,7 +1,7 @@
-"""Closed A0 source values, raw pages and exact full-row normalization.
+"""Closed source values, complete captured tables and canonical source identities.
 
 Values preserve supplied evidence; they cannot qualify its issuer, freshness,
-venue completeness, or model eligibility. No final table, digest or I/O lives here.
+venue completeness, or model eligibility. No I/O or source authority lives here.
 """
 
 import re
@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from itertools import pairwise
 from math import gcd
 from typing import Literal, cast
 from urllib.parse import urlsplit
@@ -29,17 +30,25 @@ from multi_exchange_trader.account.risk_limit_envelope import (
 from multi_exchange_trader.execution.protection import ProtectionScope
 from multi_exchange_trader.execution.risk_v2_contracts import (
     InstrumentPinV2,
+    RiskObservationRefV2,
     RiskSourceEnvironmentV2,
+    _canonical_sha256_v2,
     _decimal_v2,
     _digest_v2,
     _fields_v2,
     _identifier_v2,
     _key_payload_v2,
     _literal_v2,
+    _observation_payload_v2,
     _pin_payload_v2,
+    _time_text_v2,
     _utc_v2,
 )
-from multi_exchange_trader.execution.risk_v2_math import decimal_fraction_v2, finite_decimal_v2
+from multi_exchange_trader.execution.risk_v2_math import (
+    decimal_fraction_v2,
+    decimal_text_v2,
+    finite_decimal_v2,
+)
 from multi_exchange_trader.trading_product import InstrumentKey
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -791,3 +800,696 @@ def normalize_bybit_tier_rows_v1(
         )
         lower, previous_deduction, previous_rate = upper, deduction, maintenance
     return tuple(normalized)
+
+
+@dataclass(frozen=True)
+class BybitLinearTierTableV1:
+    """Complete supplied source graph; raw-manifest preimage lives in Capture."""
+
+    instrument_pin: InstrumentPinV2
+    reference: RiskObservationRefV2
+    pages: tuple[BybitModelSourceRefV1, ...]
+    rows: tuple[BybitLinearTierRowV1, ...]
+    raw_manifest_sha256: str
+    full_table_sha256: str
+    rate_encoding_revision: Literal["BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1"]
+    deduction_rule_revision: Literal["EXACT_CONTINUOUS_MM_DEDUCTION_V1"]
+
+    def __post_init__(self) -> None:
+        _table_v1(self)
+
+
+@dataclass(frozen=True)
+class BybitRiskLimitCaptureV1:
+    """A replayable byte association, never an actual issuer receipt."""
+
+    table: BybitLinearTierTableV1
+    raw_pages: tuple[BybitRiskLimitEnvelopeReadV1, ...]
+
+    def __post_init__(self) -> None:
+        _capture_v1(self)
+
+
+def _integer_text_v1(value: int) -> str:
+    # finite_decimal enforces derived digit/work bounds without global int-str
+    # settings. Its exponent is zero for an integer; use coefficient digits.
+    parts = finite_decimal_v2(Fraction(value)).as_tuple()
+    return ("-" if parts.sign else "") + "".join(chr(48 + d) for d in parts.digits)
+
+
+def _rational_payload_v1(value: Fraction) -> dict[str, object]:
+    if type(value) is not Fraction:
+        _reject_v1()
+    try:
+        n, d = value.numerator, value.denominator
+    except AttributeError:
+        _reject_v1()
+    if type(n) is not int or type(d) is not int or d <= 0:
+        _reject_v1()
+    if n.bit_length() > 1_000_000 or d.bit_length() > 1_000_000:
+        _reject_v1("RISK_V2_RESOURCE_LIMIT")
+    if gcd(n, d) != 1:
+        _reject_v1()
+    return {"numerator": _integer_text_v1(n), "denominator": _integer_text_v1(d)}
+
+
+def _source_payload_v1(value: BybitModelSourceRefV1) -> dict[str, object]:
+    _source_v1(value)
+    return {
+        "observation_id": value.observation_id,
+        "source_id": value.source_id,
+        "source_generation": value.source_generation,
+        "account_scope": None
+        if value.account_scope is None
+        else {
+            "account_id": value.account_scope.account_id,
+            "environment": value.account_scope.environment,
+        },
+        "source_environment": value.source_environment,
+        "origin": {
+            "scheme": value.origin.scheme,
+            "host": value.origin.host,
+            "port": value.origin.port,
+        },
+        "path": value.path,
+        "query": value.query,
+        "request_started_at": _time_text_v2(value.request_started_at),
+        "received_at": _time_text_v2(value.received_at),
+        "envelope_time_ms": value.envelope_time_ms,
+        "raw_body_sha256": value.raw_body_sha256,
+        "page_ordinal": value.page_ordinal,
+        "accepted_attempt": value.accepted_attempt,
+    }
+
+
+def _raw_capture_parts_v1(
+    pages: tuple[BybitRiskLimitEnvelopeReadV1, ...],
+) -> tuple[tuple[BybitRiskLimitPageV1, ...], tuple[BybitLinearTierRowV1, ...]]:
+    _tuple_v1(pages, 64, minimum=1)
+    total = 0
+    for envelope in pages:
+        raw = _fields_v2(envelope, BybitRiskLimitEnvelopeReadV1)["decoded_body_bytes"]
+        if type(raw) is not bytes:
+            _reject_v1()
+        total += len(raw)
+        if total > 1048576:
+            _reject_v1("RISK_V2_RESOURCE_LIMIT")
+    decoded = tuple(
+        decode_bybit_risk_limit_page_v1(page, page_ordinal=i) for i, page in enumerate(pages, 1)
+    )
+    return decoded, normalize_bybit_tier_rows_v1(decoded)
+
+
+def _raw_manifest_payload_v1(pages: tuple[BybitRiskLimitPageV1, ...]) -> dict[str, object]:
+    # Called only after complete A0 replay/normalization of this exact sequence.
+    payloads: list[dict[str, object]] = []
+    for ordinal, page in enumerate(pages, 1):
+        e = page.envelope
+        payloads.append(
+            {
+                "key": _key_payload_v2(e.key),
+                "method": e.method,
+                "endpoint": e.endpoint,
+                "params": e.params,
+                "sent_origin": {
+                    "scheme": e.sent_origin.scheme,
+                    "host": e.sent_origin.host,
+                    "port": e.sent_origin.port,
+                },
+                "response_origin": {
+                    "scheme": e.response_origin.scheme,
+                    "host": e.response_origin.host,
+                    "port": e.response_origin.port,
+                },
+                "response_status": e.response_status,
+                "request_started_at": _time_text_v2(e.request_started_at),
+                "received_at": _time_text_v2(e.received_at),
+                "started_mono_hex": e.started_mono.hex(),
+                "received_mono_hex": e.received_mono.hex(),
+                "response_time": _time_text_v2(e.response_time),
+                "decoded_body_sha256": e.decoded_body_sha256,
+                "decoded_body_length": len(e.decoded_body_bytes),
+                "accepted_attempt": e.accepted_attempt,
+                "physical_start": e.physical_start,
+                "physical_end": e.physical_end,
+                "logical_ordinal": e.logical_ordinal,
+                "observation_id": e.observation_id,
+                "source_id": e.source_id,
+                "source_generation": e.source_generation,
+                "source_environment": e.source_environment,
+                "page_ordinal": ordinal,
+                "cursor_in": "" if ordinal == 1 else e.params[-1][1],
+                "cursor_out": page.next_cursor,
+            }
+        )
+    return {"pages": tuple(payloads)}
+
+
+def _semantic_table_payload_v1(
+    pin: InstrumentPinV2,
+    rows: tuple[BybitLinearTierRowV1, ...],
+) -> dict[str, object]:
+    # Dedicated self-excluded recipe. Inputs were fully validated by either A0
+    # replay/parser or the Table shape/association validator before this call.
+    return {
+        "instrument": {
+            "key": _key_payload_v2(pin.key),
+            "native_instrument_id": pin.native_instrument_id,
+            "specification_revision": pin.specification_revision,
+        },
+        "rate_encoding_revision": "BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",
+        "deduction_rule_revision": "EXACT_CONTINUOUS_MM_DEDUCTION_V1",
+        "rows": tuple(
+            {
+                "tier_id": _integer_text_v1(row.risk_id),
+                "lower_exclusive_usdt": _rational_payload_v1(row.lower_exclusive_usdt),
+                "upper_inclusive_usdt": _rational_payload_v1(
+                    decimal_fraction_v2(row.upper_inclusive_usdt.value)
+                ),
+                "initial_margin_rate": _rational_payload_v1(
+                    decimal_fraction_v2(row.initial_margin_rate.value)
+                ),
+                "maintenance_margin_rate": _rational_payload_v1(
+                    decimal_fraction_v2(row.maintenance_margin_rate.value)
+                ),
+                "max_leverage": _rational_payload_v1(decimal_fraction_v2(row.max_leverage.value)),
+                "mm_deduction_usdt": _rational_payload_v1(
+                    decimal_fraction_v2(row.mm_deduction_usdt.value)
+                ),
+                "is_lowest_risk": row.is_lowest_risk,
+            }
+            for row in rows
+        ),
+    }
+
+
+def _tier_source_payload_v1(
+    pin: InstrumentPinV2, raw_hash: str, full_hash: str
+) -> dict[str, object]:
+    return {
+        "instrument_pin": _pin_payload_v2(pin),
+        "source_rule_revision": SOURCE_RULE_REVISION,
+        "raw_manifest_sha256": raw_hash,
+        "full_table_sha256": full_hash,
+    }
+
+
+def _table_shape_v1(value: BybitLinearTierTableV1) -> None:
+    _fields_v2(value, BybitLinearTierTableV1)
+    _pin_payload_v2(value.instrument_pin)
+    _observation_payload_v2(value.reference)
+    _digest_v2(value.raw_manifest_sha256)
+    _digest_v2(value.full_table_sha256)
+    _literal_v2(value.rate_encoding_revision, ("BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",))
+    _literal_v2(value.deduction_rule_revision, ("EXACT_CONTINUOUS_MM_DEDUCTION_V1",))
+    _tuple_v1(value.pages, 64, minimum=1)
+    _tuple_v1(value.rows, 1024, minimum=1)
+    # Validate every child before any cross-record equality or key comparison.
+    for source in value.pages:
+        bybit_source_ref_sha256_v1(source)
+    for row in value.rows:
+        bybit_tier_row_sha256_v1(row)
+    first = value.pages[0]
+    symbol = value.instrument_pin.key.symbol
+    if first.source_environment != value.instrument_pin.source_environment:
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    observations: set[str] = set()
+    cursors: set[str] = set()
+    for i, source in enumerate(value.pages, 1):
+        if source.page_ordinal != i or source.observation_id in observations:
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        observations.add(source.observation_id)
+        if (
+            source.path != "/v5/market/risk-limit"
+            or source.account_scope is not None
+            or source.source_id != first.source_id
+            or source.source_generation != first.source_generation
+            or source.source_environment != first.source_environment
+            or source.origin != first.origin
+            or source.envelope_time_ms is None
+            or source.query[:2] != (("category", "linear"), ("symbol", symbol))
+            or len(source.query) != (2 if i == 1 else 3)
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        if i > 1:
+            if (
+                source.query[2][0] != "cursor"
+                or not source.query[2][1]
+                or source.query[2][1] in cursors
+            ):
+                _reject_v1("RISK_V2_SOURCE_MISMATCH")
+            cursors.add(source.query[2][1])
+    ref = value.reference
+    server = max(
+        _EPOCH + timedelta(milliseconds=cast(int, p.envelope_time_ms)) for p in value.pages
+    )
+    if (
+        ref.source_id != first.source_id
+        or ref.source_environment != first.source_environment
+        or ref.source_rule_revision != SOURCE_RULE_REVISION
+        or _utc_v2(ref.server_observed_at) != server
+        or _utc_v2(ref.received_at) != max(_utc_v2(p.received_at) for p in value.pages)
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    indices: dict[int, set[int]] = {i: set() for i in range(1, len(value.pages) + 1)}
+    ids: set[int] = set()
+    lower, previous_d, previous_m = Fraction(0), Fraction(0), Fraction(0)
+    for index, row in enumerate(value.rows):
+        fields = (
+            row.upper_inclusive_usdt,
+            row.initial_margin_rate,
+            row.maintenance_margin_rate,
+            row.max_leverage,
+            row.mm_deduction_usdt,
+        )
+        source = fields[0].reference.source
+        if source not in value.pages:
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        pointer = fields[0].reference.json_pointer
+        match = re.fullmatch(r"/result/list/(0|[1-9][0-9]{0,3})/riskLimitValue", pointer, re.ASCII)
+        if match is None:
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        row_index = int(match.group(1))
+        _count_v1(row_index, 0, 1023)
+        if row_index in indices[source.page_ordinal]:
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        indices[source.page_ordinal].add(row_index)
+        for field, name in zip(
+            fields,
+            ("riskLimitValue", "initialMargin", "maintenanceMargin", "maxLeverage", "mmDeduction"),
+            strict=True,
+        ):
+            if (
+                field.reference.source != source
+                or field.reference.json_pointer != f"/result/list/{row_index}/{name}"
+            ):
+                _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        upper, initial, maintenance, leverage, deduction = (
+            decimal_fraction_v2(f.value) for f in fields
+        )
+        # A0 bounds every source operand before this <=16000-bit arithmetic.
+        if (
+            row.lower_exclusive_usdt != lower
+            or row.risk_id in ids
+            or upper <= lower
+            or leverage <= 0
+            or not 0 < maintenance < 1
+            or not maintenance <= initial <= 1
+            or deduction < 0
+            or row.is_lowest_risk != int(index == 0)
+            or (index == 0 and deduction != 0)
+            or (index > 0 and deduction != previous_d + lower * (maintenance - previous_m))
+        ):
+            _reject_v1("RISK_V2_RISK_TIER_UNVERIFIED")
+        ids.add(row.risk_id)
+        lower, previous_d, previous_m = upper, deduction, maintenance
+    for seen in indices.values():
+        if seen != set(range(len(seen))):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+
+
+def _table_v1(value: BybitLinearTierTableV1) -> None:
+    _table_shape_v1(value)
+    semantic = _canonical_sha256_v2(
+        "BybitLinearTierTableSemanticV1",
+        _semantic_table_payload_v1(value.instrument_pin, value.rows),
+    )
+    source_payload = _canonical_sha256_v2(
+        "BybitLinearTierSourcePayloadV1",
+        _tier_source_payload_v1(value.instrument_pin, value.raw_manifest_sha256, semantic),
+    )
+    if value.full_table_sha256 != semantic or value.reference.payload_sha256 != source_payload:
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    # raw_manifest_sha256 cannot be authenticated here: Table has no raw pages.
+
+
+def _capture_v1(value: BybitRiskLimitCaptureV1) -> None:
+    _fields_v2(value, BybitRiskLimitCaptureV1)
+    _table_v1(value.table)
+    decoded, rows = _raw_capture_parts_v1(value.raw_pages)
+    raw_hash = _canonical_sha256_v2(
+        "BybitRiskLimitRawManifestV1", _raw_manifest_payload_v1(decoded)
+    )
+    if (
+        raw_hash != value.table.raw_manifest_sha256
+        or tuple(p.source for p in decoded) != value.table.pages
+        or rows != value.table.rows
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    # Pin/ref/rules/semantic/source payload were checked by _table_v1 above;
+    # source and row equality now associate every retained pointer with bytes.
+
+
+def parse_bybit_risk_limit_table_v1(
+    pages: tuple[BybitRiskLimitEnvelopeReadV1, ...],
+    *,
+    instrument_pin: InstrumentPinV2,
+    observation_id: str,
+) -> BybitRiskLimitCaptureV1:
+    """Finalize a complete supplied capture without I/O, fake hashes or clocks."""
+    _pin_payload_v2(instrument_pin)
+    _identifier_v2(observation_id)
+    decoded, rows = _raw_capture_parts_v1(pages)
+    if (
+        instrument_pin.key != pages[0].key
+        or instrument_pin.source_environment != pages[0].source_environment
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    raw_hash = _canonical_sha256_v2(
+        "BybitRiskLimitRawManifestV1", _raw_manifest_payload_v1(decoded)
+    )
+    full_hash = _canonical_sha256_v2(
+        "BybitLinearTierTableSemanticV1", _semantic_table_payload_v1(instrument_pin, rows)
+    )
+    source_hash = _canonical_sha256_v2(
+        "BybitLinearTierSourcePayloadV1",
+        _tier_source_payload_v1(instrument_pin, raw_hash, full_hash),
+    )
+    reference = RiskObservationRefV2(
+        observation_id,
+        pages[0].source_id,
+        pages[0].source_environment,
+        SOURCE_RULE_REVISION,
+        max(p.response_time for p in pages),
+        max(p.received_at for p in pages),
+        source_hash,
+    )
+    table = BybitLinearTierTableV1(
+        instrument_pin,
+        reference,
+        tuple(p.source for p in decoded),
+        rows,
+        raw_hash,
+        full_hash,
+        "BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",
+        "EXACT_CONTINUOUS_MM_DEDUCTION_V1",
+    )
+    return BybitRiskLimitCaptureV1(table, pages)
+
+
+def bybit_instrument_pin_sha256_v1(value: InstrumentPinV2) -> str:
+    return _canonical_sha256_v2("BybitInstrumentPinV1", _pin_payload_v2(value))
+
+
+def bybit_source_ref_sha256_v1(value: BybitModelSourceRefV1) -> str:
+    return _canonical_sha256_v2("BybitModelSourceRefV1", _source_payload_v1(value))
+
+
+def bybit_field_ref_sha256_v1(value: BybitModelFieldRefV1) -> str:
+    _field_v1(value)
+    return _canonical_sha256_v2(
+        "BybitModelFieldRefV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "json_pointer": value.json_pointer,
+            "wire_kind": value.wire_kind,
+            "wire_spelling": value.wire_spelling,
+        },
+    )
+
+
+def bybit_decimal_field_sha256_v1(value: BybitDecimalFieldV1) -> str:
+    _decimal_field_v1(value)
+    return _canonical_sha256_v2(
+        "BybitDecimalFieldV1",
+        {
+            "value": decimal_text_v2(value.value),
+            "reference": bybit_field_ref_sha256_v1(value.reference),
+        },
+    )
+
+
+def bybit_nonvip_fee_sha256_v1(value: BybitNonVipFeeBasisV1) -> str:
+    _nonvip_v1(value)
+    if type(value.reference) is BybitModelFieldRefV1:
+        kind, reference = "JSON_FIELD", bybit_field_ref_sha256_v1(value.reference)
+    else:
+        kind, reference = (
+            "FEE_DOCUMENT",
+            bybit_fee_document_ref_sha256_v1(cast(BybitFeeDocumentRefV1, value.reference)),
+        )
+    return _canonical_sha256_v2(
+        "BybitNonVipFeeBasisV1",
+        {"value": decimal_text_v2(value.value), "reference_kind": kind, "reference": reference},
+    )
+
+
+def bybit_fee_document_ref_sha256_v1(value: BybitFeeDocumentRefV1) -> str:
+    _document_v1(value)
+    return _canonical_sha256_v2(
+        "BybitFeeDocumentRefV1",
+        {
+            "document_url": value.document_url,
+            "document_updated_at_text": value.document_updated_at_text,
+            "captured_at": _time_text_v2(value.captured_at),
+            "raw_document_sha256": value.raw_document_sha256,
+            "exact_locator": value.exact_locator,
+            "displayed_rate_spelling": value.displayed_rate_spelling,
+            "displayed_unit": value.displayed_unit,
+            "account_region_profile_sha256": value.account_region_profile_sha256,
+            "applicability_revision": value.applicability_revision,
+        },
+    )
+
+
+def bybit_uta_mode_sha256_v1(value: BybitUtaModeV1) -> str:
+    _fields_v2(value, BybitUtaModeV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitUtaModeV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "unified_margin_status": value.unified_margin_status,
+            "margin_mode": value.margin_mode,
+            "updated_time_ms": value.updated_time_ms,
+        },
+    )
+
+
+def bybit_trade_behaviour_sha256_v1(value: BybitTradeBehaviourV1) -> str:
+    _fields_v2(value, BybitTradeBehaviourV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitTradeBehaviourV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "lpa_perp": value.lpa_perp,
+            "futures_mnt_fee_deduction": value.futures_mnt_fee_deduction,
+            "delta_enable": value.delta_enable,
+        },
+    )
+
+
+def bybit_flat_leverage_sha256_v1(value: BybitFlatLeverageV1) -> str:
+    _fields_v2(value, BybitFlatLeverageV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitFlatLeverageV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "symbol": value.symbol,
+            "position_idx": value.position_idx,
+            "leverage": bybit_decimal_field_sha256_v1(value.leverage),
+            "read_path": value.read_path,
+        },
+    )
+
+
+def bybit_fee_inputs_sha256_v1(value: BybitLinearFeeInputsV1) -> str:
+    _fields_v2(value, BybitLinearFeeInputsV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitLinearFeeInputsV1",
+        {
+            "account_taker_rate": bybit_decimal_field_sha256_v1(value.account_taker_rate),
+            "account_maker_rate": bybit_decimal_field_sha256_v1(value.account_maker_rate),
+            "closing_order_reserve_nonvip_rate": bybit_nonvip_fee_sha256_v1(
+                value.closing_order_reserve_nonvip_rate
+            ),
+            "fee_currency": value.fee_currency,
+            "behaviour": bybit_trade_behaviour_sha256_v1(value.behaviour),
+            "nonvip_applicability_revision": value.nonvip_applicability_revision,
+        },
+    )
+
+
+def bybit_wallet_sha256_v1(value: BybitUsdtWalletV1) -> str:
+    _fields_v2(value, BybitUsdtWalletV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitUsdtWalletV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "wallet_balance": bybit_decimal_field_sha256_v1(value.wallet_balance),
+            "equity": bybit_decimal_field_sha256_v1(value.equity),
+            "total_position_im": bybit_decimal_field_sha256_v1(value.total_position_im),
+            "total_order_im": bybit_decimal_field_sha256_v1(value.total_order_im),
+            "locked": bybit_decimal_field_sha256_v1(value.locked),
+            "bonus": bybit_decimal_field_sha256_v1(value.bonus),
+            "borrow_amount": bybit_decimal_field_sha256_v1(value.borrow_amount),
+            "spot_borrow": bybit_decimal_field_sha256_v1(value.spot_borrow),
+            "accrued_interest": bybit_decimal_field_sha256_v1(value.accrued_interest),
+            "unrealised_pnl": bybit_decimal_field_sha256_v1(value.unrealised_pnl),
+        },
+    )
+
+
+def bybit_held_position_sha256_v1(value: BybitHeldPositionV1) -> str:
+    _fields_v2(value, BybitHeldPositionV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitHeldPositionV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "instrument_pin": bybit_instrument_pin_sha256_v1(value.instrument_pin),
+            "position_idx": value.position_idx,
+            "side": value.side,
+            "auto_add_margin": value.auto_add_margin,
+            "risk_id": value.risk_id,
+            "position_status": value.position_status,
+            "is_reduce_only": value.is_reduce_only,
+            "seq": value.seq,
+            "updated_time_ms": value.updated_time_ms,
+            "size": bybit_decimal_field_sha256_v1(value.size),
+            "avg_price": bybit_decimal_field_sha256_v1(value.avg_price),
+            "mark_price": bybit_decimal_field_sha256_v1(value.mark_price),
+            "leverage": bybit_decimal_field_sha256_v1(value.leverage),
+            "position_im": bybit_decimal_field_sha256_v1(value.position_im),
+            "position_im_by_mp": bybit_decimal_field_sha256_v1(value.position_im_by_mp),
+            "position_mm": bybit_decimal_field_sha256_v1(value.position_mm),
+            "position_mm_by_mp": bybit_decimal_field_sha256_v1(value.position_mm_by_mp),
+            "risk_limit_value": bybit_decimal_field_sha256_v1(value.risk_limit_value),
+            "liq_price": None
+            if value.liq_price is None
+            else bybit_decimal_field_sha256_v1(value.liq_price),
+        },
+    )
+
+
+def bybit_held_order_sha256_v1(value: BybitHeldOrderV1) -> str:
+    _fields_v2(value, BybitHeldOrderV1)
+    _validate_value_v1(value)
+    return _canonical_sha256_v2(
+        "BybitHeldOrderV1",
+        {
+            "source": bybit_source_ref_sha256_v1(value.source),
+            "instrument_pin": bybit_instrument_pin_sha256_v1(value.instrument_pin),
+            "order_id": value.order_id,
+            "order_link_id": value.order_link_id,
+            "position_idx": value.position_idx,
+            "side": value.side,
+            "order_type": value.order_type,
+            "status": value.status,
+            "reduce_only": value.reduce_only,
+            "close_on_trigger": value.close_on_trigger,
+            "updated_time_ms": value.updated_time_ms,
+            "price": bybit_decimal_field_sha256_v1(value.price),
+            "quantity": bybit_decimal_field_sha256_v1(value.quantity),
+            "leaves_quantity": bybit_decimal_field_sha256_v1(value.leaves_quantity),
+            "trigger_price": None
+            if value.trigger_price is None
+            else bybit_decimal_field_sha256_v1(value.trigger_price),
+        },
+    )
+
+
+def bybit_tier_row_sha256_v1(value: BybitLinearTierRowV1) -> str:
+    _fields_v2(value, BybitLinearTierRowV1)
+    _row_v1(value)
+    return _canonical_sha256_v2(
+        "BybitLinearTierRowV1",
+        {
+            "risk_id": value.risk_id,
+            "lower_exclusive_usdt": _rational_payload_v1(value.lower_exclusive_usdt),
+            "is_lowest_risk": value.is_lowest_risk,
+            "upper_inclusive_usdt": bybit_decimal_field_sha256_v1(value.upper_inclusive_usdt),
+            "initial_margin_rate": bybit_decimal_field_sha256_v1(value.initial_margin_rate),
+            "maintenance_margin_rate": bybit_decimal_field_sha256_v1(value.maintenance_margin_rate),
+            "max_leverage": bybit_decimal_field_sha256_v1(value.max_leverage),
+            "mm_deduction_usdt": bybit_decimal_field_sha256_v1(value.mm_deduction_usdt),
+        },
+    )
+
+
+def bybit_raw_manifest_sha256_v1(pages: tuple[BybitRiskLimitEnvelopeReadV1, ...]) -> str:
+    decoded, _ = _raw_capture_parts_v1(pages)
+    return _canonical_sha256_v2("BybitRiskLimitRawManifestV1", _raw_manifest_payload_v1(decoded))
+
+
+def bybit_full_table_sha256_v1(table: BybitLinearTierTableV1) -> str:
+    _table_v1(table)
+    return _canonical_sha256_v2(
+        "BybitLinearTierTableSemanticV1",
+        _semantic_table_payload_v1(table.instrument_pin, table.rows),
+    )
+
+
+def bybit_tier_source_payload_sha256_v1(table: BybitLinearTierTableV1) -> str:
+    _table_v1(table)
+    return _canonical_sha256_v2(
+        "BybitLinearTierSourcePayloadV1",
+        _tier_source_payload_v1(
+            table.instrument_pin, table.raw_manifest_sha256, table.full_table_sha256
+        ),
+    )
+
+
+def bybit_tier_table_sha256_v1(value: BybitLinearTierTableV1) -> str:
+    _table_v1(value)
+    return _canonical_sha256_v2(
+        "BybitLinearTierTableV1",
+        {
+            "instrument_pin": bybit_instrument_pin_sha256_v1(value.instrument_pin),
+            "reference": _observation_payload_v2(value.reference),
+            "pages": tuple(bybit_source_ref_sha256_v1(p) for p in value.pages),
+            "rows": tuple(bybit_tier_row_sha256_v1(r) for r in value.rows),
+            "raw_manifest_sha256": value.raw_manifest_sha256,
+            "full_table_sha256": value.full_table_sha256,
+            "rate_encoding_revision": value.rate_encoding_revision,
+            "deduction_rule_revision": value.deduction_rule_revision,
+        },
+    )
+
+
+def bybit_risk_limit_capture_sha256_v1(value: BybitRiskLimitCaptureV1) -> str:
+    _capture_v1(value)
+    return _canonical_sha256_v2(
+        "BybitRiskLimitCaptureV1",
+        {
+            "table": bybit_tier_table_sha256_v1(value.table),
+            "raw_pages": bybit_raw_manifest_sha256_v1(value.raw_pages),
+        },
+    )
+
+
+def bybit_selected_profile_sha256_v1(value: BybitSelectedEntryProfileV1) -> str:
+    _fields_v2(value, BybitSelectedEntryProfileV1)
+    _validate_value_v1(value)
+    for ids in (
+        value.selected_open_order_ids,
+        value.selected_conditional_order_ids,
+        value.local_unresolved_entry_ids,
+    ):
+        if any(left >= right for left, right in pairwise(ids)):
+            _reject_v1()
+    sources = value.source_records
+    if any(left.observation_id >= right.observation_id for left, right in pairwise(sources)):
+        _reject_v1()
+    return _canonical_sha256_v2(
+        "BybitSelectedEntryProfileV1",
+        {
+            "revision": value.revision,
+            "symbol": value.symbol,
+            "position_idx": value.position_idx,
+            "selected_position_quantity": bybit_decimal_field_sha256_v1(
+                value.selected_position_quantity
+            ),
+            "selected_open_order_ids": value.selected_open_order_ids,
+            "selected_conditional_order_ids": value.selected_conditional_order_ids,
+            "local_unresolved_entry_ids": value.local_unresolved_entry_ids,
+            "auto_add_margin": bybit_field_ref_sha256_v1(value.auto_add_margin),
+            "prospective_extra_margin_usdt": decimal_text_v2(value.prospective_extra_margin_usdt),
+            "extra_margin_basis": value.extra_margin_basis,
+            "source_records": tuple(bybit_source_ref_sha256_v1(source) for source in sources),
+        },
+    )
