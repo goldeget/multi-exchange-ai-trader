@@ -445,7 +445,8 @@ def build_native_node(*, session: BybitDemoAccountSession,
             if len(captured) != 1 or str(captured[0].account_id) != channel.native_account_id:
                 raise ValueError("EXACT_NATIVE_CLIENT_ACCOUNT_REQUIRED")
             bridge = NativeBybitBridge(scope=scope, native_account_id=channel.native_account_id,
-                factory=strategy.order_factory, strategy=strategy, bindings=load_native_bindings())
+                factory=strategy.order_factory, strategy=strategy,
+                bindings=load_native_bindings(include_fixed_limit_v2=True))
             subscription = NativeOrderSubscription(msgbus=native_node.kernel.msgbus,
                 strategy=strategy, channel=channel, on_event=on_event,
                 event_types=tuple(getattr(modules["events"], name) for name in (

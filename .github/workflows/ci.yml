@@ -145,6 +145,40 @@ jobs:
               raise SystemExit("Restored monitoring requires exactly 12 named unskipped passing cases")
           print("Verified 12 actual restored monitoring contracts without network access")
           PY
+      - name: Require isolated actual fixed limit native contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_bybit_fixed_limit_linux.py --junitxml=fixed-limit-native-contracts.xml
+      - name: Require all eight exact fixed limit native contracts
+        run: |
+          .venv/bin/python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("fixed-limit-native-contracts.xml").getroot()
+          suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
+          expected = {
+              "test_actual_limit_ioc_factory",
+              "test_exact_base_quantity_and_price",
+              "test_ioc_and_order_kind_revalidation",
+              "test_no_bbo_or_post_only_override",
+              "test_protection_and_product_binding",
+              "test_ambiguous_submit_keeps_identity",
+              "test_partial_and_zero_fill_keep_reservation",
+              "test_restore_never_resubmits_or_reprices",
+          }
+          def counter(suite, key):
+              value = suite.attrib.get(key)
+              if (value is None or not value or len(value) > 1 or value not in "012345678"):
+                  raise SystemExit("Fixed limit native counters require bounded nonnegative integers")
+              return int(value)
+          total = sum(counter(s, "tests") for s in suites)
+          bad = any(counter(s, key) != 0 for s in suites for key in ("skipped", "errors", "failures"))
+          names = [case.attrib.get("name", "") for case in cases]
+          if (total != 8 or len(cases) != 8 or bad or len(set(names)) != 8 or set(names) != expected
+                  or any(case.attrib.get("classname", "").split(".")[-1] != "test_bybit_fixed_limit_linux" for case in cases)
+                  or any(list(root.iter(tag)) for tag in ("skipped", "failure", "error"))):
+              raise SystemExit("Fixed limit native contracts require exactly eight named unskipped passing cases")
+          print("Verified eight actual fixed limit native contracts without network access")
+          PY
       - name: Preserve separate native qualification receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -154,6 +188,7 @@ jobs:
             native-contracts.xml
             native-restart-contracts.xml
             restored-monitoring-contracts.xml
+            fixed-limit-native-contracts.xml
           if-no-files-found: error
           retention-days: 7
 

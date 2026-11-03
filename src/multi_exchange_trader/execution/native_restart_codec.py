@@ -13,7 +13,19 @@ from decimal import Decimal
 from importlib.metadata import version
 from typing import Any, Literal
 
-from .native_recovery import OwnedCacheExpectation
+from .bybit_native import (
+    LinearFixedLimitNativeOrderRequestV2,
+    _verify_fixed_limit_order_v2,
+    load_native_bindings,
+)
+from .native_recovery import (
+    OwnedCacheExpectation,
+    _check_expectation_pins_v2,
+    _expectation_pins_v2,
+    _pin_bindings_v2,
+    _V2BindingsPin,
+    _V2ExpectationPin,
+)
 from .native_restart_store import (
     MAX_BYTES,
     MAX_EVENTS,
@@ -46,6 +58,19 @@ class NativeRestartResult:
 
 
 @dataclass(frozen=True)
+class _PreparedV2Pins:
+    owners: tuple[OwnedCacheExpectation, ...]
+    allowed: frozenset[str]
+    pins: tuple[_V2ExpectationPin, ...]
+    binding: _V2BindingsPin
+
+    def check(self, owners: tuple[OwnedCacheExpectation, ...], allowed: frozenset[str]) -> None:
+        _require(owners is self.owners and allowed is self.allowed)
+        self.binding.check()
+        _check_expectation_pins_v2(owners, self.pins)
+
+
+@dataclass(frozen=True)
 class PreparedNativeRestart:
     # Bytes prevent the caller mutating staged native objects between validation
     # and installation. Installation repeats detached decoding before any writes.
@@ -55,6 +80,7 @@ class PreparedNativeRestart:
     _allowed_missing_ids: frozenset[str] = field(repr=False)
     result: NativeRestartResult
     venue_order_ids: tuple[tuple[str, str], ...]
+    _v2_pins: _PreparedV2Pins | None = field(default=None, repr=False)
 
 
 def _sdk() -> dict[str, Any]:
@@ -78,6 +104,20 @@ def _sdk() -> dict[str, Any]:
     result["serializer"] = serializer_type(msgpack, timestamps_as_str=True)
     result["msgpack"] = msgpack
     return result
+
+
+def _sdk_for_owners(pins: tuple[_V2ExpectationPin, ...]) -> tuple[dict[str, Any], _V2BindingsPin | None]:
+    sdk = _sdk()
+    fixed = _pin_bindings_v2(load_native_bindings(include_fixed_limit_v2=True)) if pins else None
+    _check_sdk_v2(sdk, fixed)
+    return sdk, fixed
+
+
+def _check_sdk_v2(sdk: dict[str, Any], fixed: _V2BindingsPin | None) -> None:
+    if fixed is not None:
+        fixed.check()
+        _require(sdk["LimitOrder"] is fixed.selections[0]
+                 and sdk["OrderInitialized"] is fixed.selections[1])
 
 
 def _encode(obj: Any, sdk: dict[str, Any]) -> str:
@@ -126,8 +166,14 @@ def _same_id(value: Any, name: str, expected: str, sdk: dict[str, Any]) -> None:
     _require(type(value) is sdk[name] and str(value) == expected)
 
 
-def _validate_order(order: Any, owner: OwnedCacheExpectation, sdk: dict[str, Any]) -> None:
+def _validate_order(order: Any, owner: OwnedCacheExpectation, sdk: dict[str, Any],
+                    fixed: _V2BindingsPin | None = None) -> None:
     request, owned = owner.request, owner.request.owned
+    if type(request) is LinearFixedLimitNativeOrderRequestV2:
+        _require(fixed is not None)
+        assert fixed is not None
+        _verify_fixed_limit_order_v2(order, request, fixed.verifier(),
+            sdk["StrategyId"](owner.strategy_id), building=False)
     _require(type(order) is sdk["MarketOrder" if request.order_type == "MARKET" else "LimitOrder"])
     for attr, native_type, expected in (
         ("client_order_id", "ClientOrderId", owned.client_order_id),
@@ -238,7 +284,7 @@ def _populate(cache: Any, instruments: list[Any], orders: list[tuple[Any, Any, A
 
 def _stage(payload: dict[str, object], identity: NativeRestartIdentity,
            owners: tuple[OwnedCacheExpectation, ...], allowed: frozenset[str],
-           sdk: dict[str, Any]) -> tuple[Any, NativeRestartResult]:
+           sdk: dict[str, Any], fixed: _V2BindingsPin | None = None) -> tuple[Any, NativeRestartResult]:
     validate_payload_shape(payload)
     expected = _owners(identity, owners, allowed)
     instruments: dict[str, Any] = {}
@@ -275,7 +321,7 @@ def _stage(payload: dict[str, object], identity: NativeRestartIdentity,
                 _require(trade not in trades)
                 trades.add(trade)
                 fills[identifier] = (event, row["events"][index])
-        _validate_order(order, expected[key], sdk)
+        _validate_order(order, expected[key], sdk, fixed)
         _require(canonical_bytes(order.to_dict()) == canonical_bytes(row["state"])
                  and str(order.instrument_id) in instruments)
         instrument = instruments[str(order.instrument_id)]
@@ -350,9 +396,15 @@ def capture_native_cache(cache: Any, *, identity: NativeRestartIdentity,
                          owners: tuple[OwnedCacheExpectation, ...],
                          allowed_missing_ids: frozenset[str] = frozenset()) -> dict[str, object]:
     try:
-        sdk = _sdk()
+        pins = _expectation_pins_v2(owners)
+        sdk, fixed = _sdk_for_owners(pins)
+        _check_expectation_pins_v2(owners, pins)
         payload = _capture(cache, sdk)
-        _stage(payload, identity, owners, allowed_missing_ids, sdk)
+        _check_expectation_pins_v2(owners, pins)
+        _stage(payload, identity, owners, allowed_missing_ids, sdk, fixed)
+        _check_expectation_pins_v2(owners, pins)
+        _check_sdk_v2(sdk, fixed)
+        _check_expectation_pins_v2(owners, pins)
         return payload
     except Exception:  # noqa: BLE001 - native/path/provider details must stay redacted.
         raise NativeRestartError() from None
@@ -362,13 +414,20 @@ def prepare_native_cache(payload: dict[str, object], *, identity: NativeRestartI
                          owners: tuple[OwnedCacheExpectation, ...],
                          allowed_missing_ids: frozenset[str] = frozenset()) -> PreparedNativeRestart:
     try:
-        candidate, result = _stage(payload, identity, owners, allowed_missing_ids, _sdk())
+        pins = _expectation_pins_v2(owners)
+        sdk, fixed = _sdk_for_owners(pins)
+        _check_expectation_pins_v2(owners, pins)
+        candidate, result = _stage(payload, identity, owners, allowed_missing_ids, sdk, fixed)
         # Derive only after complete native type/event/immutable/cache validation;
         # raw JSON summary fields are never ownership lookup seeds.
         venues = tuple(sorted((str(order.client_order_id), str(order.venue_order_id))
             for order in candidate.orders() if order.venue_order_id is not None))
+        _check_expectation_pins_v2(owners, pins)
+        _check_sdk_v2(sdk, fixed)
+        _check_expectation_pins_v2(owners, pins)
+        original = None if fixed is None else _PreparedV2Pins(owners, allowed_missing_ids, pins, fixed)
         return PreparedNativeRestart(canonical_bytes(payload), identity, owners,
-            allowed_missing_ids, result, venues)
+            allowed_missing_ids, result, venues, original)
     except Exception:  # noqa: BLE001 - native/path/provider details must stay redacted.
         raise NativeRestartError() from None
 
@@ -376,17 +435,36 @@ def prepare_native_cache(payload: dict[str, object], *, identity: NativeRestartI
 def install_native_cache(cache: Any, prepared: PreparedNativeRestart) -> NativeRestartResult:
     try:
         _require(type(prepared) is PreparedNativeRestart)
-        sdk = _sdk()
+        original = prepared._v2_pins
+        if original is not None:
+            _require(type(original) is _PreparedV2Pins)
+            original.check(prepared._owners, prepared._allowed_missing_ids)
+        pins = _expectation_pins_v2(prepared._owners) if original is None else original.pins
+        _require(not pins or original is not None)
+        sdk, fixed = _sdk_for_owners(pins)
+        if original is not None:
+            original.check(prepared._owners, prepared._allowed_missing_ids)
+            _require(fixed is not None and all(a is b for a, b in
+                zip(fixed.selections, original.binding.selections, strict=True)))
         _require(type(cache) is sdk["Cache"] and not cache.orders() and not cache.positions()
                  and not cache.instruments() and not cache.client_order_ids()
                  and not cache.position_ids() and not cache.position_snapshot_ids()
                  and not cache.accounts())
         candidate, result = _stage(decode_document(prepared._payload), prepared._identity,
-            prepared._owners, prepared._allowed_missing_ids, sdk)
+            prepared._owners, prepared._allowed_missing_ids, sdk, fixed)
         _require(result == prepared.result)
         orders = [(order, candidate.position_id(order.client_order_id),
                    candidate.client_id(order.client_order_id)) for order in candidate.orders()]
-        _populate(cache, candidate.instruments(), orders, candidate.positions(), sdk)
+        instruments, positions = candidate.instruments(), candidate.positions()
+        if original is not None:
+            original.check(prepared._owners, prepared._allowed_missing_ids)
+        _check_sdk_v2(sdk, fixed)
+        _check_expectation_pins_v2(prepared._owners, pins)
+        _populate(cache, instruments, orders, positions, sdk)
+        if original is not None:
+            original.check(prepared._owners, prepared._allowed_missing_ids)
+        _check_sdk_v2(sdk, fixed)
+        _check_expectation_pins_v2(prepared._owners, pins)
         return result
     except Exception:  # noqa: BLE001 - native/path/provider details must stay redacted.
         raise NativeRestartError() from None
