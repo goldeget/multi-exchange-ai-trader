@@ -25,7 +25,18 @@ from enum import StrEnum
 from fractions import Fraction
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    from multi_exchange_trader.execution.reservations_v2 import (
+        ReservationAdmissionV2,
+        ReservationV2,
+    )
+    from multi_exchange_trader.execution.risk_v2_codec import DurableEntryIntentV2
+    from multi_exchange_trader.execution.risk_v2_contracts import (
+        LinearReservationSnapshotV2,
+        RiskScopeV2,
+    )
 
 
 class CommandKind(StrEnum):
@@ -197,6 +208,7 @@ class CommandRecord:
     state: CommandState
     reservation: Reservation | None
     terminal_confirmed: bool
+    reservation_v2: ReservationV2 | None = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +252,22 @@ CREATE TABLE IF NOT EXISTS inbox (
  revision INTEGER NOT NULL, projection_payload TEXT NOT NULL,
  PRIMARY KEY(account, environment, event_id));
 """
+
+_V2_TABLES = {
+    "reservation_meta_v2": (
+        "account TEXT NOT NULL, environment TEXT NOT NULL, schema_version INTEGER NOT NULL, "
+        "capacity_revision INTEGER NOT NULL, owner_epoch TEXT NOT NULL, "
+        "PRIMARY KEY(account, environment)"
+    ),
+    "entry_reservations_v2": (
+        "account TEXT NOT NULL, environment TEXT NOT NULL, command_key TEXT NOT NULL, "
+        "version INTEGER NOT NULL, instrument_venue TEXT NOT NULL, "
+        "instrument_product TEXT NOT NULL, instrument_symbol TEXT NOT NULL, "
+        "envelope_sha256 TEXT NOT NULL, base_quantity TEXT NOT NULL, "
+        "risk_amount TEXT NOT NULL, margin_amount TEXT NOT NULL, "
+        "PRIMARY KEY(account, environment, command_key)"
+    ),
+}
 
 
 class CommandJournal:
@@ -303,8 +331,107 @@ class CommandJournal:
             (*self._scope, key, action, _canonical(detail), datetime.now(UTC).isoformat()),
         )
 
-    @staticmethod
-    def _record(row: sqlite3.Row) -> CommandRecord:
+    def _record(self, row: sqlite3.Row) -> CommandRecord:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+        from multi_exchange_trader.execution.risk_v2_codec import (
+            decode_entry_intent_v2,
+            encode_entry_intent_v2,
+        )
+        from multi_exchange_trader.trading_product import InstrumentKey
+
+        stored = None
+        if self._v2_schema():
+            stored = self._db.execute(
+                "SELECT * FROM entry_reservations_v2 WHERE account=? AND environment=? "
+                "AND command_key=?",
+                (*self._scope, row["command_key"]),
+            ).fetchone()
+        if stored is not None:
+            self._v2_meta(required=True)
+            text_fields = (
+                "account",
+                "environment",
+                "command_key",
+                "instrument_venue",
+                "instrument_product",
+                "instrument_symbol",
+                "envelope_sha256",
+                "base_quantity",
+                "risk_amount",
+                "margin_amount",
+            )
+            if (
+                any(type(stored[name]) is not str for name in text_fields)
+                or type(stored["version"]) is not int
+                or stored["version"] != 2
+                or type(row["terminal"]) is not int
+                or row["terminal"] not in (0, 1)
+                or row["kind"] != "ENTRY"
+                or any(row[name] is not None for name in ("risk", "notional", "margin"))
+                or any(
+                    type(row[name]) is not str
+                    for name in ("command_key", "client_id", "payload", "payload_hash", "state")
+                )
+            ):
+                c._reject_v2()
+            try:
+                reservation_v2 = v2.ReservationV2(
+                    2,
+                    InstrumentKey(
+                        stored["instrument_venue"],
+                        stored["instrument_product"],
+                        stored["instrument_symbol"],
+                    ),
+                    stored["envelope_sha256"],
+                    Decimal(stored["base_quantity"]),
+                    Decimal(stored["risk_amount"]),
+                    Decimal(stored["margin_amount"]),
+                )
+                state = CommandState(row["state"])
+            except (ValueError, ArithmeticError):
+                c._reject_v2()
+            try:
+                intent = decode_entry_intent_v2(row["payload"])
+            except c.RiskV2Rejected:
+                c._reject_v2()
+            payload = v2._reservation_payload(reservation_v2)
+            if any(
+                payload[name] != stored[name]
+                for name in ("base_quantity", "risk_amount", "margin_amount")
+            ):
+                c._reject_v2()
+            c._digest_v2(row["payload_hash"])
+            if (
+                encode_entry_intent_v2(intent) != row["payload"]
+                or hashlib.sha256(row["payload"].encode("utf-8")).hexdigest() != row["payload_hash"]
+                or row["client_id"] != self._client_order_id(row["command_key"])
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            v2.entry_command_identity_sha256_v2(
+                ProtectionScope(*self._scope), row["command_key"], intent, reservation_v2
+            )
+            return CommandRecord(
+                row["command_key"],
+                row["client_id"],
+                CommandKind.ENTRY,
+                row["payload"],
+                row["payload_hash"],
+                state,
+                None,
+                bool(row["terminal"]),
+                reservation_v2,
+            )
+        if row["kind"] == "ENTRY":
+            # The discriminator is reserved independently of wire_version. A V2
+            # row may never silently downgrade to an unreserved legacy command.
+            try:
+                frame = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                frame = None
+            if type(frame) is dict and frame.get("schema") == "RISK_V2_DURABLE_INTENT":
+                c._reject_v2()
         reservation = (
             None
             if row["risk"] is None
@@ -322,6 +449,7 @@ class CommandJournal:
         )
 
     def get(self, command_key: str) -> CommandRecord | None:
+        self._v2_orphans()
         row = self._db.execute(
             "SELECT * FROM commands WHERE account=? AND environment=? AND command_key=?",
             (*self._scope, command_key),
@@ -337,15 +465,13 @@ class CommandJournal:
     def list_commands(
         self, states: tuple[CommandState, ...] | None = None
     ) -> tuple[CommandRecord, ...]:
+        self._v2_orphans()
         rows = self._db.execute(
             "SELECT * FROM commands WHERE account=? AND environment=? ORDER BY command_key",
             self._scope,
         ).fetchall()
-        return tuple(
-            self._record(row)
-            for row in rows
-            if states is None or CommandState(row["state"]) in states
-        )
+        records = tuple(self._record(row) for row in rows)
+        return tuple(record for record in records if states is None or record.state in states)
 
     def register(
         self,
@@ -364,6 +490,10 @@ class CommandJournal:
         with self._transaction():
             existing = self.get(command_key)
             if existing is not None:
+                if existing.reservation_v2 is not None:
+                    from multi_exchange_trader.execution import risk_v2_contracts as c
+
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
                 if (existing.kind, existing.payload_json, existing.reservation) != (
                     kind,
                     canonical,
@@ -371,14 +501,15 @@ class CommandJournal:
                 ):
                     raise JournalConflict("command identity has incompatible immutable data")
                 return existing
+            if (reservation is not None or kind is CommandKind.ENTRY) and self._v2_has_holds():
+                from multi_exchange_trader.execution import risk_v2_contracts as c
+
+                c._reject_v2("RISK_V2_LEGACY_RESERVATION_RECONCILIATION_REQUIRED")
             if reservation is not None:
                 if limits is None:
                     raise ValueError("explicit limits are required for reservations")
                 self._check_capacity(reservation, limits)
-            client_id = (
-                "ec_"
-                + hashlib.sha256(_canonical([*self._scope, command_key]).encode()).hexdigest()[:32]
-            )
+            client_id = self._client_order_id(command_key)
             amounts = (
                 (None, None, None)
                 if reservation is None
@@ -434,7 +565,19 @@ class CommandJournal:
 
     def claim(self, command_key: str) -> CommandRecord | None:
         with self._transaction():
-            if self._required(command_key).state is not CommandState.PENDING:
+            record = self._required(command_key)
+            if record.reservation_v2 is not None:
+                from multi_exchange_trader.execution import risk_v2_contracts as c
+
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            if (
+                record.reservation is not None
+                or (record.kind is CommandKind.ENTRY and not record.terminal_confirmed)
+            ) and self._v2_has_holds():
+                from multi_exchange_trader.execution import risk_v2_contracts as c
+
+                c._reject_v2("RISK_V2_LEGACY_RESERVATION_RECONCILIATION_REQUIRED")
+            if record.state is not CommandState.PENDING:
                 return None
             self._db.execute(
                 "UPDATE commands SET state=? WHERE account=? AND environment=? AND command_key=?",
@@ -505,12 +648,366 @@ class CommandJournal:
             if record.state not in (CommandState.ACKNOWLEDGED, CommandState.REJECTED):
                 raise JournalConflict("UNKNOWN or unacknowledged commands retain reservations")
             if not record.terminal_confirmed:
+                if record.reservation_v2 is not None:
+                    self._v2_increment()
                 self._db.execute(
                     "UPDATE commands SET terminal=1 WHERE account=? AND environment=? "
                     "AND command_key=?",
                     (*self._scope, command_key),
                 )
                 self._audit(command_key, "RELEASE", {"evidence": terminal_evidence})
+            result = self._required(command_key)
+        return result
+
+    def _client_order_id(self, command_key: str) -> str:
+        return (
+            "ec_"
+            + hashlib.sha256(_canonical([*self._scope, command_key]).encode()).hexdigest()[:32]
+        )
+
+    def _v2_schema(self, *, create: bool = False) -> bool:
+        """Recognize only our exact two-table schema; never repair an unknown DB."""
+        found = self._db.execute(
+            "SELECT name,type,sql FROM sqlite_master WHERE name IN (?,?)",
+            tuple(_V2_TABLES),
+        ).fetchall()
+        if not found:
+            if not create:
+                return False
+            for name, columns in _V2_TABLES.items():
+                self._db.execute(f"CREATE TABLE {name} ({columns})")
+            return True
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+
+        if len(found) != 2:
+            c._reject_v2()
+        for row in found:
+            expected = f"CREATE TABLE {row['name']} ({_V2_TABLES[row['name']]})"
+            if row["type"] != "table" or "".join(row["sql"].split()) != "".join(expected.split()):
+                c._reject_v2()
+        return True
+
+    def _v2_orphans(self) -> None:
+        if not self._v2_schema():
+            return
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+
+        if (
+            self._db.execute(
+                "SELECT 1 FROM entry_reservations_v2 r LEFT JOIN commands c "
+                "ON c.account=r.account AND c.environment=r.environment "
+                "AND c.command_key=r.command_key WHERE r.account=? AND r.environment=? "
+                "AND c.command_key IS NULL LIMIT 1",
+                self._scope,
+            ).fetchone()
+            is not None
+        ):
+            c._reject_v2()
+        self._v2_meta(required=False)
+
+    def _v2_meta(self, *, required: bool) -> tuple[str, int] | None:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+
+        if not self._v2_schema():
+            if required:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            return None
+        row = self._db.execute(
+            "SELECT * FROM reservation_meta_v2 WHERE account=? AND environment=?", self._scope
+        ).fetchone()
+        if row is None:
+            if (
+                self._db.execute(
+                    "SELECT 1 FROM entry_reservations_v2 WHERE account=? AND environment=? LIMIT 1",
+                    self._scope,
+                ).fetchone()
+                is not None
+            ):
+                c._reject_v2()
+            if required:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            return None
+        if type(row["schema_version"]) is not int or row["schema_version"] != 2:
+            c._reject_v2()
+        return c._identifier_v2(row["owner_epoch"]), v2._revision(row["capacity_revision"])
+
+    def _v2_increment(self) -> int:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+
+        meta = self._v2_meta(required=True)
+        assert meta is not None
+        revision = v2._revision(meta[1], increment=True)
+        self._db.execute(
+            "UPDATE reservation_meta_v2 SET capacity_revision=? WHERE account=? AND environment=?",
+            (revision, *self._scope),
+        )
+        return revision
+
+    def _v2_has_holds(self) -> bool:
+        return any(
+            record.reservation_v2 is not None and not record.terminal_confirmed
+            for record in self.list_commands()
+        )
+
+    def _v2_checked_records(self) -> tuple[CommandRecord, ...]:
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+
+        records = self.list_commands()
+        if any(
+            not record.terminal_confirmed
+            and record.reservation_v2 is None
+            and (record.reservation is not None or record.kind is CommandKind.ENTRY)
+            for record in records
+        ):
+            c._reject_v2("RISK_V2_LEGACY_RESERVATION_RECONCILIATION_REQUIRED")
+        return records
+
+    def bind_owner_epoch_v2(
+        self,
+        owner_epoch: str,
+        *,
+        expected_previous_owner_epoch: str | None,
+        expected_journal_revision: int,
+    ) -> int:
+        """Local CAS only; caller must separately establish real exclusive ownership."""
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+
+        c._account_payload_v2(ProtectionScope(*self._scope))
+        c._identifier_v2(owner_epoch)
+        if expected_previous_owner_epoch is not None:
+            c._identifier_v2(expected_previous_owner_epoch)
+        v2._revision(expected_journal_revision)
+        with self._transaction():
+            self._v2_schema(create=True)
+            self._v2_orphans()
+            # Validate retained identities even if no capacity will change.
+            self.list_commands()
+            meta = self._v2_meta(required=False)
+            if (None if meta is None else meta[0], 0 if meta is None else meta[1]) != (
+                expected_previous_owner_epoch,
+                expected_journal_revision,
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            if meta is not None and meta[0] == owner_epoch:
+                return meta[1]
+            revision = v2._revision(0 if meta is None else meta[1], increment=True)
+            if meta is None:
+                self._db.execute(
+                    "INSERT INTO reservation_meta_v2 VALUES(?,?,?,?,?)",
+                    (*self._scope, 2, revision, owner_epoch),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE reservation_meta_v2 SET owner_epoch=?,capacity_revision=? "
+                    "WHERE account=? AND environment=?",
+                    (owner_epoch, revision, *self._scope),
+                )
+            self._audit(None, "BIND_OWNER_EPOCH_V2", {"capacity_revision": revision})
+        return revision
+
+    def reservation_snapshot_v2(
+        self,
+        scope: RiskScopeV2,
+        *,
+        now: datetime,
+        owner_generation: str,
+        exclude: str | None,
+    ) -> LinearReservationSnapshotV2:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+
+        c._scope_payload_v2(scope)
+        c._identifier_v2(owner_generation)
+        c._utc_v2(now)
+        account = ProtectionScope(*self._scope)
+        if c._account_payload_v2(account) != c._account_payload_v2(scope.product_scope.account):
+            c._reject_v2("RISK_V2_SCOPE_MISMATCH")
+        with self._transaction():
+            records = self._v2_checked_records()
+            meta = self._v2_meta(required=True)
+            assert meta is not None
+            if meta[0] != owner_generation:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            result = v2._snapshot(
+                account, records, owner_epoch=meta[0], revision=meta[1], now=now, exclude=exclude
+            )
+        return result
+
+    def _v2_pins(
+        self,
+        records: tuple[CommandRecord, ...],
+        owner_epoch: str,
+        expected_journal_revision: int,
+        expected_held_quantity_sha256: str,
+    ) -> tuple[str, int]:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+
+        c._identifier_v2(owner_epoch)
+        v2._revision(expected_journal_revision)
+        c._digest_v2(expected_held_quantity_sha256)
+        meta = self._v2_meta(required=True)
+        assert meta is not None
+        digest = v2._held_hash(ProtectionScope(*self._scope), records)
+        if (*meta, digest) != (
+            owner_epoch,
+            expected_journal_revision,
+            expected_held_quantity_sha256,
+        ):
+            c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+        return meta
+
+    def register_entry_v2(
+        self,
+        command_key: str,
+        intent: DurableEntryIntentV2,
+        *,
+        reservation: ReservationV2,
+        admission: ReservationAdmissionV2,
+    ) -> CommandRecord:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+        from multi_exchange_trader.execution.risk_v2_codec import encode_entry_intent_v2
+        from multi_exchange_trader.execution.risk_v2_math import decimal_text_v2
+
+        v2._validate_admission(admission)
+        account = ProtectionScope(*self._scope)
+        if c._account_payload_v2(account) != c._account_payload_v2(admission.account_scope):
+            c._reject_v2("RISK_V2_SCOPE_MISMATCH")
+        identity = v2.entry_command_identity_sha256_v2(account, command_key, intent, reservation)
+        if c._scope_payload_v2(intent.envelope.scope) != c._scope_payload_v2(
+            admission.policy.scope
+        ):
+            c._reject_v2("RISK_V2_SCOPE_MISMATCH")
+        wire = encode_entry_intent_v2(intent)
+        digest = hashlib.sha256(wire.encode("utf-8")).hexdigest()
+        with self._transaction():
+            records = self._v2_checked_records()
+            meta = self._v2_pins(
+                records,
+                admission.owner_epoch,
+                admission.expected_journal_revision,
+                admission.expected_held_quantity_sha256,
+            )
+            if identity != admission.expected_command_identity_sha256:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            existing = next((item for item in records if item.command_key == command_key), None)
+            if existing is not None:
+                if (
+                    existing.reservation_v2 is None
+                    or existing.payload_json != wire
+                    or v2._reservation_payload(existing.reservation_v2)
+                    != v2._reservation_payload(reservation)
+                ):
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+                return existing
+            snapshot = v2._snapshot(
+                account,
+                records,
+                owner_epoch=meta[0],
+                revision=meta[1],
+                now=admission.now,
+                exclude=None,
+            )
+            v2._check_capacity(intent, reservation, admission, snapshot)
+            revision = self._v2_increment()
+            self._db.execute(
+                "INSERT INTO commands(account,environment,command_key,client_id,kind,payload,"
+                "payload_hash,state,risk,notional,margin) VALUES(?,?,?,?,?,?,?,?,NULL,NULL,NULL)",
+                (
+                    *self._scope,
+                    command_key,
+                    self._client_order_id(command_key),
+                    "ENTRY",
+                    wire,
+                    digest,
+                    CommandState.PENDING.value,
+                ),
+            )
+            self._db.execute(
+                "INSERT INTO entry_reservations_v2 VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    *self._scope,
+                    command_key,
+                    2,
+                    reservation.instrument.venue,
+                    reservation.instrument.product,
+                    reservation.instrument.symbol,
+                    reservation.envelope_sha256,
+                    decimal_text_v2(reservation.base_quantity),
+                    decimal_text_v2(reservation.risk_amount),
+                    decimal_text_v2(reservation.margin_amount),
+                ),
+            )
+            # Validate the prospective aggregate, not just a fitting pre-state.
+            prospective = self._v2_checked_records()
+            v2._snapshot(
+                account,
+                prospective,
+                owner_epoch=meta[0],
+                revision=revision,
+                now=admission.now,
+                exclude=None,
+            )
+            self._audit(
+                command_key,
+                "REGISTER_ENTRY_V2",
+                {"payload_hash": digest, "capacity_revision": revision},
+            )
+            result = self._required(command_key)
+        return result
+
+    def claim_entry_v2(
+        self,
+        command_key: str,
+        *,
+        owner_epoch: str,
+        expected_journal_revision: int,
+        expected_held_quantity_sha256: str,
+        expected_command_identity_sha256: str,
+    ) -> CommandRecord | None:
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+        from multi_exchange_trader.execution.risk_v2_codec import decode_entry_intent_v2
+
+        c._identifier_v2(command_key)
+        c._identifier_v2(owner_epoch)
+        v2._revision(expected_journal_revision)
+        c._digest_v2(expected_held_quantity_sha256)
+        c._digest_v2(expected_command_identity_sha256)
+        with self._transaction():
+            records = self._v2_checked_records()
+            self._v2_pins(
+                records, owner_epoch, expected_journal_revision, expected_held_quantity_sha256
+            )
+            record = next((item for item in records if item.command_key == command_key), None)
+            if record is None or record.reservation_v2 is None:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            identity = v2.entry_command_identity_sha256_v2(
+                ProtectionScope(*self._scope),
+                command_key,
+                decode_entry_intent_v2(record.payload_json),
+                record.reservation_v2,
+            )
+            if identity != expected_command_identity_sha256:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            if record.state is not CommandState.PENDING or record.terminal_confirmed:
+                return None
+            changed = self._db.execute(
+                "UPDATE commands SET state=? WHERE account=? AND environment=? AND command_key=? "
+                "AND state=? AND terminal=0",
+                (CommandState.SENDING.value, *self._scope, command_key, CommandState.PENDING.value),
+            )
+            if changed.rowcount != 1:
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            self._audit(command_key, "CLAIM_ENTRY_V2", {})
             result = self._required(command_key)
         return result
 
