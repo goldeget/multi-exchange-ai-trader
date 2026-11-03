@@ -383,6 +383,9 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
         ordered = tuple(sorted(issues, key=lambda issue: (issue.client_order_id or "", issue.code)))
         return NativeRecoveryCheck("BLOCKED", ordered)
     for expected in expectations:
+        if not original_inputs():
+            ordered = tuple(sorted(issues, key=lambda issue: (issue.client_order_id or "", issue.code)))
+            return NativeRecoveryCheck("BLOCKED", ordered)
         owned = expected.request.owned
         key = safe_keys.get(id(expected), owned.client_order_id)
         permitted_position = owned.instrument_id + "-" + expected.strategy_id

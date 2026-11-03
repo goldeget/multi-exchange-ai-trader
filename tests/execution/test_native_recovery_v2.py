@@ -436,3 +436,196 @@ def test_last_binding_member_getter_cannot_mutate_original_expected_scope(v2: An
         return value
     v2.cache.position_id = position_id
     assert inspect_v2(v2).status == 'BLOCKED'
+
+
+def late_handoff_probe(operation: str, arm: int | None = None,
+                       final_read: int | None = None, change: str | None = None) -> Any:
+    state: dict[str, Any] = {'armed': False, 'fired': 0, 'arm': None, 'final': None}
+    strategy: Any = None
+    bridge: Any = None
+    request = a.request()
+    class Tif:
+        IOC: Any
+        @property
+        def name(self) -> str:
+            if state['armed']:
+                state['armed'] = False
+                state['fired'] += 1
+                strategy.id = 'OTHER-STRATEGY-001'
+            return 'IOC'
+    Tif.IOC = Tif()
+    class Strategy(a.Strategy):
+        @property
+        def id(self) -> str:
+            self.reads += 1
+            if self.reads == state['arm']:
+                state['armed'] = True
+            if self.reads == state['final']:
+                state['fired'] += 1
+                if change == 'request':
+                    object.__setattr__(request.owned, 'quantity', Decimal('1.0'))
+                elif change == 'binding':
+                    bridge._bindings = replace(bridge._bindings)
+                elif change == 'member':
+                    object.__setattr__(bridge._bindings.fixed_limit_v2, 'time_in_force_ioc', a.Tif.IOC)
+                elif change == 'converter':
+                    object.__setattr__(bridge._bindings, 'price', lambda text: text)
+                elif change == 'requests_map':
+                    bridge._requests = dict(bridge._requests)
+                elif change == 'registered_owner':
+                    bridge._requests[a.ID] = replace(request)
+                elif change == 'factory':
+                    bridge._factory = a.Factory()
+                elif change == 'strategy':
+                    bridge._strategy = a.Strategy(factory)
+                elif change == 'context':
+                    bridge._context_v2 = replace(bridge._context_v2)
+            return self.identity
+        @id.setter
+        def id(self, value: str) -> None:
+            self.identity = value
+        def __init__(self, factory: Any) -> None:
+            self.reads = 0
+            super().__init__(factory)
+    factory = a.Factory()
+    strategy = Strategy(factory)
+    bindings = n.NativeBindings(str, str, str, str, str,
+        n.FixedLimitBindingsV2(a.Limit, a.Init, a.Updated, a.Kind.LIMIT, Tif.IOC))
+    bridge = n.NativeBybitBridge(scope=request.scope, native_account_id='BYBIT-UNIFIED',
+        factory=factory, strategy=strategy, bindings=bindings)
+    if operation != 'submit':
+        bridge.submit_fixed_limit_v2(request)
+        a.activate(factory)
+        strategy.reads = 0
+    state.update(arm=arm, final=final_read)
+    error, returned = None, None
+    try:
+        if operation == 'submit':
+            returned = bridge.submit_fixed_limit_v2(request)
+        elif operation == 'cancel':
+            returned = bridge.cancel_owned(a.ID)
+        else:
+            returned = bridge.cached_owned_order(a.ID)
+    except ValueError as exc:
+        error = str(exc)
+    return SimpleNamespace(bridge=bridge, strategy=strategy, factory=factory, state=state,
+        error=error, returned=returned, reads=strategy.reads)
+
+
+@pytest.mark.parametrize('operation,arm', [('submit', 2), ('cancel', 4), ('cached', 4)])
+def test_final_strategy_id_follows_all_binding_callbacks(operation: str, arm: int) -> None:
+    control = late_handoff_probe(operation)
+    assert control.error is None and control.returned is not None and control.state['fired'] == 0
+    assert len(control.strategy.submits) == 1
+    assert len(control.strategy.cancels) == (1 if operation == 'cancel' else 0)
+    changed = late_handoff_probe(operation, arm=arm)
+    # The corrected order may leave this particular getter unarmed/uninvoked.
+    # A returned/handoff order must still belong to the unchanged original ID.
+    if changed.state['fired']:
+        assert changed.error is not None and changed.returned is None
+        assert not changed.strategy.cancels and not changed.bridge._cancellations
+        if operation == 'submit':
+            assert not changed.strategy.submits and not changed.bridge._submissions
+    else:
+        assert changed.strategy.identity == changed.factory.order.strategy_id
+
+
+@pytest.mark.parametrize('operation', ['submit', 'cached', 'cancel'])
+@pytest.mark.parametrize('change', ['request', 'binding', 'member', 'converter', 'requests_map',
+    'registered_owner', 'factory', 'strategy', 'context'])
+def test_final_strategy_getter_cannot_replace_original_associations(operation: str, change: str) -> None:
+    control = late_handoff_probe(operation)
+    assert control.error is None
+    changed = late_handoff_probe(operation, final_read=control.reads, change=change)
+    assert changed.state['fired'] == 1
+    assert changed.error is not None and changed.returned is None
+    assert not changed.strategy.cancels and not changed.bridge._cancellations
+    if operation == 'submit':
+        assert not changed.strategy.submits and not changed.bridge._submissions
+
+
+@pytest.mark.parametrize('change', ['none', 'request', 'owned', 'metadata'])
+def test_previous_owner_callback_cannot_escape_next_owner_diagnostic(v2: Any, change: str) -> None:
+    import copy
+    request = replace(v2.request, owned=replace(v2.request.owned, client_order_id=a.OTHER))
+    second = replace(v2.expected, request=request, venue_order_id='VENUE-002')
+    order = copy.deepcopy(v2.order)
+    order.client_order_id = order.events[0].client_order_id = f.ClientOrderId(a.OTHER)
+    order.venue_order_id = f.VenueOrderId('VENUE-002')
+    v2.cache = f.ReadOnlyCache([v2.order, order])
+    original = v2.cache.position_id
+    fired = []
+    def position_id(key: Any) -> Any:
+        result = original(key)
+        if str(key) == a.ID and change != 'none':
+            fired.append(change)
+            if change == 'request':
+                object.__setattr__(second, 'request', object())
+            elif change == 'owned':
+                object.__setattr__(request, 'owned', object())
+            else:
+                object.__setattr__(second, 'strategy_id', object())
+        return result
+    v2.cache.position_id = position_id
+    result = inspect_v2(v2, expectations=(v2.expected, second))
+    assert result.status == ('CONSISTENT' if change == 'none' else 'BLOCKED')
+    assert fired == ([] if change == 'none' else [change])
+    assert all(issue.client_order_id in (None, a.ID, a.OTHER) for issue in result.issues)
+    if change != 'none':
+        assert 'CACHED_ORDER_IDENTITY_MISMATCH' in {issue.code for issue in result.issues}
+    assert not v2.cache.effects
+
+
+@pytest.mark.parametrize('case', ['valid', 'balanced', 'zero_suites', 'tests_negative', 'tests_missing',
+    'tests_malformed', 'tests_signed', 'tests_huge', 'count_mismatch', 'duplicate', 'module', 'unknown',
+    'errors_missing', 'errors_malformed', 'errors_negative', 'errors_nonzero',
+    'failures_missing', 'failures_malformed', 'failures_negative', 'failures_nonzero',
+    'skipped_missing', 'skipped_malformed', 'skipped_negative', 'skipped_nonzero',
+    'nested_error', 'nested_failure', 'nested_skipped', 'empty', 'malformed', 'missing'])
+def test_actual_fourth_ci_gate_requires_individual_zero_counters(tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    import xml.etree.ElementTree as ET
+    from pathlib import Path
+    workflow = Path(__file__).parents[2] / '.github/workflows/ci.yml'
+    text = workflow.read_text(encoding='utf-8')
+    block = text.split('      - name: Require all eight exact fixed limit native contracts\n', 1)[1].split(
+        '      - name: Preserve separate native qualification receipts\n', 1)[0]
+    body = block.split("          .venv/bin/python - <<'PY'\n", 1)[1].rsplit('          PY\n', 1)[0]
+    code = '\n'.join(line[10:] for line in body.splitlines()) + '\n'
+    names = ['test_actual_limit_ioc_factory', 'test_exact_base_quantity_and_price',
+        'test_ioc_and_order_kind_revalidation', 'test_no_bbo_or_post_only_override',
+        'test_protection_and_product_binding', 'test_ambiguous_submit_keeps_identity',
+        'test_partial_and_zero_fill_keep_reservation', 'test_restore_never_resubmits_or_reprices']
+    root = ET.Element('testsuites')
+    suite = ET.SubElement(root, 'testsuite', tests='8', errors='0', failures='0', skipped='0')
+    for name in names:
+        ET.SubElement(suite, 'testcase', name=name, classname='tests.execution.test_bybit_fixed_limit_linux')
+    if case == 'balanced':
+        suite.set('errors', '-1'); suite.set('failures', '1')
+    elif case == 'zero_suites':
+        root.remove(suite)
+    elif case.startswith('tests_'):
+        value = {'negative': '-8', 'malformed': 'eight', 'signed': '+8', 'huge': '9' * 5000,
+            'missing': None}[case.removeprefix('tests_')]
+        if value is None: del suite.attrib['tests']
+        else: suite.set('tests', value)
+    elif case == 'count_mismatch': suite.set('tests', '7')
+    elif case == 'duplicate': suite[1].set('name', names[0])
+    elif case == 'module': suite[0].set('classname', 'other_module')
+    elif case == 'unknown': suite[0].set('name', 'unknown')
+    elif case.startswith(('errors_', 'failures_', 'skipped_')):
+        counter, shape = case.split('_')
+        if shape == 'missing': del suite.attrib[counter]
+        else: suite.set(counter, {'malformed': 'bad', 'negative': '-1', 'nonzero': '1'}[shape])
+    elif case.startswith('nested_'): ET.SubElement(suite[0], case.removeprefix('nested_'))
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / 'fixed-limit-native-contracts.xml'
+    if case == 'empty': path.write_text('', encoding='utf-8')
+    elif case == 'malformed': path.write_text('<bad', encoding='utf-8')
+    elif case != 'missing': ET.ElementTree(root).write(path)
+    def execute() -> None:
+        exec(compile(code, str(workflow), 'exec'), {})  # noqa: S102 - actual trusted local CI gate, synthetic XML only
+    if case == 'valid': execute()
+    else:
+        with pytest.raises((SystemExit, ValueError, ET.ParseError, FileNotFoundError)):
+            execute()
