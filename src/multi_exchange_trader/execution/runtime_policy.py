@@ -1,12 +1,18 @@
 """Revisioned operator drafts. Saving settings never grants execution authority."""
 
+import hashlib
 import json
+import os
 import re
 import sqlite3
-from contextlib import closing
-from dataclasses import fields
+import stat
+import sys
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from pathlib import Path
+from threading import Lock
 from typing import Any, cast
 
 from .policy_sections import (
@@ -17,7 +23,13 @@ from .policy_sections import (
     validate_sections_v2,
 )
 from .risk import RiskScope, UserRiskPolicy
-from .risk_v2_contracts import LinearCapitalCapsV2, LinearRiskPolicyV2, RiskScopeV2, RiskV2Rejected
+from .risk_v2_contracts import (
+    LinearCapitalCapsV2,
+    LinearRiskPolicyV2,
+    RiskScopeV2,
+    RiskV2Rejected,
+    risk_policy_sha256_v2,
+)
 from .strategy_catalog import ApprovalEnvironment, require_strategy_references
 
 DECIMALS = (
@@ -142,9 +154,93 @@ def _fences() -> dict[str, str]:
             for action in ("INSERT", "UPDATE", "DELETE")}
 
 
+_SHARED_POLICY_TARGET_V2 = Path("/etc/trader/policy-target.json")
+
+
+class _PolicyIdentityErrorV2(ValueError):
+    """A configured original target no longer has its bound identity."""
+
+
+@dataclass(frozen=True)
+class _PolicyTargetBindingV2:
+    book: "RuntimePolicyBook"
+    original_path: Path
+    config_path: Path
+    config_bytes: bytes
+    config_sha256: str
+    config_identity: tuple[int, int]
+    db_identity: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class _PolicyAdmissionDataV2:
+    book: "RuntimePolicyBook"
+    binding: _PolicyTargetBindingV2
+    revision: int
+    policy: LinearRiskPolicyV2
+    policy_sha256: str
+
+
+@dataclass
+class _PolicyResourcesV2:
+    db: sqlite3.Connection | None = None
+    descriptors: list[int] = field(default_factory=list)
+
+
+def _file_identity_v2(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _protected_policy_file_v2(info: os.stat_result, *, config: bool) -> None:
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or info.st_mode & (0o022 if config else 0o077)
+            or config and info.st_uid != 0):
+        raise _PolicyIdentityErrorV2("policy target file")
+
+
+def _protected_policy_path_v2(path: Path, *, config: bool) -> os.stat_result:
+    if (not path.is_absolute() or ".." in path.parts or path != path.absolute()
+            or path.is_junction()):
+        raise _PolicyIdentityErrorV2("policy target path")
+    for parent in path.parents:
+        info = os.lstat(parent)
+        if (not stat.S_ISDIR(info.st_mode) or parent.is_junction()
+                or info.st_mode & 0o022 or config and info.st_uid != 0):
+            raise _PolicyIdentityErrorV2("policy target parent")
+    info = os.lstat(path)
+    _protected_policy_file_v2(info, config=config)
+    if not config and os.lstat(path.parent).st_mode & 0o077:
+        raise _PolicyIdentityErrorV2("policy target private parent")
+    return info
+
+
+def _pin_policy_file_v2(path: Path, *, config: bool, resources: _PolicyResourcesV2) -> int:
+    named = _protected_policy_path_v2(path, config=config)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                         | getattr(os, "O_CLOEXEC", 0))
+    resources.descriptors.append(descriptor)
+    opened = os.fstat(descriptor)
+    _protected_policy_file_v2(opened, config=config)
+    if _file_identity_v2(named) != _file_identity_v2(opened):
+        raise _PolicyIdentityErrorV2("policy pin identity")
+    return descriptor
+
+
+def _config_bytes_v2(descriptor: int) -> bytes:
+    info = os.fstat(descriptor)
+    if not 0 < info.st_size <= 4096:
+        raise _PolicyIdentityErrorV2("policy target config size")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    raw = os.read(descriptor, 4097)
+    if len(raw) != info.st_size:
+        raise _PolicyIdentityErrorV2("policy target config read")
+    return raw
+
+
 class RuntimePolicyBook:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._initialize_private_v2()
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -163,10 +259,201 @@ class RuntimePolicyBook:
                 raise ValueError("policy corruption")
 
     def connect(self) -> sqlite3.Connection:
+        if self._target_binding_v2 is not None:
+            raise ValueError("configured policy requires operation lifetime")
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA synchronous=FULL")
         return db
+
+    def _initialize_private_v2(self) -> None:
+        self._target_binding_v2: _PolicyTargetBindingV2 | None = None
+        self._admission_gate_v2 = Lock()
+        self._admission_poisoned_v2 = False
+        self._quarantined_resources_v2: _PolicyResourcesV2 | None = None
+        self._cleanup_failures_v2: tuple[BaseException, ...] = ()
+
+    @classmethod
+    def _from_shared_target_v2(cls, explicit_legacy_path: Path | None) -> "RuntimePolicyBook | None":
+        if sys.platform != "linux":
+            return None
+        config = _SHARED_POLICY_TARGET_V2
+        try:
+            os.lstat(config)
+        except FileNotFoundError:
+            return None
+        book = cls.__new__(cls)
+        book._initialize_private_v2()
+        resources = _PolicyResourcesV2()
+        primary: BaseException | None = None
+        try:
+            config_fd = _pin_policy_file_v2(config, config=True, resources=resources)
+            raw = _config_bytes_v2(config_fd)
+            value = parse_json(raw)
+            if (type(value) is not dict or set(value) != {"schema_version", "policy_db"}
+                    or type(value["schema_version"]) is not int or value["schema_version"] != 1
+                    or type(value["policy_db"]) is not str):
+                raise _PolicyIdentityErrorV2("policy target config fields")
+            path = Path(value["policy_db"])
+            if str(path) != value["policy_db"]:
+                raise _PolicyIdentityErrorV2("policy target canonical path")
+            _protected_policy_path_v2(path, config=False)
+            if explicit_legacy_path is not None:
+                if explicit_legacy_path != path:
+                    raise _PolicyIdentityErrorV2("policy target explicit path conflict")
+                _protected_policy_path_v2(explicit_legacy_path, config=False)
+            db_fd = _pin_policy_file_v2(path, config=False, resources=resources)
+            book.path = path
+            book._target_binding_v2 = _PolicyTargetBindingV2(book, path, config, raw,
+                hashlib.sha256(raw).hexdigest(), _file_identity_v2(os.fstat(config_fd)),
+                _file_identity_v2(os.fstat(db_fd)))
+            book._verify_bound_pins_v2(resources)
+            book._open_bound_connection_v2(resources, timeout=10)
+            assert resources.db is not None
+            resources.db.execute("BEGIN")
+            book._read(resources.db)
+            if resources.db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("policy corruption")
+            book._verify_bound_pins_v2(resources)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            book._cleanup_bound_v2(resources, primary)
+        return book
+
+    def _require_bound_v2(self) -> _PolicyTargetBindingV2:
+        binding = self._target_binding_v2
+        if (binding is None or binding.book is not self or self.path is not binding.original_path
+                or _SHARED_POLICY_TARGET_V2 is not binding.config_path
+                or self._quarantined_resources_v2 is not None):
+            self._admission_poisoned_v2 = True
+            raise _PolicyIdentityErrorV2("original configured policy book required")
+        return binding
+
+    def _verify_bound_pins_v2(self, resources: _PolicyResourcesV2) -> None:
+        binding = self._require_bound_v2()
+        if len(resources.descriptors) != 2:
+            raise _PolicyIdentityErrorV2("policy pin lifetime")
+        for path, descriptor, identity, config in (
+            (binding.config_path, resources.descriptors[0], binding.config_identity, True),
+            (binding.original_path, resources.descriptors[1], binding.db_identity, False),
+        ):
+            named = _protected_policy_path_v2(path, config=config)
+            opened = os.fstat(descriptor)
+            _protected_policy_file_v2(opened, config=config)
+            if (_file_identity_v2(named) != identity or _file_identity_v2(opened) != identity):
+                raise _PolicyIdentityErrorV2("policy target changed")
+        if _config_bytes_v2(resources.descriptors[0]) != binding.config_bytes:
+            raise _PolicyIdentityErrorV2("policy target config changed")
+        if resources.db is not None:
+            databases = resources.db.execute("PRAGMA database_list").fetchall()
+            names = [Path(row[2]) for row in databases if row[1] == "main"]
+            if names != [binding.original_path]:
+                raise _PolicyIdentityErrorV2("policy SQLite target changed")
+
+    def _open_bound_connection_v2(self, resources: _PolicyResourcesV2, *, timeout: float) -> None:
+        binding = self._require_bound_v2()
+        db = sqlite3.connect(binding.original_path.as_uri() + "?mode=rw", uri=True, timeout=timeout)
+        resources.db = db
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA synchronous=FULL")
+        if timeout == 0:
+            db.execute("PRAGMA busy_timeout=0")
+        self._verify_bound_pins_v2(resources)
+
+    def _cleanup_bound_v2(self, resources: _PolicyResourcesV2,
+                          primary: BaseException | None) -> None:
+        failures: list[BaseException] = []
+        db = resources.db
+        if db is not None:
+            try:
+                if db.in_transaction:
+                    db.rollback()
+            except BaseException as error:  # noqa: BLE001 - finish cleanup even on cancellation.
+                failures.append(error)
+            try:
+                db.close()
+                resources.db = None
+            except BaseException as error:  # noqa: BLE001 - finish cleanup even on cancellation.
+                failures.append(error)
+        remaining: list[int] = []
+        for descriptor in resources.descriptors:
+            try:
+                os.close(descriptor)
+            except BaseException as error:  # noqa: BLE001 - finish cleanup even on cancellation.
+                failures.append(error)
+                remaining.append(descriptor)
+        resources.descriptors = remaining
+        if isinstance(primary, (_PolicyIdentityErrorV2, OSError)) or failures:
+            self._admission_poisoned_v2 = True
+        if resources.db is not None or remaining:
+            self._quarantined_resources_v2 = resources
+            # A loader may fail before returning its original book. Transfer a
+            # strong diagnostic reference through the ORIGINAL error, not GC.
+            owner_error = primary if primary is not None else failures[0]
+            BaseException.__setattr__(owner_error, "_policy_cleanup_owner_v2", self)
+        if failures:
+            self._cleanup_failures_v2 = tuple(failures)
+            if primary is not None:
+                primary.add_note("configured policy cleanup uncertain; owner retired")
+            else:
+                raise failures[0]
+
+    @contextmanager
+    def _bound_connection_scope_v2(self, *, timeout: float, commit: bool) -> Iterator[sqlite3.Connection]:
+        binding = self._require_bound_v2()
+        resources = _PolicyResourcesV2()
+        primary: BaseException | None = None
+        try:
+            _pin_policy_file_v2(binding.config_path, config=True, resources=resources)
+            _pin_policy_file_v2(binding.original_path, config=False, resources=resources)
+            self._verify_bound_pins_v2(resources)
+            self._open_bound_connection_v2(resources, timeout=timeout)
+            assert resources.db is not None
+            yield resources.db
+            self._verify_bound_pins_v2(resources)
+            if commit:
+                resources.db.commit()
+                self._verify_bound_pins_v2(resources)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            self._cleanup_bound_v2(resources, primary)
+
+    @contextmanager
+    def _operation_v2(self) -> Iterator[sqlite3.Connection]:
+        if self._target_binding_v2 is None:
+            with closing(self.connect()) as db, db:
+                yield db
+        else:
+            with self._bound_connection_scope_v2(timeout=10, commit=True) as db:
+                yield db
+
+    @contextmanager
+    def _private_admission_snapshot_v2(self, scope: RiskScopeV2, expected_revision: int,
+                                       expected_policy_sha256: str) -> Iterator[_PolicyAdmissionDataV2]:
+        revision = validate_revision(expected_revision)
+        if (type(expected_policy_sha256) is not str
+                or re.fullmatch("[0-9a-f]{64}", expected_policy_sha256) is None):
+            raise ValueError("policy admission hash")
+        if not self._admission_gate_v2.acquire(blocking=False):
+            raise ValueError("policy admission already reserved")
+        try:
+            if self._admission_poisoned_v2:
+                raise ValueError("policy admission owner retired")
+            binding = self._require_bound_v2()
+            with self._bound_connection_scope_v2(timeout=0, commit=False) as db:
+                db.execute("BEGIN IMMEDIATE")
+                snapshot = self._read(db)
+                policy = self._risk_policy_v2_from_snapshot(snapshot, scope)
+                digest = risk_policy_sha256_v2(policy)
+                if snapshot["revision"] != revision or digest != expected_policy_sha256:
+                    raise ValueError("policy admission revision conflict")
+                yield _PolicyAdmissionDataV2(self, binding, revision, policy, digest)
+        finally:
+            self._admission_gate_v2.release()
 
     @staticmethod
     def _row(db: sqlite3.Connection, table: str) -> sqlite3.Row:
@@ -228,7 +515,7 @@ class RuntimePolicyBook:
                 "blockers": blockers}
 
     def read(self) -> dict[str, Any]:
-        with closing(self.connect()) as db, db:
+        with self._operation_v2() as db:
             db.execute("BEGIN")
             return self._read(db)
 
@@ -237,7 +524,7 @@ class RuntimePolicyBook:
 
     def migrate_v1(self, expected_revision: int) -> dict[str, Any]:
         revision = validate_revision(expected_revision, increment=True)
-        with closing(self.connect()) as db, db:
+        with self._operation_v2() as db:
             db.execute("BEGIN IMMEDIATE")
             current = self._read(db)
             if current["schema_version"] != 1 or current["revision"] != revision:
@@ -263,7 +550,7 @@ class RuntimePolicyBook:
             raise ValueError("policy strategy generation")
         if policy_sections_version is not None and (type(policy_sections_version) is not int or policy_sections_version != 1):
             raise ValueError("policy sections capability")
-        with closing(self.connect()) as db, db:
+        with self._operation_v2() as db:
             db.execute("BEGIN IMMEDIATE")
             # Validate persisted pins before capability checks and revision CAS.
             current = self._read(db)
@@ -281,7 +568,10 @@ class RuntimePolicyBook:
             return self._read(db)
 
     def risk_policy_v2(self, scope: RiskScopeV2) -> LinearRiskPolicyV2:
-        snapshot = self.read()
+        return self._risk_policy_v2_from_snapshot(self.read(), scope)
+
+    @staticmethod
+    def _risk_policy_v2_from_snapshot(snapshot: dict[str, Any], scope: RiskScopeV2) -> LinearRiskPolicyV2:
         if snapshot["schema_version"] != 2:
             raise ValueError("POLICY_V1_MIGRATION_REQUIRED")
         policy = validate_v2(snapshot["policy"])

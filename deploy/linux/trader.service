@@ -11,6 +11,9 @@ Group=trader
 WorkingDirectory=/opt/trader/app
 EnvironmentFile=/etc/trader/runtime.env
 EnvironmentFile=/etc/trader/credentials.env
+# Optional shared policy contract: fixed /etc/trader/policy-target.json (root-owned).
+# If present, explicit RUNTIME_POLICY_DB_PATH must agree; invalid never falls back.
+# This inactive template does not create that file or enable policy admission/orders.
 # EnvironmentFile overrides Environment=. Enforce gates in the executed process.
 ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=false BYBIT_TESTNET=false BYBIT_ENV_FILE=off ANTHROPIC_ENV_FILE=off AI_ENV_FILE=off /opt/trader/app/.venv/bin/python -m uvicorn multi_exchange_trader.api:app --host 127.0.0.1 --port 8000 --workers 1 --no-proxy-headers
 Restart=on-failure
