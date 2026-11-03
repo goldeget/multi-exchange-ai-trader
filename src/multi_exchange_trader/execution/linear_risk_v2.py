@@ -7,6 +7,7 @@ producer. This calculation grants no minimum-amount or submission eligibility.
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
+from typing import Literal
 
 from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
 from multi_exchange_trader.execution import risk_v2_contracts as c
@@ -450,4 +451,141 @@ def prepare_linear_entry_v2(
         finite_decimal_v2(capacity),
         display_ratio_v2(loss, decimal_fraction_v2(account.equity)),
         "RISK_V2_EXACT_FINITE_ELSE_CEILING80_V1",
+    )
+
+
+def assess_entry_v2(
+    inputs: e.LinearRiskInputsV2,
+    *,
+    now: datetime,
+    stage: Literal["PLAN", "SUBMIT"],
+    margin: e.LinearMarginAssessmentV2 | None,
+    liquidation: e.LinearLiquidationAssessmentV2 | None,
+    leverage_readback: e.LinearLeverageReadbackV2 | None,
+) -> e.LinearEntryAssessmentV2:
+    # Supplied values are observations, not authority. Validate every nested
+    # record before any cross-record comparison or recomputed economic gate.
+    e._inputs_payload_v2(inputs)
+    if margin is not None:
+        e._margin_payload_v2(margin)
+    if liquidation is not None:
+        e._liquidation_payload_v2(liquidation)
+    if leverage_readback is not None:
+        e._readback_payload_v2(leverage_readback)
+    now = c._utc_v2(now)
+    c._literal_v2(stage, ("PLAN", "SUBMIT"))
+    if margin is None and (liquidation is not None or leverage_readback is not None):
+        c._reject_v2()
+
+    preparation = prepare_linear_entry_v2(inputs, now=now)
+    e._assessment_links_v2(preparation, margin, liquidation, leverage_readback)
+    policy, requirements = inputs.policy, inputs.requirements
+    maximum = decimal_fraction_v2(policy.max_evidence_age_seconds)
+    for model in (margin, liquidation):
+        if model is not None:
+            c._target_environment_v2(model.reference.target_environment, policy.scope)
+            c._fresh_v2(model.reference.computed_at, now=now, maximum=maximum)
+            if now >= c._utc_v2(model.valid_until):
+                c._reject_v2("RISK_V2_EXPIRED")
+    if margin is not None:
+        if (
+            margin.model_revision != requirements.margin_model_revision
+            or margin.reserve_basis != requirements.margin_reserve_basis
+            or margin.reserve_rounding_revision != requirements.reserve_rounding_revision
+            or margin.reserve_quantum_usdt.as_tuple()
+            != requirements.reserve_quantum_usdt.as_tuple()
+        ):
+            c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+        if margin.leverage_grid_rule != requirements.leverage_grid_rule:
+            c._reject_v2("RISK_V2_GRID_SOURCE_MODEL_UNVERIFIED")
+        predecessors = (
+            inputs.costs.reference.computed_at,
+            inputs.minimum_amount.reference.computed_at,
+            inputs.account.reference.received_at,
+            inputs.reservations.observed_at,
+            *(mark.reference.received_at for mark in inputs.marks),
+            inputs.tiers.reference.received_at,
+            preparation.binding.instrument_pin.received_at,
+        )
+        if any(
+            c._utc_v2(moment) > c._utc_v2(margin.reference.computed_at) for moment in predecessors
+        ):
+            c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    if liquidation is not None:
+        assert margin is not None
+        if (
+            liquidation.model_revision != requirements.liquidation_model_revision
+            or liquidation.margin_mode != policy.margin_mode
+            or liquidation.position_mode != policy.position_mode
+        ):
+            c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+        if c._utc_v2(liquidation.reference.computed_at) < c._utc_v2(margin.reference.computed_at):
+            c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    if leverage_readback is not None:
+        readback = leverage_readback
+        c._target_environment_v2(readback.reference.source_environment, policy.scope)
+        for moment in (readback.reference.server_observed_at, readback.reference.received_at):
+            c._fresh_v2(moment, now=now, maximum=maximum)
+        if (
+            readback.margin_mode != policy.margin_mode
+            or readback.position_mode != policy.position_mode
+        ):
+            c._reject_v2("RISK_V2_LEVERAGE_READBACK_UNVERIFIED")
+        if c._utc_v2(readback.reference.server_observed_at) > c._utc_v2(
+            inputs.account.reference.server_observed_at
+        ) or c._utc_v2(readback.reference.received_at) > c._utc_v2(
+            inputs.account.reference.received_at
+        ):
+            c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+
+    reserve = None
+    if margin is not None:
+        required = max(
+            decimal_fraction_v2(margin.initial_margin_quote)
+            + decimal_fraction_v2(preparation.sizing.cost_allowance_quote),
+            decimal_fraction_v2(margin.venue_required_total_reserve_quote),
+        )
+        if required > decimal_fraction_v2(preparation.capacity_quote):
+            c._reject_v2("RISK_V2_MARGIN_LIMIT")
+        reserve = finite_decimal_v2(required)
+    buffer_result: Literal["GAP_SATISFIED", "MODEL_NO_POSITIVE_TRIGGER"] | None = None
+    if liquidation is not None:
+        outcome = liquidation.outcome
+        if type(outcome) is e.LiquidationPositiveRootV2:
+            price = decimal_fraction_v2(outcome.exact_price.numerator) / decimal_fraction_v2(
+                outcome.exact_price.denominator
+            )
+            stop = decimal_fraction_v2(preparation.sizing.stop_price)
+            gap = stop - price if liquidation.side == "LONG" else price - stop
+            threshold = decimal_fraction_v2(
+                policy.liquidation_buffer_fraction
+            ) * decimal_fraction_v2(preparation.sizing.envelope.limit_price)
+            if gap <= 0 or gap < threshold:
+                c._reject_v2("RISK_V2_LIQUIDATION_BUFFER")
+            buffer_result = "GAP_SATISFIED"
+        else:
+            buffer_result = "MODEL_NO_POSITIVE_TRIGGER"
+    missing = tuple(
+        code
+        for item, code in (
+            (margin, "RISK_V2_MARGIN_UNVERIFIED"),
+            (liquidation, "RISK_V2_LIQUIDATION_UNVERIFIED"),
+            (leverage_readback, "RISK_V2_LEVERAGE_READBACK_UNVERIFIED"),
+        )
+        if item is None
+    )
+    if stage == "SUBMIT" and missing:
+        c._reject_v2(missing[0])
+    blockers = (missing or ("RISK_V2_PLANNING_ONLY",)) if stage == "PLAN" else ()
+    return e.LinearEntryAssessmentV2(
+        stage,
+        now,
+        preparation,
+        margin,
+        liquidation,
+        leverage_readback,
+        reserve,
+        blockers,
+        "LINEAR_FIXED_LIMIT_MARK_ADMISSION_V2",
+        buffer_result,
     )

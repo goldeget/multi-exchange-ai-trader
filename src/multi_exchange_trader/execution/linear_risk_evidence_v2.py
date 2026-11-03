@@ -4,12 +4,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
+from math import gcd
 from typing import Literal, cast
 
 from multi_exchange_trader.execution import risk_v2_contracts as c
 from multi_exchange_trader.execution.risk_v2_math import (
     decimal_fraction_v2,
     finite_decimal_v2,
+    is_zero_origin_member_v2,
     zero_origin_lattice_v2,
 )
 from multi_exchange_trader.market_data.instrument_definition import (
@@ -604,4 +606,497 @@ def _preparation_payload_v2(value: object) -> dict[str, object]:
         sizing.cost_allowance_quote
     ):
         c._reject_v2("RISK_V2_MARGIN_LIMIT")
+    return payload
+
+
+@dataclass(frozen=True)
+class ExactRiskRatioV2:
+    numerator: Decimal
+    denominator: Decimal
+
+    def __post_init__(self) -> None:
+        _ratio_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LiquidationPositiveRootV2:
+    kind: Literal["POSITIVE_ROOT"]
+    exact_price: ExactRiskRatioV2
+    candidate_tier_id: str
+    domain_upper_quote: Decimal
+    full_table_sha256: str
+    raw_manifest_sha256: str
+    consumed_tier_ids: tuple[str, ...]
+    rule_revision: str
+
+    def __post_init__(self) -> None:
+        _positive_root_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LiquidationNoPositiveRootV2:
+    kind: Literal["NO_POSITIVE_ROOT"]
+    reason: Literal["NON_POSITIVE_LONG_INTERCEPT"]
+    domain_upper_quote: Decimal
+    full_table_sha256: str
+    raw_manifest_sha256: str
+    consumed_tier_ids: tuple[str, ...]
+    rule_revision: str
+    model_input_sha256: str
+    proof_sha256: str
+
+    def __post_init__(self) -> None:
+        _no_positive_root_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearMarginAssessmentV2:
+    binding_sha256: str
+    reference: c.RiskComputationRefV2
+    model_revision: str
+    quantity: Decimal
+    leverage: Decimal
+    leverage_grid_rule: Literal["LOCAL_ZERO_ORIGIN_LATTICE_V1"]
+    selection_rule: Literal["SMALLEST_FEASIBLE_PERMITTED_GRID_V1"]
+    initial_margin_quote: Decimal
+    venue_required_total_reserve_quote: Decimal
+    covered_tier_ids: tuple[str, ...]
+    valid_until: datetime
+    reserve_basis: Literal["POINT_ESTIMATE_TWO_IM_ENVELOPE_V1"]
+    reserve_rounding_revision: Literal["APP_RESERVE_CEILING_QUANTUM_V1"]
+    reserve_quantum_usdt: Decimal
+    model_input_sha256: str
+    exact_calculation_sha256: str
+
+    def __post_init__(self) -> None:
+        _margin_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearLiquidationAssessmentV2:
+    binding_sha256: str
+    margin_assessment_sha256: str
+    reference: c.RiskComputationRefV2
+    model_revision: str
+    quantity: Decimal
+    leverage: Decimal
+    side: Literal["LONG", "SHORT"]
+    entry_limit_price: Decimal
+    margin_mode: Literal["ISOLATED", "CROSS"]
+    position_mode: Literal["ONE_WAY"]
+    covered_tier_ids: tuple[str, ...]
+    outcome: LiquidationPositiveRootV2 | LiquidationNoPositiveRootV2
+    valid_until: datetime
+    model_input_sha256: str
+    exact_calculation_sha256: str
+
+    def __post_init__(self) -> None:
+        _liquidation_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearLeverageReadbackV2:
+    binding_sha256: str
+    reference: c.RiskObservationRefV2
+    account_observation_id: str
+    control_command_key: str
+    after_control_at: datetime
+    side: Literal["LONG", "SHORT"]
+    applied_leverage: Decimal
+    margin_mode: Literal["ISOLATED", "CROSS"]
+    position_mode: Literal["ONE_WAY"]
+
+    def __post_init__(self) -> None:
+        _readback_payload_v2(self)
+
+
+@dataclass(frozen=True)
+class LinearEntryAssessmentV2:
+    stage: Literal["PLAN", "SUBMIT"]
+    assessed_at: datetime
+    preparation: LinearEntryPreparationV2
+    margin: LinearMarginAssessmentV2 | None
+    liquidation: LinearLiquidationAssessmentV2 | None
+    leverage_readback: LinearLeverageReadbackV2 | None
+    required_reservation_quote: Decimal | None
+    blockers: tuple[str, ...]
+    formula_version: Literal["LINEAR_FIXED_LIMIT_MARK_ADMISSION_V2"]
+    liquidation_buffer_result: Literal["GAP_SATISFIED", "MODEL_NO_POSITIVE_TRIGGER"] | None
+
+    def __post_init__(self) -> None:
+        _assessment_payload_v2(self)
+
+
+def margin_assessment_sha256_v2(value: LinearMarginAssessmentV2) -> str:
+    return c._canonical_sha256_v2("LinearMarginAssessmentV2", _margin_payload_v2(value))
+
+
+def _ratio_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, ExactRiskRatioV2)
+    payload = {
+        name: c._decimal_text_field_v2(
+            values, name, source=False, sign="nonnegative" if name == "numerator" else "positive"
+        )
+        for name in ("numerator", "denominator")
+    }
+    for name in ("numerator", "denominator"):
+        parts = cast(Decimal, values[name]).as_tuple()
+        if parts.sign != 0 or parts.exponent != 0:
+            c._reject_v2()
+    numerator = decimal_fraction_v2(values["numerator"]).numerator
+    denominator = decimal_fraction_v2(values["denominator"]).numerator
+    if gcd(numerator, denominator) != 1:
+        c._reject_v2()
+    return dict(payload)
+
+
+def _ordered_tier_ids_v2(value: object) -> tuple[str, ...]:
+    identifiers = c._tuple_v2(value, minimum=1, maximum=1024)
+    for identifier in identifiers:
+        c._identifier_v2(identifier)
+    if len(set(identifiers)) != len(identifiers):
+        c._reject_v2()
+    return cast(tuple[str, ...], identifiers)
+
+
+def _root_domain_payload_v2(values: dict[str, object]) -> dict[str, object]:
+    return {
+        "domain_upper_quote": c._decimal_text_field_v2(values, "domain_upper_quote", source=False),
+        "full_table_sha256": c._digest_v2(values["full_table_sha256"]),
+        "raw_manifest_sha256": c._digest_v2(values["raw_manifest_sha256"]),
+        "consumed_tier_ids": _ordered_tier_ids_v2(values["consumed_tier_ids"]),
+        "rule_revision": c._identifier_v2(values["rule_revision"]),
+    }
+
+
+def _positive_root_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LiquidationPositiveRootV2)
+    payload = {
+        "kind": c._literal_v2(values["kind"], ("POSITIVE_ROOT",)),
+        "exact_price": _ratio_payload_v2(values["exact_price"]),
+        "candidate_tier_id": c._identifier_v2(values["candidate_tier_id"]),
+        **_root_domain_payload_v2(values),
+    }
+    price = cast(ExactRiskRatioV2, values["exact_price"])
+    if decimal_fraction_v2(price.numerator) <= 0 or values["candidate_tier_id"] not in cast(
+        tuple[str, ...], values["consumed_tier_ids"]
+    ):
+        c._reject_v2()
+    return payload
+
+
+def _no_positive_root_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LiquidationNoPositiveRootV2)
+    return {
+        "kind": c._literal_v2(values["kind"], ("NO_POSITIVE_ROOT",)),
+        "reason": c._literal_v2(values["reason"], ("NON_POSITIVE_LONG_INTERCEPT",)),
+        **_root_domain_payload_v2(values),
+        "model_input_sha256": c._digest_v2(values["model_input_sha256"]),
+        "proof_sha256": c._digest_v2(values["proof_sha256"]),
+    }
+
+
+def _margin_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LinearMarginAssessmentV2)
+    payload: dict[str, object] = {
+        name: c._digest_v2(values[name])
+        for name in ("binding_sha256", "model_input_sha256", "exact_calculation_sha256")
+    }
+    payload["reference"] = c._computation_payload_v2(values["reference"])
+    payload["model_revision"] = c._identifier_v2(values["model_revision"])
+    payload["covered_tier_ids"] = _ordered_tier_ids_v2(values["covered_tier_ids"])
+    for name in (
+        "quantity",
+        "leverage",
+        "initial_margin_quote",
+        "venue_required_total_reserve_quote",
+        "reserve_quantum_usdt",
+    ):
+        payload[name] = c._decimal_text_field_v2(
+            values, name, source=name == "reserve_quantum_usdt"
+        )
+    for name, choices in (
+        ("leverage_grid_rule", ("LOCAL_ZERO_ORIGIN_LATTICE_V1",)),
+        ("selection_rule", ("SMALLEST_FEASIBLE_PERMITTED_GRID_V1",)),
+        ("reserve_basis", ("POINT_ESTIMATE_TWO_IM_ENVELOPE_V1",)),
+        ("reserve_rounding_revision", ("APP_RESERVE_CEILING_QUANTUM_V1",)),
+    ):
+        payload[name] = c._literal_v2(values[name], choices)
+    payload["valid_until"] = c._time_text_v2(values["valid_until"])
+    quantum = cast(Decimal, values["reserve_quantum_usdt"])
+    if quantum.as_tuple() != (0, (1,), -8):
+        c._reject_v2()
+    for name in ("initial_margin_quote", "venue_required_total_reserve_quote"):
+        if (decimal_fraction_v2(values[name]) / decimal_fraction_v2(quantum)).denominator != 1:
+            c._reject_v2()
+    reference = cast(c.RiskComputationRefV2, values["reference"])
+    if (
+        reference.model_revision != values["model_revision"]
+        or reference.input_sha256 != values["binding_sha256"]
+    ):
+        c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+    if c._utc_v2(values["valid_until"]) <= c._utc_v2(reference.computed_at):
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    return payload
+
+
+def _liquidation_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LinearLiquidationAssessmentV2)
+    payload: dict[str, object] = {
+        name: c._digest_v2(values[name])
+        for name in (
+            "binding_sha256",
+            "margin_assessment_sha256",
+            "model_input_sha256",
+            "exact_calculation_sha256",
+        )
+    }
+    payload["reference"] = c._computation_payload_v2(values["reference"])
+    payload["model_revision"] = c._identifier_v2(values["model_revision"])
+    for name in ("quantity", "leverage", "entry_limit_price"):
+        payload[name] = c._decimal_text_field_v2(values, name, source=name == "entry_limit_price")
+    for name, choices in (
+        ("side", ("LONG", "SHORT")),
+        ("margin_mode", ("ISOLATED", "CROSS")),
+        ("position_mode", ("ONE_WAY",)),
+    ):
+        payload[name] = c._literal_v2(values[name], choices)
+    payload["covered_tier_ids"] = _ordered_tier_ids_v2(values["covered_tier_ids"])
+    outcome = values["outcome"]
+    if type(outcome) is LiquidationPositiveRootV2:
+        payload["outcome"] = _positive_root_payload_v2(outcome)
+    elif type(outcome) is LiquidationNoPositiveRootV2:
+        payload["outcome"] = _no_positive_root_payload_v2(outcome)
+    else:
+        c._reject_v2()
+    payload["valid_until"] = c._time_text_v2(values["valid_until"])
+    if not set(values["covered_tier_ids"]).issubset(outcome.consumed_tier_ids):
+        c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    if type(outcome) is LiquidationNoPositiveRootV2:
+        if (
+            values["side"] != "LONG"
+            or values["margin_mode"] != "ISOLATED"
+            or values["position_mode"] != "ONE_WAY"
+        ):
+            c._reject_v2("RISK_V2_UNSUPPORTED_MODE")
+        if outcome.model_input_sha256 != values["model_input_sha256"]:
+            c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    reference = cast(c.RiskComputationRefV2, values["reference"])
+    if (
+        reference.model_revision != values["model_revision"]
+        or reference.input_sha256 != values["margin_assessment_sha256"]
+    ):
+        c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    if c._utc_v2(values["valid_until"]) <= c._utc_v2(reference.computed_at):
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    return payload
+
+
+def _readback_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LinearLeverageReadbackV2)
+    payload: dict[str, object] = {
+        "binding_sha256": c._digest_v2(values["binding_sha256"]),
+        "reference": c._observation_payload_v2(values["reference"]),
+        "account_observation_id": c._identifier_v2(values["account_observation_id"]),
+        "control_command_key": c._identifier_v2(values["control_command_key"]),
+        "after_control_at": c._time_text_v2(values["after_control_at"]),
+        "applied_leverage": c._decimal_text_field_v2(values, "applied_leverage", source=True),
+    }
+    for name, choices in (
+        ("side", ("LONG", "SHORT")),
+        ("margin_mode", ("ISOLATED", "CROSS")),
+        ("position_mode", ("ONE_WAY",)),
+    ):
+        payload[name] = c._literal_v2(values[name], choices)
+    reference = cast(c.RiskObservationRefV2, values["reference"])
+    if reference.source_environment not in ("DEMO", "LIVE", "FIXTURE"):
+        c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    if c._utc_v2(values["after_control_at"]) > c._utc_v2(reference.server_observed_at):
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    return payload
+
+
+def _assessment_links_v2(
+    preparation: LinearEntryPreparationV2,
+    margin: LinearMarginAssessmentV2 | None,
+    liquidation: LinearLiquidationAssessmentV2 | None,
+    readback: LinearLeverageReadbackV2 | None,
+) -> None:
+    # Callers validate the complete records before this cross-record phase.
+    if margin is None:
+        if liquidation is not None or readback is not None:
+            c._reject_v2()
+        return
+    binding_hash = binding_sha256_v2(preparation.binding)
+    sizing, bound = preparation.sizing, preparation.tier_bound
+    side = "LONG" if sizing.envelope.side == "BUY" else "SHORT"
+    if (
+        margin.binding_sha256 != binding_hash
+        or margin.quantity != sizing.envelope.base_quantity
+        or margin.covered_tier_ids != bound.covered_tier_ids
+    ):
+        c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+    if margin.leverage_grid_rule != bound.leverage_grid_rule:
+        c._reject_v2("RISK_V2_GRID_SOURCE_MODEL_UNVERIFIED")
+    if not is_zero_origin_member_v2(
+        decimal_fraction_v2(margin.leverage),
+        first=decimal_fraction_v2(bound.permitted_leverage_min),
+        last=decimal_fraction_v2(bound.permitted_leverage_max),
+        step=decimal_fraction_v2(bound.leverage_step),
+    ):
+        c._reject_v2("RISK_V2_LEVERAGE_UNSATISFIABLE")
+    if liquidation is not None and (
+        liquidation.binding_sha256 != binding_hash
+        or liquidation.margin_assessment_sha256 != margin_assessment_sha256_v2(margin)
+        or liquidation.quantity != margin.quantity
+        or liquidation.leverage != margin.leverage
+        or liquidation.side != side
+        or liquidation.entry_limit_price != sizing.envelope.limit_price
+        or liquidation.covered_tier_ids != bound.covered_tier_ids
+        or liquidation.model_input_sha256 != margin.model_input_sha256
+        or liquidation.exact_calculation_sha256 != margin.exact_calculation_sha256
+    ):
+        c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    if readback is not None and (
+        readback.binding_sha256 != binding_hash
+        or readback.side != side
+        or readback.applied_leverage != margin.leverage
+        or readback.account_observation_id != preparation.binding.account_observation_id
+        or (
+            liquidation is not None
+            and (
+                readback.margin_mode != liquidation.margin_mode
+                or readback.position_mode != liquidation.position_mode
+            )
+        )
+    ):
+        c._reject_v2("RISK_V2_LEVERAGE_READBACK_UNVERIFIED")
+
+
+def _assessment_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LinearEntryAssessmentV2)
+    payload: dict[str, object] = {
+        "stage": c._literal_v2(values["stage"], ("PLAN", "SUBMIT")),
+        "assessed_at": c._time_text_v2(values["assessed_at"]),
+        "preparation": _preparation_payload_v2(values["preparation"]),
+        "formula_version": c._literal_v2(
+            values["formula_version"], ("LINEAR_FIXED_LIMIT_MARK_ADMISSION_V2",)
+        ),
+    }
+    for name, validator in (
+        ("margin", _margin_payload_v2),
+        ("liquidation", _liquidation_payload_v2),
+        ("leverage_readback", _readback_payload_v2),
+    ):
+        payload[name] = None if values[name] is None else validator(values[name])
+    reserve = values["required_reservation_quote"]
+    payload["required_reservation_quote"] = (
+        None
+        if reserve is None
+        else c._decimal_text_field_v2(
+            values, "required_reservation_quote", source=False, sign="nonnegative"
+        )
+    )
+    buffer_result = values["liquidation_buffer_result"]
+    payload["liquidation_buffer_result"] = (
+        None
+        if buffer_result is None
+        else c._literal_v2(buffer_result, ("GAP_SATISFIED", "MODEL_NO_POSITIVE_TRIGGER"))
+    )
+    blockers = c._tuple_v2(values["blockers"], minimum=0, maximum=3)
+    for blocker in blockers:
+        c._literal_v2(
+            blocker,
+            (
+                "RISK_V2_MARGIN_UNVERIFIED",
+                "RISK_V2_LIQUIDATION_UNVERIFIED",
+                "RISK_V2_LEVERAGE_READBACK_UNVERIFIED",
+                "RISK_V2_PLANNING_ONLY",
+            ),
+        )
+    payload["blockers"] = blockers
+    preparation = cast(LinearEntryPreparationV2, values["preparation"])
+    margin = cast(LinearMarginAssessmentV2 | None, values["margin"])
+    liquidation = cast(LinearLiquidationAssessmentV2 | None, values["liquidation"])
+    readback = cast(LinearLeverageReadbackV2 | None, values["leverage_readback"])
+    _assessment_links_v2(preparation, margin, liquidation, readback)
+    assessed_at = c._utc_v2(values["assessed_at"])
+    pin = preparation.binding.instrument_pin
+    moments = [
+        pin.response_time,
+        pin.received_at,
+        preparation.sizing.cost_reference.computed_at,
+        preparation.minimum_amount.reference.computed_at,
+    ]
+    expiries = [preparation.sizing.envelope.valid_until, preparation.minimum_amount.valid_until]
+    for model in (margin, liquidation):
+        if model is not None:
+            c._target_environment_v2(model.reference.target_environment, preparation.binding.scope)
+            moments.append(model.reference.computed_at)
+            expiries.append(model.valid_until)
+    if readback is not None:
+        c._target_environment_v2(readback.reference.source_environment, preparation.binding.scope)
+        moments.extend((readback.reference.server_observed_at, readback.reference.received_at))
+    if any(c._utc_v2(moment) > assessed_at for moment in moments):
+        c._reject_v2("RISK_V2_FUTURE_EVIDENCE")
+    if any(assessed_at >= c._utc_v2(expiry) for expiry in expiries):
+        c._reject_v2("RISK_V2_EXPIRED")
+    if margin is not None and any(
+        c._utc_v2(moment) > c._utc_v2(margin.reference.computed_at)
+        for moment in (
+            pin.received_at,
+            preparation.sizing.cost_reference.computed_at,
+            preparation.minimum_amount.reference.computed_at,
+        )
+    ):
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    if liquidation is not None and margin is not None:
+        if c._utc_v2(liquidation.reference.computed_at) < c._utc_v2(margin.reference.computed_at):
+            c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+        if type(liquidation.outcome) is LiquidationPositiveRootV2:
+            price = decimal_fraction_v2(
+                liquidation.outcome.exact_price.numerator
+            ) / decimal_fraction_v2(liquidation.outcome.exact_price.denominator)
+            stop = decimal_fraction_v2(preparation.sizing.stop_price)
+            gap = stop - price if liquidation.side == "LONG" else price - stop
+            if gap <= 0:
+                c._reject_v2("RISK_V2_LIQUIDATION_BUFFER")
+    missing = tuple(
+        code
+        for item, code in (
+            (margin, "RISK_V2_MARGIN_UNVERIFIED"),
+            (liquidation, "RISK_V2_LIQUIDATION_UNVERIFIED"),
+            (readback, "RISK_V2_LEVERAGE_READBACK_UNVERIFIED"),
+        )
+        if item is None
+    )
+    if values["stage"] == "SUBMIT" and missing:
+        c._reject_v2(missing[0])
+    expected = (missing or ("RISK_V2_PLANNING_ONLY",)) if values["stage"] == "PLAN" else ()
+    if blockers != expected:
+        c._reject_v2()
+    if margin is None:
+        if reserve is not None:
+            c._reject_v2()
+    else:
+        required = max(
+            decimal_fraction_v2(margin.initial_margin_quote)
+            + decimal_fraction_v2(preparation.sizing.cost_allowance_quote),
+            decimal_fraction_v2(margin.venue_required_total_reserve_quote),
+        )
+        if reserve is None or decimal_fraction_v2(reserve) != required:
+            c._reject_v2()
+        if required > decimal_fraction_v2(preparation.capacity_quote):
+            c._reject_v2("RISK_V2_MARGIN_LIMIT")
+    expected_buffer = (
+        None
+        if liquidation is None
+        else (
+            "GAP_SATISFIED"
+            if type(liquidation.outcome) is LiquidationPositiveRootV2
+            else "MODEL_NO_POSITIVE_TRIGGER"
+        )
+    )
+    if buffer_result != expected_buffer:
+        c._reject_v2()
     return payload
