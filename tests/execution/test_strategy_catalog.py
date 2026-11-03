@@ -13,12 +13,15 @@ import sys
 import time
 from dataclasses import MISSING, FrozenInstanceError, fields, replace
 from pathlib import Path
+from typing import TypedDict, cast
 
 import pytest
 
 from multi_exchange_trader.execution import strategy_catalog as subject
 from multi_exchange_trader.execution.modes import StrategyReference
 from multi_exchange_trader.execution.strategy_catalog import (
+    ApprovalEnvironment,
+    ApprovalStatus,
     StrategyCatalog,
     StrategyCatalogRejected,
     StrategyCatalogSelection,
@@ -40,8 +43,22 @@ CODES = (
 )
 
 
-def descriptor(**changes):
-    values = {
+class _DescriptorArguments(TypedDict):
+    reference: StrategyReference
+    implementation_sha256: str
+    config_sha256: str
+    config_schema_version: int
+    engine_contract_version: str
+    permitted_instruments: tuple[InstrumentKey, ...]
+    approval_reference: str
+    approval_source_reference: str
+    approval_source_sha256: str
+    approval_environments: tuple[ApprovalEnvironment, ...]
+    approval_status: ApprovalStatus
+
+
+def descriptor(**changes: object) -> StrategyDescriptor:
+    values: _DescriptorArguments = {
         "reference": StrategyReference("fixture-trend", "v1"),
         "implementation_sha256": "a" * 64, "config_sha256": "b" * 64, "config_schema_version": 1,
         "engine_contract_version": "fixture-engine-v1", "permitted_instruments": (SPOT,),
@@ -49,17 +66,20 @@ def descriptor(**changes):
         "approval_source_sha256": "c" * 64, "approval_environments": ("DEMO",),
         "approval_status": "APPROVED",
     }
-    return StrategyDescriptor(**(values | changes))
+    # Overrides deliberately accept malformed objects; the constructor must reject them.
+    return StrategyDescriptor(**cast(_DescriptorArguments, values | changes))
 
 
-def forged(cls, **values):
+def forged[T](cls: type[T], **values: object) -> T:
     value = object.__new__(cls)
     for name, item in values.items():
         object.__setattr__(value, name, item)
     return value
 
 
-def changed(value, **changes):
+def changed[T: (StrategyDescriptor, StrategyCatalog, InstrumentKey)](
+    value: T, **changes: object,
+) -> T:
     return forged(type(value), **({field.name: getattr(value, field.name) for field in fields(value)}
                                  | changes))
 
@@ -282,17 +302,38 @@ def test_rejection_code_constructor_rejects_str_subclass():
         StrategyCatalogRejected(Text(INVALID))
 
 
-def require(catalog, **changes):
-    arguments = {"expected_catalog_revision": catalog.revision,
+class _RequireArguments(TypedDict):
+    expected_catalog_revision: str
+    allowed: tuple[StrategyReference, ...]
+    selected: tuple[StrategyReference, ...]
+    instrument: InstrumentKey
+    environment: ApprovalEnvironment
+
+
+class _SelectionArguments(TypedDict):
+    catalog_revision: str
+    instrument: InstrumentKey
+    environment: ApprovalEnvironment
+    allowed: tuple[StrategyDescriptor, ...]
+    selected: tuple[StrategyDescriptor, ...]
+
+
+def require(catalog: StrategyCatalog, **changes: object) -> StrategyCatalogSelection:
+    arguments: _RequireArguments = {"expected_catalog_revision": catalog.revision,
                  "allowed": (StrategyReference("fixture-trend", "v1"),), "selected": (),
                  "instrument": SPOT, "environment": "DEMO"}
-    return require_strategy_references(catalog, **(arguments | changes))
+    # Preserve malformed request overrides at the real public validation boundary.
+    return require_strategy_references(catalog, **cast(_RequireArguments, arguments | changes))
 
 
-def selection(allowed_entries, selected_entries=(), **changes):
-    arguments = {"catalog_revision": "sha256:" + "0" * 64, "instrument": SPOT, "environment": "DEMO",
+def selection(
+    allowed_entries: tuple[StrategyDescriptor, ...],
+    selected_entries: tuple[StrategyDescriptor, ...] = (), **changes: object,
+) -> StrategyCatalogSelection:
+    arguments: _SelectionArguments = {
+        "catalog_revision": "sha256:" + "0" * 64, "instrument": SPOT, "environment": "DEMO",
                  "allowed": allowed_entries, "selected": selected_entries}
-    return StrategyCatalogSelection(**(arguments | changes))
+    return StrategyCatalogSelection(**cast(_SelectionArguments, arguments | changes))
 
 
 def test_require_preserves_allowed_selected_order_and_empty_subset():
