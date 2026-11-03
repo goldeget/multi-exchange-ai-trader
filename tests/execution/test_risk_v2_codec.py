@@ -1217,3 +1217,95 @@ GOLDEN_WIRES = {
         'NTENT","wire_version":2}'
     ),
 }
+
+
+# Adopted independent-review corrections R1/R2. The entire original 96-test
+# module and complete golden literals above remain an exact byte prefix.
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("envelope", "scope", "product_scope", "account", "environment"), "PAPER"),
+        (("protection_policy", "stop_price"), "0"),
+        (("protection_policy", "stop_price"), "-90.00"),
+        (("protection_policy", "take_profit_price"), "0"),
+        (("protection_policy", "take_profit_price"), "-120"),
+    ],
+    ids=["account-environment", "zero-stop", "negative-stop", "zero-target", "negative-target"],
+)
+def test_correction_r1_exact_legacy_rejection_boundary(path: tuple[str, ...], value: str) -> None:
+    tree = json.loads(GOLDEN_WIRES["PLAN"])
+    node = tree["fields"]
+    for part in path[:-1]:
+        node = node[part]
+    node[path[-1]] = value
+    # Direct stdlib JSON/hash independently recomputes a valid outer checksum.
+    raw = canonical_frame(tree)
+    root = actual_intent()
+    replacement: Any = value if path[-1] == "environment" else Decimal(value)
+    changed = replace_path(root, path, replacement)
+    reject(partial(replace, root, **{path[0]: object.__getattribute__(changed, path[0])}))
+    reject(partial(encode_entry_intent_v2, changed))
+    reject(partial(decode_entry_intent_v2, raw))
+
+
+@pytest.mark.parametrize("generation", [-1000000000000000000, -9223372036854775807, -9223372036854775808])
+def test_correction_r2_negative_19_magnitude_digits_owner(generation: int) -> None:
+    tree = json.loads(GOLDEN_WIRES["PLAN"])
+    tree["fields"]["protection_policy"]["generation"] = generation
+    raw = canonical_frame(tree)
+    root = actual_intent()
+    policy = forged(root.protection_policy, "generation", generation)
+    reject(partial(replace, root, protection_policy=policy))
+    reject(partial(encode_entry_intent_v2, forged(root, "protection_policy", policy)))
+    reject(partial(decode_entry_intent_v2, raw))
+
+
+@pytest.mark.parametrize("generation", [-1000000000000000000, -9223372036854775807, -9223372036854775808])
+def test_correction_r2_scanner_and_callback_magnitude_bound(generation: int) -> None:
+    from multi_exchange_trader.execution import risk_v2_codec as codec
+
+    token = str(generation)
+    assert codec._integer(token) == generation
+    codec._scan('{"generation":' + token + "}")
+
+
+@pytest.mark.parametrize("seam", ["ProtectionScope", "ProtectionPolicy"])
+def test_correction_r1_preserves_shared_codes_and_programming_failures(
+    seam: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from multi_exchange_trader.execution import risk_v2_codec as codec
+
+    def meaningful(**kwargs: Any) -> Any:
+        raise c.RiskV2Rejected("RISK_V2_REVISION_MISMATCH")
+
+    monkeypatch.setattr(codec, seam, meaningful)
+    reject(partial(decode_entry_intent_v2, GOLDEN_WIRES["PLAN"]), "RISK_V2_REVISION_MISMATCH")
+
+    def programming_failure(**kwargs: Any) -> Any:
+        raise RuntimeError("deliberate programming-failure sentinel")
+
+    monkeypatch.setattr(codec, seam, programming_failure)
+    with pytest.raises(RuntimeError, match="deliberate programming-failure sentinel"):
+        decode_entry_intent_v2(GOLDEN_WIRES["PLAN"])
+
+
+def test_correction_r2_positive_and_canonical_resource_controls() -> None:
+    from multi_exchange_trader.execution import risk_v2_codec as codec
+
+    before_limit = sys.get_int_max_str_digits()
+    tree = json.loads(GOLDEN_WIRES["PLAN"])
+    tree["fields"]["protection_policy"]["generation"] = 9223372036854775807
+    restored = decode_entry_intent_v2(canonical_frame(tree))
+    assert restored.protection_policy.generation == 9223372036854775807
+    for generation in (9223372036854775808, 10000000000000000000, -10000000000000000000):
+        tree["fields"]["protection_policy"]["generation"] = generation
+        reject(partial(decode_entry_intent_v2, canonical_frame(tree)), "RISK_V2_RESOURCE_LIMIT")
+    for token in ("1" * 20, "-" + "1" * 20, "1" * 5001, "-" + "1" * 5001):
+        reject(partial(codec._integer, token), "RISK_V2_RESOURCE_LIMIT")
+        reject(partial(codec._scan, '{"generation":' + token + "}"), "RISK_V2_RESOURCE_LIMIT")
+    raw = GOLDEN_WIRES["PLAN"].replace('"generation":0', '"generation":-0')
+    reject(partial(decode_entry_intent_v2, raw))
+    for token in ("1.0", "1e18", "NaN", "Infinity", "-Infinity"):
+        raw = GOLDEN_WIRES["PLAN"].replace('"generation":0', '"generation":' + token)
+        reject(partial(decode_entry_intent_v2, raw))
+    assert sys.get_int_max_str_digits() == before_limit

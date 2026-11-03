@@ -618,6 +618,7 @@ def encode_entry_intent_v2(value: DurableEntryIntentV2) -> str:
 
 def _scan(payload: str) -> None:
     depth, quoted, escaped, number = 0, False, False, 0
+    negative = False
     for char in payload:
         if quoted:
             if escaped:
@@ -636,11 +637,14 @@ def _scan(payload: str) -> None:
         elif char in "]}":
             depth -= 1
         if char in "0123456789-eE+.":
+            if number == 0:
+                negative = char == "-"
             number += 1
-            if number > 19:
+            if number > 19 + int(negative):
                 _reject(True)
         else:
             number = 0
+            negative = False
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -653,7 +657,7 @@ def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _integer(token: str) -> int:
-    if len(token) > 19:
+    if len(token) - int(token.startswith("-")) > 19:
         _reject(True)
     return int(token)
 
@@ -679,7 +683,12 @@ def _reconstruct(value: Any, kind: str, *, construct: bool) -> Any:
         if kind == "strategy":
             return StrategyReference(**children)
         if kind == "account":
-            return ProtectionScope(**children)
+            try:
+                return ProtectionScope(**children)
+            except c.RiskV2Rejected:
+                raise
+            except ValueError:
+                _reject()
         if kind == "product":
             try:
                 return ProductScope(**children)
@@ -727,7 +736,12 @@ def _reconstruct(value: Any, kind: str, *, construct: bool) -> Any:
         if kind == "assessment":
             return e.LinearEntryAssessmentV2(**children)
         if kind == "protection":
-            return ProtectionPolicy(**children)
+            try:
+                return ProtectionPolicy(**children)
+            except c.RiskV2Rejected:
+                raise
+            except ValueError:
+                _reject()
         _reject()
     if kind in ("ids", "marks", "hashes", "blockers"):
         return tuple(value)
