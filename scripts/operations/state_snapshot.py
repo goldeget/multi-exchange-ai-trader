@@ -1040,9 +1040,11 @@ def check_risk_v2(db: sqlite3.Connection) -> None:
             _v2_id(row["command_key"])
             _v2_count(row["version"], version=True)
             key = tuple(row[name] for name in ("account", "environment", "command_key"))
-            command = db.execute("SELECT * FROM commands WHERE account=? AND environment=? AND command_key=?", key).fetchone()
+            command = db.execute("SELECT * FROM commands WHERE account COLLATE BINARY=? "
+                "AND environment COLLATE BINARY=? AND command_key COLLATE BINARY=?", key).fetchone()
             meta = db.execute("SELECT 1 FROM reservation_meta_v2 WHERE account=? AND environment=?", key[:2]).fetchone()
-            _v2_require(command is not None and meta is not None)
+            _v2_require(command is not None and meta is not None
+                        and tuple(command[name] for name in ("account", "environment", "command_key")) == key)
             _v2_command(command, row)
     for row in db.execute("SELECT account,environment,command_key,payload FROM commands WHERE kind='ENTRY'"):
         # The reserved discriminator cannot fall back to V1, regardless of version.

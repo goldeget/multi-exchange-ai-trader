@@ -469,3 +469,107 @@ def test_decimal_identity_keeps_scale_signed_zero_and_context_independence(value
 def test_decimal_noncanonical_and_boundaries_refuse(value: str, source: bool) -> None:
     with pytest.raises(OFFLINE["SnapshotError"]):
         OFFLINE["_v2_decimal"](value, source=source)
+
+
+def legacy_nocase_identity(directory: Path, column: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit a coherent ASCII account, then vary only legacy column collation."""
+    from copy import copy
+
+    factory = FIXTURES["fixture_values"]
+    original = factory.__globals__["actual_intent"]
+
+    def scoped_original(kind: str) -> DurableEntryIntentV2:
+        intent = cast(DurableEntryIntentV2, original(kind))
+        scope = intent.envelope.scope
+        product = replace(scope.product_scope,
+                          account=replace(scope.product_scope.account, account_id="AccountA"))
+        # Intermediate seed only: the existing factory rebuilds linked commitments
+        # and constructs a validated intent before genuine journal admission below.
+        seed = copy(intent)
+        object.__setattr__(seed, "envelope", replace(intent.envelope,
+                           scope=replace(scope, product_scope=product)))
+        return seed
+
+    # Restore fixture globals before admission; other tests retain their original fixture.
+    with monkeypatch.context() as patch:
+        patch.setitem(factory.__globals__, "actual_intent", scoped_original)
+        values = factory()
+    with CommandJournal(directory / "execution.sqlite3", ExecutionScope("AccountA", "DEMO")) as journal:
+        FIXTURES["bound"](journal)
+        FIXTURES["register"](journal, values)
+        assert journal.list_commands()[0].reservation_v2 is not None
+    assert column in {"account", "environment", "command_key"}
+    with closing(sqlite3.connect(directory / "execution.sqlite3")) as db:
+        ddl = db.execute("SELECT sql FROM sqlite_master WHERE name='commands'").fetchone()[0]
+        altered = ddl.replace(f"{column} TEXT NOT NULL", f"{column} TEXT NOT NULL COLLATE NOCASE", 1)
+        altered = altered.replace("PRIMARY KEY(account, environment, command_key)",
+            "PRIMARY KEY(account COLLATE BINARY, environment COLLATE BINARY, command_key COLLATE BINARY)")
+        assert altered != ddl and f"{column} COLLATE BINARY" in altered
+        rows = db.execute("SELECT * FROM commands").fetchall()
+        db.execute("DROP TABLE commands")
+        db.execute(altered)
+        db.executemany("INSERT INTO commands VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        indexes = db.execute("PRAGMA index_list(commands)").fetchall()
+        parts = [db.execute('SELECT name,coll FROM pragma_index_xinfo(?) WHERE "key"=1',
+                            (index[1],)).fetchall() for index in indexes]
+        assert len(parts) == 2 and all(coll == "BINARY" for part in parts for _, coll in part)
+        db.commit()
+
+
+def add_case_alias_orphan(directory: Path, column: str) -> None:
+    columns = ("account", "environment", "command_key")
+    aliases = {"account": "accounta", "environment": "demo", "command_key": "command"}
+    with closing(sqlite3.connect(directory / "execution.sqlite3")) as db:
+        row = list(db.execute("SELECT * FROM entry_reservations_v2").fetchone())
+        row[columns.index(column)] = aliases[column]
+        db.execute("INSERT INTO entry_reservations_v2 VALUES (?,?,?,?,?,?,?,?,?,?,?)", row)
+        if column != "command_key":
+            meta = list(db.execute("SELECT * FROM reservation_meta_v2").fetchone())
+            meta[columns.index(column)] = aliases[column]
+            db.execute("INSERT INTO reservation_meta_v2 VALUES (?,?,?,?,?)", meta)
+        key = tuple(row[:3])
+        default = db.execute("SELECT account,environment,command_key FROM commands "
+            "WHERE account=? AND environment=? AND command_key=?", key).fetchone()
+        exact = db.execute("SELECT account,environment,command_key FROM commands "
+            "WHERE account COLLATE BINARY=? AND environment COLLATE BINARY=? "
+            "AND command_key COLLATE BINARY=?", key).fetchone()
+        assert default == ("AccountA", "DEMO", "COMMAND") and default != key and exact is None
+        db.commit()
+
+
+@pytest.mark.parametrize("column", ["account", "environment", "command_key"])
+def test_legacy_nocase_columns_with_binary_identity_remain_supported(
+    runtime_state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, column: str,
+) -> None:
+    legacy_nocase_identity(runtime_state, column, monkeypatch)
+    before = state_bytes(runtime_state)
+    take(runtime_state, tmp_path / "backup")
+    assert cli("verify", "--source", tmp_path / "backup").returncode == 0
+    assert cli("restore", "--source", tmp_path / "backup", "--target", tmp_path / "restored").returncode == 0
+    assert state_bytes(runtime_state) == before == state_bytes(tmp_path / "restored")
+
+
+@pytest.mark.parametrize("operation", ["snapshot", "verify", "restore"])
+@pytest.mark.parametrize("column", ["account", "environment", "command_key"])
+def test_case_alias_orphan_refuses_each_recovery_path_without_publication(
+    runtime_state: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, column: str, operation: str,
+) -> None:
+    legacy_nocase_identity(runtime_state, column, monkeypatch)
+    backup = tmp_path / "backup"
+    take(runtime_state, backup)
+    source = runtime_state if operation == "snapshot" else backup / "data"
+    add_case_alias_orphan(source, column)
+    if operation != "snapshot":
+        rehash_manifest(backup)
+    before_source, before_backup = state_bytes(runtime_state), state_bytes(backup)
+    target = tmp_path / "refused"
+    if operation == "snapshot":
+        result = cli("snapshot", "--source", runtime_state, "--target", target, "--writers-stopped")
+    elif operation == "verify":
+        result = cli("verify", "--source", backup)
+    else:
+        result = cli("restore", "--source", backup, "--target", target)
+    # Lowercase environment is also forbidden by the preexisting finite enum domain.
+    assert result.returncode == 1, result.stdout
+    assert "Recovery refused:" in result.stderr and not target.exists()
+    assert state_bytes(runtime_state) == before_source and state_bytes(backup) == before_backup
