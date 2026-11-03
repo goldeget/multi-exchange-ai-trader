@@ -2,15 +2,21 @@
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Literal
+from fractions import Fraction
+from typing import Literal, cast
 
 from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a
+from multi_exchange_trader.execution import bybit_linear_model_v1 as m
 from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
 from multi_exchange_trader.execution import linear_risk_v2 as r
 from multi_exchange_trader.execution import reservations_v2 as v
 from multi_exchange_trader.execution import risk_domain_v2 as d
 from multi_exchange_trader.execution import risk_v2_contracts as c
-from multi_exchange_trader.execution.journal import CommandJournal, _OwnPendingViewV2
+from multi_exchange_trader.execution.journal import (
+    CommandJournal,
+    _OwnPendingDataV2,
+    _OwnPendingViewV2,
+)
 from multi_exchange_trader.execution.risk_v2_math import (
     _compare,
     _fraction,
@@ -325,3 +331,347 @@ def bind_bybit_own_pending_inputs_v1(
         min(evaluation.valid_until, data.intent.envelope.valid_until),
         "BYBIT_LINEAR_OWN_PENDING_MODEL_V1",
     )
+
+
+@dataclass(frozen=True)
+class BybitOwnPendingCalculationV1:
+    model_input_sha256: str
+    point_input_sha256: str
+    search: m.BybitLeverageSearchV1
+    valid_until: datetime
+    exact_calculation_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.exact_calculation_sha256 != bybit_own_pending_calculation_sha256_v1(self):
+            c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+
+
+def _own_pending_calculation_payload_v1(value: BybitOwnPendingCalculationV1) -> dict[str, object]:
+    c._fields_v2(value, BybitOwnPendingCalculationV1)
+    model = c._digest_v2(value.model_input_sha256)
+    point = c._digest_v2(value.point_input_sha256)
+    search = m.bybit_leverage_search_sha256_v1(value.search)
+    expiry = c._time_text_v2(value.valid_until)
+    c._digest_v2(value.exact_calculation_sha256)
+    if value.search.point_input_sha256 != point:
+        c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    return {
+        "model_input_sha256": model,
+        "point_input_sha256": point,
+        "search": search,
+        "valid_until": expiry,
+    }
+
+
+def bybit_own_pending_calculation_sha256_v1(value: BybitOwnPendingCalculationV1) -> str:
+    return c._canonical_sha256_v2(
+        "BybitOwnPendingCalculationV1", _own_pending_calculation_payload_v1(value)
+    )
+
+
+def calculate_bybit_own_pending_v1(
+    inputs: BybitOwnPendingModelInputsV1,
+    *,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    now: datetime,
+) -> BybitOwnPendingCalculationV1 | m.BybitModelRejectedV1:
+    original = _own_pending_payload_v1(inputs)
+    now = c._utc_v2(now)
+    rebound = bind_bybit_own_pending_inputs_v1(
+        inputs.full_risk_inputs,
+        full_domain=inputs.full_domain,
+        full_venue=inputs.full_venue,
+        catalog=inputs.evaluation.catalog,
+        selected_mark=inputs.evaluation.point.selected_mark,
+        journal=journal,
+        view=view,
+        command_key=inputs.command_key,
+        expected_command_identity_sha256=inputs.command_identity_sha256,
+        now=now,
+    )
+    if _own_pending_payload_v1(rebound) != original or a._point_payload_v1(
+        rebound.point
+    ) != a._point_payload_v1(inputs.point):
+        c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    search = m.select_smallest_bybit_leverage_v1(rebound.point, now=now)
+    journal._require_own_pending_view_v2(
+        view,
+        scope=inputs.full_risk_inputs.policy.scope,
+        command_key=inputs.command_key,
+        expected_command_identity_sha256=inputs.command_identity_sha256,
+        now=now,
+    )
+    if type(search) is m.BybitModelRejectedV1:
+        return search
+    search = cast(m.BybitLeverageSearchV1, search)
+    model_hash = bybit_own_pending_model_inputs_sha256_v1(rebound)
+    point_hash = a.bybit_point_input_sha256_v1(rebound.point)
+    exact = c._canonical_sha256_v2(
+        "BybitOwnPendingCalculationV1",
+        {
+            "model_input_sha256": model_hash,
+            "point_input_sha256": point_hash,
+            "search": m.bybit_leverage_search_sha256_v1(search),
+            "valid_until": c._time_text_v2(rebound.valid_until),
+        },
+    )
+    return BybitOwnPendingCalculationV1(model_hash, point_hash, search, rebound.valid_until, exact)
+
+
+def _replay_own_pending_v1(
+    calculation: BybitOwnPendingCalculationV1 | m.BybitModelRejectedV1,
+    inputs: BybitOwnPendingModelInputsV1,
+    *,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    now: datetime,
+) -> BybitOwnPendingCalculationV1:
+    if type(calculation) is m.BybitModelRejectedV1:
+        rejected = calculation
+        m._rejected(rejected)
+        c._reject_v2(rejected.public_code)
+    calculation = cast(BybitOwnPendingCalculationV1, calculation)
+    supplied = _own_pending_calculation_payload_v1(calculation)
+    if bybit_own_pending_calculation_sha256_v1(calculation) != calculation.exact_calculation_sha256:
+        c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    replayed = calculate_bybit_own_pending_v1(inputs, journal=journal, view=view, now=now)
+    if type(replayed) is m.BybitModelRejectedV1:
+        c._reject_v2(replayed.public_code)
+    actual = cast(BybitOwnPendingCalculationV1, replayed)
+    if (
+        _own_pending_calculation_payload_v1(actual) != supplied
+        or m._search_payload(actual.search) != m._search_payload(calculation.search)
+        or actual.exact_calculation_sha256 != calculation.exact_calculation_sha256
+    ):
+        c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    return actual
+
+
+def _current_own_pending_v1(
+    inputs: BybitOwnPendingModelInputsV1,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    *,
+    now: datetime,
+) -> _OwnPendingDataV2:
+    return journal._require_own_pending_view_v2(
+        view,
+        scope=inputs.full_risk_inputs.policy.scope,
+        command_key=inputs.command_key,
+        expected_command_identity_sha256=inputs.command_identity_sha256,
+        now=now,
+    )
+
+
+def build_bybit_own_pending_margin_v1(
+    calculation: BybitOwnPendingCalculationV1,
+    *,
+    inputs: BybitOwnPendingModelInputsV1,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    reference: c.RiskComputationRefV2,
+    now: datetime,
+) -> e.LinearMarginAssessmentV2:
+    c._computation_payload_v2(reference)
+    actual = _replay_own_pending_v1(calculation, inputs, journal=journal, view=view, now=now)
+    requirements = inputs.evaluation.risk_inputs.requirements
+    revision = "BYBIT_LINEAR_OWN_PENDING_MARGIN_V1"
+    if requirements.margin_model_revision != revision:
+        c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+    data = _current_own_pending_v1(inputs, journal, view, now=now)
+    if not data.intent.assessment.assessed_at <= data.full.observed_at <= reference.computed_at:
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    binding = e.binding_sha256_v2(inputs.evaluation.preparation.binding)
+    m._completion(
+        reference,
+        inputs=inputs.evaluation,
+        expected_input=binding,
+        model_revision=revision,
+        public_code="RISK_V2_MARGIN_UNVERIFIED",
+        now=now,
+    )
+    selected = actual.search.selected
+    result = e.LinearMarginAssessmentV2(
+        binding,
+        reference,
+        revision,
+        inputs.point.envelope.base_quantity,
+        selected.leverage,
+        requirements.leverage_grid_rule,
+        actual.search.selection_rule,
+        selected.reserve.initial_margin_quote,
+        selected.reserve.venue_required_total_reserve_quote,
+        inputs.point.admission_covered_tier_ids,
+        actual.valid_until,
+        requirements.margin_reserve_basis,
+        requirements.reserve_rounding_revision,
+        requirements.reserve_quantum_usdt,
+        actual.model_input_sha256,
+        actual.exact_calculation_sha256,
+    )
+    e._margin_payload_v2(result)
+    _current_own_pending_v1(inputs, journal, view, now=now)
+    return result
+
+
+def build_bybit_own_pending_liquidation_v1(
+    calculation: BybitOwnPendingCalculationV1,
+    *,
+    inputs: BybitOwnPendingModelInputsV1,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    margin: e.LinearMarginAssessmentV2,
+    reference: c.RiskComputationRefV2,
+    now: datetime,
+) -> e.LinearLiquidationAssessmentV2:
+    e._margin_payload_v2(margin)
+    c._computation_payload_v2(reference)
+    actual = _replay_own_pending_v1(calculation, inputs, journal=journal, view=view, now=now)
+    expected_margin = build_bybit_own_pending_margin_v1(
+        calculation, inputs=inputs, journal=journal, view=view, reference=margin.reference, now=now
+    )
+    if e._margin_payload_v2(margin) != e._margin_payload_v2(expected_margin):
+        c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+    requirements = inputs.evaluation.risk_inputs.requirements
+    revision = "BYBIT_LINEAR_OWN_PENDING_LIQUIDATION_V1"
+    if requirements.liquidation_model_revision != revision:
+        c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    data = _current_own_pending_v1(inputs, journal, view, now=now)
+    if not data.intent.assessment.assessed_at <= data.full.observed_at <= reference.computed_at:
+        c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    margin_hash = e.margin_assessment_sha256_v2(margin)
+    m._completion(
+        reference,
+        inputs=inputs.evaluation,
+        expected_input=margin_hash,
+        model_revision=revision,
+        public_code="RISK_V2_LIQUIDATION_UNVERIFIED",
+        now=now,
+        after=margin.reference.computed_at,
+    )
+    selected = actual.search.selected
+    lp = selected.liquidation
+    outcome: e.LiquidationPositiveRootV2 | e.LiquidationNoPositiveRootV2
+    if type(lp.outcome) is m.BybitPositiveRootPointV1:
+        price = lp.outcome.exact_price
+        outcome = e.LiquidationPositiveRootV2(
+            "POSITIVE_ROOT",
+            e.ExactRiskRatioV2(
+                finite_decimal_v2(Fraction(price.numerator)),
+                finite_decimal_v2(Fraction(price.denominator)),
+            ),
+            lp.outcome.candidate_tier_id,
+            lp.domain_upper_quote,
+            lp.full_table_sha256,
+            lp.raw_manifest_sha256,
+            lp.consumed_tier_ids,
+            lp.rule_revision,
+        )
+    else:
+        outcome = e.LiquidationNoPositiveRootV2(
+            "NO_POSITIVE_ROOT",
+            "NON_POSITIVE_LONG_INTERCEPT",
+            lp.domain_upper_quote,
+            lp.full_table_sha256,
+            lp.raw_manifest_sha256,
+            lp.consumed_tier_ids,
+            lp.rule_revision,
+            actual.model_input_sha256,
+            lp.proof_sha256,
+        )
+    result = e.LinearLiquidationAssessmentV2(
+        e.binding_sha256_v2(inputs.evaluation.preparation.binding),
+        margin_hash,
+        reference,
+        revision,
+        inputs.point.envelope.base_quantity,
+        selected.leverage,
+        inputs.evaluation.risk_inputs.proposal.side,
+        inputs.point.envelope.limit_price,
+        inputs.evaluation.risk_inputs.policy.margin_mode,
+        inputs.evaluation.risk_inputs.policy.position_mode,
+        inputs.point.admission_covered_tier_ids,
+        outcome,
+        actual.valid_until,
+        actual.model_input_sha256,
+        actual.exact_calculation_sha256,
+    )
+    e._liquidation_payload_v2(result)
+    _current_own_pending_v1(inputs, journal, view, now=now)
+    return result
+
+
+def assess_bybit_own_pending_submit_v1(
+    inputs: BybitOwnPendingModelInputsV1,
+    *,
+    calculation: BybitOwnPendingCalculationV1,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    margin: e.LinearMarginAssessmentV2,
+    liquidation: e.LinearLiquidationAssessmentV2,
+    leverage_readback: e.LinearLeverageReadbackV2,
+    now: datetime,
+) -> e.LinearEntryAssessmentV2:
+    _own_pending_payload_v1(inputs)
+    e._margin_payload_v2(margin)
+    e._liquidation_payload_v2(liquidation)
+    e._readback_payload_v2(leverage_readback)
+    _replay_own_pending_v1(calculation, inputs, journal=journal, view=view, now=now)
+    expected_margin = build_bybit_own_pending_margin_v1(
+        calculation, inputs=inputs, journal=journal, view=view, reference=margin.reference, now=now
+    )
+    if e._margin_payload_v2(margin) != e._margin_payload_v2(expected_margin):
+        c._reject_v2("RISK_V2_MARGIN_UNVERIFIED")
+    expected_liquidation = build_bybit_own_pending_liquidation_v1(
+        calculation,
+        inputs=inputs,
+        journal=journal,
+        view=view,
+        margin=margin,
+        reference=liquidation.reference,
+        now=now,
+    )
+    if e._liquidation_payload_v2(liquidation) != e._liquidation_payload_v2(expected_liquidation):
+        c._reject_v2("RISK_V2_LIQUIDATION_UNVERIFIED")
+    assessment = r.assess_entry_v2(
+        inputs.evaluation.risk_inputs,
+        now=now,
+        stage="SUBMIT",
+        margin=margin,
+        liquidation=liquidation,
+        leverage_readback=leverage_readback,
+    )
+    data = _current_own_pending_v1(inputs, journal, view, now=now)
+    sizing = assessment.preparation.sizing
+    required = assessment.required_reservation_quote
+    if (
+        c._envelope_payload_v2(sizing.envelope) != c._envelope_payload_v2(data.intent.envelope)
+        or decimal_text_v2(sizing.stop_price)
+        != decimal_text_v2(data.intent.protection_policy.stop_price)
+        or _compare(
+            decimal_fraction_v2(sizing.estimated_loss_quote),
+            decimal_fraction_v2(data.reservation.risk_amount),
+        )
+        > 0
+        or required is None
+        or _compare(
+            decimal_fraction_v2(required), decimal_fraction_v2(data.reservation.margin_amount)
+        )
+        > 0
+    ):
+        c._reject_v2(_CONFLICT)
+    admission = v.ReservationAdmissionV2(
+        data.full.account,
+        data.full.owner_generation,
+        data.full.journal_revision,
+        data.full.held_quantity_sha256,
+        data.command_identity_sha256,
+        inputs.full_risk_inputs.policy,
+        inputs.full_risk_inputs.account,
+        inputs.full_risk_inputs.marks,
+        now,
+    )
+    v._check_capacity(data.intent, data.reservation, admission, data.evaluation)
+    _current_own_pending_v1(inputs, journal, view, now=now)
+    return assessment
