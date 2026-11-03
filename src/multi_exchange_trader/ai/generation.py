@@ -239,9 +239,15 @@ class OpenRouterGenerationClient:
         public = public_candidate_request(request, now=now)
         if self.__key in public or "sk-" in public.lower() or "bearer" in public.lower():
             raise ValueError("Invalid generation input")
+        system = (
+            _SYSTEM
+            + f" The reason must contain at most {request.limits.max_reason_chars} Unicode "
+            "characters and no control characters. The entire JSON response must be at most "
+            f"{request.limits.max_response_bytes} UTF-8 bytes."
+        )
         payload = {
             "model": self.__model, "stream": False, "max_tokens": quote.max_output_tokens,
-            "messages": [{"role": "system", "content": _SYSTEM},
+            "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": public}],
             "response_format": {"type": "json_object"}, "usage": {"include": True},
             "provider": {"allow_fallbacks": False, "require_parameters": True,
