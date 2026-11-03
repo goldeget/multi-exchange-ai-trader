@@ -487,7 +487,7 @@ def test_invalid_runtime_database_refused_even_when_other_ledgers_are_valid(
     ("execution.sqlite3", "audit", "missing_key"),
     ("execution.sqlite3", "projections", "missing_key"),
     ("execution.sqlite3", "inbox", "missing_key"),
-    ("runtime-policy.sqlite3", "runtime_policy", "missing_key"),
+    ("runtime-policy.sqlite3", "runtime_policy_v2", "missing_key"),
     ("ai-dispatch.sqlite3", "ai_dispatches", "missing_key"),
 ])
 def test_malformed_runtime_constraints_refused_before_snapshot_and_restore_publication(
@@ -1109,7 +1109,7 @@ def test_history_restored_observations_do_not_refresh_or_qualify(history_state: 
         with pytest.raises(HistoryError, match="LEDGER_COMPLETE_CURRENT_UTC_WINDOW_REQUIRED"):
             daily_realized_loss(history_observation(), baseline, now=now)
     with closing(sqlite3.connect(restored / "runtime-policy.sqlite3")) as db:
-        assert not db.execute("SELECT 1 FROM runtime_policy WHERE desired_state != 'STOPPED'").fetchall()
+        assert not db.execute("SELECT 1 FROM runtime_policy_v2 WHERE desired_state != 'STOPPED'").fetchall()
     RuntimePolicyBook(restored / "runtime-policy.sqlite3")
 
 

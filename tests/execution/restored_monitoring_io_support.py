@@ -18,6 +18,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import httpx
+from fixtures.runtime_policy_v1 import load_v1
 from test_bybit_native_linux import module
 from test_native_monitor_http import fee_row, instrument_row, wallet_row
 from test_risk import inputs
@@ -273,8 +274,9 @@ async def make_worker(directory, io, previous=None, *, binding_age=30):
     session = BybitDemoAccountSession(api_key=KEY, api_secret=SECRET,
         max_age=timedelta(seconds=binding_age))
     binding = await session.authenticate(expected_uid="12345", expected_parent_uid="0", expected_is_master=False)
-    book = RuntimePolicyBook(directory / "runtime-policy.sqlite3")
+    policy_path = directory / "runtime-policy.sqlite3"
     if previous is None:
+        historical = load_v1()(policy_path)
         now = datetime.now(UTC)
         data = inputs()
         for name in ("policy", "market", "instrument", "account", "tiers", "reservations"):
@@ -288,14 +290,17 @@ async def make_worker(directory, io, previous=None, *, binding_age=30):
                 values.update(next_funding_at=now + timedelta(hours=1), costs_valid_until=now + timedelta(minutes=1))
             data[name] = replace(value, **values)
         data["now"] = now
-        draft = book.read()["policy"]
+        draft = historical.read()["policy"]
         for key, value in asdict(data["policy"]).items():
             if key in draft:
                 draft[key] = str(value) if isinstance(value, Decimal) else value
         draft.update(capital_usdt="1000", mode="FULL_AUTO", environment="DEMO",
             allowed_symbols=["BTCUSDT"], selected_symbols=["BTCUSDT"],
             allowed_strategies=["strategy-1"], selected_strategies=["strategy-1"])
-        book.save(0, draft)
+        historical.save(0, draft)
+        book = RuntimePolicyBook(policy_path)
+        assert book.read()["schema_version"] == 1
+        assert book.read()["revision"] == 1 and book.read()["policy"] == draft
         data["policy"] = book.risk_policy(data["policy"].scope)
         plan = assess_entry(**data)
         request = selection()
@@ -308,6 +313,7 @@ async def make_worker(directory, io, previous=None, *, binding_age=30):
         protection = ProtectionPolicy("1", 0, Decimal(90), Decimal(120), "MarkPrice")
         registry = TrustedPlanRegistry((RegisteredPlan("plan-1", request.candidates[0].strategy, plan, protection),))
     else:
+        book = RuntimePolicyBook(policy_path)
         plan, request, registry = previous.plan, previous.request, previous.registry
     worker = ExecutionWorker(directory=directory, scope=SCOPE, session=session, binding=binding,
         symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=book, registry=registry,

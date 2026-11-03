@@ -10,11 +10,7 @@ from fractions import Fraction
 from typing import Any, cast
 
 import pytest
-
-from multi_exchange_trader.execution import risk_v2_contracts as c
-from multi_exchange_trader.execution.linear_risk_v2 import value_linear_admission_v2
-from multi_exchange_trader.trading_product import InstrumentKey
-from tests.execution.risk_v2_support import (
+from risk_v2_support import (
     DIGEST,
     NOW,
     costs_v2,
@@ -23,6 +19,10 @@ from tests.execution.risk_v2_support import (
     policy_v2,
     sizing_v2,
 )
+
+from multi_exchange_trader.execution import risk_v2_contracts as c
+from multi_exchange_trader.execution.linear_risk_v2 import value_linear_admission_v2
+from multi_exchange_trader.trading_product import InstrumentKey
 
 X = InstrumentKey("BYBIT", "LINEAR", "XAAUSDT")
 Y = InstrumentKey("BYBIT", "LINEAR", "YBBUSDT")

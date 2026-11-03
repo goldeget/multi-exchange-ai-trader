@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fixtures.runtime_policy_v1 import commit_policy_change, load_v1
 from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import NOW, inputs
 from test_runtime import SCOPE, selection
@@ -44,16 +45,19 @@ def fresh_assembly() -> NativeNodeAssembly:
 
 def harness(tmp_path: Path, *, mode: str = "FULL_AUTO",
             lock_directory: Path | None = None, core: SyntheticSession | None = None) -> Any:
-    book = RuntimePolicyBook(tmp_path / "runtime-policy.sqlite3")
+    historical = load_v1()(tmp_path / "runtime-policy.sqlite3")
     data = inputs()
-    draft = book.read()["policy"]
+    draft = historical.read()["policy"]
     for key, value in asdict(data["policy"]).items():
         if key in draft:
             draft[key] = str(value) if isinstance(value, Decimal) else value
     draft.update(capital_usdt="1000", mode=mode, environment="DEMO",
         allowed_symbols=["BTCUSDT"], selected_symbols=["BTCUSDT"],
         allowed_strategies=["strategy-1"], selected_strategies=["strategy-1"])
-    book.save(0, draft)
+    historical.save(0, draft)
+    book = RuntimePolicyBook(historical.path)
+    assert book.read()["schema_version"] == 1
+    assert book.read()["revision"] == 1 and book.read()["policy"] == draft
     data["policy"] = book.risk_policy(data["policy"].scope)
     plan = assess_entry(**data)
     request = selection()
@@ -165,7 +169,8 @@ async def test_stale_policy_and_unregistered_strategy_block_before_staging(tmp_p
     with pytest.raises(RuntimeBlocked, match="APPROVED"):
         await stage(h)
     h.worker.registry = h.registry
-    h.book.save(1, h.book.read()["policy"])
+    snap = h.book.read()
+    commit_policy_change(h.book, snap["policy"] | {"max_positions": snap["policy"]["max_positions"] + 1})
     with pytest.raises(RuntimeBlocked, match="CURRENT_STOPPED"):
         await stage(h)
     assert h.worker.runtime.journal.list_commands() == ()
@@ -177,7 +182,8 @@ async def test_all_in_one_rechecks_policy_after_dispatch_and_no_fallback(tmp_pat
     await h.worker.start_passive()
 
     def dispatch(*_args: Any, **_kwargs: Any) -> Any:
-        h.book.save(1, h.book.read()["policy"])
+        snap = h.book.read()
+        commit_policy_change(h.book, snap["policy"] | {"max_positions": snap["policy"]["max_positions"] + 1})
         return SimpleNamespace(failure=None, selection=select_all_in_one(
             request=h.request, response=None, now=NOW))
 
@@ -258,3 +264,26 @@ async def test_paid_dispatch_does_not_block_owned_fill_callbacks(tmp_path: Path)
         release.set()
         assert await task is None
         await h.worker.stop()
+
+
+@pytest.mark.parametrize("schema", [1, 2])
+def test_policy_fixture_mutation_requires_committed_revision_and_payload(tmp_path, schema):
+    path = tmp_path / "policy-change.sqlite3"
+    if schema == 1:
+        load_v1()(path)
+    book = RuntimePolicyBook(path)
+    before = book.read()
+    if schema == 1:
+        draft = before["policy"] | {"max_positions": 1}
+    else:
+        draft = before["policy"] | {"legacy_v1": before["policy"]["legacy_v1"] | {"max_positions": 1}}
+    failure = None
+    try:
+        commit_policy_change(book, draft)
+    except ValueError as exc:
+        failure = exc
+    # An expected exception from a raced caller cannot stand in for this commit.
+    after = book.read()
+    assert after["revision"] == before["revision"] + 1
+    assert after["policy"] == draft and after["policy"] != before["policy"]
+    assert failure is None

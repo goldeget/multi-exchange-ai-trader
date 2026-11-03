@@ -14,11 +14,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-
-from multi_exchange_trader.execution import risk_v2_contracts as c
-from multi_exchange_trader.execution import risk_v2_math as m
-from multi_exchange_trader.market_data.instrument_definition import KnownNotPublished
-from tests.execution.risk_v2_support import (
+from risk_v2_support import (
     EXPIRY,
     NOW,
     computation_ref_v2,
@@ -31,6 +27,10 @@ from tests.execution.risk_v2_support import (
     scope_v2,
     sizing_v2,
 )
+
+from multi_exchange_trader.execution import risk_v2_contracts as c
+from multi_exchange_trader.execution import risk_v2_math as m
+from multi_exchange_trader.market_data.instrument_definition import KnownNotPublished
 
 
 def _forged(value: Any, *, missing: object = None, **changes: object) -> Any:

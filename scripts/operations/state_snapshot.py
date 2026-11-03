@@ -319,6 +319,11 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                 tables = {row[0] for row in db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
                 )}
+                # Policy V2 is a current format of the same file/generation, not
+                # a caller-selected migration or a new portable dependency.
+                if name == "runtime-policy.sqlite3" and db.execute("PRAGMA user_version").fetchone()[0] == 2:
+                    check_policy_v2(db)
+                    continue
                 if tables != set(schema):
                     raise SnapshotError("Unsupported SQLite schema")
                 for table, columns in schema.items():
@@ -381,6 +386,106 @@ def json_payload(raw: object) -> object:
     result = json.loads(raw, object_pairs_hook=unique_object, parse_constant=nonfinite)
     json.dumps(result, allow_nan=False)
     return result
+
+
+# Explicit offline counterpart of the supported null-only policy codec. Keep
+# this bounded contract local so the three-file -I -S recovery bundle stays usable.
+POLICY_DECIMALS = (
+    "capital_usdt", "leverage_min", "leverage_max", "per_trade_loss", "max_daily_loss",
+    "max_drawdown", "max_total_notional", "max_total_risk", "max_total_margin",
+    "margin_allocation", "liquidation_buffer_fraction", "max_quote_age_seconds",
+    "max_evidence_age_seconds",
+)
+POLICY_COUNTS = ("max_consecutive_losses", "max_positions")
+POLICY_CHOICES = {"mode": {"FULL_AUTO", "ALL_IN_ONE"}, "environment": {"DEMO", "LIVE"},
+                  "sizing_rule": {"LOSS_FIXED"}, "margin_mode": {"ISOLATED", "CROSS"},
+                  "position_mode": {"ONE_WAY", "HEDGE"}}
+POLICY_LISTS = ("allowed_symbols", "allowed_strategies", "selected_symbols", "selected_strategies")
+POLICY_KEYS = {*POLICY_DECIMALS, *POLICY_COUNTS, *POLICY_CHOICES, *POLICY_LISTS}
+POLICY_ZERO_ALLOWED = {"liquidation_buffer_fraction", "max_quote_age_seconds", "max_evidence_age_seconds"}
+POLICY_TABLE_LAYOUT = "(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL," \
+                      "payload TEXT NOT NULL,desired_state TEXT NOT NULL CHECK(desired_state='STOPPED'))"
+
+
+def check_policy_legacy(value: object) -> None:
+    if type(value) is not dict or set(value) != POLICY_KEYS:
+        raise SnapshotError("Unsupported policy legacy fields")
+    for key, item in value.items():
+        if item is None:
+            continue
+        if key in POLICY_DECIMALS:
+            if (type(item) is not str or re.fullmatch(r"(?:0|[1-9][0-9]{0,15})(?:\.[0-9]{1,8})?", item) is None
+                    or Decimal(item) < 0 or key not in POLICY_ZERO_ALLOWED and Decimal(item) == 0):
+                raise SnapshotError("Unsupported policy legacy decimal")
+        elif key in POLICY_COUNTS:
+            if type(item) is not int or not 1 <= item <= 1_000_000:
+                raise SnapshotError("Unsupported policy legacy count")
+        elif key in POLICY_CHOICES:
+            if type(item) is not str or item not in POLICY_CHOICES[key]:
+                raise SnapshotError("Unsupported policy legacy choice")
+        elif (type(item) is not list or len(item) > 100
+              or len({entry for entry in item if type(entry) is str}) != len(item)
+              or any(type(entry) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}", entry) is None
+                     for entry in item)):
+            raise SnapshotError("Unsupported policy legacy list")
+    if (value["leverage_min"] is not None and value["leverage_max"] is not None
+            and Decimal(value["leverage_min"]) > Decimal(value["leverage_max"])):
+        raise SnapshotError("Unsupported policy legacy leverage")
+    for selected, allowed in (("selected_symbols", "allowed_symbols"), ("selected_strategies", "allowed_strategies")):
+        if value[selected] and (value[allowed] is None or not set(value[selected]) <= set(value[allowed])):
+            raise SnapshotError("Unsupported policy legacy selection")
+    for limit in ("margin_allocation", "max_total_margin"):
+        if (value[limit] is not None and value["capital_usdt"] is not None
+                and Decimal(value[limit]) > Decimal(value["capital_usdt"])):
+            raise SnapshotError("Unsupported policy legacy margin")
+    if value["liquidation_buffer_fraction"] is not None and Decimal(value["liquidation_buffer_fraction"]) >= 1:
+        raise SnapshotError("Unsupported policy legacy buffer")
+
+
+def policy_row(db: sqlite3.Connection, table: str) -> tuple[int, int, str, str]:
+    expected = [(0, "id", "INTEGER", 0, None, 1, 0), (1, "revision", "INTEGER", 1, None, 0, 0),
+                (2, "payload", "TEXT", 1, None, 0, 0), (3, "desired_state", "TEXT", 1, None, 0, 0)]
+    sql = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    if (sql is None or " ".join(sql[0].split()) != f"CREATE TABLE {table} {POLICY_TABLE_LAYOUT}"
+            or db.execute(f'PRAGMA table_xinfo("{table}")').fetchall() != expected
+            or db.execute(f'PRAGMA foreign_key_list("{table}")').fetchone() is not None
+            or db.execute(f'PRAGMA index_list("{table}")').fetchone() is not None):
+        raise SnapshotError("Unsupported policy table layout")
+    rows = db.execute(f'SELECT * FROM "{table}"').fetchmany(2)
+    if (len(rows) != 1 or type(rows[0][0]) is not int or rows[0][0] != 1
+            or type(rows[0][1]) is not int or not 0 <= rows[0][1] <= 2**53 - 1
+            or type(rows[0][2]) is not str or rows[0][3] != "STOPPED"):
+        raise SnapshotError("Unsupported policy stopped singleton")
+    return cast(tuple[int, int, str, str], tuple(rows[0]))
+
+
+def check_policy_v2(db: sqlite3.Connection) -> None:
+    if db.execute("PRAGMA user_version").fetchone()[0] != 2:
+        raise SnapshotError("Unsupported policy version")
+    objects = db.execute("SELECT type,name,sql FROM sqlite_master").fetchall()
+    tables = {name for kind, name, _sql in objects if kind == "table"}
+    historical = {"runtime_policy", "runtime_policy_v1_archive"}
+    if tables not in ({"runtime_policy_v2"}, {"runtime_policy_v2"} | historical):
+        raise SnapshotError("Unsupported policy table set")
+    fences = {f"{table}_immutable_{action.lower()}":
+              f"CREATE TRIGGER {table}_immutable_{action.lower()} BEFORE {action} ON {table} "
+              "BEGIN SELECT RAISE(ABORT,'policy immutable'); END"
+              for table in historical for action in ("INSERT", "UPDATE", "DELETE")} if tables & historical else {}
+    if (any(kind not in {"table", "trigger"} for kind, _name, _sql in objects)
+            or {name: sql for kind, name, sql in objects if kind == "trigger"} != fences):
+        raise SnapshotError("Unsupported policy immutable objects")
+    row = policy_row(db, "runtime_policy_v2")
+    value = json_payload(row[2])
+    if (type(value) is not dict or set(value) != {"legacy_v1", "scope", "strategy", "risk_v2"}
+            or any(value[key] is not None for key in ("scope", "strategy", "risk_v2"))):
+        raise SnapshotError("Unsupported policy V2 fields")
+    check_policy_legacy(value["legacy_v1"])
+    if tables & historical:
+        original = policy_row(db, "runtime_policy")
+        archive = policy_row(db, "runtime_policy_v1_archive")
+        if original != archive or row[1] <= original[1]:
+            raise SnapshotError("Unsupported policy archive integrity")
+        check_policy_legacy(json_payload(original[2]))
 
 
 def identifier(value: object) -> None:

@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fixtures.runtime_policy_v1 import load_v1
 from test_bybit_native_linux import isolated_native_runtime, module  # noqa: F401
 from test_native_restart_codec import closed_fixture, fixture
 from test_risk import NOW, inputs
@@ -67,21 +68,25 @@ def actual_worker(directory: Path, previous: Any = None) -> Any:
     directory.mkdir(parents=True, exist_ok=True)
     lock_directory = directory.parent / "leases"
     lock_directory.mkdir(mode=0o700, exist_ok=True)
-    book = RuntimePolicyBook(directory / "runtime-policy.sqlite3")
+    policy_path = directory / "runtime-policy.sqlite3"
     core = synthetic_session(SCOPE, NOW)
     # Grant only the synthetic fixture identity the permissions needed to build
     # an unconnected adapter. This does not authenticate a real account.
     core.permit_fake_monitoring()
     if previous is None:
+        historical = load_v1()(policy_path)
         data = inputs()
-        draft = book.read()["policy"]
+        draft = historical.read()["policy"]
         for key, value in asdict(data["policy"]).items():
             if key in draft:
                 draft[key] = str(value) if isinstance(value, Decimal) else value
         draft.update(capital_usdt="1000", mode="FULL_AUTO", environment="DEMO",
             allowed_symbols=["BTCUSDT"], selected_symbols=["BTCUSDT"],
             allowed_strategies=["strategy-1"], selected_strategies=["strategy-1"])
-        book.save(0, draft)
+        historical.save(0, draft)
+        book = RuntimePolicyBook(policy_path)
+        assert book.read()["schema_version"] == 1
+        assert book.read()["revision"] == 1 and book.read()["policy"] == draft
         data["policy"] = book.risk_policy(data["policy"].scope)
         plan = assess_entry(**data)
         request = selection()
@@ -91,6 +96,7 @@ def actual_worker(directory: Path, previous: Any = None) -> Any:
         registry = TrustedPlanRegistry((RegisteredPlan("plan-1", request.candidates[0].strategy,
             plan, protection),))
     else:
+        book = RuntimePolicyBook(policy_path)
         plan, request, registry = previous.plan, previous.request, previous.registry
     worker = ExecutionWorker(directory=directory, scope=SCOPE, session=core.session,
         binding=core.binding, symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=book,
