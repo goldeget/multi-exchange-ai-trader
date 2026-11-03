@@ -27,6 +27,10 @@ from .runtime import QUALIFICATION_BLOCKERS, RuntimeBlocked
 from .runtime_policy import RuntimePolicyBook
 from .worker import LEGACY_JOURNAL_BLOCKER, ExecutionWorker, TrustedPlanRegistry
 
+# Configured validation stays bound to the genuine class, independently of the
+# passive constructor seam used by callers and offline integrations.
+_load_shared_policy_target_v2 = RuntimePolicyBook._from_shared_target_v2
+
 
 def _no_entry_risk(_plan: EntryDecision, _now: datetime,
                    _reservations: ReservationTotals) -> EntryDecision:
@@ -75,6 +79,11 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
 
 
 async def _run(args: argparse.Namespace) -> None:
+    # Validate a present shared target before any credential/account work. A
+    # missing target keeps the old passive constructor at its original point.
+    explicit_policy_path = getattr(args, "policy_db", None)
+    shared_policy = _load_shared_policy_target_v2(
+        Path(explicit_policy_path) if explicit_policy_path is not None else None)
     # Resolve and freeze provenance before credentials. This private immutable
     # context stays alive for the worker and every refresh; files never hot-switch it.
     expectations = resolve_worker_expectations(uid=args.uid, parent_uid=args.parent_uid,
@@ -91,7 +100,8 @@ async def _run(args: argparse.Namespace) -> None:
             lock_directory=Path(args.lock_directory) if args.lock_directory is not None else None,
             scope=ProtectionScope(expectations._uid, "DEMO"), session=session, binding=binding,
             symbols=tuple(args.symbol), trader_id="MONITOR-001",
-            policy_book=RuntimePolicyBook(Path(args.policy_db)), registry=TrustedPlanRegistry(()),
+            policy_book=shared_policy if shared_policy is not None else RuntimePolicyBook(Path(args.policy_db)),
+            registry=TrustedPlanRegistry(()),
             entry_risk=_no_entry_risk, clock=lambda: datetime.now(UTC),
             max_age=timedelta(seconds=30))
 

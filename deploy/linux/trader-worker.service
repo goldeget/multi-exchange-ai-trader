@@ -14,6 +14,9 @@ WorkingDirectory=/opt/trader/app
 # Explicit values required: BYBIT_DEMO_API_KEY, BYBIT_DEMO_API_SECRET,
 # BYBIT_DEMO_UID, BYBIT_DEMO_PARENT_UID, BYBIT_DEMO_IS_MASTER, TRADER_MONITOR_SYMBOL.
 EnvironmentFile=/etc/trader/monitor-worker.env
+# Optional fixed /etc/trader/policy-target.json is shared with the separate API.
+# A present target must match --policy-db below; disagreement rejects before auth.
+# This inactive template neither creates the config nor enables entry/admission.
 # No shell interpolation, server port, strategy plugin, or automatic order activation.
 # Co-locate execution.sqlite3/runtime-state.sqlite3 with policy and app ledgers for offline recovery.
 ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=false BYBIT_TESTNET=false BYBIT_ENV_FILE=off AI_ENV_FILE=off ANTHROPIC_ENV_FILE=off /opt/trader/app/.venv/bin/python -m multi_exchange_trader.execution.worker_cli --run-monitor --connect-monitoring --uid ${BYBIT_DEMO_UID} --parent-uid ${BYBIT_DEMO_PARENT_UID} --is-master ${BYBIT_DEMO_IS_MASTER} --symbol ${TRADER_MONITOR_SYMBOL} --directory /var/lib/trader/data --policy-db /var/lib/trader/data/runtime-policy.sqlite3 --lock-directory /var/lib/trader/locks

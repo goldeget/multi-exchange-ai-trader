@@ -196,6 +196,26 @@ POSIX 출력 디렉터리는 0700, 파일은 0600으로 만든다. 대상은 **�
 
 롤백도 서비스를 정지하고 모든 writer를 확인한 뒤 이전 코드 SHA·설정·검증된 **하나의 전체 세대**를 새 디렉터리에 복원해 전환한다. `RUNTIME_POLICY_DB_PATH`를 포함한 위 8개 경로를 함께 바꾸고, worker를 별도로 구성했다면 아래 세 worker 파일 경로도 같은 롤백 디렉터리로 바꾼다. 이미 생성된 현재 장부 위로 덮어쓰거나 서로 다른 DB 세대를 합치지 않는다. HTTP 응답, SSH 재접속, systemd active만으로 복원·계정·거래·LLM 연결을 완료 판정하지 않는다.
 
+## 별도 API·감시 worker의 정책 대상 계약
+
+두 프로세스가 같은 정책 저장소를 쓰도록 하는 선택적 Linux 설정 계약을 추가했다. 고정 위치는 `/etc/trader/policy-target.json`이며, 코드·서비스 템플릿·테스트는 이 실제 파일을 설치하거나 만들지 않는다. 현재 서버나 실제 두 프로세스의 신원 대조를 완료했다는 뜻이 아니다. 파일은 UTF-8 JSON 4096바이트 이내이며 필드는 정확히 다음 두 개다. 아래 경로는 기존 비활성 템플릿의 예시다.
+
+```json
+{"schema_version":1,"policy_db":"/var/lib/trader/data/runtime-policy.sqlite3"}
+```
+
+설정 파일과 그 부모는 root가 소유하고 group/other 쓰기가 없어야 한다. 서비스 사용자가 읽을 수 있는 root 소유 0640 파일과 적절한 읽기 그룹을 사용할 수 있다. DB는 이미 존재하는 절대 경로의 일반 단일 링크 파일이어야 하며, 즉시 부모와 DB 권한은 private여야 한다. DB의 부모 경로에도 group/other 쓰기, symlink·junction·`..`를 허용하지 않는다. 파일시스템은 지정 호스트의 로컬 저장소여야 한다. 누락된 DB를 빈 DB로 만들지 않으며 기존 schema1은 명시적 마이그레이션 전까지 기존 차단을 유지한다.
+
+공유 파일이 없거나 Linux가 아니면 기존 비활성 경로를 유지한다. API는 실제 명시된 `RUNTIME_POLICY_DB_PATH`만 공유 대상과 대조하고, 명시하지 않았다면 공유 대상을 사용한다. 공유 파일도 없을 때만 기존 PAPER sidecar 기본값을 쓴다. 감시 CLI는 기존 필수 `--policy-db`를 대조한다. 공유 설정이 있는데 유효하지 않거나 명시 경로가 다르면 다른 DB로 우회하지 않는다. CLI 대조는 자격 정보 처리 전에 수행하지만 기존 감시 인증·연결 절차를 대신하지 않는다.
+
+구성된 book은 원래 Path 객체, 설정 원문과 파일의 dev/ino, DB의 dev/ino에 묶인다. 읽기·저장·마이그레이션·private 예약마다 no-follow pin descriptor를 유지하며 이름과 descriptor의 파일 신원·권한, 설정 원문과 SQLite `database_list` 경로를 대조한다. 구성된 book의 raw `connect()`는 수명 검사를 우회하지 못하도록 거절한다. 별도 private 예약은 동일 연결의 `BEGIN IMMEDIATE`, timeout/busy 0, 기존 정책 투영을 사용하고 행을 쓰거나 커밋하지 않고 rollback한다. 기존 설정 writer의 timeout 10과 CAS·원본 archive fence는 유지한다. 정리·신원 대조가 불확실하면 새 private 예약은 차단하고, rollback·close·descriptor close를 각각 시도한다. 닫힘이 불확실한 자원은 그 book에 한 묶음만 보존하며 자동 재시도하지 않는다.
+
+이는 참여하는 로컬 writer와 정지된 복원 절차의 계약이다. Python SQLite는 실제 OS DB descriptor를 노출하지 않으므로 `database_list` 문자열만으로 같은 파일을 증명하지 않는다. 임의 root/UID 파일 교체·ABA, 악의적인 부모 변경이나 다른 호스트까지 원자적으로 막는 보장은 없다. G06에서 실제 두 서비스·프로세스·설정·열린 book의 파일 신원과 로컬 파일시스템·권한을 별도로 확인해야 한다. 임시 POSIX 메타데이터 fixture나 Windows 결과는 그 증거가 아니다.
+
+대상 변경·복원은 모든 writer를 정지하고 전체 세대와 명시 경로를 함께 전환한 뒤 새 book으로 시작한다. 설정이나 DB를 실행 중 hot-rebind하지 않는다. 이 컴포넌트에는 실제 진입 caller가 없으며 설정은 계속 STOPPED 초안이다. 주문 직전 시각·native 전달·실제 source/model·보호 주문·DEMO·PC 종료 후 서버 운용 자격은 별도 미완료 항목이다. 두 service 파일은 계속 설치·시작하지 않은 템플릿이다.
+
+초기 loader가 book을 반환하기 전에 close에 실패해도 원래 예외에 실제 정리 owner를 보존한다. API는 그 원본 book을 private 상태로 유지하며 설정 조회는 unavailable로 남긴다. 같은 앱 수명에서 자동 재시도·재바인딩하거나 GC가 닫아 줄 것에 의존하지 않는다. 남은 자원은 명시적 정지·점검 대상이다. 이 보관 참조는 정책·계정·주문 권한이 아니다.
+
 ## 자동 운용 저장소와 v2 복구 계약
 
 기존 여섯 장부만 있는 소스와 format_version=1 백업은 계속 지원한다. 자동 운용 관련 파일이 있으면 format_version=2 manifest의 `runtime_files`에 정확한 목록을 보존한다. 초기 설정 화면만 사용해 `runtime-policy.sqlite3`만 생긴 비활성 설치도 백업할 수 있다. 알려진 파일을 일부 생략하는 자동 수집은 하지 않는다.

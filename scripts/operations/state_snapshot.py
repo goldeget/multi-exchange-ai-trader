@@ -24,6 +24,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 
@@ -84,6 +85,23 @@ RUNTIME_KEYS: dict[str, dict[str, tuple[tuple[str, ...], ...]]] = {
     },
     "runtime-policy.sqlite3": {"runtime_policy": (("id",),)},
     "ai-dispatch.sqlite3": {"ai_dispatches": (("request_id",),)},
+}
+# J creates this optional pair lazily. Its exact storage shape is separate from
+# typed Risk V2 replay, which must still precede any runtime activation/recovery.
+RISK_V2_TABLES = {
+    "reservation_meta_v2": (
+        "account TEXT NOT NULL, environment TEXT NOT NULL, schema_version INTEGER NOT NULL, "
+        "capacity_revision INTEGER NOT NULL, owner_epoch TEXT NOT NULL, "
+        "PRIMARY KEY(account, environment)"
+    ),
+    "entry_reservations_v2": (
+        "account TEXT NOT NULL, environment TEXT NOT NULL, command_key TEXT NOT NULL, "
+        "version INTEGER NOT NULL, instrument_venue TEXT NOT NULL, "
+        "instrument_product TEXT NOT NULL, instrument_symbol TEXT NOT NULL, "
+        "envelope_sha256 TEXT NOT NULL, base_quantity TEXT NOT NULL, "
+        "risk_amount TEXT NOT NULL, margin_amount TEXT NOT NULL, "
+        "PRIMARY KEY(account, environment, command_key)"
+    ),
 }
 HISTORY_SCHEMAS = {
     "history.sqlite3": {
@@ -324,7 +342,8 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                 if name == "runtime-policy.sqlite3" and db.execute("PRAGMA user_version").fetchone()[0] == 2:
                     check_policy_v2(db)
                     continue
-                if tables != set(schema):
+                optional = check_risk_v2_schema(db) if name == "execution.sqlite3" else set()
+                if tables != set(schema) | optional:
                     raise SnapshotError("Unsupported SQLite schema")
                 for table, columns in schema.items():
                     actual = [row[1] for row in db.execute(f'PRAGMA table_xinfo("{table}")')]
@@ -346,7 +365,7 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                 if name in RUNTIME_SCHEMAS:
                     check_runtime(db, name)
                     if name in {"execution.sqlite3", "runtime-state.sqlite3"}:
-                        for table in schema:
+                        for table in set(schema) | optional:
                             runtime_scopes.update(tuple(row) for row in db.execute(
                                 f'SELECT DISTINCT account,environment FROM "{table}"'))
                     if name == "ai-dispatch.sqlite3":
@@ -720,6 +739,322 @@ def nonnegative(value: object) -> Decimal:
     return result
 
 
+def _v2_require(condition: object) -> None:
+    if not condition:
+        raise SnapshotError("Unsupported Risk V2 storage commitment")
+
+
+def _v2_object(value: Any, keys: set[str] | None = None) -> dict[str, Any]:
+    _v2_require(type(value) is dict and (keys is None or set(value) == keys))
+    return cast(dict[str, Any], value)
+
+
+def _v2_id(value: Any) -> None:
+    _v2_require(type(value) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}", value))
+
+
+def _v2_hash(value: Any) -> None:
+    _v2_require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value))
+
+
+def _v2_count(value: Any, *, version: bool = False) -> None:
+    _v2_require(type(value) is int and (value == 2 if version else 0 <= value <= 2**63 - 1))
+
+
+def _v2_account(account: Any, environment: Any) -> None:
+    _v2_require(type(account) is str and 1 <= len(account) <= 256 and account == account.strip()
+                and not any(ord(char) < 32 or ord(char) == 127 for char in account))
+    _v2_require(type(environment) is str and environment in {"DEMO", "LIVE"})
+
+
+def _v2_canonical(value: object) -> bytes:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                         allow_nan=False).encode("ascii")
+    _v2_require(len(encoded) <= 65536)
+    return encoded
+
+
+def _v2_decimal(value: Any, *, source: bool = False, positive: bool = False) -> None:
+    _v2_require(type(value) is str and len(value) <= 65536
+                and re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-][0-9]+)?", value))
+    mantissa, marker, token = value.partition("E")
+    _v2_require(not marker or len(token) <= 7)
+    exponent = int(token) if marker else 0
+    coefficient = mantissa.lstrip("-").replace(".", "")
+    digits = len(coefficient.lstrip("0")) or 1
+    if "." in mantissa:
+        exponent -= len(mantissa) - mantissa.index(".") - 1
+    _v2_require(digits <= 65536 and abs(exponent) <= 65536)
+    if source:
+        _v2_require(digits <= 256 and abs(exponent) <= 1000 and abs(exponent + digits - 1) <= 1000)
+    number = Decimal(value)
+    _v2_require(number.is_finite() and (number > 0 if positive else number >= 0))
+    parts = number.as_tuple()
+    exponent = cast(int, parts.exponent)
+    text = "".join(chr(48 + digit) for digit in parts.digits)
+    adjusted, point = exponent + len(parts.digits) - 1, len(parts.digits) + exponent
+    if exponent <= 0 and adjusted >= -6:
+        if point <= 0:
+            text = "0." + "0" * (-point) + text
+        elif point < len(parts.digits):
+            text = text[:point] + "." + text[point:]
+    else:
+        text = text[0] + ("." + text[1:] if len(text) > 1 else "")
+        text += "E" + ("+" if adjusted >= 0 else "-") + str(abs(adjusted))
+    _v2_require(("-" if parts.sign else "") + text == value)
+
+
+def _v2_time(value: Any) -> None:
+    _v2_require(type(value) is str and re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\+00:00", value))
+    _v2_require(datetime.fromisoformat(value).isoformat(timespec="microseconds") == value)
+
+
+def _v2_strategy(value: Any) -> None:
+    strategy = _v2_object(value, {"strategy_id", "revision"})
+    for item in strategy.values():
+        _v2_id(item)
+
+
+def _v2_key(value: Any) -> None:
+    key = _v2_object(value, {"venue", "product", "symbol"})
+    _v2_require(type(key["venue"]) is str and key["venue"] == "BYBIT"
+                and type(key["product"]) is str and key["product"] == "LINEAR"
+                and type(key["symbol"]) is str and re.fullmatch(r"[A-Z0-9]{2,48}", key["symbol"]))
+
+
+def _v2_scope(value: Any) -> None:
+    scope = _v2_object(value, {"product_scope", "instrument", "strategy"})
+    product = _v2_object(scope["product_scope"], {"account", "product"})
+    account = _v2_object(product["account"], {"account_id", "environment"})
+    _v2_account(account["account_id"], account["environment"])
+    _v2_require(type(product["product"]) is str and product["product"] == "LINEAR")
+    _v2_key(scope["instrument"])
+    _v2_strategy(scope["strategy"])
+
+
+def _v2_pin(value: Any) -> None:
+    pin = _v2_object(value, {"key", "native_instrument_id", "catalog_revision", "specification_revision",
+        "parser_revision", "source_rule_revision", "source_id", "source_environment", "response_time",
+        "received_at", "raw_row_sha256"})
+    _v2_key(pin["key"])
+    _v2_require(type(pin["native_instrument_id"]) is str
+                and pin["native_instrument_id"] == pin["key"]["symbol"] + "-LINEAR.BYBIT")
+    for name in ("catalog_revision", "parser_revision", "source_rule_revision", "source_id"):
+        _v2_id(pin[name])
+    for name in ("specification_revision", "raw_row_sha256"):
+        _v2_hash(pin[name])
+    _v2_require(type(pin["source_environment"]) is str
+                and pin["source_environment"] in {"PUBLIC_MAINNET", "PUBLIC_TESTNET", "FIXTURE"})
+    for name in ("response_time", "received_at"):
+        _v2_time(pin[name])
+
+
+def _v2_frame(raw: Any) -> dict[str, Any]:
+    _v2_require(type(raw) is str and 0 < len(raw) <= 65536)
+    encoded = raw.encode("utf-8", errors="strict")
+    _v2_require(len(encoded) <= 65536)
+    # Bound containers before json.loads allocates them; quotes/escapes are data.
+    depth, quoted, escaped = 0, False, False
+    for char in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            depth += 1
+            _v2_require(depth <= 32)
+        elif char in "]}":
+            depth -= 1
+
+    def integer(token: str) -> int:
+        _v2_require(len(token) - int(token.startswith("-")) <= 19)
+        return int(token)
+
+    def no_number(_token: str) -> Any:
+        raise SnapshotError("Unsupported Risk V2 storage number")
+
+    frame = _v2_object(json.loads(raw, object_pairs_hook=unique_object, parse_int=integer,
+                                  parse_float=no_number, parse_constant=no_number),
+                       {"schema", "wire_version", "record_type", "fields", "content_sha256"})
+    def tree(value: Any, level: int = 1) -> None:
+        _v2_require(level <= 32)
+        if type(value) is dict:
+            for name, child in value.items():
+                _v2_require(type(name) is str)
+                tree(child, level + 1)
+        elif type(value) is list:
+            for child in value:
+                tree(child, level + 1)
+        else:
+            _v2_require(value is None or type(value) in (str, bool, int))
+
+    tree(frame)
+    _v2_require(frame["schema"] == "RISK_V2_DURABLE_INTENT"
+                and frame["record_type"] == "DurableEntryIntentV2")
+    _v2_count(frame["wire_version"], version=True)
+    _v2_hash(frame["content_sha256"])
+    _v2_require(_v2_canonical(frame) == encoded)
+    unsigned = {name: value for name, value in frame.items() if name != "content_sha256"}
+    _v2_require(hashlib.sha256(_v2_canonical(unsigned)).hexdigest() == frame["content_sha256"])
+    return frame
+
+
+def check_risk_v2_schema(db: sqlite3.Connection) -> set[str]:
+    found = db.execute("SELECT name,type,sql FROM sqlite_master WHERE name IN (?,?)",
+                       tuple(RISK_V2_TABLES)).fetchall()
+    if not found:
+        return set()
+    _v2_require(len(found) == 2)
+    for table, kind, sql in found:
+        expected = f"CREATE TABLE {table} ({RISK_V2_TABLES[table]})"
+        _v2_require(kind == "table" and type(sql) is str
+                    and "".join(sql.split()) == "".join(expected.split()))
+        columns = RISK_V2_TABLES[table].split(", PRIMARY KEY")[0].split(", ")
+        key = ["account", "environment"] + (["command_key"] if table == "entry_reservations_v2" else [])
+        expected_columns = [(i, field.split()[0], field.split()[1], 1, None,
+                             key.index(field.split()[0]) + 1 if field.split()[0] in key else 0, 0)
+                            for i, field in enumerate(columns)]
+        _v2_require([tuple(row) for row in db.execute(f'PRAGMA table_xinfo("{table}")')] == expected_columns)
+        _v2_require(not db.execute(f'PRAGMA foreign_key_list("{table}")').fetchall())
+        indexes = db.execute(f'PRAGMA index_list("{table}")').fetchall()
+        _v2_require(len(indexes) == 1 and tuple(indexes[0][2:]) == (1, "pk", 0))
+        index = indexes[0][1]
+        _v2_require(index == f"sqlite_autoindex_{table}_1")
+        parts = db.execute('SELECT cid,name,desc,coll FROM pragma_index_xinfo(?) WHERE "key"=1',
+                           (index,)).fetchall()
+        _v2_require([tuple(row) for row in parts] == [(i, name, 0, "BINARY") for i, name in enumerate(key)])
+    return set(RISK_V2_TABLES)
+
+
+def _v2_command(command: sqlite3.Row, reservation: sqlite3.Row) -> None:
+    _v2_require(command["kind"] == "ENTRY" and type(command["terminal"]) is int
+                and command["terminal"] in (0, 1)
+                and all(command[name] is None for name in ("risk", "notional", "margin"))
+                and all(type(command[name]) is str for name in
+                        ("account", "environment", "command_key", "client_id", "payload", "payload_hash", "state"))
+                and command["state"] in {"PENDING", "SENDING", "ACKNOWLEDGED", "UNKNOWN", "REJECTED"})
+    frame = _v2_frame(command["payload"])
+    _v2_hash(command["payload_hash"])
+    _v2_require(hashlib.sha256(command["payload"].encode("utf-8")).hexdigest() == command["payload_hash"])
+    fields = _v2_object(frame["fields"], {"schema_version", "command_key", "position_id", "plan_id",
+        "strategy", "envelope", "assessment", "protection_policy", "source_record_sha256s"})
+    _v2_count(fields["schema_version"], version=True)
+    for name in ("command_key", "position_id", "plan_id"):
+        _v2_id(fields[name])
+    _v2_require(fields["command_key"] == command["command_key"])
+    _v2_strategy(fields["strategy"])
+    hashes = fields["source_record_sha256s"]
+    _v2_require(type(hashes) is list and 1 <= len(hashes) <= 1024)
+    for value in hashes:
+        _v2_hash(value)
+    _v2_require(all(left < right for left, right in pairwise(hashes)))
+    protection = _v2_object(fields["protection_policy"],
+                           {"revision", "generation", "stop_price", "take_profit_price", "trigger_source"})
+    for name in ("revision", "trigger_source"):
+        _v2_id(protection[name])
+    _v2_count(protection["generation"])
+    for name in ("stop_price", "take_profit_price"):
+        _v2_decimal(protection[name], source=True, positive=True)
+    envelope = _v2_object(fields["envelope"], {"schema_version", "scope", "instrument_pin",
+        "policy_revision", "policy_sha256", "side", "base_quantity", "limit_price", "order_type",
+        "time_in_force", "role", "reduce_only", "origin_quote_id", "valid_until"})
+    _v2_count(envelope["schema_version"], version=True)
+    _v2_scope(envelope["scope"])
+    scope = envelope["scope"]
+    account = scope["product_scope"]["account"]
+    _v2_require(account == {"account_id": command["account"], "environment": command["environment"]}
+                and scope["strategy"] == fields["strategy"])
+    _v2_pin(envelope["instrument_pin"])
+    _v2_require(envelope["instrument_pin"]["key"] == scope["instrument"])
+    for name in ("policy_revision", "origin_quote_id"):
+        _v2_id(envelope[name])
+    _v2_hash(envelope["policy_sha256"])
+    _v2_require(envelope["side"] in ("BUY", "SELL") and envelope["order_type"] == "LIMIT"
+                and envelope["time_in_force"] == "IOC" and envelope["role"] == "ENTRY"
+                and envelope["reduce_only"] is False)
+    _v2_decimal(envelope["base_quantity"], positive=True)
+    _v2_decimal(envelope["limit_price"], source=True, positive=True)
+    _v2_time(envelope["valid_until"])
+    # codec._validated_fields writes this exact contract-owned raw envelope tree.
+    commitment = hashlib.sha256(_v2_canonical({"schema": "RISK_V2_CANONICAL_V1",
+        "record_type": "FixedLimitEnvelopeV2", "fields": envelope})).hexdigest()
+    assessment = _v2_object(fields["assessment"])
+    preparation = _v2_object(assessment["preparation"])
+    sizing, binding, minimum, valuation, tier = (
+        _v2_object(preparation[name]) for name in
+        ("sizing", "binding", "minimum_amount", "valuation", "tier_bound"))
+    for part in (sizing, binding, minimum, valuation):
+        _v2_scope(part["scope"])
+        _v2_require(part["scope"] == scope)
+    _v2_key(tier["instrument"])
+    _v2_pin(binding["instrument_pin"])
+    _v2_require(tier["instrument"] == scope["instrument"]
+                and binding["instrument_pin"] == envelope["instrument_pin"]
+                and _v2_canonical(sizing["envelope"]) == _v2_canonical(envelope)
+                and binding["envelope_sha256"] == minimum["envelope_sha256"] == commitment
+                and sizing["policy_sha256"] == binding["policy_sha256"] == envelope["policy_sha256"]
+                and protection["revision"] == envelope["policy_revision"]
+                and protection["stop_price"] == sizing["stop_price"])
+    _v2_decimal(sizing["estimated_loss_quote"])
+    _v2_decimal(assessment["required_reservation_quote"])
+    instrument = {"venue": reservation["instrument_venue"], "product": reservation["instrument_product"],
+                  "symbol": reservation["instrument_symbol"]}
+    _v2_key(instrument)
+    _v2_hash(reservation["envelope_sha256"])
+    for name in ("base_quantity", "risk_amount", "margin_amount"):
+        _v2_decimal(reservation[name], positive=name == "base_quantity")
+    _v2_require(instrument == scope["instrument"] and reservation["envelope_sha256"] == commitment
+                and reservation["base_quantity"] == envelope["base_quantity"]
+                and reservation["risk_amount"] == sizing["estimated_loss_quote"]
+                and reservation["margin_amount"] == assessment["required_reservation_quote"])
+    client = "ec_" + hashlib.sha256(_v2_canonical(
+        [command["account"], command["environment"], command["command_key"]])).hexdigest()[:32]
+    _v2_require(command["client_id"] == client)
+    dto = {"schema_version": 2, "instrument": instrument, "envelope_sha256": commitment,
+           **{name: reservation[name] for name in ("base_quantity", "risk_amount", "margin_amount")}}
+    _v2_canonical(dto)
+    _v2_canonical({"schema": "RISK_V2_CANONICAL_V1", "record_type": "LocalEntryCommandIdentityV2",
+        "fields": {**account, "command_key": command["command_key"], "kind": "ENTRY",
+                   "intent_sha256": command["payload_hash"], "reservation": dto}})
+
+
+def check_risk_v2(db: sqlite3.Connection) -> None:
+    """Finite all-row storage checks, deliberately not the 24-context economic codec."""
+    db.row_factory = sqlite3.Row
+    present = bool(check_risk_v2_schema(db))
+    if present:
+        for meta in db.execute("SELECT * FROM reservation_meta_v2"):
+            _v2_account(meta["account"], meta["environment"])
+            _v2_count(meta["schema_version"], version=True)
+            _v2_count(meta["capacity_revision"])
+            _v2_id(meta["owner_epoch"])
+        for row in db.execute("SELECT * FROM entry_reservations_v2"):
+            _v2_require(all(type(row[name]) is str for name in tuple(row.keys()) if name != "version"))
+            _v2_account(row["account"], row["environment"])
+            _v2_id(row["command_key"])
+            _v2_count(row["version"], version=True)
+            key = tuple(row[name] for name in ("account", "environment", "command_key"))
+            command = db.execute("SELECT * FROM commands WHERE account COLLATE BINARY=? "
+                "AND environment COLLATE BINARY=? AND command_key COLLATE BINARY=?", key).fetchone()
+            meta = db.execute("SELECT 1 FROM reservation_meta_v2 WHERE account=? AND environment=?", key[:2]).fetchone()
+            _v2_require(command is not None and meta is not None
+                        and tuple(command[name] for name in ("account", "environment", "command_key")) == key)
+            _v2_command(command, row)
+    for row in db.execute("SELECT account,environment,command_key,payload FROM commands WHERE kind='ENTRY'"):
+        # The reserved discriminator cannot fall back to V1, regardless of version.
+        value = json_payload(row["payload"])
+        if type(value) is dict and value.get("schema") == "RISK_V2_DURABLE_INTENT":
+            _v2_require(present and db.execute(
+                "SELECT 1 FROM entry_reservations_v2 WHERE account=? AND environment=? AND command_key=?",
+                (row["account"], row["environment"], row["command_key"])).fetchone() is not None)
+
+
 def check_runtime_constraints(db: sqlite3.Connection, name: str) -> None:
     for table, required in RUNTIME_KEYS[name].items():
         indexes = list(db.execute(f'PRAGMA index_list("{table}")'))
@@ -763,6 +1098,8 @@ def check_runtime(db: sqlite3.Connection, name: str) -> None:
         if " ".join(sql.split()) != expected_sql:
             raise SnapshotError("Runtime audit immutability is unsupported")
     check_runtime_constraints(db, name)
+    if name == "execution.sqlite3":
+        check_risk_v2(db)
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise SnapshotError("Runtime references are incomplete")
     db.row_factory = sqlite3.Row
