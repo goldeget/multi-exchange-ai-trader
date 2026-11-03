@@ -1,0 +1,2906 @@
+"""Hand-calculated raw-source and nonmonotonic continuity fixtures."""
+
+import hashlib
+import json
+import sys
+from dataclasses import fields, replace
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal, localcontext
+from fractions import Fraction
+from typing import Any, cast
+
+import pytest
+from test_bybit_linear_model_v1 import selector_point  # type: ignore[import-not-found]
+
+from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
+from multi_exchange_trader.account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
+from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a1
+from multi_exchange_trader.execution import bybit_linear_model_v1 as c_model
+from multi_exchange_trader.execution import linear_risk_evidence_v2 as d_e
+from multi_exchange_trader.execution import linear_risk_v2 as d_r
+from multi_exchange_trader.execution import risk_domain_v2 as d_domain
+from multi_exchange_trader.execution import risk_v2_contracts as d_c
+from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
+    BybitDecimalFieldV1,
+    BybitFeeDocumentRefV1,
+    BybitFlatLeverageV1,
+    BybitHeldOrderV1,
+    BybitHeldPositionV1,
+    BybitLinearFeeInputsV1,
+    BybitModelFieldRefV1,
+    BybitModelSourceRefV1,
+    BybitNonVipFeeBasisV1,
+    BybitRiskLimitPageV1,
+    BybitSelectedEntryProfileV1,
+    BybitTradeBehaviourV1,
+    BybitUsdtWalletV1,
+    BybitUtaModeV1,
+    decode_bybit_risk_limit_page_v1,
+    normalize_bybit_tier_rows_v1,
+)
+from multi_exchange_trader.execution.protection import ProtectionScope
+from multi_exchange_trader.execution.risk_v2_contracts import (
+    InstrumentPinV2,
+    _canonical_sha256_v2,
+    envelope_sha256_v2,
+)
+from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected, decimal_fraction_v2
+from multi_exchange_trader.market_data.instrument_catalog import build_instrument_catalog
+from multi_exchange_trader.market_data.instrument_definition import (
+    INSTRUMENT_ENDPOINT,
+    LINEAR_SOURCE_RULE_REVISION,
+    PARSER_REVISION,
+    CatalogSource,
+    parse_bybit_instrument_response,
+)
+from multi_exchange_trader.trading_product import InstrumentKey
+
+ROW = (
+    '{"id":1,"symbol":"BTCUSDT","riskLimitValue":"100",'
+    '"initialMargin":0.5,"maintenanceMargin":0.1,"maxLeverage":"2",'
+    '"mmDeduction":"0","isLowestRisk":1}'
+)
+
+
+def test_point_digest_has_complete_supplied_recipe() -> None:
+    value = selector_point()
+    expected = {
+        "envelope": envelope_sha256_v2(value.envelope),
+        "stop_price": "950",
+        "selected_mark": a1.bybit_decimal_field_sha256_v1(value.selected_mark),
+        "selected_mark_reference": {
+            "observation_id": "mark1",
+            "source_id": "source1",
+            "source_environment": "FIXTURE",
+            "source_rule_revision": "synthetic-mark-v1",
+            "server_observed_at": "1970-01-01T00:00:00.001000+00:00",
+            "received_at": "1970-01-01T00:00:00.001000+00:00",
+            "payload_sha256": "c" * 64,
+        },
+        "fee": a1.bybit_fee_inputs_sha256_v1(value.fee),
+        "table": a1.bybit_tier_table_sha256_v1(value.table),
+        "profile": a1.bybit_selected_profile_sha256_v1(value.profile),
+        "planned_cost_allowance_quote": "20",
+        "capacity_quote": "225",
+        "liquidation_buffer_fraction": "0.01",
+        "admission_upper_quote": "1010",
+        "admission_covered_tier_ids": ["1"],
+        "continuous_leverage_lower": "1",
+        "continuous_leverage_upper": "5",
+        "leverage_step": "1",
+        "max_evidence_age_seconds": "10",
+        "max_quote_age_seconds": "10",
+        "valid_until": "1970-01-01T00:01:00.001000+00:00",
+        "model_rule_revision": "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    }
+    raw = json.dumps(
+        {
+            "schema": "RISK_V2_CANONICAL_V1",
+            "record_type": "BybitLinearPointInputV1",
+            "fields": expected,
+        },
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    assert a1.bybit_point_input_sha256_v1(value) == hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("stop_price", Decimal(0)),
+        ("planned_cost_allowance_quote", Decimal(-1)),
+        ("capacity_quote", Decimal(-1)),
+        ("liquidation_buffer_fraction", Decimal(1)),
+        ("admission_upper_quote", Decimal(0)),
+        ("continuous_leverage_lower", Decimal("0.9")),
+        ("continuous_leverage_upper", Decimal("0.9")),
+        ("leverage_step", Decimal(0)),
+        ("max_evidence_age_seconds", Decimal(-1)),
+        ("max_quote_age_seconds", Decimal(-1)),
+        ("admission_covered_tier_ids", ("1", "1")),
+        ("admission_covered_tier_ids", ["1"]),
+        ("model_rule_revision", "other"),
+        ("valid_until", datetime(1970, 1, 1)),
+    ],
+)
+def test_point_validates_fixed_scalar_types_and_bounds(field: str, bad: Any) -> None:
+    point = selector_point()
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        replace(point, **{field: bad})
+
+
+def test_point_digest_revalidates_forged_children_and_preserves_source_spelling() -> None:
+    point = selector_point()
+    forged = object.__new__(type(point))
+    for item in fields(type(point)):
+        object.__setattr__(forged, item.name, getattr(point, item.name))
+    object.__setattr__(forged, "capacity_quote", True)
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1.bybit_point_input_sha256_v1(forged)
+    mark = point.selected_mark
+    altered = replace(
+        mark, value=Decimal("1010.0"), reference=replace(mark.reference, wire_spelling="1010.0")
+    )
+    assert a1.bybit_point_input_sha256_v1(
+        replace(point, selected_mark=altered)
+    ) != a1.bybit_point_input_sha256_v1(point)
+    assert a1.bybit_point_input_sha256_v1(
+        replace(point, capacity_quote=Decimal("225.0"))
+    ) != a1.bybit_point_input_sha256_v1(point)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        replace(point, stop_price=Decimal("1" * 257))
+
+
+def test_point_codec_does_not_invent_absent_mark_authority_or_rewrite_refs() -> None:
+    point = selector_point()
+    altered = replace(
+        point,
+        selected_mark_reference=replace(point.selected_mark_reference, payload_sha256="9" * 64),
+    )
+    # This opaque owner-specific payload is bound, without guessing a raw/semantic
+    # preimage recipe. Both point hashes can be structurally valid; neither is a
+    # qualified source receipt, full generic preparation or applied UTA readback.
+    assert a1.bybit_point_input_sha256_v1(point) != a1.bybit_point_input_sha256_v1(altered)
+    assert tuple(item.name for item in fields(type(point))) == (
+        "envelope",
+        "stop_price",
+        "selected_mark",
+        "selected_mark_reference",
+        "fee",
+        "table",
+        "profile",
+        "planned_cost_allowance_quote",
+        "capacity_quote",
+        "liquidation_buffer_fraction",
+        "admission_upper_quote",
+        "admission_covered_tier_ids",
+        "continuous_leverage_lower",
+        "continuous_leverage_upper",
+        "leverage_step",
+        "max_evidence_age_seconds",
+        "max_quote_age_seconds",
+        "valid_until",
+        "model_rule_revision",
+    )
+
+
+_POLICY_RESOURCE_CASES: list[tuple[str, str, str, bool]] = []
+for _policy_field in (
+    "liquidation_buffer_fraction",
+    "max_evidence_age_seconds",
+    "max_quote_age_seconds",
+    "stop_price",
+):
+    _fractional = _policy_field in ("liquidation_buffer_fraction", "stop_price")
+    _POLICY_RESOURCE_CASES.extend(
+        [
+            (_policy_field, "coefficient256", ("0." if _fractional else "") + "1" * 256, True),
+            (_policy_field, "coefficient257", ("0." if _fractional else "") + "1" * 257, False),
+            (_policy_field, "negative-exponent1000", "1E-1000", True),
+            (_policy_field, "negative-exponent1001", "1E-1001", False),
+        ]
+    )
+    if not _fractional:
+        _POLICY_RESOURCE_CASES.extend(
+            [
+                (_policy_field, "positive-exponent1000", "1E+1000", True),
+                (_policy_field, "positive-exponent1001", "1E+1001", False),
+                (_policy_field, "adjusted-exponent1000", "11E+999", True),
+                (_policy_field, "adjusted-exponent1001", "11E+1000", False),
+            ]
+        )
+
+
+@pytest.mark.parametrize("gate", ["constructor", "digest", "selector"])
+@pytest.mark.parametrize(
+    "field,boundary,spelling,accepted",
+    _POLICY_RESOURCE_CASES,
+    ids=[f"{field}-{boundary}" for field, boundary, _, _ in _POLICY_RESOURCE_CASES],
+)
+def test_correction_policy_source_resource_boundaries(
+    gate: str, field: str, boundary: str, spelling: str, accepted: bool
+) -> None:
+    """The three public gates must agree on original policy source limits."""
+    point = selector_point(capacity="2000")
+    value = Decimal(spelling)
+    # Deliberately bypass construction for public digest/selector trust-boundary
+    # tests. Each gate must validate original Decimal spelling independently.
+    forged = object.__new__(type(point))
+    for item in fields(type(point)):
+        object.__setattr__(forged, item.name, getattr(point, item.name))
+    object.__setattr__(forged, field, value)
+    if gate == "constructor":
+        if accepted:
+            constructed = replace(point, **{field: value})
+            assert getattr(constructed, field).as_tuple() == value.as_tuple()
+        else:
+            with pytest.raises(RiskV2Rejected) as error:
+                replace(point, **{field: value})
+            assert error.value.code == "RISK_V2_RESOURCE_LIMIT"
+    elif gate == "digest":
+        if accepted:
+            assert len(a1.bybit_point_input_sha256_v1(forged)) == 64
+        else:
+            with pytest.raises(RiskV2Rejected) as error:
+                a1.bybit_point_input_sha256_v1(forged)
+            assert error.value.code == "RISK_V2_RESOURCE_LIMIT"
+    else:
+        result = c_model.select_smallest_bybit_leverage_v1(
+            forged, now=point.table.pages[0].received_at
+        )
+        if accepted:
+            assert isinstance(result, c_model.BybitLeverageSearchV1)
+            assert result.selected.leverage == Decimal(1)
+            assert result.selected.liquidation_buffer_result == "MODEL_NO_POSITIVE_TRIGGER"
+        else:
+            assert isinstance(result, c_model.BybitModelRejectedV1)
+            assert (result.phase, result.reason, result.public_code) == (
+                "SOURCE",
+                "RESOURCE_LIMIT",
+                "RISK_V2_RESOURCE_LIMIT",
+            )
+            assert result.candidate_leverage is None and result.evaluated_prefix == ()
+
+
+@pytest.mark.parametrize("cost,capacity", [("1" * 300, "2" * 300), ("1E+1001", "2E+1001")])
+def test_correction_planned_cost_capacity_keep_derived_roles(cost: str, capacity: str) -> None:
+    point = selector_point(cost=cost, capacity=capacity)
+    assert point.planned_cost_allowance_quote.as_tuple() == Decimal(cost).as_tuple()
+    assert point.capacity_quote.as_tuple() == Decimal(capacity).as_tuple()
+    assert len(a1.bybit_point_input_sha256_v1(point)) == 64
+    result = c_model.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert isinstance(result, c_model.BybitLeverageSearchV1)
+    assert result.selected.leverage == Decimal(1)
+    assert (
+        result.selected.reserve.planned_cost_allowance_quote.as_tuple() == Decimal(cost).as_tuple()
+    )
+
+
+def body(rows: str = ROW, cursor: str = "") -> bytes:
+    return (
+        '{"retCode":0,"result":{"category":"linear","list":['
+        + rows
+        + '],"nextPageCursor":"'
+        + cursor
+        + '"},"time":1}'
+    ).encode()
+
+
+def read(raw: bytes, ordinal: int = 1, cursor: str = "") -> BybitRiskLimitEnvelopeReadV1:
+    stamp = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=1)
+    params: tuple[tuple[str, str], ...] = (("category", "linear"), ("symbol", "BTCUSDT"))
+    if cursor:
+        params += (("cursor", cursor),)
+    return BybitRiskLimitEnvelopeReadV1(
+        InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"),
+        "GET",
+        "/v5/market/risk-limit",
+        params,
+        HttpsOrigin("https", "api.bybit.com", 443),
+        HttpsOrigin("https", "api.bybit.com", 443),
+        200,
+        stamp,
+        stamp,
+        0.0,
+        1.0,
+        stamp,
+        raw,
+        hashlib.sha256(raw).hexdigest(),
+        1,
+        0,
+        1,
+        ordinal,
+        f"obs{ordinal}",
+        "source1",
+        "gen1",
+        "FIXTURE",
+    )
+
+
+def page(rows: str = ROW) -> BybitRiskLimitPageV1:
+    return decode_bybit_risk_limit_page_v1(read(body(rows)), page_ordinal=1)
+
+
+def test_decode_number_spelling_and_raw_row_no_fabricated_lower() -> None:
+    value = page(
+        ROW.replace('"maintenanceMargin":0.1', '"maintenanceMargin":0.0050').replace(
+            '"initialMargin":0.5', '"initialMargin":5e-3'
+        )
+    )
+    row = value.rows[0]
+    assert row.maintenance_margin_rate.reference.wire_spelling == "0.0050"
+    assert row.initial_margin_rate.reference.wire_spelling == "5e-3"
+    assert decimal_fraction_v2(row.maintenance_margin_rate.value) == Fraction(1, 200)
+    assert decimal_fraction_v2(row.initial_margin_rate.value) == Fraction(1, 200)
+    assert row.maintenance_margin_rate.value.as_tuple() == Decimal("0.0050").as_tuple()
+    assert row.upper_inclusive_usdt.reference.json_pointer == "/result/list/0/riskLimitValue"
+    assert row.upper_inclusive_usdt.reference.wire_kind == "STRING"
+    assert (
+        value.source.raw_body_sha256
+        == hashlib.sha256(value.envelope.decoded_body_bytes).hexdigest()
+    )
+    assert tuple(f.name for f in fields(type(row))) == (
+        "risk_id",
+        "symbol",
+        "upper_inclusive_usdt",
+        "initial_margin_rate",
+        "maintenance_margin_rate",
+        "max_leverage",
+        "mm_deduction_usdt",
+        "is_lowest_risk",
+    )
+
+
+def test_normalize_continuity_nonmonotonic() -> None:
+    second = ROW.replace('"id":1', '"id":2').replace('"100"', '"200"')
+    second = second.replace('"maintenanceMargin":0.1', '"maintenanceMargin":0.3')
+    second = second.replace('"mmDeduction":"0"', '"mmDeduction":"20"').replace('Risk":1', 'Risk":0')
+    third = second.replace('"id":2', '"id":3').replace('"200"', '"300"')
+    third = third.replace('"maintenanceMargin":0.3', '"maintenanceMargin":0.25')
+    third = third.replace('"mmDeduction":"20"', '"mmDeduction":"10"')
+    source = page(third + "," + ROW + "," + second)
+    with localcontext() as context:
+        context.prec = 1
+        for signal in context.traps:
+            context.traps[signal] = True
+        rows = normalize_bybit_tier_rows_v1((source,))
+    assert [r.lower_exclusive_usdt for r in rows] == [Fraction(0), Fraction(100), Fraction(200)]
+    assert [r.mm_deduction_usdt.value for r in rows] == [Decimal(0), Decimal(20), Decimal(10)]
+    assert rows[2].upper_inclusive_usdt.reference.json_pointer == "/result/list/0/riskLimitValue"
+    assert len(source.rows) == len(rows) == 3
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('"id":1', '"id":true'),
+        ('"id":1', '"id":1.0'),
+        ('"id":1', '"id":1e0'),
+        ('"id":1', '"id":0'),
+        ('"id":1', '"id":9223372036854775808'),
+        ('"maintenanceMargin":0.1', '"maintenanceMargin":"0.1"'),
+        ('"riskLimitValue":"100"', '"riskLimitValue":100'),
+        ('"riskLimitValue":"100"', '"riskLimitValue":"0100"'),
+        ('"riskLimitValue":"100"', '"riskLimitValue":"+100"'),
+        ('"symbol":"BTCUSDT"', '"symbol":"ETHUSDT"'),
+        ('"mmDeduction":"0"', '"mmDeduction":""'),
+        ('"mmDeduction":"0",', ""),
+        ('"mmDeduction":"0"', '"extra":0,"mmDeduction":"0"'),
+        ('"isLowestRisk":1', '"isLowestRisk":true'),
+    ],
+)
+def test_wire_schema_rejections(old: str, new: str) -> None:
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        page(ROW.replace(old, new))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        ROW.replace('"mmDeduction":"0"', '"mmDeduction":"1"'),
+        ROW.replace('"maintenanceMargin":0.1', '"maintenanceMargin":1'),
+        ROW.replace('"maintenanceMargin":0.1', '"maintenanceMargin":0'),
+        ROW.replace('"initialMargin":0.5', '"initialMargin":0.05'),
+        ROW.replace('"isLowestRisk":1', '"isLowestRisk":0'),
+        ROW + "," + ROW,
+    ],
+)
+def test_invalid_ranges_and_continuity(rows: str) -> None:
+    with pytest.raises(RiskV2Rejected):
+        normalize_bybit_tier_rows_v1((page(rows),))
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('"retCode":0', '"retCode":false'),
+        ('"retCode":0', '"retCode":1'),
+        ('"time":1', '"time":1e0'),
+        ('"time":1', '"time":true'),
+        ('"time":1', '"time":0'),
+        ('"time":1', '"time":253402300800000'),
+        ('"category":"linear"', '"category":"spot"'),
+        ('"nextPageCursor":""', '"nextPageCursor":null'),
+        ('"nextPageCursor":""', '"nextPageCursor":"","extra":0'),
+        ('"retCode":0', '"retMsg":false,"retCode":0'),
+        ('"retCode":0', '"retExtInfo":[],"retCode":0'),
+        ('"retCode":0', '"unknown":0,"retCode":0'),
+    ],
+)
+def test_closed_root_result_and_integer_controls(old: str, new: str) -> None:
+    with pytest.raises(RiskV2Rejected):
+        decode_bybit_risk_limit_page_v1(
+            read(body().replace(old.encode(), new.encode())), page_ordinal=1
+        )
+
+
+def test_cursor_chain_and_forged_page_revalidation() -> None:
+    first = decode_bybit_risk_limit_page_v1(read(body(cursor="next")), page_ordinal=1)
+    secondrow = (
+        ROW.replace('"id":1', '"id":2').replace('"100"', '"200"').replace('Risk":1', 'Risk":0')
+    )
+    second = decode_bybit_risk_limit_page_v1(read(body(secondrow), 2, "next"), page_ordinal=2)
+    assert len(normalize_bybit_tier_rows_v1((first, second))) == 2
+    for pages in ((first,), (second, first), (first, first)):
+        with pytest.raises(RiskV2Rejected):
+            normalize_bybit_tier_rows_v1(pages)
+    with pytest.raises(RiskV2Rejected):
+        normalize_bybit_tier_rows_v1((replace(first, next_cursor="bad"), second))
+    object.__setattr__(second.rows[0].max_leverage, "value", Decimal(999))
+    with pytest.raises(RiskV2Rejected):
+        normalize_bybit_tier_rows_v1((first, second))
+
+
+def test_source_numeric_limits_before_decimal_conversion() -> None:
+    for spelling in ("1" * 256, "1e1000", "1e-1000"):
+        assert page(ROW.replace('"100"', '"' + spelling + '"')).rows
+    for spelling in ("1" * 257, "1e1001", "1e-1001", "1" * 1025, "1e" + "9" * 1021):
+        with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+            page(ROW.replace('"100"', '"' + spelling + '"'))
+
+
+def captured_pages(
+    count: int, total_rows: int, *, padded: bool = False
+) -> tuple[BybitRiskLimitPageV1, ...]:
+    pages = []
+    risk_id = 1
+    for ordinal in range(1, count + 1):
+        nrows = total_rows // count + int(ordinal <= total_rows % count)
+        rows = []
+        for _ in range(nrows):
+            rows.append(
+                ROW.replace('"id":1', f'"id":{risk_id}')
+                .replace('"100"', f'"{risk_id * 100}"')
+                .replace('Risk":1', f'Risk":{int(risk_id == 1)}')
+            )
+            risk_id += 1
+        raw = body(",".join(rows), f"c{ordinal}" if ordinal < count else "")
+        if padded:
+            raw += b" " * (65536 - len(raw))
+        pages.append(
+            decode_bybit_risk_limit_page_v1(
+                read(raw, ordinal, f"c{ordinal - 1}" if ordinal > 1 else ""), page_ordinal=ordinal
+            )
+        )
+    return tuple(pages)
+
+
+def test_row_and_page_limits_independent_of_canonical_payload() -> None:
+    pages = captured_pages(64, 1024)
+    rows = normalize_bybit_tier_rows_v1(pages)
+    assert len(rows) == 1024
+    assert rows[-1].lower_exclusive_usdt == Fraction(102300)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        normalize_bybit_tier_rows_v1(captured_pages(64, 1025))
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        normalize_bybit_tier_rows_v1(pages + (pages[-1],))
+
+
+def test_total_body_bytes_independent_boundary() -> None:
+    pages = captured_pages(16, 16, padded=True)
+    assert len(normalize_bybit_tier_rows_v1(pages)) == 16
+    extra = captured_pages(1, 1)[0]
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        normalize_bybit_tier_rows_v1(pages + (extra,))
+
+
+def private_source() -> BybitModelSourceRefV1:
+    return replace(
+        page().source,
+        path="/v5/account/wallet-balance",
+        query=(),
+        account_scope=ProtectionScope("synthetic-account", "DEMO"),
+    )
+
+
+def number_field(source: BybitModelSourceRefV1, spelling: str = "1") -> BybitDecimalFieldV1:
+    return BybitDecimalFieldV1(
+        Decimal(spelling), BybitModelFieldRefV1(source, "/result/value", "STRING", spelling)
+    )
+
+
+def test_source_scope_pointer_tuple_and_exact_types() -> None:
+    source = private_source()
+    changes: tuple[dict[str, Any], ...] = (
+        {"account_scope": None},
+        {"source_environment": "PUBLIC_MAINNET"},
+        {"path": "https://api.bybit.com/secret"},
+        {"query": []},
+        {"page_ordinal": True},
+        {"accepted_attempt": 0},
+    )
+    for change in changes:
+        with pytest.raises(RiskV2Rejected):
+            replace(source, **change)
+    for pointer in ("bad", "/bad~", "/bad~2"):
+        with pytest.raises(RiskV2Rejected):
+            BybitModelFieldRefV1(source, pointer, "STRING", "1")
+    assert BybitModelFieldRefV1(source, "/a~0b~1c", "STRING", "1")
+    for kind, spelling in (("INTEGER", "1.0"), ("BOOLEAN", "0"), ("NUMBER", "nan")):
+        with pytest.raises(RiskV2Rejected):
+            BybitModelFieldRefV1(source, "/x", kind, spelling)  # type: ignore[arg-type]
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        BybitModelFieldRefV1(source, "/" + "a" * 2048, "STRING", "1")
+
+    class Hostile:
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("foreign comparison executed")
+
+    object.__setattr__(source, "raw_body_sha256", Hostile())
+    with pytest.raises(RiskV2Rejected):
+        number_field(source)
+
+
+def test_source_times_are_utc_normalized_without_clock_read() -> None:
+    source = private_source()
+    offset = timezone(timedelta(hours=9))
+    value = replace(
+        source,
+        request_started_at=source.request_started_at.astimezone(offset),
+        received_at=source.received_at.astimezone(offset),
+    )
+    assert value.received_at.tzinfo is UTC
+    assert value.request_started_at.tzinfo is UTC
+
+
+def test_decimal_preserves_tuple_and_detects_equivalent_value_forgery() -> None:
+    source = private_source()
+    field = number_field(source, "0.0050")
+    with pytest.raises(RiskV2Rejected):
+        replace(field, value=Decimal("0.005"))
+    with pytest.raises(RiskV2Rejected):
+        replace(field, value=True)  # type: ignore[arg-type]
+
+    class SubDecimal(Decimal):
+        pass
+
+    with pytest.raises(RiskV2Rejected):
+        replace(field, value=SubDecimal("0.0050"))
+
+
+def fee_document() -> BybitFeeDocumentRefV1:
+    return BybitFeeDocumentRefV1(
+        "https://www.bybit.com/en/help-center/article/Fee",
+        "2026-11-03",
+        datetime(2026, 11, 3, tzinfo=UTC),
+        "a" * 64,
+        "Non-VIP derivatives: taker",
+        "0.0550",
+        "PERCENT",
+        "b" * 64,
+        "synthetic-fees-v1",
+    )
+
+
+def test_fee_document_exact_percent_and_original_limits() -> None:
+    document = fee_document()
+    with localcontext() as context:
+        context.prec = 1
+        for signal in context.traps:
+            context.traps[signal] = True
+        fee = BybitNonVipFeeBasisV1(Decimal("0.000550"), document)
+    assert fee.value.as_tuple() == Decimal("0.000550").as_tuple()
+    with pytest.raises(RiskV2Rejected):
+        replace(fee, value=Decimal("0.0550"))
+    for url in (
+        "https://bybit.com.evil/x",
+        "https://u:p@bybit.com/x",
+        "http://bybit.com/x",
+        "https://bybit.com:444/x",
+        "https://bybit.com/x#frag",
+    ):
+        with pytest.raises(RiskV2Rejected):
+            replace(document, document_url=url)
+    assert replace(document, exact_locator="가" * 600)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        replace(document, displayed_rate_spelling="1" * 257)
+
+
+def test_inherited_records_preserve_observed_settings_without_defaults() -> None:
+    source = private_source()
+    one, zero = number_field(source), number_field(source, "0")
+    behaviour = BybitTradeBehaviourV1(source, True, False, None)
+    assert behaviour.lpa_perp and behaviour.delta_enable is None
+    BybitUtaModeV1(source, 5, "ISOLATED_MARGIN", 1)
+    BybitFlatLeverageV1(source, "BTCUSDT", 0, one, "/v5/position/list")
+    BybitLinearFeeInputsV1(
+        zero, zero, BybitNonVipFeeBasisV1(Decimal(0), zero.reference), "USDT", behaviour, "fee-v1"
+    )
+    wallet = BybitUsdtWalletV1(
+        source,
+        number_field(source, "-1"),
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        zero,
+        number_field(source, "-2"),
+    )
+    assert wallet.wallet_balance.value == Decimal(-1)
+    for change in ({"lpa_perp": 0}, {"futures_mnt_fee_deduction": None}, {"delta_enable": 1}):
+        with pytest.raises(RiskV2Rejected):
+            replace(behaviour, **change)
+    with pytest.raises(RiskV2Rejected):
+        BybitFlatLeverageV1(source, "bad symbol", 0, one, "/v5/position/list")
+    with pytest.raises(RiskV2Rejected):
+        replace(wallet, locked=number_field(source, "-1"))
+
+
+def test_held_and_selected_profile_are_values_not_eligibility_claims() -> None:
+    source = private_source()
+    one, zero = number_field(source), number_field(source, "0")
+    pin = InstrumentPinV2(
+        InstrumentKey("BYBIT", "LINEAR", "BTCUSDT"),
+        "BTCUSDT-LINEAR.BYBIT",
+        "catalog-v1",
+        "a" * 64,
+        PARSER_REVISION,
+        LINEAR_SOURCE_RULE_REVISION,
+        "source1",
+        "FIXTURE",
+        source.received_at,
+        source.received_at,
+        "b" * 64,
+    )
+    position = BybitHeldPositionV1(
+        source,
+        pin,
+        1,
+        "buy",
+        one,
+        one,
+        one,
+        one,
+        zero,
+        zero,
+        zero,
+        zero,
+        None,
+        1,
+        0,
+        zero,
+        "Transitional",
+        False,
+        -1,
+        1,
+    )
+    assert position.side == "buy" and position.position_status == "Transitional"
+    order = BybitHeldOrderV1(
+        source,
+        "order1",
+        "",
+        pin,
+        1,
+        "SELL",
+        "Other",
+        zero,
+        one,
+        one,
+        "Unknown",
+        False,
+        True,
+        None,
+        1,
+    )
+    assert order.status == "Unknown" and order.order_type == "Other"
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "BTCUSDT",
+        0,
+        one,
+        ("order1",),
+        (),
+        (),
+        BybitModelFieldRefV1(source, "/amr", "INTEGER", "1"),
+        Decimal(1),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (source,),
+    )
+    assert profile.selected_open_order_ids == ("order1",)
+    assert profile.prospective_extra_margin_usdt == Decimal(1)
+    with pytest.raises(RiskV2Rejected):
+        replace(profile, source_records=())
+    with pytest.raises(RiskV2Rejected):
+        replace(position, seq=True)
+    with pytest.raises(RiskV2Rejected):
+        replace(order, order_link_id="bad id")
+
+
+def test_forged_fraction_lower_rejected_before_comparison() -> None:
+    normalized = normalize_bybit_tier_rows_v1((page(),))[0]
+    lower = Fraction(0)
+    object.__setattr__(lower, "_denominator", 2)
+    with pytest.raises(RiskV2Rejected):
+        replace(normalized, lower_exclusive_usdt=lower)
+
+
+@pytest.mark.parametrize(
+    "component", ["source_generation", "source_id", "source_environment", "observation_id"]
+)
+def test_chain_identity_cannot_be_substituted(component: str) -> None:
+    pages = captured_pages(2, 2)
+    changes: dict[str, Any] = {component: "other"}
+    if component == "source_environment":
+        changes[component] = "PUBLIC_MAINNET"
+    if component == "observation_id":
+        changes[component] = pages[0].source.observation_id
+    altered = decode_bybit_risk_limit_page_v1(replace(pages[1].envelope, **changes), page_ordinal=2)
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        normalize_bybit_tier_rows_v1((pages[0], altered))
+
+
+def test_cursor_match_uniqueness_and_utf8_byte_limit() -> None:
+    first = decode_bybit_risk_limit_page_v1(read(body(cursor="next")), page_ordinal=1)
+    wrong = decode_bybit_risk_limit_page_v1(read(body(), 2, "wrong"), page_ordinal=2)
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        normalize_bybit_tier_rows_v1((first, wrong))
+    middle = decode_bybit_risk_limit_page_v1(read(body(cursor="next"), 2, "next"), page_ordinal=2)
+    terminal = decode_bybit_risk_limit_page_v1(read(body(), 3, "next"), page_ordinal=3)
+    with pytest.raises(RiskV2Rejected):
+        normalize_bybit_tier_rows_v1((first, middle, terminal))
+    assert decode_bybit_risk_limit_page_v1(read(body(cursor="a" * 1024)), page_ordinal=1)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        decode_bybit_risk_limit_page_v1(read(body(cursor="가" * 342)), page_ordinal=1)
+
+
+def test_exact_deduction_recurrence_and_upper_ties() -> None:
+    second = ROW.replace('"id":1', '"id":2').replace('"100"', '"200"')
+    second = second.replace('"maintenanceMargin":0.1', '"maintenanceMargin":0.3')
+    second = second.replace('"mmDeduction":"0"', '"mmDeduction":"20.0000000001"')
+    second = second.replace('Risk":1', 'Risk":0')
+    with pytest.raises(RiskV2Rejected, match="RISK_TIER_UNVERIFIED"):
+        normalize_bybit_tier_rows_v1((page(ROW + "," + second),))
+    tie = ROW.replace('"id":1', '"id":2').replace('Risk":1', 'Risk":0')
+    with pytest.raises(RiskV2Rejected, match="RISK_TIER_UNVERIFIED"):
+        normalize_bybit_tier_rows_v1((page(ROW + "," + tie),))
+
+
+def test_fee_document_empty_fragment_and_port_are_not_absent() -> None:
+    for url in ("https://bybit.com/x#", "https://bybit.com:/x"):
+        with pytest.raises(RiskV2Rejected):
+            replace(fee_document(), document_url=url)
+
+
+# A1 expected payloads below are handwritten maps, encoded independently by the
+# standard test-only JSON encoder. No production projection/digest is an oracle.
+STAMP = "1970-01-01T00:00:00.001000+00:00"
+
+
+def expected_hash(record: str, payload: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {"schema": "RISK_V2_CANONICAL_V1", "record_type": record, "fields": payload},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def a1_pin(symbol: str = "BTCUSDT") -> InstrumentPinV2:
+    stamp = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=1)
+    return InstrumentPinV2(
+        InstrumentKey("BYBIT", "LINEAR", symbol),
+        symbol + "-LINEAR.BYBIT",
+        "catalog-v1",
+        "a" * 64,
+        PARSER_REVISION,
+        LINEAR_SOURCE_RULE_REVISION,
+        "instruments",
+        "FIXTURE",
+        stamp,
+        stamp,
+        "b" * 64,
+    )
+
+
+def a1_capture(rows: str = ROW) -> a1.BybitRiskLimitCaptureV1:
+    return a1.parse_bybit_risk_limit_table_v1(
+        (read(body(rows)),), instrument_pin=a1_pin(), observation_id="table1"
+    )
+
+
+def expected_pin() -> dict[str, object]:
+    return {
+        "key": {"venue": "BYBIT", "product": "LINEAR", "symbol": "BTCUSDT"},
+        "native_instrument_id": "BTCUSDT-LINEAR.BYBIT",
+        "catalog_revision": "catalog-v1",
+        "specification_revision": "a" * 64,
+        "parser_revision": PARSER_REVISION,
+        "source_rule_revision": LINEAR_SOURCE_RULE_REVISION,
+        "source_id": "instruments",
+        "source_environment": "FIXTURE",
+        "response_time": STAMP,
+        "received_at": STAMP,
+        "raw_row_sha256": "b" * 64,
+    }
+
+
+def expected_source(raw_hash: str, private: bool = False) -> dict[str, object]:
+    return {
+        "observation_id": "obs1",
+        "source_id": "source1",
+        "source_generation": "gen1",
+        "account_scope": {"account_id": "synthetic-account", "environment": "DEMO"}
+        if private
+        else None,
+        "source_environment": "FIXTURE",
+        "origin": {"scheme": "https", "host": "api.bybit.com", "port": 443},
+        "path": "/v5/account/wallet-balance" if private else "/v5/market/risk-limit",
+        "query": () if private else (("category", "linear"), ("symbol", "BTCUSDT")),
+        "request_started_at": STAMP,
+        "received_at": STAMP,
+        "envelope_time_ms": 1,
+        "raw_body_sha256": raw_hash,
+        "page_ordinal": 1,
+        "accepted_attempt": 1,
+    }
+
+
+def rational(n: str, d: str = "1") -> dict[str, object]:
+    return {"numerator": n, "denominator": d}
+
+
+def test_number_spelling_raw_diff_semantic_equal() -> None:
+    first = a1_capture(ROW.replace('"maintenanceMargin":0.1', '"maintenanceMargin":0.0050'))
+    second = a1_capture(ROW.replace('"maintenanceMargin":0.1', '"maintenanceMargin":5e-3'))
+    left, right = first.table.rows[0], second.table.rows[0]
+    assert left.maintenance_margin_rate.reference.wire_spelling == "0.0050"
+    assert right.maintenance_margin_rate.reference.wire_spelling == "5e-3"
+    assert decimal_fraction_v2(left.maintenance_margin_rate.value) == Fraction(1, 200)
+    assert decimal_fraction_v2(right.maintenance_margin_rate.value) == Fraction(1, 200)
+    assert first.table.raw_manifest_sha256 != second.table.raw_manifest_sha256
+    assert first.table.full_table_sha256 == second.table.full_table_sha256
+    assert a1.bybit_tier_table_sha256_v1(first.table) != a1.bybit_tier_table_sha256_v1(second.table)
+    assert first.table.reference.payload_sha256 != second.table.reference.payload_sha256
+
+
+def test_complete_table_survives_admission_subset() -> None:
+    first = ROW.replace('"100"', '"1050"').replace(":0.1", ":0.01")
+    second = ROW.replace('"id":1', '"id":2').replace('"100"', '"2000"')
+    second = second.replace(":0.1", ":0.02").replace('"0"', '"10.5"').replace('Risk":1', 'Risk":0')
+    capture = a1_capture(first + "," + second)
+    assert tuple(row.risk_id for row in capture.table.rows) == (1, 2)
+    assert capture.table.rows[0].upper_inclusive_usdt.value > Decimal(1000)
+    assert capture.table.rows[1].lower_exclusive_usdt == Fraction(1050)
+    assert capture.raw_pages == (read(body(first + "," + second)),)
+
+
+def test_a1_nonmonotonic_continuity() -> None:
+    second = ROW.replace('"id":1', '"id":2').replace('"100"', '"200"')
+    second = second.replace(":0.1", ":0.3").replace('"0"', '"20"').replace('Risk":1', 'Risk":0')
+    third = second.replace('"id":2', '"id":3').replace('"200"', '"300"')
+    third = third.replace(":0.3", ":0.25").replace('"20"', '"10"')
+    assert tuple(
+        r.mm_deduction_usdt.value for r in a1_capture(third + "," + ROW + "," + second).table.rows
+    ) == (Decimal(0), Decimal(20), Decimal(10))
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('"initialMargin":0.5', '"initialMargin":0.5,"initial\\u004dargin":0.5'),
+        ('"mmDeduction":"0",', ""),
+        ('"mmDeduction":"0"', '"mmDeduction":"1"'),
+        ('"initialMargin":0.5', '"initialMargin":"0.5"'),
+        ('"id":1', '"id":true'),
+    ],
+)
+def test_final_parse_replays_raw_schema(old: str, new: str) -> None:
+    with pytest.raises(RiskV2Rejected):
+        a1_capture(ROW.replace(old, new))
+
+
+def test_final_reference_has_exact_rule_and_actual_supplied_maxima() -> None:
+    p1 = read(body(cursor="next"))
+    row2 = ROW.replace('"id":1', '"id":2').replace('"100"', '"200"').replace('Risk":1', 'Risk":0')
+    raw2 = body(row2).replace(b'"time":1', b'"time":2')
+    p2 = replace(
+        read(body(row2), 2, "next"),
+        decoded_body_bytes=raw2,
+        decoded_body_sha256=hashlib.sha256(raw2).hexdigest(),
+        received_at=p1.received_at + timedelta(milliseconds=9),
+        response_time=p1.response_time + timedelta(milliseconds=1),
+    )
+    c = a1.parse_bybit_risk_limit_table_v1(
+        (p1, p2), instrument_pin=a1_pin(), observation_id="explicit-table"
+    )
+    ref = c.table.reference
+    assert (
+        ref.observation_id,
+        ref.source_id,
+        ref.source_environment,
+        ref.source_rule_revision,
+    ) == ("explicit-table", "source1", "FIXTURE", "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1")
+    assert ref.server_observed_at == datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=2)
+    assert ref.received_at == datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=10)
+    assert ref.server_observed_at != ref.received_at
+    assert ref.payload_sha256 == a1.bybit_tier_source_payload_sha256_v1(c.table)
+    assert c.table.pages[0].received_at == p1.received_at
+
+
+def test_a1_exact_source_field_decimal_row_and_pin_recipes() -> None:
+    source = page().source
+    source_hash = expected_hash("BybitModelSourceRefV1", expected_source(source.raw_body_sha256))
+    assert a1.bybit_source_ref_sha256_v1(source) == source_hash
+    assert a1.bybit_instrument_pin_sha256_v1(a1_pin()) == expected_hash(
+        "BybitInstrumentPinV1", expected_pin()
+    )
+    field = page().rows[0].maintenance_margin_rate
+    field_hash = expected_hash(
+        "BybitModelFieldRefV1",
+        {
+            "source": source_hash,
+            "json_pointer": "/result/list/0/maintenanceMargin",
+            "wire_kind": "NUMBER",
+            "wire_spelling": "0.1",
+        },
+    )
+    assert a1.bybit_field_ref_sha256_v1(field.reference) == field_hash
+    assert a1.bybit_decimal_field_sha256_v1(field) == expected_hash(
+        "BybitDecimalFieldV1", {"value": "0.1", "reference": field_hash}
+    )
+    row_fields: dict[str, object] = {
+        "risk_id": 1,
+        "lower_exclusive_usdt": rational("0"),
+        "is_lowest_risk": 1,
+    }
+    for name, pointer, kind, spelling in (
+        ("upper_inclusive_usdt", "riskLimitValue", "STRING", "100"),
+        ("initial_margin_rate", "initialMargin", "NUMBER", "0.5"),
+        ("maintenance_margin_rate", "maintenanceMargin", "NUMBER", "0.1"),
+        ("max_leverage", "maxLeverage", "STRING", "2"),
+        ("mm_deduction_usdt", "mmDeduction", "STRING", "0"),
+    ):
+        h = expected_hash(
+            "BybitModelFieldRefV1",
+            {
+                "source": source_hash,
+                "json_pointer": "/result/list/0/" + pointer,
+                "wire_kind": kind,
+                "wire_spelling": spelling,
+            },
+        )
+        row_fields[name] = expected_hash("BybitDecimalFieldV1", {"value": spelling, "reference": h})
+    assert a1.bybit_tier_row_sha256_v1(normalize_bybit_tier_rows_v1((page(),))[0]) == expected_hash(
+        "BybitLinearTierRowV1", row_fields
+    )
+
+
+def test_a1_inherited_recipes_preserve_every_field_and_null() -> None:
+    source = private_source()
+    sh = expected_hash("BybitModelSourceRefV1", expected_source(source.raw_body_sha256, True))
+    one = number_field(source)
+    fh = expected_hash(
+        "BybitModelFieldRefV1",
+        {
+            "source": sh,
+            "json_pointer": "/result/value",
+            "wire_kind": "STRING",
+            "wire_spelling": "1",
+        },
+    )
+    dh = expected_hash("BybitDecimalFieldV1", {"value": "1", "reference": fh})
+    bh = expected_hash(
+        "BybitTradeBehaviourV1",
+        {"source": sh, "lpa_perp": True, "futures_mnt_fee_deduction": False, "delta_enable": None},
+    )
+    behaviour = BybitTradeBehaviourV1(source, True, False, None)
+    assert a1.bybit_trade_behaviour_sha256_v1(behaviour) == bh
+    assert a1.bybit_source_ref_sha256_v1(source) == sh
+    assert a1.bybit_uta_mode_sha256_v1(
+        BybitUtaModeV1(source, 5, "ISOLATED_MARGIN", 1)
+    ) == expected_hash(
+        "BybitUtaModeV1",
+        {
+            "source": sh,
+            "unified_margin_status": 5,
+            "margin_mode": "ISOLATED_MARGIN",
+            "updated_time_ms": 1,
+        },
+    )
+    assert a1.bybit_flat_leverage_sha256_v1(
+        BybitFlatLeverageV1(source, "BTCUSDT", 0, one, "/v5/position/list")
+    ) == expected_hash(
+        "BybitFlatLeverageV1",
+        {
+            "source": sh,
+            "symbol": "BTCUSDT",
+            "position_idx": 0,
+            "leverage": dh,
+            "read_path": "/v5/position/list",
+        },
+    )
+    nh = expected_hash(
+        "BybitNonVipFeeBasisV1", {"value": "1", "reference_kind": "JSON_FIELD", "reference": fh}
+    )
+    assert a1.bybit_nonvip_fee_sha256_v1(BybitNonVipFeeBasisV1(Decimal(1), one.reference)) == nh
+    assert a1.bybit_fee_inputs_sha256_v1(
+        BybitLinearFeeInputsV1(
+            one, one, BybitNonVipFeeBasisV1(Decimal(1), one.reference), "USDT", behaviour, "fee-v1"
+        )
+    ) == expected_hash(
+        "BybitLinearFeeInputsV1",
+        {
+            "account_taker_rate": dh,
+            "account_maker_rate": dh,
+            "closing_order_reserve_nonvip_rate": nh,
+            "fee_currency": "USDT",
+            "behaviour": bh,
+            "nonvip_applicability_revision": "fee-v1",
+        },
+    )
+    assert a1.bybit_wallet_sha256_v1(
+        BybitUsdtWalletV1(source, one, one, one, one, one, one, one, one, one, one)
+    ) == expected_hash(
+        "BybitUsdtWalletV1",
+        {
+            "source": sh,
+            "wallet_balance": dh,
+            "equity": dh,
+            "total_position_im": dh,
+            "total_order_im": dh,
+            "locked": dh,
+            "bonus": dh,
+            "borrow_amount": dh,
+            "spot_borrow": dh,
+            "accrued_interest": dh,
+            "unrealised_pnl": dh,
+        },
+    )
+    pin_hash = expected_hash("BybitInstrumentPinV1", expected_pin())
+    position = BybitHeldPositionV1(
+        source,
+        a1_pin(),
+        1,
+        "buy",
+        one,
+        one,
+        one,
+        one,
+        one,
+        one,
+        one,
+        one,
+        None,
+        1,
+        0,
+        one,
+        "Transitional",
+        False,
+        -1,
+        1,
+    )
+    assert a1.bybit_held_position_sha256_v1(position) == expected_hash(
+        "BybitHeldPositionV1",
+        {
+            "source": sh,
+            "instrument_pin": pin_hash,
+            "position_idx": 1,
+            "side": "buy",
+            "size": dh,
+            "avg_price": dh,
+            "mark_price": dh,
+            "leverage": dh,
+            "position_im": dh,
+            "position_im_by_mp": dh,
+            "position_mm": dh,
+            "position_mm_by_mp": dh,
+            "liq_price": None,
+            "auto_add_margin": 1,
+            "risk_id": 0,
+            "risk_limit_value": dh,
+            "position_status": "Transitional",
+            "is_reduce_only": False,
+            "seq": -1,
+            "updated_time_ms": 1,
+        },
+    )
+    order = BybitHeldOrderV1(
+        source,
+        "order1",
+        "",
+        a1_pin(),
+        1,
+        "SELL",
+        "Other",
+        one,
+        one,
+        one,
+        "Unknown",
+        False,
+        True,
+        None,
+        1,
+    )
+    assert a1.bybit_held_order_sha256_v1(order) == expected_hash(
+        "BybitHeldOrderV1",
+        {
+            "source": sh,
+            "order_id": "order1",
+            "order_link_id": "",
+            "instrument_pin": pin_hash,
+            "position_idx": 1,
+            "side": "SELL",
+            "order_type": "Other",
+            "price": dh,
+            "quantity": dh,
+            "leaves_quantity": dh,
+            "status": "Unknown",
+            "reduce_only": False,
+            "close_on_trigger": True,
+            "trigger_price": None,
+            "updated_time_ms": 1,
+        },
+    )
+    amr = BybitModelFieldRefV1(source, "/amr", "INTEGER", "1")
+    ah = expected_hash(
+        "BybitModelFieldRefV1",
+        {"source": sh, "json_pointer": "/amr", "wire_kind": "INTEGER", "wire_spelling": "1"},
+    )
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "BTCUSDT",
+        0,
+        one,
+        ("order1",),
+        (),
+        (),
+        amr,
+        Decimal(1),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (source,),
+    )
+    assert a1.bybit_selected_profile_sha256_v1(profile) == expected_hash(
+        "BybitSelectedEntryProfileV1",
+        {
+            "revision": "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+            "symbol": "BTCUSDT",
+            "position_idx": 0,
+            "selected_position_quantity": dh,
+            "selected_open_order_ids": ("order1",),
+            "selected_conditional_order_ids": (),
+            "local_unresolved_entry_ids": (),
+            "auto_add_margin": ah,
+            "prospective_extra_margin_usdt": "1",
+            "extra_margin_basis": "NEW_SELECTED_FLAT_NO_ADD_V1",
+            "source_records": (sh,),
+        },
+    )
+    for ids in (("z", "a"), ("a", "a")):
+        with pytest.raises(RiskV2Rejected):
+            a1.bybit_selected_profile_sha256_v1(replace(profile, selected_open_order_ids=ids))
+    for sources in ((replace(source, observation_id="z"), source), (source, source)):
+        with pytest.raises(RiskV2Rejected):
+            a1.bybit_selected_profile_sha256_v1(replace(profile, source_records=sources))
+
+
+def test_a1_fee_document_and_nonvip_document_recipes() -> None:
+    document = fee_document()
+    h = expected_hash(
+        "BybitFeeDocumentRefV1",
+        {
+            "document_url": "https://www.bybit.com/en/help-center/article/Fee",
+            "document_updated_at_text": "2026-11-03",
+            "captured_at": "2026-11-03T00:00:00.000000+00:00",
+            "raw_document_sha256": "a" * 64,
+            "exact_locator": "Non-VIP derivatives: taker",
+            "displayed_rate_spelling": "0.0550",
+            "displayed_unit": "PERCENT",
+            "account_region_profile_sha256": "b" * 64,
+            "applicability_revision": "synthetic-fees-v1",
+        },
+    )
+    assert a1.bybit_fee_document_ref_sha256_v1(document) == h
+    assert a1.bybit_nonvip_fee_sha256_v1(
+        BybitNonVipFeeBasisV1(Decimal("0.000550"), document)
+    ) == expected_hash(
+        "BybitNonVipFeeBasisV1",
+        {"value": "0.000550", "reference_kind": "FEE_DOCUMENT", "reference": h},
+    )
+
+
+def test_a1_source_and_semantic_codec_goldens() -> None:
+    time = datetime(2000, 1, 1, tzinfo=UTC)
+    value = BybitModelSourceRefV1(
+        "p1",
+        "fixture",
+        "g1",
+        None,
+        "FIXTURE",
+        HttpsOrigin("https", "api.bybit.com", 443),
+        "/v5/market/risk-limit",
+        (("category", "linear"), ("symbol", "XAAUSDT")),
+        time,
+        time,
+        946684800000,
+        "0" * 64,
+        1,
+        1,
+    )
+    assert (
+        a1.bybit_source_ref_sha256_v1(value)
+        == "d5c899b3ef1e4dde4548a555a4180ee91f65cee584743d0e974bdc32c09c4b95"
+    )
+    raw = body(
+        ROW.replace("BTCUSDT", "XAAUSDT")
+        .replace('"100"', '"10"')
+        .replace(":0.5", ":0.01")
+        .replace(":0.1", ":0.005")
+    )
+    envelope = replace(
+        read(raw),
+        key=InstrumentKey("BYBIT", "LINEAR", "XAAUSDT"),
+        params=(("category", "linear"), ("symbol", "XAAUSDT")),
+    )
+    # Codec-only zero pin value: never assemble it into a claimed full graph.
+    pin = replace(a1_pin("XAAUSDT"), specification_revision="0" * 64)
+    rows = normalize_bybit_tier_rows_v1(
+        (decode_bybit_risk_limit_page_v1(envelope, page_ordinal=1),)
+    )
+    payload = a1._semantic_table_payload_v1(pin, rows)
+    assert (
+        _canonical_sha256_v2("BybitLinearTierTableSemanticV1", payload)
+        == "728be44d0457dd75d8b6c153631f4d615eb209ab765848e8640280e529b056c6"
+    )
+
+
+@pytest.mark.parametrize("name", ["raw_manifest_sha256", "full_table_sha256"])
+def test_a1_table_rejects_hash_substitution(name: str) -> None:
+    value = a1_capture().table
+    with pytest.raises(RiskV2Rejected):
+        changes: dict[str, Any] = {name: "a" * 64}
+        replace(value, **changes)
+
+
+def test_a1_capture_replays_bytes_and_all_associations() -> None:
+    capture = a1_capture()
+    other = a1_capture(ROW.replace('"100"', '"101"'))
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        replace(capture, raw_pages=other.raw_pages)
+    # The Table lacks a raw-manifest preimage: a coherent claim can be a value.
+    # Only Capture can reject this self-consistent but false raw-manifest claim.
+    value = object.__new__(a1.BybitLinearTierTableV1)
+    for f in fields(a1.BybitLinearTierTableV1):
+        object.__setattr__(value, f.name, getattr(capture.table, f.name))
+    object.__setattr__(value, "raw_manifest_sha256", "a" * 64)
+    with pytest.raises(RiskV2Rejected):
+        a1.bybit_risk_limit_capture_sha256_v1(a1.BybitRiskLimitCaptureV1(value, capture.raw_pages))
+    for field_name, changed in (
+        ("source_rule_revision", "instrument-v1"),
+        ("source_id", "other"),
+        ("payload_sha256", "a" * 64),
+    ):
+        ref_changes: dict[str, Any] = {field_name: changed}
+        ref = replace(capture.table.reference, **ref_changes)
+        with pytest.raises(RiskV2Rejected):
+            replace(capture.table, reference=ref)
+    with pytest.raises(RiskV2Rejected):
+        replace(capture.table, instrument_pin=a1_pin("ETHUSDT"))
+    row = capture.table.rows[0]
+    for change in ({"lower_exclusive_usdt": Fraction(1)}, {"is_lowest_risk": 0}, {"risk_id": 2}):
+        with pytest.raises(RiskV2Rejected):
+            replace(capture.table, rows=(replace(row, **change),))
+    with pytest.raises(RiskV2Rejected):
+        replace(capture.table, pages=(replace(capture.table.pages[0], source_generation="other"),))
+
+
+def test_a1_composed_canonical_limit_rejects_complete_large_capture() -> None:
+    pages = captured_pages(64, 1024)
+    assert len(normalize_bybit_tier_rows_v1(pages)) == 1024
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        a1.parse_bybit_risk_limit_table_v1(
+            tuple(p.envelope for p in pages), instrument_pin=a1_pin(), observation_id="large"
+        )
+
+
+def test_a1_digests_revalidate_forged_records_without_hooks() -> None:
+    class Hostile:
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("foreign equality hook")
+
+    source = private_source()
+    object.__setattr__(source, "source_id", Hostile())
+    with pytest.raises(RiskV2Rejected):
+        a1.bybit_source_ref_sha256_v1(source)
+    partial = object.__new__(a1.BybitLinearTierTableV1)
+    with pytest.raises(RiskV2Rejected):
+        a1.bybit_tier_table_sha256_v1(partial)
+    capture = a1_capture()
+    object.__setattr__(capture.table.rows[0].upper_inclusive_usdt.reference, "source", Hostile())
+    with pytest.raises(RiskV2Rejected):
+        a1.bybit_full_table_sha256_v1(capture.table)
+
+
+def test_a1_ambient_context_and_current_labels_do_not_issue_authority() -> None:
+    digit_limit = sys.get_int_max_str_digits()
+    with localcontext() as ctx:
+        ctx.prec = 1
+        ctx.rounding = "ROUND_DOWN"
+        ctx.capitals = 0
+        for signal in ctx.traps:
+            ctx.traps[signal] = True
+        before = ctx.copy()
+        value = a1_capture()
+        assert len(a1.bybit_risk_limit_capture_sha256_v1(value)) == 64
+        assert ctx == before or (ctx.prec, ctx.rounding, ctx.capitals, ctx.flags, ctx.traps) == (
+            before.prec,
+            before.rounding,
+            before.capitals,
+            before.flags,
+            before.traps,
+        )
+    assert sys.get_int_max_str_digits() == digit_limit
+    # Structurally valid fixture source labels remain plain closed values.
+    assert value.table.reference.source_environment == "FIXTURE"
+    assert not hasattr(value, "qualified")
+
+
+def test_a1_raw_manifest_source_payload_table_capture_literal_maps() -> None:
+    capture = a1_capture()
+    raw = body()
+    body_hash = hashlib.sha256(raw).hexdigest()
+    source_hash = expected_hash("BybitModelSourceRefV1", expected_source(body_hash))
+    raw_map: dict[str, object] = {
+        "pages": (
+            {
+                "key": {"venue": "BYBIT", "product": "LINEAR", "symbol": "BTCUSDT"},
+                "method": "GET",
+                "endpoint": "/v5/market/risk-limit",
+                "params": (("category", "linear"), ("symbol", "BTCUSDT")),
+                "sent_origin": {"scheme": "https", "host": "api.bybit.com", "port": 443},
+                "response_origin": {"scheme": "https", "host": "api.bybit.com", "port": 443},
+                "response_status": 200,
+                "request_started_at": STAMP,
+                "received_at": STAMP,
+                "started_mono_hex": "0x0.0p+0",
+                "received_mono_hex": "0x1.0000000000000p+0",
+                "response_time": STAMP,
+                "decoded_body_sha256": body_hash,
+                "decoded_body_length": len(raw),
+                "accepted_attempt": 1,
+                "physical_start": 0,
+                "physical_end": 1,
+                "logical_ordinal": 1,
+                "observation_id": "obs1",
+                "source_id": "source1",
+                "source_generation": "gen1",
+                "source_environment": "FIXTURE",
+                "page_ordinal": 1,
+                "cursor_in": "",
+                "cursor_out": "",
+            },
+        )
+    }
+    raw_hash = expected_hash("BybitRiskLimitRawManifestV1", raw_map)
+    semantic_map: dict[str, object] = {
+        "instrument": {
+            "key": {"venue": "BYBIT", "product": "LINEAR", "symbol": "BTCUSDT"},
+            "native_instrument_id": "BTCUSDT-LINEAR.BYBIT",
+            "specification_revision": "a" * 64,
+        },
+        "rate_encoding_revision": "BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",
+        "deduction_rule_revision": "EXACT_CONTINUOUS_MM_DEDUCTION_V1",
+        "rows": (
+            {
+                "tier_id": "1",
+                "lower_exclusive_usdt": rational("0"),
+                "upper_inclusive_usdt": rational("100"),
+                "initial_margin_rate": rational("1", "2"),
+                "maintenance_margin_rate": rational("1", "10"),
+                "max_leverage": rational("2"),
+                "mm_deduction_usdt": rational("0"),
+                "is_lowest_risk": 1,
+            },
+        ),
+    }
+    semantic_hash = expected_hash("BybitLinearTierTableSemanticV1", semantic_map)
+    source_payload_hash = expected_hash(
+        "BybitLinearTierSourcePayloadV1",
+        {
+            "instrument_pin": expected_pin(),
+            "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+            "raw_manifest_sha256": raw_hash,
+            "full_table_sha256": semantic_hash,
+        },
+    )
+    row_map: dict[str, object] = {
+        "risk_id": 1,
+        "lower_exclusive_usdt": rational("0"),
+        "is_lowest_risk": 1,
+    }
+    for name, pointer, kind, spelling in (
+        ("upper_inclusive_usdt", "riskLimitValue", "STRING", "100"),
+        ("initial_margin_rate", "initialMargin", "NUMBER", "0.5"),
+        ("maintenance_margin_rate", "maintenanceMargin", "NUMBER", "0.1"),
+        ("max_leverage", "maxLeverage", "STRING", "2"),
+        ("mm_deduction_usdt", "mmDeduction", "STRING", "0"),
+    ):
+        field_hash = expected_hash(
+            "BybitModelFieldRefV1",
+            {
+                "source": source_hash,
+                "json_pointer": "/result/list/0/" + pointer,
+                "wire_kind": kind,
+                "wire_spelling": spelling,
+            },
+        )
+        row_map[name] = expected_hash(
+            "BybitDecimalFieldV1", {"value": spelling, "reference": field_hash}
+        )
+    row_hash = expected_hash("BybitLinearTierRowV1", row_map)
+    table_hash = expected_hash(
+        "BybitLinearTierTableV1",
+        {
+            "instrument_pin": expected_hash("BybitInstrumentPinV1", expected_pin()),
+            "reference": {
+                "observation_id": "table1",
+                "source_id": "source1",
+                "source_environment": "FIXTURE",
+                "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+                "server_observed_at": STAMP,
+                "received_at": STAMP,
+                "payload_sha256": source_payload_hash,
+            },
+            "pages": (source_hash,),
+            "rows": (row_hash,),
+            "raw_manifest_sha256": raw_hash,
+            "full_table_sha256": semantic_hash,
+            "rate_encoding_revision": "BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",
+            "deduction_rule_revision": "EXACT_CONTINUOUS_MM_DEDUCTION_V1",
+        },
+    )
+    assert a1.bybit_raw_manifest_sha256_v1((read(raw),)) == raw_hash
+    assert a1.bybit_full_table_sha256_v1(table=capture.table) == semantic_hash
+    assert a1.bybit_tier_source_payload_sha256_v1(table=capture.table) == source_payload_hash
+    assert a1.bybit_tier_table_sha256_v1(capture.table) == table_hash
+    assert a1.bybit_risk_limit_capture_sha256_v1(capture) == expected_hash(
+        "BybitRiskLimitCaptureV1", {"table": table_hash, "raw_pages": raw_hash}
+    )
+
+
+def test_a1_coherent_false_raw_manifest_claim_is_rejected_by_capture() -> None:
+    capture = a1_capture()
+    # A syntactically valid independently rehashed Table has no raw manifest
+    # preimage. It remains only a claim until Capture checks the supplied bytes.
+    payload = expected_hash(
+        "BybitLinearTierSourcePayloadV1",
+        {
+            "instrument_pin": expected_pin(),
+            "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+            "raw_manifest_sha256": "a" * 64,
+            "full_table_sha256": capture.table.full_table_sha256,
+        },
+    )
+    false_claim = replace(
+        capture.table,
+        raw_manifest_sha256="a" * 64,
+        reference=replace(capture.table.reference, payload_sha256=payload),
+    )
+    assert len(a1.bybit_tier_table_sha256_v1(false_claim)) == 64
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        a1.BybitRiskLimitCaptureV1(false_claim, capture.raw_pages)
+    forged = object.__new__(a1.BybitRiskLimitCaptureV1)
+    object.__setattr__(forged, "table", false_claim)
+    object.__setattr__(forged, "raw_pages", capture.raw_pages)
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        a1.bybit_risk_limit_capture_sha256_v1(forged)
+
+
+@pytest.mark.parametrize(
+    "name,changed",
+    [
+        ("decoded_body_bytes", b"{}"),
+        ("decoded_body_sha256", "a" * 64),
+        ("source_generation", "copied-generation"),
+        ("source_id", "copied-source"),
+        ("response_origin", HttpsOrigin("https", "api-testnet.bybit.com", 443)),
+        ("key", InstrumentKey("BYBIT", "LINEAR", "ETHUSDT")),
+        ("response_time", datetime(1970, 1, 1, tzinfo=UTC)),
+        ("received_mono", float("nan")),
+        ("request_started_at", datetime(2026, 11, 3, tzinfo=UTC)),
+        ("params", (("category", "linear"), ("symbol", "BTCUSDT"), ("cursor", "unseen"))),
+    ],
+)
+def test_a1_capture_hash_replays_raw_metadata_tampering(name: str, changed: object) -> None:
+    capture = a1_capture()
+    object.__setattr__(capture.raw_pages[0], name, changed)
+    with pytest.raises(RiskV2Rejected):
+        a1.bybit_risk_limit_capture_sha256_v1(capture)
+
+
+def test_a1_final_parse_rejects_duplicate_rows_and_incomplete_captured_chain() -> None:
+    with pytest.raises(RiskV2Rejected):
+        a1_capture(ROW + "," + ROW)
+    for pages in ((read(body(cursor="remaining")),), (read(body(), 2, "unexpected"),)):
+        with pytest.raises(RiskV2Rejected):
+            a1.parse_bybit_risk_limit_table_v1(pages, instrument_pin=a1_pin(), observation_id="t1")
+    p1 = read(body(cursor="next"))
+    p2 = read(body(), 2, "other")
+    with pytest.raises(RiskV2Rejected):
+        a1.parse_bybit_risk_limit_table_v1((p1, p2), instrument_pin=a1_pin(), observation_id="t1")
+
+
+def test_a1_raw_total_exact_limit_and_plus_one_independent_of_canonical() -> None:
+    exact = tuple(p.envelope for p in captured_pages(16, 16, padded=True))
+    assert sum(len(p.decoded_body_bytes) for p in exact) == 1048576
+    assert (
+        len(
+            a1.parse_bybit_risk_limit_table_v1(
+                exact, instrument_pin=a1_pin(), observation_id="exact"
+            ).table.rows
+        )
+        == 16
+    )
+    pages = []
+    for i, p in enumerate(captured_pages(17, 17)):
+        size = 65536 if i < 15 else 32768 + int(i == 16)
+        raw = p.envelope.decoded_body_bytes + b" " * (size - len(p.envelope.decoded_body_bytes))
+        pages.append(
+            replace(
+                p.envelope,
+                decoded_body_bytes=raw,
+                decoded_body_sha256=hashlib.sha256(raw).hexdigest(),
+            )
+        )
+    assert sum(len(p.decoded_body_bytes) for p in pages) == 1048577
+    assert all(len(p.decoded_body_bytes) <= 65536 for p in pages)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        a1.parse_bybit_risk_limit_table_v1(
+            tuple(pages), instrument_pin=a1_pin(), observation_id="plus-one"
+        )
+
+
+def test_a1_profile_canonical_exact_65536_and_plus_one() -> None:
+    source = private_source()
+    one = number_field(source)
+    source_hash = expected_hash(
+        "BybitModelSourceRefV1", expected_source(source.raw_body_sha256, True)
+    )
+    field_hash = expected_hash(
+        "BybitModelFieldRefV1",
+        {
+            "source": source_hash,
+            "json_pointer": "/result/value",
+            "wire_kind": "STRING",
+            "wire_spelling": "1",
+        },
+    )
+    amount_hash = expected_hash("BybitDecimalFieldV1", {"value": "1", "reference": field_hash})
+    amr = BybitModelFieldRefV1(source, "/amr", "INTEGER", "1")
+    amr_hash = expected_hash(
+        "BybitModelFieldRefV1",
+        {
+            "source": source_hash,
+            "json_pointer": "/amr",
+            "wire_kind": "INTEGER",
+            "wire_spelling": "1",
+        },
+    )
+    ids = [f"i{i:04d}" for i in range(700)]
+    payload: dict[str, object] = {
+        "revision": "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "symbol": "BTCUSDT",
+        "position_idx": 0,
+        "selected_position_quantity": amount_hash,
+        "selected_open_order_ids": tuple(ids),
+        "selected_conditional_order_ids": (),
+        "local_unresolved_entry_ids": (),
+        "auto_add_margin": amr_hash,
+        "prospective_extra_margin_usdt": "1",
+        "extra_margin_basis": "NEW_SELECTED_FLAT_NO_ADD_V1",
+        "source_records": (source_hash,),
+    }
+
+    def encoded_size() -> int:
+        return len(
+            json.dumps(
+                {
+                    "schema": "RISK_V2_CANONICAL_V1",
+                    "record_type": "BybitSelectedEntryProfileV1",
+                    "fields": payload,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+        )
+
+    remaining = 65536 - encoded_size()
+    for i, identifier in enumerate(ids):
+        extra = min(96 - len(identifier), remaining)
+        ids[i] += "x" * extra
+        remaining -= extra
+    assert remaining == 0
+    payload["selected_open_order_ids"] = tuple(ids)
+    assert encoded_size() == 65536
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "BTCUSDT",
+        0,
+        one,
+        tuple(ids),
+        (),
+        (),
+        amr,
+        Decimal(1),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (source,),
+    )
+    assert a1.bybit_selected_profile_sha256_v1(profile) == expected_hash(
+        "BybitSelectedEntryProfileV1", payload
+    )
+    # The last identifier has spare source-ID capacity; increase canonical bytes
+    # by exactly one without violating ID count/order/individual length limits.
+    ids[-1] += "x"
+    payload["selected_open_order_ids"] = tuple(ids)
+    assert encoded_size() == 65537
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        a1.bybit_selected_profile_sha256_v1(replace(profile, selected_open_order_ids=tuple(ids)))
+
+
+@pytest.mark.parametrize("spelling", ["1" * 256, "1e1000", "1e-1000"])
+def test_a1_final_source_numeric_maxima_preserved(spelling: str) -> None:
+    value = a1_capture(ROW.replace('"100"', '"' + spelling + '"'))
+    assert value.table.rows[0].upper_inclusive_usdt.reference.wire_spelling == spelling
+    assert value.table.rows[0].upper_inclusive_usdt.value.as_tuple() == Decimal(spelling).as_tuple()
+
+
+@pytest.mark.parametrize("spelling", ["1" * 257, "1e1001", "1e-1001"])
+def test_a1_final_source_numeric_overflow_rejected(spelling: str) -> None:
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        a1_capture(ROW.replace('"100"', '"' + spelling + '"'))
+
+
+def test_a1_every_public_digest_rejects_partial_exact_type_and_subclasses() -> None:
+    entries: tuple[tuple[Any, type[Any]], ...] = (
+        (a1.bybit_instrument_pin_sha256_v1, InstrumentPinV2),
+        (a1.bybit_source_ref_sha256_v1, BybitModelSourceRefV1),
+        (a1.bybit_field_ref_sha256_v1, BybitModelFieldRefV1),
+        (a1.bybit_decimal_field_sha256_v1, BybitDecimalFieldV1),
+        (a1.bybit_fee_document_ref_sha256_v1, BybitFeeDocumentRefV1),
+        (a1.bybit_nonvip_fee_sha256_v1, BybitNonVipFeeBasisV1),
+        (a1.bybit_uta_mode_sha256_v1, BybitUtaModeV1),
+        (a1.bybit_trade_behaviour_sha256_v1, BybitTradeBehaviourV1),
+        (a1.bybit_flat_leverage_sha256_v1, BybitFlatLeverageV1),
+        (a1.bybit_fee_inputs_sha256_v1, BybitLinearFeeInputsV1),
+        (a1.bybit_wallet_sha256_v1, BybitUsdtWalletV1),
+        (a1.bybit_held_position_sha256_v1, BybitHeldPositionV1),
+        (a1.bybit_held_order_sha256_v1, BybitHeldOrderV1),
+        (a1.bybit_tier_row_sha256_v1, a1.BybitLinearTierRowV1),
+        (a1.bybit_full_table_sha256_v1, a1.BybitLinearTierTableV1),
+        (a1.bybit_tier_source_payload_sha256_v1, a1.BybitLinearTierTableV1),
+        (a1.bybit_tier_table_sha256_v1, a1.BybitLinearTierTableV1),
+        (a1.bybit_risk_limit_capture_sha256_v1, a1.BybitRiskLimitCaptureV1),
+        (a1.bybit_selected_profile_sha256_v1, BybitSelectedEntryProfileV1),
+    )
+    for digest, cls in entries:
+        with pytest.raises(RiskV2Rejected):
+            digest(object.__new__(cls))
+        subclass = type("ForeignSubclass", (cls,), {})
+        with pytest.raises(RiskV2Rejected):
+            digest(object.__new__(subclass))
+    bad_inputs: tuple[Any, ...] = ([], (), (object(),))
+    for bad in bad_inputs:
+        with pytest.raises(RiskV2Rejected):
+            a1.bybit_raw_manifest_sha256_v1(bad)
+
+
+def test_a1_canonical_source_and_semantic_byte_literals() -> None:
+    source = b'{"fields":{"accepted_attempt":1,"account_scope":null,"envelope_time_ms":946684800000,"observation_id":"p1","origin":{"host":"api.bybit.com","port":443,"scheme":"https"},"page_ordinal":1,"path":"/v5/market/risk-limit","query":[["category","linear"],["symbol","XAAUSDT"]],"raw_body_sha256":"0000000000000000000000000000000000000000000000000000000000000000","received_at":"2000-01-01T00:00:00.000000+00:00","request_started_at":"2000-01-01T00:00:00.000000+00:00","source_environment":"FIXTURE","source_generation":"g1","source_id":"fixture"},"record_type":"BybitModelSourceRefV1","schema":"RISK_V2_CANONICAL_V1"}'
+    semantic = b'{"fields":{"deduction_rule_revision":"EXACT_CONTINUOUS_MM_DEDUCTION_V1","instrument":{"key":{"product":"LINEAR","symbol":"XAAUSDT","venue":"BYBIT"},"native_instrument_id":"XAAUSDT-LINEAR.BYBIT","specification_revision":"0000000000000000000000000000000000000000000000000000000000000000"},"rate_encoding_revision":"BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1","rows":[{"initial_margin_rate":{"denominator":"100","numerator":"1"},"is_lowest_risk":1,"lower_exclusive_usdt":{"denominator":"1","numerator":"0"},"maintenance_margin_rate":{"denominator":"200","numerator":"1"},"max_leverage":{"denominator":"1","numerator":"2"},"mm_deduction_usdt":{"denominator":"1","numerator":"0"},"tier_id":"1","upper_inclusive_usdt":{"denominator":"1","numerator":"10"}}]},"record_type":"BybitLinearTierTableSemanticV1","schema":"RISK_V2_CANONICAL_V1"}'
+    assert (len(source), hashlib.sha256(source).hexdigest()) == (
+        609,
+        "d5c899b3ef1e4dde4548a555a4180ee91f65cee584743d0e974bdc32c09c4b95",
+    )
+    assert (len(semantic), hashlib.sha256(semantic).hexdigest()) == (
+        825,
+        "728be44d0457dd75d8b6c153631f4d615eb209ab765848e8640280e529b056c6",
+    )
+    # These bytes pin the codec. The preceding actual typed-graph golden test
+    # separately proves production hashing consumes the same closed recipes.
+
+
+def test_a1_field_source_pointer_association_and_capture_order() -> None:
+    capture = a1_capture()
+    row = capture.table.rows[0]
+    foreign = page(ROW.replace('"100"', '"101"')).rows[0].initial_margin_rate
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        replace(capture.table, rows=(replace(row, initial_margin_rate=foreign),))
+    wrong_pointer = replace(
+        row.initial_margin_rate.reference, json_pointer="/result/list/0/maintenanceMargin"
+    )
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        replace(
+            capture.table,
+            rows=(
+                replace(
+                    row,
+                    initial_margin_rate=replace(row.initial_margin_rate, reference=wrong_pointer),
+                ),
+            ),
+        )
+    two = captured_pages(2, 2)
+    envelopes = tuple(p.envelope for p in two)
+    good = a1.parse_bybit_risk_limit_table_v1(
+        envelopes, instrument_pin=a1_pin(), observation_id="table1"
+    )
+    with pytest.raises(RiskV2Rejected):
+        replace(good, raw_pages=tuple(reversed(envelopes)))
+    with pytest.raises(RiskV2Rejected):
+        replace(good.table, pages=tuple(reversed(good.table.pages)))
+    with pytest.raises(RiskV2Rejected):
+        replace(good.table, rows=tuple(reversed(good.table.rows)))
+
+
+def test_a1_raw_whitespace_and_aggregate_id_exclusion_scopes() -> None:
+    capture = a1_capture()
+    envelope = read(body() + b" ")
+    spaced = a1.parse_bybit_risk_limit_table_v1(
+        (envelope,), instrument_pin=a1_pin(), observation_id="table1"
+    )
+    assert spaced.table.full_table_sha256 == capture.table.full_table_sha256
+    assert spaced.table.raw_manifest_sha256 != capture.table.raw_manifest_sha256
+    assert a1.bybit_tier_table_sha256_v1(spaced.table) != a1.bybit_tier_table_sha256_v1(
+        capture.table
+    )
+    renamed = a1.parse_bybit_risk_limit_table_v1(
+        capture.raw_pages, instrument_pin=a1_pin(), observation_id="another-id"
+    )
+    assert renamed.table.raw_manifest_sha256 == capture.table.raw_manifest_sha256
+    assert renamed.table.full_table_sha256 == capture.table.full_table_sha256
+    assert renamed.table.reference.payload_sha256 == capture.table.reference.payload_sha256
+    assert a1.bybit_tier_table_sha256_v1(renamed.table) != a1.bybit_tier_table_sha256_v1(
+        capture.table
+    )
+
+
+def test_a1_derived_decimal_text_exceeds_global_int_string_limit_without_mutation() -> None:
+    source = private_source()
+    one = number_field(source)
+    amr = BybitModelFieldRefV1(source, "/amr", "INTEGER", "1")
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "BTCUSDT",
+        0,
+        one,
+        (),
+        (),
+        (),
+        amr,
+        Decimal("1" * 5001),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (source,),
+    )
+    before = sys.get_int_max_str_digits()
+    assert len(a1.bybit_selected_profile_sha256_v1(profile)) == 64
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        a1.bybit_selected_profile_sha256_v1(
+            replace(profile, prospective_extra_margin_usdt=Decimal("1" * 65536))
+        )
+    assert sys.get_int_max_str_digits() == before
+
+
+def test_a1_capture_replays_full_rows_even_with_coherent_shortened_table_hashes() -> None:
+    # Flat-rate second row has exact continuous D=0. A false Table that omits
+    # this otherwise unused row can rehash all its available fields coherently.
+    second = ROW.replace('"id":1', '"id":2').replace('"100"', '"200"').replace('Risk":1', 'Risk":0')
+    capture = a1_capture(ROW + "," + second)
+    shortened_hash = expected_hash(
+        "BybitLinearTierTableSemanticV1",
+        {
+            "instrument": {
+                "key": {"venue": "BYBIT", "product": "LINEAR", "symbol": "BTCUSDT"},
+                "native_instrument_id": "BTCUSDT-LINEAR.BYBIT",
+                "specification_revision": "a" * 64,
+            },
+            "rate_encoding_revision": "BYBIT_LINEAR_RISK_NUMBER_FRACTION_V1",
+            "deduction_rule_revision": "EXACT_CONTINUOUS_MM_DEDUCTION_V1",
+            "rows": (
+                {
+                    "tier_id": "1",
+                    "lower_exclusive_usdt": rational("0"),
+                    "upper_inclusive_usdt": rational("100"),
+                    "initial_margin_rate": rational("1", "2"),
+                    "maintenance_margin_rate": rational("1", "10"),
+                    "max_leverage": rational("2"),
+                    "mm_deduction_usdt": rational("0"),
+                    "is_lowest_risk": 1,
+                },
+            ),
+        },
+    )
+    payload = expected_hash(
+        "BybitLinearTierSourcePayloadV1",
+        {
+            "instrument_pin": expected_pin(),
+            "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+            "raw_manifest_sha256": capture.table.raw_manifest_sha256,
+            "full_table_sha256": shortened_hash,
+        },
+    )
+    shortened = replace(
+        capture.table,
+        rows=capture.table.rows[:1],
+        full_table_sha256=shortened_hash,
+        reference=replace(capture.table.reference, payload_sha256=payload),
+    )
+    assert len(shortened.rows) == 1
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        a1.BybitRiskLimitCaptureV1(shortened, capture.raw_pages)
+
+
+def full_d_graph(
+    *,
+    y_minimum: str = "2",
+    unused_received: datetime | None = None,
+    selected_received: datetime | None = None,
+    allocation: str = "60",
+    two_rows: bool = False,
+    risk_upper: str = "3000",
+    short: bool = False,
+) -> dict[str, Any]:
+    """Real synthetic X flat/Y held+pending/Z spot graph; no issuer preimages."""
+    from risk_v2_support import (  # type: ignore[import-not-found]
+        NOW,
+        costs_v2,
+        instrument_v2,
+        observation_ref_v2,
+        policy_v2,
+        proposal_v2,
+    )
+
+    observations = []
+    for symbol, product, row_minimum in (
+        ("XAAUSDT", "LINEAR", "1"),
+        ("YBBUSDT", "LINEAR", y_minimum),
+        ("ZCCUSDT", "SPOT", "1"),
+    ):
+        row = json.loads(instrument_v2().raw_row_canonical)
+        row.update(symbol=symbol, baseCoin=symbol[:3])
+        row["leverageFilter"].update(minLeverage=row_minimum, maxLeverage="5", leverageStep="1")
+        observation = parse_bybit_instrument_response(
+            {
+                "retCode": 0,
+                "result": {"category": product.lower(), "list": [row]},
+                "time": 1793663999000,
+            },
+            expected=InstrumentKey("BYBIT", cast(Any, product), symbol),
+            source=CatalogSource(
+                "FIXTURE_CATALOG",
+                "FIXTURE",
+                INSTRUMENT_ENDPOINT,
+                unused_received
+                if product == "SPOT" and unused_received is not None
+                else selected_received
+                if symbol == "XAAUSDT" and selected_received is not None
+                else NOW,
+            ),
+        )
+        observations.append(observation)
+    catalog = build_instrument_catalog(
+        tuple(observations),
+        declared_universe=tuple(o.key for o in observations),
+        now=NOW,
+        max_age=timedelta(seconds=30),
+    )
+    x, y, _ = observations
+    policy = replace(policy_v2(), leverage_max=Decimal(5), margin_allocation=Decimal(allocation))
+    scope = policy.scope.product_scope.account
+    stamp = NOW
+    source = BybitModelSourceRefV1(
+        "private",
+        "private-source",
+        "GENERATION_V1",
+        scope,
+        "FIXTURE",
+        HttpsOrigin("https", "api.bybit.com", 443),
+        "/v5/position/list",
+        (),
+        stamp,
+        stamp,
+        1793664000000,
+        "f" * 64,
+        1,
+        1,
+    )
+
+    def raw_source(
+        identifier: str, path: str, *, symbol: str | None = None
+    ) -> BybitModelSourceRefV1:
+        return replace(
+            source,
+            observation_id=identifier,
+            source_id="public-source" if path.startswith("/v5/market/") else "private-source",
+            path=path,
+            account_scope=None if path.startswith("/v5/market/") else scope,
+            query=() if symbol is None else (("category", "linear"), ("symbol", symbol)),
+        )
+
+    def field(s: BybitModelSourceRefV1, name: str, value: str) -> BybitDecimalFieldV1:
+        return BybitDecimalFieldV1(
+            Decimal(value), BybitModelFieldRefV1(s, "/result/" + name, "STRING", value)
+        )
+
+    tables = []
+    for observation in (x, y):
+        row = (
+            '{"id":1,"symbol":"'
+            + observation.key.symbol
+            + '","riskLimitValue":"'
+            + risk_upper
+            + '","initialMargin":0.1,"maintenanceMargin":0.005,"maxLeverage":"5","mmDeduction":"0","isLowestRisk":1}'
+        )
+        if two_rows:
+            row += (
+                ',{"id":2,"symbol":"'
+                + observation.key.symbol
+                + '","riskLimitValue":"6000","initialMargin":0.1,"maintenanceMargin":0.01,"maxLeverage":"4","mmDeduction":"15","isLowestRisk":0}'
+            )
+        raw = (
+            '{"retCode":0,"result":{"category":"linear","list":['
+            + row
+            + '],"nextPageCursor":""},"time":1793664000000}'
+        ).encode()
+        envelope = BybitRiskLimitEnvelopeReadV1(
+            observation.key,
+            "GET",
+            "/v5/market/risk-limit",
+            (("category", "linear"), ("symbol", observation.key.symbol)),
+            source.origin,
+            source.origin,
+            200,
+            NOW,
+            NOW,
+            0.0,
+            1.0,
+            NOW,
+            raw,
+            hashlib.sha256(raw).hexdigest(),
+            1,
+            0,
+            1,
+            1,
+            "page-" + observation.key.symbol,
+            "public-source",
+            "GENERATION_V1",
+            "FIXTURE",
+        )
+        tables.append(
+            a1.parse_bybit_risk_limit_table_v1(
+                (envelope,),
+                instrument_pin=d_c.pin_instrument_v2(
+                    observation, catalog_revision=catalog.revision
+                ),
+                observation_id="table-" + observation.key.symbol,
+            ).table
+        )
+    marks = tuple(
+        d_c.LinearMarkQuoteV2(
+            o.key,
+            replace(
+                observation_ref_v2("mark-" + o.key.symbol),
+                source_id="public-source",
+                server_observed_at=NOW,
+            ),
+            Decimal("140" if index == 0 else "50"),
+        )
+        for index, o in enumerate((x, y))
+    )
+    account = d_c.LinearAccountRiskSnapshotV2(
+        scope,
+        observation_ref_v2("ACCOUNT"),
+        "COVERAGE_V1",
+        (d_c.ExposureQuantityV2("AY", y.key, "ACCOUNT_POSITION", "SELL", Decimal(2)),),
+        "UTC_REALIZED_NET_FEES_FUNDING",
+        NOW.date(),
+        Decimal(1000),
+        Decimal(500),
+        Decimal(7),
+        Decimal(8),
+        1,
+        Decimal(0),
+        Decimal(0),
+        0,
+        "ISOLATED",
+        "ONE_WAY",
+        (),
+    )
+    reservations = d_c.LinearReservationSnapshotV2(
+        scope,
+        "RESERVATION",
+        "GENERATION_V1",
+        1,
+        "a" * 64,
+        NOW,
+        None,
+        (d_c.ExposureQuantityV2("RY", y.key, "PENDING_ENTRY", "BUY", Decimal(".5")),),
+        Decimal(3),
+        Decimal(4),
+        1,
+    )
+    tiers = tuple(
+        d_e.LinearTierSnapshotV2(
+            o.key,
+            table.reference,
+            o.specification_revision,
+            (
+                d_e.LinearRiskTierV2(
+                    "1",
+                    Decimal(0),
+                    Decimal(risk_upper),
+                    Decimal("1" if index == 0 else y_minimum),
+                    Decimal(5),
+                    Decimal(".1"),
+                    Decimal(".005"),
+                    Decimal(0),
+                ),
+            )
+            + (
+                (
+                    d_e.LinearRiskTierV2(
+                        "2",
+                        Decimal(3000),
+                        Decimal(6000),
+                        Decimal("1" if index == 0 else y_minimum),
+                        Decimal(4),
+                        Decimal(".1"),
+                        Decimal(".01"),
+                        Decimal(15),
+                    ),
+                )
+                if two_rows
+                else ()
+            ),
+        )
+        for index, (o, table) in enumerate(zip((x, y), tables, strict=True))
+    )
+    members = tuple(
+        d_domain.LinearRiskDomainMemberV2(
+            table.instrument_pin,
+            mark,
+            tier,
+            () if index == 0 else ("AY",),
+            () if index == 0 else ("RY",),
+            Decimal(0 if index == 0 else 7),
+            Decimal(0 if index == 0 else 8),
+            0 if index == 0 else 1,
+            Decimal(0 if index == 0 else 3),
+            Decimal(0 if index == 0 else 4),
+            0 if index == 0 else 1,
+            observation_ref_v2("margin-" + o.key.symbol),
+            d_c.RiskComputationRefV2("risk-" + o.key.symbol, "risk-v1", "FIXTURE", NOW, "b" * 64),
+        )
+        for index, (o, table, mark, tier) in enumerate(
+            zip((x, y), tables, marks, tiers, strict=True)
+        )
+    )
+    domain = d_domain.build_linear_risk_domain_coverage_v2(
+        policy=policy,
+        catalog=catalog,
+        catalog_revision=catalog.revision,
+        coverage_revision="DOMAIN_V1",
+        source_generation="GENERATION_V1",
+        account=account,
+        reservations=reservations,
+        marks=marks,
+        members=members,
+        source_record_sha256s=("a" * 64,),
+        now=NOW,
+    )
+    proposal = proposal_v2()
+    if short:
+        proposal = replace(
+            proposal,
+            side="SHORT",
+            stop_price=Decimal(110),
+            entry=replace(proposal.entry, side="SELL"),
+        )
+    costs = replace(
+        costs_v2(),
+        policy_sha256=d_c.risk_policy_sha256_v2(policy),
+        instrument_revision=x.specification_revision,
+    )
+    if short:
+        costs = replace(costs, side="SHORT", stop_price=Decimal(110))
+    sizing = d_r.size_linear_entry_v2(
+        policy=policy,
+        proposal=proposal,
+        instrument=x,
+        catalog_revision=catalog.revision,
+        costs=costs,
+        now=NOW,
+    )
+    minimum = d_e.MinimumAmountAssessmentV2(
+        policy.scope,
+        d_c.RiskComputationRefV2("minimum", "minimum-v1", "FIXTURE", NOW, "b" * 64),
+        d_c.envelope_sha256_v2(sizing.envelope),
+        x.specification_revision,
+        "minimum-v1",
+        ("instrument", "ltp"),
+        Decimal(95),
+        Decimal(5),
+        Decimal(95),
+        proposal.entry.valid_until,
+    )
+    requirements = d_e.RiskRequirementsV2(
+        "mapping-v1",
+        "minimum-v1",
+        costs.cost_rule_revision,
+        costs.fee_rule_revision,
+        costs.funding_rule_revision,
+        costs.stop_gap_model_revision,
+        "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
+        "LOCAL_ZERO_ORIGIN_LATTICE_V1",
+        "margin-v1",
+        "lp-v1",
+        "POINT_ESTIMATE_WITH_RECONCILIATION_V1",
+        "POINT_ESTIMATE_TWO_IM_ENVELOPE_V1",
+        "APP_RESERVE_CEILING_QUANTUM_V1",
+        Decimal(".00000001"),
+    )
+    inputs = d_e.LinearRiskInputsV2(
+        policy,
+        proposal,
+        x,
+        catalog.revision,
+        costs,
+        account,
+        reservations,
+        marks,
+        tiers[0],
+        d_domain.risk_domain_sha256_v2(domain),
+        minimum,
+        requirements,
+    )
+    profile_source = raw_source("profile", "/v5/position/list", symbol=x.key.symbol)
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        x.key.symbol,
+        0,
+        field(profile_source, "size", "0"),
+        (),
+        (),
+        (),
+        BybitModelFieldRefV1(profile_source, "/result/autoAddMargin", "INTEGER", "0"),
+        Decimal(0),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (profile_source,),
+    )
+    fee_source = raw_source("fee", "/v5/account/fee-rate", symbol=x.key.symbol)
+    behaviour_source = raw_source("behaviour", "/v5/account/info")
+    doc = replace(
+        fee_document(),
+        captured_at=NOW,
+        displayed_rate_spelling="0.00055",
+        displayed_unit="FRACTION",
+        applicability_revision="applicability-v1",
+    )
+    fee = BybitLinearFeeInputsV1(
+        field(fee_source, "takerFeeRate", "0.00055"),
+        field(fee_source, "makerFeeRate", "0"),
+        BybitNonVipFeeBasisV1(Decimal(".00055"), doc),
+        "USDT",
+        BybitTradeBehaviourV1(behaviour_source, True, False, False),
+        "applicability-v1",
+    )
+    wallet_source = raw_source("wallet", "/v5/account/wallet-balance")
+    wallet = BybitUsdtWalletV1(
+        wallet_source,
+        *(
+            field(wallet_source, name, value)
+            for name, value in (
+                ("walletBalance", "520"),
+                ("equity", "1000"),
+                ("totalPositionIM", "8"),
+                ("totalOrderIM", "4"),
+                ("locked", "3"),
+                ("bonus", "5"),
+                ("borrowAmount", "0"),
+                ("spotBorrow", "0"),
+                ("accruedInterest", "0"),
+                ("unrealisedPnl", "480"),
+            )
+        ),
+    )
+    held_source = raw_source("held-Y", "/v5/position/list", symbol=y.key.symbol)
+    held = BybitHeldPositionV1(
+        held_source,
+        tables[1].instrument_pin,
+        0,
+        "Sell",
+        field(held_source, "size", "2"),
+        field(held_source, "avgPrice", "50"),
+        field(held_source, "markPrice", "50"),
+        field(held_source, "leverage", "2"),
+        field(held_source, "positionIM", "8"),
+        field(held_source, "positionIMByMp", "8"),
+        field(held_source, "positionMM", "1"),
+        field(held_source, "positionMMByMp", "1"),
+        None,
+        0,
+        1,
+        field(held_source, "riskLimitValue", "3000"),
+        "Normal",
+        False,
+        1,
+        1793664000000,
+    )
+    mode_source = raw_source("mode", "/v5/account/info")
+    flat_source = raw_source("flat", "/v5/position/symbol-info", symbol=x.key.symbol)
+    mark_source = raw_source("mark-" + x.key.symbol, "/v5/market/tickers", symbol=x.key.symbol)
+    raw_mark = field(mark_source, "markPrice", "140")
+    sources = (
+        behaviour_source,
+        fee_source,
+        flat_source,
+        held_source,
+        mode_source,
+        profile_source,
+        wallet_source,
+        mark_source,
+        *(t.pages[0] for t in tables),
+    )
+    return {
+        "inputs": inputs,
+        "preparation": d_r.prepare_linear_entry_v2(inputs, now=NOW),
+        "domain": domain,
+        "catalog": catalog,
+        "selected_mark": raw_mark,
+        "venue_fields": (
+            BybitUtaModeV1(mode_source, 5, "ISOLATED_MARGIN", 1793664000000),
+            BybitFlatLeverageV1(
+                flat_source,
+                x.key.symbol,
+                0,
+                field(flat_source, "leverage", "2"),
+                "/v5/position/symbol-info",
+            ),
+            fee,
+            wallet,
+            (held,),
+            (),
+            tuple(tables),
+            profile,
+            tuple(sorted(sources, key=lambda s: s.observation_id)),
+            NOW + timedelta(seconds=20),
+        ),
+        "now": NOW,
+    }
+
+
+def bind_d_graph(graph: dict[str, Any]) -> Any:
+    return a1.bind_bybit_model_inputs_v1(
+        graph["inputs"],
+        preparation=graph["preparation"],
+        domain=graph["domain"],
+        venue=a1.BybitVenueStateV1(*graph["venue_fields"]),
+        catalog=graph["catalog"],
+        selected_mark=graph["selected_mark"],
+        now=graph["now"],
+    )
+
+
+def test_d_all_held_y_bound_when_selection_only_x() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    assert bound.point.envelope.base_quantity == Decimal(1)
+    assert bound.point.capacity_quote == Decimal(60)
+    assert bound.point.admission_upper_quote == Decimal(140)
+    assert bound.domain.members[1].tiers.rows[0].min_leverage == Decimal(2)
+    assert bound.venue.held_positions[0].size.value == Decimal(2)
+    assert bound.valid_until == graph["now"] + timedelta(seconds=1)
+    assert len(a1.bybit_model_inputs_sha256_v1(bound)) == 64
+
+
+def test_d_full_projection_keeps_y_instrument_minimum() -> None:
+    graph = full_d_graph(y_minimum="2.5")
+    projected = a1.project_bybit_tier_snapshot_v1(
+        graph["venue_fields"][6][1], instrument=graph["catalog"].observations[1]
+    )
+    assert projected.rows[0].min_leverage == Decimal("2.5")
+    assert projected.rows[0].upper_inclusive_quote == Decimal(3000)
+
+
+def test_d_raw_selected_mark_is_mandatory_and_not_inferred() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    assert bound.point.selected_mark is graph["selected_mark"]
+    wrong = dict(
+        graph,
+        selected_mark=replace(
+            graph["selected_mark"],
+            value=Decimal(141),
+            reference=replace(graph["selected_mark"].reference, wire_spelling="141"),
+        ),
+    )
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        bind_d_graph(wrong)
+
+
+def d_reprepare(graph: dict[str, Any], inputs: Any, *, members: Any = None) -> dict[str, Any]:
+    old = graph["domain"]
+    domain = d_domain.build_linear_risk_domain_coverage_v2(
+        policy=inputs.policy,
+        catalog=graph["catalog"],
+        catalog_revision=inputs.catalog_revision,
+        coverage_revision=old.coverage_revision,
+        source_generation=old.source_generation,
+        account=inputs.account,
+        reservations=inputs.reservations,
+        marks=inputs.marks,
+        members=old.members if members is None else members,
+        source_record_sha256s=old.source_record_sha256s,
+        now=graph["now"],
+    )
+    inputs = replace(inputs, risk_domain_sha256=d_domain.risk_domain_sha256_v2(domain))
+    return dict(
+        graph,
+        inputs=inputs,
+        domain=domain,
+        preparation=d_r.prepare_linear_entry_v2(inputs, now=graph["now"]),
+    )
+
+
+@pytest.mark.parametrize("kind", ["missing", "size", "side", "opposing-net-equal", "extra-x"])
+def test_d_generic_position_per_side_nonnet_coverage(kind: str) -> None:
+    graph = full_d_graph()
+    original = graph["inputs"].account.components[0]
+    components = {
+        "missing": (),
+        "size": (replace(original, base_quantity=Decimal(1)),),
+        "side": (replace(original, side="BUY"),),
+        "opposing-net-equal": (
+            replace(original, base_quantity=Decimal(3)),
+            replace(original, component_id="AY2", side="BUY", base_quantity=Decimal(1)),
+        ),
+        "extra-x": (
+            d_c.ExposureQuantityV2(
+                "AX", graph["inputs"].instrument.key, "ACCOUNT_POSITION", "BUY", Decimal(1)
+            ),
+            original,
+        ),
+    }[kind]
+    account = replace(graph["inputs"].account, components=components)
+    members = tuple(
+        replace(
+            m,
+            account_component_ids=tuple(
+                c.component_id for c in components if c.instrument == m.instrument_pin.key
+            ),
+        )
+        for m in graph["domain"].members
+    )
+    graph = d_reprepare(graph, replace(graph["inputs"], account=account), members=members)
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        bind_d_graph(graph)
+
+
+@pytest.mark.parametrize("kind", ["missing", "size", "side", "extra-x"])
+def test_d_raw_position_per_side_nonnet_coverage(kind: str) -> None:
+    graph = full_d_graph()
+    fields_ = list(graph["venue_fields"])
+    original = fields_[4][0]
+    size = replace(
+        original.size,
+        value=Decimal(1),
+        reference=replace(original.size.reference, wire_spelling="1"),
+    )
+    extra = replace(original, instrument_pin=fields_[6][0].instrument_pin)
+    fields_[4] = {
+        "missing": (),
+        "size": (replace(original, size=size),),
+        "side": (replace(original, side="Buy"),),
+        "extra-x": (extra, original),
+    }[kind]
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        bind_d_graph(dict(graph, venue_fields=tuple(fields_)))
+
+
+def test_d_same_side_components_sum_without_inventing_cardinality_or_native_id() -> None:
+    graph = full_d_graph()
+    component = graph["inputs"].account.components[0]
+    components = (
+        replace(component, base_quantity=Decimal(1)),
+        replace(component, component_id="AY2", base_quantity=Decimal(1)),
+    )
+    members = (
+        graph["domain"].members[0],
+        replace(graph["domain"].members[1], account_component_ids=("AY", "AY2")),
+    )
+    graph = d_reprepare(
+        graph,
+        replace(graph["inputs"], account=replace(graph["inputs"].account, components=components)),
+        members=members,
+    )
+    bound = bind_d_graph(graph)
+    assert len(bound.risk_inputs.account.components) == 2
+    assert len(bound.venue.held_positions) == 1
+    assert bound.domain.source_record_sha256s == ("a" * 64,)
+    assert all(
+        a1.bybit_source_ref_sha256_v1(source) != "a" * 64 for source in bound.venue.source_records
+    )
+    assert not hasattr(bound, "qualified") and not hasattr(bound, "native_id_mapping")
+
+
+def test_d_pending_x_is_generic_coverage_but_profile_unsupported() -> None:
+    graph = full_d_graph()
+    pending = graph["inputs"].reservations.components[0]
+    pending = replace(pending, instrument=graph["inputs"].instrument.key)
+    reservations = replace(graph["inputs"].reservations, components=(pending,))
+    members = tuple(
+        replace(
+            m,
+            reservation_component_ids=("RY",) if index == 0 else (),
+            reserved_risk_quote=Decimal(3 if index == 0 else 0),
+            reserved_margin_quote=Decimal(4 if index == 0 else 0),
+            reserved_position_count=1 if index == 0 else 0,
+        )
+        for index, m in enumerate(graph["domain"].members)
+    )
+    graph = d_reprepare(graph, replace(graph["inputs"], reservations=reservations), members=members)
+    assert graph["domain"].members[0].reservation_component_ids == ("RY",)
+    with pytest.raises(RiskV2Rejected, match="UNSUPPORTED_MODE"):
+        bind_d_graph(graph)
+
+
+@pytest.mark.parametrize("target", ["wallet", "table", "domain-total", "profile", "fee-document"])
+def test_d_rejects_whole_graph_omissions_and_totals_before_selector(target: str) -> None:
+    graph = full_d_graph()
+    fields_ = list(graph["venue_fields"])
+    if target == "wallet":
+        wallet = fields_[3]
+        fields_[3] = replace(
+            wallet,
+            locked=replace(
+                wallet.locked,
+                value=Decimal(4),
+                reference=replace(wallet.locked.reference, wire_spelling="4"),
+            ),
+        )
+    elif target == "table":
+        fields_[6] = fields_[6][:1]
+    elif target == "domain-total":
+        graph["domain"] = replace(
+            graph["domain"],
+            members=(
+                graph["domain"].members[0],
+                replace(graph["domain"].members[1], account_margin_quote=Decimal(9)),
+            ),
+        )
+    elif target == "profile":
+        fields_[7] = replace(fields_[7], selected_open_order_ids=("unknown",))
+    else:
+        fee = fields_[2]
+        fields_[2] = replace(
+            fee,
+            closing_order_reserve_nonvip_rate=replace(
+                fee.closing_order_reserve_nonvip_rate,
+                reference=replace(
+                    fee.closing_order_reserve_nonvip_rate.reference, applicability_revision="other"
+                ),
+            ),
+        )
+    with pytest.raises(RiskV2Rejected):
+        bind_d_graph(dict(graph, venue_fields=tuple(fields_)))
+
+
+def test_d_unused_z_receipt_and_raw_row_are_catalog_committed() -> None:
+    graph = full_d_graph()
+    original = bind_d_graph(graph)
+    changed = bind_d_graph(full_d_graph(unused_received=graph["now"] - timedelta(microseconds=1)))
+    assert changed.catalog.revision == original.catalog.revision
+    assert changed.catalog.expires_at == original.catalog.expires_at
+    assert a1._catalog_input_sha256_v1(changed.catalog) != a1._catalog_input_sha256_v1(
+        original.catalog
+    )
+    assert a1.bybit_model_inputs_sha256_v1(changed) != a1.bybit_model_inputs_sha256_v1(original)
+    z = original.catalog.observations[2]
+    row = json.loads(z.raw_row_canonical)
+    row["unconsumedSourceField"] = "retained"
+    changed_z = parse_bybit_instrument_response(
+        {"retCode": 0, "result": {"category": "spot", "list": [row]}, "time": 1793663999000},
+        expected=z.key,
+        source=z.source,
+    )
+    catalog = build_instrument_catalog(
+        (*original.catalog.observations[:2], changed_z),
+        declared_universe=original.catalog.declared_universe,
+        now=graph["now"],
+        max_age=original.catalog.max_age,
+    )
+    assert catalog.revision == original.catalog.revision
+    assert a1._catalog_input_sha256_v1(catalog) != a1._catalog_input_sha256_v1(original.catalog)
+
+
+def test_d_catalog_and_compact_model_independent_full_graph_payloads() -> None:
+    bound = bind_d_graph(full_d_graph())
+    catalog = bound.catalog
+    payload = {
+        "schema_version": 1,
+        "revision": catalog.revision,
+        "declared_universe": [
+            {"venue": "BYBIT", "product": product, "symbol": symbol}
+            for product, symbol in (
+                ("LINEAR", "XAAUSDT"),
+                ("LINEAR", "YBBUSDT"),
+                ("SPOT", "ZCCUSDT"),
+            )
+        ],
+        "max_age_microseconds": 30000000,
+        "expires_at": "2026-11-03T00:00:29.000000+00:00",
+        "observations": tuple(
+            {
+                "key": {"venue": "BYBIT", "product": o.key.product, "symbol": o.key.symbol},
+                "native_instrument_id": o.key.symbol + "-" + o.key.product + ".BYBIT",
+                "parser_revision": "BYBIT_INSTRUMENT_PARSER_V1",
+                "source_rule_revision": "BYBIT_LINEAR_USDT_PERPETUAL_V1"
+                if o.key.product == "LINEAR"
+                else "BYBIT_SPOT_USDT_REGULAR_V1",
+                "specification_revision": o.specification_revision,
+                "source": {
+                    "source_id": "FIXTURE_CATALOG",
+                    "source_environment": "FIXTURE",
+                    "endpoint": "/v5/market/instruments-info",
+                    "received_at": "2026-11-03T00:00:00.000000+00:00",
+                },
+                "response_time": "2026-11-02T23:59:59.000000+00:00",
+                "raw_row_sha256": hashlib.sha256(o.raw_row_canonical).hexdigest(),
+            }
+            for o in catalog.observations
+        ),
+    }
+    catalog_hash = expected_hash("BybitInstrumentCatalogInputsV1", payload)
+    assert a1._catalog_input_sha256_v1(catalog) == catalog_hash
+    compact: dict[str, object] = {
+        "binding_sha256": d_e.binding_sha256_v2(bound.preparation.binding),
+        "risk_domain_sha256": d_domain.risk_domain_sha256_v2(bound.domain),
+        "requirements_sha256": d_e.requirements_sha256_v2(bound.risk_inputs.requirements),
+        "venue_state_sha256": a1.bybit_venue_state_sha256_v1(bound.venue),
+        "point_input_sha256": a1.bybit_point_input_sha256_v1(bound.point),
+        "catalog_input_sha256": catalog_hash,
+        "valid_until": "2026-11-03T00:00:01.000000+00:00",
+        "model_rule_revision": "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    }
+    assert a1.bybit_model_inputs_sha256_v1(bound) == expected_hash(
+        "BybitLinearModelInputsV1", compact
+    )
+
+
+@pytest.mark.parametrize(
+    "bound", ["proposal", "cost", "funding", "holding", "minimum", "venue", "catalog"]
+)
+def test_d_exact_eight_bound_minimum_and_strict_expiry(bound: str) -> None:
+    graph = full_d_graph()
+    inputs = graph["inputs"]
+    if bound == "catalog":
+        policy = replace(
+            inputs.policy, max_quote_age_seconds=Decimal(60), max_evidence_age_seconds=Decimal(60)
+        )
+        inputs = replace(
+            inputs,
+            policy=policy,
+            costs=replace(inputs.costs, policy_sha256=d_c.risk_policy_sha256_v2(policy)),
+        )
+    now = graph["now"]
+    late = now + timedelta(seconds=60)
+    early = now + timedelta(microseconds=100)
+    proposal = replace(
+        inputs.proposal,
+        entry=replace(inputs.proposal.entry, valid_until=early if bound == "proposal" else late),
+    )
+    costs = replace(
+        inputs.costs,
+        valid_until=early if bound == "cost" else late,
+        next_funding_at=early if bound == "funding" else late,
+        holding_until=early if bound == "holding" else late,
+    )
+    sized = d_r.size_linear_entry_v2(
+        policy=inputs.policy,
+        proposal=proposal,
+        instrument=inputs.instrument,
+        catalog_revision=inputs.catalog_revision,
+        costs=costs,
+        now=now,
+    )
+    minimum = replace(
+        inputs.minimum_amount,
+        envelope_sha256=d_c.envelope_sha256_v2(sized.envelope),
+        valid_until=early if bound == "minimum" else late,
+    )
+    fields_ = list(graph["venue_fields"])
+    fields_[-1] = early if bound == "venue" else late
+    inputs = replace(inputs, proposal=proposal, costs=costs, minimum_amount=minimum)
+    graph = d_reprepare(dict(graph, venue_fields=tuple(fields_)), inputs)
+    result = bind_d_graph(graph)
+    # Sizing envelope expiry is exactly the proposal expiry: both bounds are
+    # retained, with no independently forged shorter envelope admitted.
+    want = graph["catalog"].expires_at if bound == "catalog" else early
+    assert result.valid_until == result.point.valid_until == want
+    assert result.preparation.sizing.envelope.valid_until == proposal.entry.valid_until
+    with pytest.raises(RiskV2Rejected, match="EXPIRED|INPUT_INVALID"):
+        a1.bind_bybit_model_inputs_v1(
+            inputs,
+            preparation=result.preparation,
+            domain=result.domain,
+            venue=result.venue,
+            catalog=result.catalog,
+            selected_mark=result.point.selected_mark,
+            now=want,
+        )
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        replace(result, valid_until=now + timedelta(microseconds=1))
+
+
+def test_d_all_raw_orders_remain_committed_without_invented_ack_or_registry_mapping() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    held = bound.venue.held_positions[0]
+    field = held.size
+    order = BybitHeldOrderV1(
+        held.source,
+        "native-order-not-a-component-id",
+        "",
+        held.instrument_pin,
+        0,
+        "Buy",
+        "Limit",
+        held.mark_price,
+        field,
+        field,
+        "New",
+        False,
+        False,
+        None,
+        held.updated_time_ms,
+    )
+    venue = replace(bound.venue, held_orders=(order,))
+    amended = a1.bind_bybit_model_inputs_v1(
+        bound.risk_inputs,
+        preparation=bound.preparation,
+        domain=bound.domain,
+        venue=venue,
+        catalog=bound.catalog,
+        selected_mark=bound.point.selected_mark,
+        now=graph["now"],
+    )
+    assert amended.venue.held_orders == (order,)
+    assert a1.bybit_model_inputs_sha256_v1(amended) != a1.bybit_model_inputs_sha256_v1(bound)
+    assert amended.domain.source_record_sha256s == bound.domain.source_record_sha256s
+    assert amended.domain.members[1].reservation_component_ids == ("RY",)
+    assert not hasattr(amended, "disjointness_proven")
+    with pytest.raises(RiskV2Rejected, match="UNSUPPORTED_MODE"):
+        a1.bind_bybit_model_inputs_v1(
+            bound.risk_inputs,
+            preparation=bound.preparation,
+            domain=bound.domain,
+            venue=replace(venue, held_orders=(replace(order, status="Filled"),)),
+            catalog=bound.catalog,
+            selected_mark=bound.point.selected_mark,
+            now=graph["now"],
+        )
+
+
+@pytest.mark.parametrize("target", ["hard-fee", "sell-hard-quote"])
+def test_d_generic_hard_errors_propagate_before_selector(target: str) -> None:
+    graph = full_d_graph()
+    if target == "hard-fee":
+        inputs = replace(
+            graph["inputs"],
+            requirements=replace(
+                graph["inputs"].requirements, cost_assessment_basis="HARD_EXECUTION_FEE_UPPER_V1"
+            ),
+        )
+        graph = d_reprepare(graph, inputs)
+        code = "MARGIN_UNVERIFIED"
+    else:
+        old = graph["inputs"]
+        policy = replace(
+            old.policy,
+            caps=replace(
+                old.policy.caps,
+                turnover_requirement="HARD_EXECUTION_QUOTE_CAP",
+                max_execution_quote_amount=Decimal(500),
+            ),
+        )
+        proposal = replace(
+            old.proposal,
+            side="SHORT",
+            stop_price=Decimal(110),
+            entry=replace(old.proposal.entry, side="SELL"),
+        )
+        costs = replace(
+            old.costs,
+            policy_sha256=d_c.risk_policy_sha256_v2(policy),
+            side="SHORT",
+            stop_price=Decimal(110),
+        )
+        sizing = d_r.size_linear_entry_v2(
+            policy=policy,
+            proposal=proposal,
+            instrument=old.instrument,
+            catalog_revision=old.catalog_revision,
+            costs=costs,
+            now=graph["now"],
+        )
+        # Genuine generic preparation owns SELL's unavailable hard upper; an
+        # old otherwise-valid supplied preparation must not hide that failure.
+        graph["inputs"] = replace(
+            old,
+            policy=policy,
+            proposal=proposal,
+            costs=costs,
+            minimum_amount=replace(
+                old.minimum_amount, envelope_sha256=d_c.envelope_sha256_v2(sizing.envelope)
+            ),
+        )
+        code = "SELL_EXECUTION_UPPER_UNAVAILABLE"
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_" + code + "$"):
+        bind_d_graph(graph)
+
+
+def test_d_every_new_input_boundary_rejects_partial_and_hostile_exact_children() -> None:
+    bound = bind_d_graph(full_d_graph())
+    for cls, digest in (
+        (a1.BybitVenueStateV1, a1.bybit_venue_state_sha256_v1),
+        (a1.BybitLinearModelInputsV1, a1.bybit_model_inputs_sha256_v1),
+    ):
+        with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+            cast(Any, digest)(object.__new__(cls))
+    bad_catalog = object.__new__(type(bound.catalog))
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1._catalog_input_sha256_v1(bad_catalog)
+    for field in fields(bound.catalog):
+        object.__setattr__(bad_catalog, field.name, getattr(bound.catalog, field.name))
+    object.__setattr__(
+        bad_catalog, "observations", (object.__new__(type(bound.catalog.observations[0])),)
+    )
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1._catalog_input_sha256_v1(bad_catalog)
+
+
+def test_d_seven_key_framing_is_superseded_by_independent_eight_key_literal() -> None:
+    literal = b'{"fields":{"binding_sha256":"1111111111111111111111111111111111111111111111111111111111111111","catalog_input_sha256":"2222222222222222222222222222222222222222222222222222222222222222","model_rule_revision":"BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1","point_input_sha256":"3333333333333333333333333333333333333333333333333333333333333333","requirements_sha256":"4444444444444444444444444444444444444444444444444444444444444444","risk_domain_sha256":"5555555555555555555555555555555555555555555555555555555555555555","valid_until":"2026-11-03T00:00:10.000000+00:00","venue_state_sha256":"6666666666666666666666666666666666666666666666666666666666666666"},"record_type":"BybitLinearModelInputsV1","schema":"RISK_V2_CANONICAL_V1"}'
+    assert len(literal) == 722
+    assert (
+        hashlib.sha256(literal).hexdigest()
+        == "476db19b6adeaac6439ee95e637ea48c4bf2b0a04b5bd1b869f71bb757fceefd"
+    )
+    # This independently encoded framing is not an admissible full graph.
+    parsed = json.loads(literal)
+    assert len(parsed["fields"]) == 8
+    assert (
+        _canonical_sha256_v2("BybitLinearModelInputsV1", parsed["fields"])
+        == hashlib.sha256(literal).hexdigest()
+    )
+
+
+def test_d_model_digest_rejects_missing_selected_table_with_closed_error() -> None:
+    bound = bind_d_graph(full_d_graph())
+    venue = replace(bound.venue, tier_tables=bound.venue.tier_tables[1:])
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        replace(bound, venue=venue)
+
+
+def test_d_full_table_projection_retains_rows_above_selected_admission() -> None:
+    bound = bind_d_graph(full_d_graph(two_rows=True))
+    assert bound.point.admission_covered_tier_ids == ("1",)
+    assert tuple(row.tier_id for row in bound.risk_inputs.tiers.rows) == ("1", "2")
+    assert tuple(row.min_leverage for row in bound.domain.members[1].tiers.rows) == (
+        Decimal(2),
+        Decimal(2),
+    )
+    assert bound.domain.members[1].tiers.rows[1].maintenance_margin_deduction == Decimal(15)
+    assert len(bound.venue.tier_tables[0].rows) == len(bound.venue.tier_tables[1].rows) == 2
+
+
+def test_d_venue_digest_independent_named_child_recipe() -> None:
+    venue = bind_d_graph(full_d_graph()).venue
+    payload: dict[str, object] = {
+        "account_mode": a1.bybit_uta_mode_sha256_v1(venue.account_mode),
+        "flat_leverage": a1.bybit_flat_leverage_sha256_v1(venue.flat_leverage),
+        "fee": a1.bybit_fee_inputs_sha256_v1(venue.fee),
+        "wallet": a1.bybit_wallet_sha256_v1(venue.wallet),
+        "held_positions": [a1.bybit_held_position_sha256_v1(venue.held_positions[0])],
+        "held_orders": [],
+        "tier_tables": [a1.bybit_tier_table_sha256_v1(table) for table in venue.tier_tables],
+        "selected_profile": a1.bybit_selected_profile_sha256_v1(venue.selected_profile),
+        "source_records": [
+            a1.bybit_source_ref_sha256_v1(source) for source in venue.source_records
+        ],
+        "valid_until": "2026-11-03T00:00:20.000000+00:00",
+    }
+    assert a1.bybit_venue_state_sha256_v1(venue) == expected_hash("BybitVenueStateV1", payload)
+
+
+def d_table_catalog_revision_substitution(index: int) -> dict[str, Any]:
+    """Keep the source payload and real generic graph coherent with a foreign table pin."""
+    graph = full_d_graph()
+    venue_fields = list(graph["venue_fields"])
+    tables = list(venue_fields[6])
+    original = tables[index]
+    pin = replace(original.instrument_pin, catalog_revision="f" * 64)
+    source_payload = _canonical_sha256_v2(
+        "BybitLinearTierSourcePayloadV1",
+        {
+            "instrument_pin": d_c._pin_payload_v2(pin),
+            "source_rule_revision": "BYBIT_LINEAR_RISK_LIMIT_TABLE_V1",
+            "raw_manifest_sha256": original.raw_manifest_sha256,
+            "full_table_sha256": original.full_table_sha256,
+        },
+    )
+    table = replace(
+        original,
+        instrument_pin=pin,
+        reference=replace(original.reference, payload_sha256=source_payload),
+    )
+    tables[index] = table
+    venue_fields[6] = tuple(tables)
+    graph["venue_fields"] = tuple(venue_fields)
+    projected = a1.project_bybit_tier_snapshot_v1(
+        table, instrument=graph["catalog"].observations[index]
+    )
+    members = tuple(
+        replace(member, tiers=projected) if member_index == index else member
+        for member_index, member in enumerate(graph["domain"].members)
+    )
+    inputs = replace(graph["inputs"], tiers=projected) if index == 0 else graph["inputs"]
+    graph = d_reprepare(graph, inputs, members=members)
+    assert table.instrument_pin.catalog_revision == "f" * 64
+    assert graph["domain"].members[index].instrument_pin.catalog_revision == graph["catalog"].revision
+    assert graph["catalog"].revision != "f" * 64
+    assert len(a1.bybit_tier_table_sha256_v1(table)) == 64
+    assert d_domain.risk_domain_sha256_v2(graph["domain"]) == graph["inputs"].risk_domain_sha256
+    return graph
+
+
+@pytest.mark.parametrize("index", (0, 1), ids=("selected-x", "held-pending-y"))
+def test_d_full_binder_rejects_coherent_foreign_table_catalog_pin(index: int) -> None:
+    graph = d_table_catalog_revision_substitution(index)
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_SOURCE_MISMATCH$"):
+        bind_d_graph(graph)
+
+
+def test_d_calculate_rejects_coherent_foreign_y_table_pin_before_selector() -> None:
+    graph = d_table_catalog_revision_substitution(1)
+    original = bind_d_graph(full_d_graph())
+    bound = replace(
+        original,
+        risk_inputs=graph["inputs"],
+        preparation=graph["preparation"],
+        domain=graph["domain"],
+        venue=a1.BybitVenueStateV1(*graph["venue_fields"]),
+    )
+    assert len(a1.bybit_model_inputs_sha256_v1(bound)) == 64
+    # Selected X remains genuinely feasible; whole-held binding must reject Y
+    # before that local selector can stand in for catalog provenance.
+    assert type(c_model.select_smallest_bybit_leverage_v1(bound.point, now=graph["now"])) is (
+        c_model.BybitLeverageSearchV1
+    )
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_SOURCE_MISMATCH$"):
+        c_model.calculate_bound_bybit_model_v1(bound, now=graph["now"])
