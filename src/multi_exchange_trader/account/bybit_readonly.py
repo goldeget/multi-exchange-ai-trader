@@ -29,6 +29,8 @@ from urllib.parse import urlencode
 from uuid import uuid4
 
 import httpx
+from httpx._client import ClientState
+from httpx._urlparse import ParseResult
 
 from ..credential_resolution import CredentialResolver
 from ..trading_product import InstrumentKey, bybit_category
@@ -201,6 +203,77 @@ class _InstrumentRoute:
         self.budget.require_active_group(self.group)
 
 
+type _RiskWire = tuple[
+    httpx.URL, httpx.Headers, str, ParseResult, str | None,
+    tuple[tuple[bytes, bytes, bytes], ...],
+]
+
+
+def _risk_request_wire(request: httpx.Request, expected: _RiskWire | None = None) -> _RiskWire:
+    """Pinned HTTPX 0.28 wire fields only; no virtual request/header/URL calls."""
+    if type(request) is not httpx.Request:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    try:
+        url, headers, method = request.url, request.headers, request.method
+    except AttributeError:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH") from None
+    if type(url) is not httpx.URL or type(headers) is not httpx.Headers or type(method) is not str:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    try:
+        reference = url._uri_reference
+    except AttributeError:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH") from None
+    if type(reference) is not ParseResult or len(reference) != 7:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    size = 0
+    for value in (method, reference.scheme, reference.userinfo, reference.host, reference.path):
+        if type(value) is not str:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        size += len(value)
+        if size > 65536 or not value.isascii():
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    port = reference.port
+    if port is not None and (type(port) is not int or not 0 <= port <= 65535):
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    size += 0 if port is None else 5
+    if size > 65536:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    try:
+        encoding, entries = headers._encoding, headers._list
+    except AttributeError:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH") from None
+    for optional in (reference.query, reference.fragment, encoding):
+        if optional is not None:
+            if type(optional) is not str:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+            size += len(optional)
+            if size > 65536 or not optional.isascii():
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    if type(entries) is not list or len(entries) > 64:
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    frozen: list[tuple[bytes, bytes, bytes]] = []
+    for entry in entries:
+        if type(entry) is not tuple or len(entry) != 3:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        for leaf in entry:
+            if type(leaf) is not bytes:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+            size += len(leaf)
+            if size > 65536:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        # HTTPX semantic lookup uses slot1, while the wire uses slot0.
+        if (not entry[0] or not entry[0].isascii() or entry[0].lower() != entry[1]
+                or entry[1].startswith(b"x-bapi")):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        frozen.append(entry)
+    packed = tuple(frozen)
+    if expected is not None and (
+            url is not expected[0] or headers is not expected[1] or method != expected[2]
+            or reference != expected[3] or encoding != expected[4] or packed != expected[5]):
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    return url, headers, method, reference, encoding, packed
+
+
 @dataclass
 class _RiskRoute(_InstrumentRoute):
     owner: "BybitReadOnlyClient | None" = None
@@ -242,21 +315,19 @@ class _RiskRoute(_InstrumentRoute):
         if (type(self.owner) is not BybitReadOnlyClient
                 or type(self.client) is not httpx.AsyncClient):
             raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
-        context = self.operation_context
-        if type(context) is not ContextVar or self.owner._operation is not context:
-            raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
-        operation = context.get()
-        if (operation is not self.budget if self.operation_entered else
-                operation is not None and operation is not self.budget):
-            raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
         if self.owner._risk_generation is None:
             raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
         if (type(self.generation) is not str or type(self.source_id) is not str
                 or type(self.owner._risk_generation) is not str
                 or type(self.owner._risk_source_id) is not str):
             raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
-        if self.client.is_closed:
+        state = self.client._state
+        if type(state) is not ClientState:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
+        if state is ClientState.CLOSED:
             raise InstrumentSourceError("INSTRUMENT_SOURCE_CLOSED")
+        if state is not ClientState.UNOPENED and state is not ClientState.OPENED:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_RETIRED")
         if (self.owner._client is not self.client
                 or self.owner._risk_http_client is not self.client
                 or self.owner._risk_generation != self.generation
@@ -277,6 +348,13 @@ class _RiskRoute(_InstrumentRoute):
                 or self.owner._api_key != "" or self.owner._api_secret != ""
                 or self.owner._credential_check is not None):
             raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+        context = self.operation_context
+        if type(context) is not ContextVar or self.owner._operation is not context:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
+        operation = context.get()
+        if (operation is not self.budget if self.operation_entered else
+                operation is not None and operation is not self.budget):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
 
     def _clock_check(self) -> None:
         now = time.monotonic()
@@ -286,19 +364,32 @@ class _RiskRoute(_InstrumentRoute):
         if self.deadline is not None and now >= self.deadline:
             raise InstrumentSourceError("INSTRUMENT_SOURCE_TIMEOUT")
 
-    def check(self) -> None:
+    def check(self, request: httpx.Request | None = None) -> None:
         self._owner_check()
         self._group_check()
         self.budget.require_active_group(self.group)
-        # All callbackful checks precede the external owner guard. Its final
-        # higher-owner proof must not be followed by another route clock.
+        # Semantic library observations and clocks precede the higher-owner
+        # guard. Only closed wire fields and raw owner/context proofs follow it.
         self._clock_check()
+        wire: _RiskWire | None = None
+        if request is not None:
+            wire = _risk_request_wire(request)
+            origin = self.request_origin(request)
+            # Bracket semantic observations with the same closed wire snapshot.
+            # Observation-time owner loss retains its ordinary lifetime error.
+            self._owner_check()
+            self._group_check()
+            _risk_request_wire(request, wire)
+            self.sent_origin = origin
         if self.owner_guard is not None:
             try:
                 self.owner_guard()
             except BaseException as error:
                 self.owner_failure = error
                 raise
+        if request is not None:
+            assert wire is not None
+            _risk_request_wire(request, wire)
         self._owner_check()
         self._group_check()
 
@@ -873,10 +964,7 @@ class BybitReadOnlyClient:
             # callbacks/proof; rejection at that boundary is still charged.
             route.budget.before_attempt(route.attempt)
             if isinstance(route, _RiskRoute):
-                route.check()
-                # The last guard may reach the already built request. Reprove
-                # the exact outgoing object after every callback and clock.
-                route.sent_origin = route.request_origin(request)
+                route.check(request)
         response = await self._client.send(request, stream=True)
         primary: BaseException | None = None
         try:

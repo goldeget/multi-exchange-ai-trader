@@ -1523,3 +1523,417 @@ async def test_e2a_final_proof_rejects_changed_original_factory_types(owner: str
             KEY, cursor="", budget=budget, group=group, deadline=None, owner_guard=guard)
     await client.aclose()
     assert budget.physical_attempts == 1
+
+
+
+async def test_e2a_fix_original_late_header_vector_never_sends_after_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    sent: list[bool] = []
+    callbacks: list[int] = []
+    stream = Stream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(client._risk_generation is None)
+        return httpx.Response(200, stream=stream)
+
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    operation_context = client._operation
+    original_build = client._build_request
+
+    def build(path: str, params: list[tuple[str, str]], *, signed: bool) -> httpx.Request:
+        request = original_build(path, params, signed=signed)
+        requests.append(request)
+        return request
+
+    monkeypatch.setattr(client, "_build_request", build)
+    budget = MonitoringReadBudget()
+
+    class LateHeaders(httpx.Headers):
+        def get_list(self, key: str, split_commas: bool = False) -> list[str]:
+            if key.lower() == "accept-encoding":
+                callbacks.append(budget.physical_attempts)
+                client._risk_generation = None
+            return super().get_list(key, split_commas=split_commas)
+
+    def guard() -> None:
+        if budget.physical_attempts == 1 and not sent:
+            requests[-1].headers = LateHeaders(requests[-1].headers)
+
+    with budget.reuse_or_open_receipt() as group, pytest.raises(InstrumentSourceError) as caught:
+        await client.read_risk_limit_envelope(
+            KEY, cursor="", budget=budget, group=group, deadline=None, owner_guard=guard)
+    await client.aclose()
+    assert sent == [] and callbacks == []
+    assert budget.physical_attempts == 1 and stream.closes == 0
+    assert caught.value.code == "INSTRUMENT_SOURCE_ORIGIN_MISMATCH"
+    assert operation_context.get() is None
+
+
+async def test_e2a_fix_original_final_state_vector_cannot_return_or_call_equality() -> None:
+    import inspect
+
+    from httpx._client import ClientState
+
+    sent: list[httpx.Request] = []
+    callbacks: list[bool] = []
+    stream = Stream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, stream=stream)
+
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    raw_client = client._client
+    operation_context = client._operation
+    original_state = raw_client._state
+    budget = MonitoringReadBudget()
+    fired = False
+
+    class LateState:
+        def __eq__(self, other: object) -> bool:
+            callbacks.append(operation_context.get() is budget)
+            operation_context.set(None)
+            raw_client._state = original_state
+            return False
+
+    def guard() -> None:
+        nonlocal fired
+        names = {frame.function for frame in inspect.stack()}
+        if (stream.closes == 1 and "read_risk_limit_envelope" in names
+                and "_read" not in names):
+            fired = True
+            raw_client._state = cast(ClientState, LateState())
+
+    try:
+        with budget.reuse_or_open_receipt() as group, pytest.raises(
+            InstrumentSourceError, match="RETIRED"
+        ):
+            await client.read_risk_limit_envelope(
+                KEY, cursor="", budget=budget, group=group, deadline=None, owner_guard=guard)
+        assert fired and callbacks == [] and operation_context.get() is None
+        assert len(sent) == budget.physical_attempts == stream.closes == 1
+    finally:
+        # Only restore the fixture's library state to close it; never repair the
+        # original operation context, whose reset is part of the assertion.
+        raw_client._state = original_state
+        await client.aclose()
+
+
+async def test_e2a_fix_preexisting_header_subclass_rejected_without_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import inspect
+
+    requests: list[httpx.Request] = []
+    callbacks: list[int] = []
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda request: pytest.fail("retired during observation then sent")))
+    original_build = client._build_request
+
+    def build(path: str, params: list[tuple[str, str]], *, signed: bool) -> httpx.Request:
+        request = original_build(path, params, signed=signed)
+        requests.append(request)
+        return request
+
+    monkeypatch.setattr(client, "_build_request", build)
+
+    class ObservedHeaders(httpx.Headers):
+        def get_list(self, key: str, split_commas: bool = False) -> list[str]:
+            if key == "accept-encoding":
+                callbacks.append(budget.physical_attempts)
+                client._risk_generation = None
+            return super().get_list(key, split_commas=split_commas)
+
+    def mutate() -> None:
+        if requests and any(frame.function == "before_attempt" for frame in inspect.stack()):
+            requests[-1].headers = ObservedHeaders(requests[-1].headers)
+
+    budget = MonitoringReadBudget(guard=mutate)
+    with budget.reuse_or_open_receipt() as group, pytest.raises(
+        InstrumentSourceError, match="ORIGIN_MISMATCH"
+    ):
+        await read(client, budget, group)
+    await client.aclose()
+    assert callbacks == [] and budget.physical_attempts == 1
+    assert client._operation.get() is None
+
+
+@pytest.mark.parametrize("stage", ["entry", "final"])
+async def test_e2a_fix_real_closed_state_retains_closed_error(stage: str) -> None:
+    import inspect
+
+    from httpx._client import ClientState
+
+    stream = Stream()
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=stream)))
+    if stage == "entry":
+        await client._client.aclose()
+    budget = MonitoringReadBudget()
+
+    def guard() -> None:
+        names = {frame.function for frame in inspect.stack()}
+        if (stage == "final" and stream.closes == 1 and "read_risk_limit_envelope" in names
+                and "_read" not in names):
+            client._client._state = ClientState.CLOSED
+
+    with budget.reuse_or_open_receipt() as group, pytest.raises(
+        InstrumentSourceError, match="CLOSED"
+    ):
+        await client.read_risk_limit_envelope(
+            KEY, cursor="", budget=budget, group=group, deadline=None, owner_guard=guard)
+    await client.aclose()
+    assert client._operation.get() is None
+    assert budget.physical_attempts == stream.closes == (stage == "final")
+
+
+
+@pytest.mark.parametrize("mutation", [
+    "request_type", "url_type", "headers_type", "method_type", "reference_type",
+    "reference_subclass", "url_scheme_type", "url_userinfo_type", "url_host_type",
+    "url_port_type", "url_path_type", "url_query_type", "url_fragment_type",
+    "header_list_type", "header_entry_type", "header_raw_name_type",
+    "header_lookup_name_type", "header_value_type", "header_encoding_type",
+    "header_count", "aggregate_bytes", "method_value", "url_scheme_value",
+    "url_userinfo_value", "url_host_value", "url_port_value", "url_path_value",
+    "url_query_value", "url_fragment_value", "header_raw_name_value",
+    "header_lookup_name_value", "header_value_value", "header_encoding_value",
+    "url_replacement", "headers_replacement", "reference_shape",
+    "missing_method", "missing_reference", "missing_header_list", "missing_header_encoding",
+])
+async def test_e2a_fix_final_wire_leaves_reject_without_open_callbacks_or_send(
+    mutation: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections.abc import Iterator
+
+    from httpx._urlparse import ParseResult
+
+    events: list[str] = []
+    requests: list[httpx.Request] = []
+
+    class OpenStr(str):
+        def __eq__(self, other: object) -> bool:
+            events.append("str equality")
+            return True
+
+        def __ne__(self, other: object) -> bool:
+            events.append("str inequality")
+            return False
+
+        __hash__ = str.__hash__
+
+    class OpenBytes(bytes):
+        def lower(self) -> bytes:
+            events.append("bytes lower")
+            return super().lower()
+
+        def decode(self, encoding: str = "utf-8", errors: str = "strict") -> str:
+            events.append("bytes decode")
+            return super().decode(encoding, errors)
+
+    class OpenList(list[tuple[bytes, bytes, bytes]]):
+        def __iter__(self) -> Iterator[tuple[bytes, bytes, bytes]]:
+            events.append("header list iteration")
+            return super().__iter__()
+
+    class OpenTuple(tuple[bytes, ...]):
+        def __iter__(self) -> Iterator[bytes]:
+            events.append("header tuple iteration")
+            return super().__iter__()
+
+    class OpenRequest(httpx.Request):
+        def __getattribute__(self, name: str) -> object:
+            events.append("request attribute")
+            return super().__getattribute__(name)
+
+    class OpenURL(httpx.URL):
+        @property
+        def scheme(self) -> str:
+            events.append("URL property")
+            return super().scheme
+
+    class OpenHeaders(httpx.Headers):
+        def get_list(self, key: str, split_commas: bool = False) -> list[str]:
+            events.append("header method")
+            return super().get_list(key, split_commas=split_commas)
+
+    class OpenReference(ParseResult):
+        def __iter__(self) -> Iterator[str | int | None]:
+            events.append("reference iteration")
+            return super().__iter__()
+
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda request: pytest.fail("changed/open wire leaf reached transport")))
+    original_build = client._build_request
+
+    def build(path: str, params: list[tuple[str, str]], *, signed: bool) -> httpx.Request:
+        request = original_build(path, params, signed=signed)
+        requests.append(request)
+        return request
+
+    monkeypatch.setattr(client, "_build_request", build)
+    budget = MonitoringReadBudget()
+
+    def guard() -> None:
+        if budget.physical_attempts != 1:
+            return
+        request = requests[-1]
+        reference = request.url._uri_reference
+        if mutation == "missing_method":
+            del request.method
+        elif mutation == "missing_reference":
+            del request.url._uri_reference
+        elif mutation == "missing_header_list":
+            del request.headers._list
+        elif mutation == "missing_header_encoding":
+            del request.headers._encoding
+        elif mutation == "reference_shape":
+            request.url._uri_reference = tuple.__new__(ParseResult, ())
+        elif mutation == "request_type":
+            request.__class__ = OpenRequest
+        elif mutation == "url_type":
+            request.url.__class__ = OpenURL
+        elif mutation == "headers_type":
+            request.headers.__class__ = OpenHeaders
+        elif mutation == "method_type":
+            request.method = OpenStr("GET")
+        elif mutation == "reference_type":
+            request.url._uri_reference = cast(ParseResult, object())
+        elif mutation == "reference_subclass":
+            request.url._uri_reference = OpenReference(*reference)
+        elif mutation.startswith("url_") and mutation.endswith(("_type", "_value")):
+            field = mutation[4:].rsplit("_", 1)[0]
+            if mutation.endswith("_type"):
+                value: object = True if field == "port" else OpenStr("x")
+            else:
+                value = 444 if field == "port" else "changed"
+            replace = cast(Callable[..., ParseResult], reference._replace)
+            request.url._uri_reference = replace(**{field: value})
+        elif mutation == "header_list_type":
+            request.headers._list = OpenList(request.headers._list)
+        elif mutation == "header_entry_type":
+            request.headers._list[0] = cast(tuple[bytes, bytes, bytes],
+                                             OpenTuple(request.headers._list[0]))
+        elif mutation in ("header_raw_name_type", "header_lookup_name_type", "header_value_type",
+                          "header_raw_name_value", "header_lookup_name_value", "header_value_value"):
+            index = 0 if "raw_name" in mutation else 1 if "lookup_name" in mutation else 2
+            entry = list(request.headers._list[0])
+            entry[index] = OpenBytes(entry[index]) if mutation.endswith("_type") else b"changed"
+            request.headers._list[0] = (entry[0], entry[1], entry[2])
+        elif mutation == "header_encoding_type":
+            request.headers._encoding = OpenStr("ascii")
+        elif mutation == "header_encoding_value":
+            request.headers._encoding = "utf-8"
+        elif mutation == "header_count":
+            request.headers._list.extend([(b"x", b"x", b"y")] * 65)
+        elif mutation == "aggregate_bytes":
+            request.headers._list.append((b"x", b"x", b"y" * 65536))
+        elif mutation == "method_value":
+            request.method = "POST"
+        elif mutation == "url_replacement":
+            request.url = httpx.URL(request.url)
+        else:
+            assert mutation == "headers_replacement"
+            request.headers = httpx.Headers(request.headers)
+
+    with budget.reuse_or_open_receipt() as group, pytest.raises(
+        InstrumentSourceError, match="ORIGIN_MISMATCH"
+    ):
+        await client.read_risk_limit_envelope(
+            KEY, cursor="", budget=budget, group=group, deadline=None, owner_guard=guard)
+    assert events == [] and budget.physical_attempts == 1
+    assert client._operation.get() is None
+    await client.aclose()
+
+
+async def test_e2a_fix_unchanged_wire_with_higher_guard_keeps_positive_capture() -> None:
+    sent: list[httpx.Request] = []
+    guards: list[int] = []
+    stream = Stream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, stream=stream)
+
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(handler))
+    budget = MonitoringReadBudget()
+    with budget.reuse_or_open_receipt() as group:
+        envelope = await client.read_risk_limit_envelope(
+            KEY, cursor="", budget=budget, group=group, deadline=None,
+            owner_guard=lambda: guards.append(budget.physical_attempts))
+    await client.aclose()
+    assert envelope.decoded_body_bytes == RAW and guards
+    assert len(sent) == budget.physical_attempts == stream.closes == 1
+    assert client._operation.get() is None
+
+
+
+async def test_e2a_fix_raw_credential_name_cannot_hide_behind_normalized_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda request: pytest.fail("hidden raw credential header sent")))
+    original_build = client._build_request
+
+    def build(path: str, params: list[tuple[str, str]], *, signed: bool) -> httpx.Request:
+        request = original_build(path, params, signed=signed)
+        raw_name, lookup_name, value = request.headers._list[0]
+        assert raw_name.lower() == lookup_name
+        request.headers._list[0] = (b"X-BAPI-SIGN", lookup_name, value)
+        return request
+
+    monkeypatch.setattr(client, "_build_request", build)
+    budget = MonitoringReadBudget()
+    with budget.reuse_or_open_receipt() as group, pytest.raises(
+        InstrumentSourceError, match="ORIGIN_MISMATCH"
+    ):
+        await read(client, budget, group)
+    await client.aclose()
+    assert budget.physical_attempts == 1 and client._operation.get() is None
+
+
+
+@pytest.mark.parametrize("change,expected", [
+    ("retire", "RETIRED"), ("wire", "ORIGIN_MISMATCH"),
+])
+async def test_e2a_fix_controlled_pre_guard_observation_is_bracketed(
+    change: str, expected: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
+
+    # Controlled observation-time test hook over an exact closed request. This
+    # models ordering; it does not qualify attacks on global library methods.
+    callbacks: list[int] = []
+    client = module.BybitReadOnlyClient.for_public_instruments(
+        source_environment="PUBLIC_MAINNET", transport=httpx.MockTransport(
+            lambda request: pytest.fail("observation changed owner/wire then sent")))
+    budget = MonitoringReadBudget()
+    original_observation = module._RiskRoute.request_origin
+
+    def observe(route: module._RiskRoute, request: httpx.Request) -> HttpsOrigin:
+        origin = original_observation(route, request)
+        if budget.physical_attempts == 1:
+            callbacks.append(1)
+            if change == "retire":
+                client._risk_generation = None
+            else:
+                request.url = request.url.copy_with(path="/v5/order/create")
+        return origin
+
+    monkeypatch.setattr(module._RiskRoute, "request_origin", observe)
+    with budget.reuse_or_open_receipt() as group, pytest.raises(
+        InstrumentSourceError, match=expected
+    ):
+        await read(client, budget, group)
+    await client.aclose()
+    assert callbacks == [1] and budget.physical_attempts == 1
+    assert client._operation.get() is None
