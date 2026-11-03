@@ -347,12 +347,12 @@ class BybitInstrumentCatalogProducer:
                     _reject("BUDGET_EXHAUSTED")
                 slot.phase = "COLLECTING"
                 for key in slot.keys:
-                    self._check_pending(slot)
+                    pre_wall, pre_mono = self._check_pending(slot)
                     before = self._active_group(slot)
                     envelope = await self._client.read_instrument_envelope(
                         key, budget=budget, group=group
                     )
-                    self._check_pending(slot)
+                    post_wall, post_mono = self._check_pending(slot)
                     validate_instrument_envelope_read(envelope)
                     host = (
                         "api.bybit.com"
@@ -374,6 +374,10 @@ class BybitInstrumentCatalogProducer:
                     if (
                         envelope.request_started_at < slot.started_at
                         or envelope.started_mono < slot.started_mono
+                        or envelope.request_started_at < pre_wall
+                        or envelope.started_mono < pre_mono
+                        or envelope.received_at > post_wall
+                        or envelope.received_mono > post_mono
                     ):
                         _reject("CLOCK_INVALID")
                     slot.envelopes += (envelope,)

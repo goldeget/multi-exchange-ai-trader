@@ -940,3 +940,156 @@ async def test_wrong_loop_rejects_refresh_lookup_retire_and_close(clocks: Clocks
     await asyncio.to_thread(other_thread)
     assert view(owner, handle)
     await owner.aclose()
+
+
+@pytest.mark.parametrize("clock_kind", ["wall", "mono"])
+async def test_recovered_request_start_rollback_rejected_before_next_key(
+    clocks: Clocks,
+    monkeypatch: pytest.MonkeyPatch,
+    clock_kind: str,
+) -> None:
+    base_wall, base_mono = clocks.wall, clocks.mono
+    source_samples = 0
+    sends = 0
+    captured: list[InstrumentEnvelopeRead] = []
+
+    def source_wall(_: object) -> datetime:
+        nonlocal source_samples
+        # Called by the real strict client only at request start and body receipt.
+        # The third key is also scripted so the unfixed producer reaches a genuine
+        # missing-rejection failure, rather than exhausting this clock harness.
+        offsets = (0, 1, 0.5, 1.5, 1.5, 1.5)
+        offset = offsets[source_samples]
+        source_samples += 1
+        clocks.wall = base_wall + timedelta(
+            seconds=offset if clock_kind == "wall" else max(offset, 1)
+        )
+        clocks.mono = base_mono + (offset if clock_kind == "mono" else 0)
+        return clocks.wall
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal sends
+        sends += 1
+        return response(request)
+
+    owner = producer(clocks, handler)
+    original_read = owner._client.read_instrument_envelope
+
+    async def capture_actual_envelope(
+        key: InstrumentKey,
+        *,
+        budget: MonitoringReadBudget,
+        group: budget_module.ReadGroupToken,
+    ) -> InstrumentEnvelopeRead:
+        envelope = await original_read(key, budget=budget, group=group)
+        captured.append(envelope)
+        return envelope  # Unchanged original strict-route evidence, never a forged DTO.
+
+    monkeypatch.setattr(client_module, "datetime", SimpleNamespace(now=source_wall))
+    # The parent clock is independent here: isolate the issuer's retained source
+    # clock ordering from the already-covered parent-budget rollback rejection.
+    monkeypatch.setattr(budget_module, "time", SimpleNamespace(monotonic=lambda: base_mono))
+    monkeypatch.setattr(owner._client, "read_instrument_envelope", capture_actual_envelope)
+    keys = (
+        SPOT,
+        InstrumentKey("BYBIT", "SPOT", "ETHUSDT"),
+        InstrumentKey("BYBIT", "SPOT", "XRPUSDT"),
+    )
+    try:
+        with pytest.raises(InstrumentSourceError) as caught:
+            await refresh(owner, keys=keys)
+        assert_code(caught, "CLOCK_INVALID")
+        assert sends == 2 and source_samples == 4 and len(captured) == 2
+        previous, following = captured
+        if clock_kind == "wall":
+            assert previous.received_at == base_wall + timedelta(seconds=1)
+            assert following.request_started_at == base_wall + timedelta(seconds=0.5)
+            assert following.received_at == base_wall + timedelta(seconds=1.5)
+        else:
+            assert previous.received_mono == base_mono + 1
+            assert following.started_mono == base_mono + 0.5
+            assert following.received_mono == base_mono + 1.5
+        assert owner._current is None and owner._pending is None
+    finally:
+        await owner.aclose()
+
+
+@pytest.mark.parametrize("clock_kind", ["wall", "mono"])
+async def test_recovered_receive_to_return_rollback_rejected_before_next_key(
+    clocks: Clocks,
+    monkeypatch: pytest.MonkeyPatch,
+    clock_kind: str,
+) -> None:
+    base_wall, base_mono = clocks.wall, clocks.mono
+    owner_samples: list[tuple[datetime, float]] = []
+    source_samples = 0
+    sent_symbols: list[str] = []
+    captured: list[InstrumentEnvelopeRead] = []
+
+    def owner_wall() -> datetime:
+        offset = (0, 0, 0.5, 1.5)[min(len(owner_samples), 3)]
+        return base_wall + timedelta(seconds=offset if clock_kind == "wall" else 0)
+
+    def owner_mono() -> float:
+        offset = (0, 0, 0.5, 1.5)[min(len(owner_samples), 3)]
+        value = base_mono + (offset if clock_kind == "mono" else 0)
+        owner_samples.append((owner_wall(), value))
+        return value
+
+    def source_wall(_: object) -> datetime:
+        nonlocal source_samples
+        # Real strict-client start/receive pairs. Later keys remain valid even
+        # if the first post-await sample is wrongly discarded before recovery.
+        offset = (0, 1, 1.5, 1.5, 1.5, 1.5)[source_samples]
+        source_samples += 1
+        clocks.wall = base_wall + timedelta(seconds=offset if clock_kind == "wall" else 0)
+        clocks.mono = base_mono + (offset if clock_kind == "mono" else 0)
+        return clocks.wall
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent_symbols.append(request.url.params["symbol"])
+        return response(request)
+
+    owner = module.BybitInstrumentCatalogProducer._for_testing(
+        source_environment="PUBLIC_MAINNET",
+        transport=httpx.MockTransport(handler),
+        wall_clock=owner_wall,
+        monotonic_clock=owner_mono,
+    )
+    original_read = owner._client.read_instrument_envelope
+
+    async def capture_actual_envelope(
+        key: InstrumentKey,
+        *,
+        budget: MonitoringReadBudget,
+        group: budget_module.ReadGroupToken,
+    ) -> InstrumentEnvelopeRead:
+        envelope = await original_read(key, budget=budget, group=group)
+        captured.append(envelope)
+        return envelope
+
+    monkeypatch.setattr(client_module, "datetime", SimpleNamespace(now=source_wall))
+    monkeypatch.setattr(budget_module, "time", SimpleNamespace(monotonic=lambda: base_mono))
+    monkeypatch.setattr(owner._client, "read_instrument_envelope", capture_actual_envelope)
+    keys = (
+        SPOT,
+        InstrumentKey("BYBIT", "SPOT", "ETHUSDT"),
+        InstrumentKey("BYBIT", "SPOT", "XRPUSDT"),
+    )
+    try:
+        with pytest.raises(InstrumentSourceError) as caught:
+            await refresh(owner, keys=keys)
+        assert_code(caught, "CLOCK_INVALID")
+        assert sent_symbols == ["BTCUSDT"]
+        assert source_samples == 2 and len(captured) == 1 and len(owner_samples) == 3
+        envelope = captured[0]
+        post_wall, post_mono = owner_samples[2]
+        if clock_kind == "wall":
+            assert envelope.received_at == base_wall + timedelta(seconds=1)
+            assert post_wall == base_wall + timedelta(seconds=0.5)
+        else:
+            assert envelope.received_mono == base_mono + 1
+            assert post_mono == base_mono + 0.5
+        assert owner._current is None and owner._pending is None
+    finally:
+        await owner.aclose()

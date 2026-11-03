@@ -154,16 +154,14 @@ def _digits(coefficient: int) -> tuple[int, ...]:
 
 
 def _denominator_factors(denominator: int) -> tuple[int, int, int]:
+    # Inputs already have the integer-work bound. Classification alone imposes
+    # no finite-decimal scale bound on a potentially nonterminating display.
     twos = (denominator & -denominator).bit_length() - 1
-    if twos > _MAX_DIGITS:
-        raise RiskV2Rejected("RISK_V2_RESOURCE_LIMIT")
     remaining = denominator >> twos
     fives = 0
     while remaining % 5 == 0:
         remaining //= 5
         fives += 1
-        if fives > _MAX_DIGITS:
-            raise RiskV2Rejected("RISK_V2_RESOURCE_LIMIT")
     return twos, fives, remaining
 
 
@@ -187,6 +185,8 @@ def finite_decimal_v2(value: Fraction) -> Decimal:
     if remaining != 1:
         raise RiskV2Rejected("RISK_V2_INPUT_INVALID")
     scale = max(twos, fives)
+    if scale > _MAX_DIGITS:
+        raise RiskV2Rejected("RISK_V2_RESOURCE_LIMIT")
     coefficient = _product(abs(value.numerator), _power(2, scale - twos))
     coefficient = _product(coefficient, _power(5, scale - fives))
     return Decimal((int(value.numerator < 0), _digits(coefficient), -scale))
