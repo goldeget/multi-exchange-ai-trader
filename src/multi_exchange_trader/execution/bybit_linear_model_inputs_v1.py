@@ -29,6 +29,7 @@ from multi_exchange_trader.account.risk_limit_envelope import (
 )
 from multi_exchange_trader.execution.protection import ProtectionScope
 from multi_exchange_trader.execution.risk_v2_contracts import (
+    FixedLimitEnvelopeV2,
     InstrumentPinV2,
     RiskObservationRefV2,
     RiskSourceEnvironmentV2,
@@ -43,6 +44,7 @@ from multi_exchange_trader.execution.risk_v2_contracts import (
     _pin_payload_v2,
     _time_text_v2,
     _utc_v2,
+    envelope_sha256_v2,
 )
 from multi_exchange_trader.execution.risk_v2_math import (
     decimal_fraction_v2,
@@ -1493,3 +1495,99 @@ def bybit_selected_profile_sha256_v1(value: BybitSelectedEntryProfileV1) -> str:
             "source_records": tuple(bybit_source_ref_sha256_v1(source) for source in sources),
         },
     )
+
+
+@dataclass(frozen=True)
+class BybitLinearPointInputV1:
+    """Supplied local bounds, not original preparation or whole-account authority."""
+
+    envelope: FixedLimitEnvelopeV2
+    stop_price: Decimal
+    selected_mark: BybitDecimalFieldV1
+    selected_mark_reference: RiskObservationRefV2
+    fee: BybitLinearFeeInputsV1
+    table: BybitLinearTierTableV1
+    profile: BybitSelectedEntryProfileV1
+    planned_cost_allowance_quote: Decimal
+    capacity_quote: Decimal
+    liquidation_buffer_fraction: Decimal
+    admission_upper_quote: Decimal
+    admission_covered_tier_ids: tuple[str, ...]
+    continuous_leverage_lower: Decimal
+    continuous_leverage_upper: Decimal
+    leverage_step: Decimal
+    max_evidence_age_seconds: Decimal
+    max_quote_age_seconds: Decimal
+    valid_until: datetime
+    model_rule_revision: Literal["BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1"]
+
+    def __post_init__(self) -> None:
+        _point_payload_v1(self)
+        object.__setattr__(self, "valid_until", _utc_v2(self.valid_until))
+
+
+def _point_payload_v1(value: BybitLinearPointInputV1) -> dict[str, object]:
+    _fields_v2(value, BybitLinearPointInputV1)
+    # Validate all fixed children before equality, source links or numeric work.
+    envelope = envelope_sha256_v2(value.envelope)
+    mark = bybit_decimal_field_sha256_v1(value.selected_mark)
+    reference = _observation_payload_v2(value.selected_mark_reference)
+    fee = bybit_fee_inputs_sha256_v1(value.fee)
+    table = bybit_tier_table_sha256_v1(value.table)
+    profile = bybit_selected_profile_sha256_v1(value.profile)
+    _decimal_v2(value.stop_price, source=True, sign="positive")
+    if _decimal_field_v1(value.selected_mark) <= 0:
+        _reject_v1()
+    for amount in (
+        value.planned_cost_allowance_quote,
+        value.capacity_quote,
+        value.liquidation_buffer_fraction,
+        value.max_evidence_age_seconds,
+        value.max_quote_age_seconds,
+    ):
+        _decimal_v2(amount, source=False, sign="nonnegative")
+    for amount in (
+        value.admission_upper_quote,
+        value.continuous_leverage_lower,
+        value.continuous_leverage_upper,
+        value.leverage_step,
+    ):
+        _decimal_v2(amount, source=False, sign="positive")
+    if (
+        decimal_fraction_v2(value.liquidation_buffer_fraction) >= 1
+        or decimal_fraction_v2(value.continuous_leverage_lower) < 1
+        or decimal_fraction_v2(value.continuous_leverage_upper)
+        < decimal_fraction_v2(value.continuous_leverage_lower)
+    ):
+        _reject_v1()
+    for identifier in _tuple_v1(value.admission_covered_tier_ids, 1024, minimum=1):
+        _identifier_v2(identifier)
+    if len(set(value.admission_covered_tier_ids)) != len(value.admission_covered_tier_ids):
+        _reject_v1()
+    _utc_v2(value.valid_until)
+    _literal_v2(value.model_rule_revision, ("BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",))
+    return {
+        "envelope": envelope,
+        "stop_price": decimal_text_v2(value.stop_price),
+        "selected_mark": mark,
+        "selected_mark_reference": reference,
+        "fee": fee,
+        "table": table,
+        "profile": profile,
+        "planned_cost_allowance_quote": decimal_text_v2(value.planned_cost_allowance_quote),
+        "capacity_quote": decimal_text_v2(value.capacity_quote),
+        "liquidation_buffer_fraction": decimal_text_v2(value.liquidation_buffer_fraction),
+        "admission_upper_quote": decimal_text_v2(value.admission_upper_quote),
+        "admission_covered_tier_ids": value.admission_covered_tier_ids,
+        "continuous_leverage_lower": decimal_text_v2(value.continuous_leverage_lower),
+        "continuous_leverage_upper": decimal_text_v2(value.continuous_leverage_upper),
+        "leverage_step": decimal_text_v2(value.leverage_step),
+        "max_evidence_age_seconds": decimal_text_v2(value.max_evidence_age_seconds),
+        "max_quote_age_seconds": decimal_text_v2(value.max_quote_age_seconds),
+        "valid_until": _time_text_v2(value.valid_until),
+        "model_rule_revision": value.model_rule_revision,
+    }
+
+
+def bybit_point_input_sha256_v1(value: BybitLinearPointInputV1) -> str:
+    return _canonical_sha256_v2("BybitLinearPointInputV1", _point_payload_v1(value))

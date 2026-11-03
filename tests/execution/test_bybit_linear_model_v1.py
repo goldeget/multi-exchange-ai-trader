@@ -8,12 +8,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal as D
 from decimal import getcontext, localcontext
 from fractions import Fraction as F
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
+from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a
 from multi_exchange_trader.execution import bybit_linear_model_v1 as b
 from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     BybitLinearTierTableV1,
@@ -21,7 +22,16 @@ from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     bybit_tier_table_sha256_v1,
     parse_bybit_risk_limit_table_v1,
 )
-from multi_exchange_trader.execution.risk_v2_contracts import InstrumentPinV2, _canonical_sha256_v2
+from multi_exchange_trader.execution.modes import StrategyReference
+from multi_exchange_trader.execution.product_scope import ProductScope
+from multi_exchange_trader.execution.protection import ProtectionScope
+from multi_exchange_trader.execution.risk_v2_contracts import (
+    FixedLimitEnvelopeV2,
+    InstrumentPinV2,
+    RiskObservationRefV2,
+    RiskScopeV2,
+    _canonical_sha256_v2,
+)
 from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
 from multi_exchange_trader.market_data.instrument_definition import (
     LINEAR_SOURCE_RULE_REVISION,
@@ -100,6 +110,743 @@ def table(
     return parse_bybit_risk_limit_table_v1(
         (envelope,), instrument_pin=pin, observation_id="table1"
     ).table
+
+
+def selector_point(
+    *,
+    side: Any = "BUY",
+    quantity: str = "1",
+    price: str = "1000",
+    mark: str = "1010",
+    stop: str | None = None,
+    cost: str = "20",
+    capacity: str = "225",
+    buffer: str = "0.01",
+    admission: str = "1010",
+    lower: str = "1",
+    upper: str = "5",
+    step: str = "1",
+    fee: str = "0.00055",
+    rows: tuple[tuple[str, str, str, str, str], ...] = (("3000", "0.1", "0.005", "5", "0"),),
+    covered: tuple[str, ...] = ("1",),
+) -> Any:
+    """Complete supplied synthetic graph; no account mode/readback claim is made."""
+    full = table(rows)
+    stamp = full.pages[0].received_at
+    scope = ProtectionScope("synthetic-account", "DEMO")
+    public = full.pages[0]
+    mark_source = replace(
+        public, observation_id="mark1", path="/v5/market/tickers", raw_body_sha256="c" * 64
+    )
+    position_source = replace(
+        public, observation_id="position1", account_scope=scope, path="/v5/position/list"
+    )
+    fee_source = replace(position_source, observation_id="fee1", path="/v5/account/fee-rate")
+    behaviour_source = replace(
+        position_source, observation_id="behaviour1", path="/v5/account/info", query=()
+    )
+
+    def field(source: Any, pointer: str, spelling: str) -> Any:
+        return a.BybitDecimalFieldV1(
+            D(spelling), a.BybitModelFieldRefV1(source, pointer, "STRING", spelling)
+        )
+
+    mark_field = field(mark_source, "/result/list/0/markPrice", mark)
+    profile = a.BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        "BTCUSDT",
+        0,
+        field(position_source, "/result/list/0/size", "0"),
+        (),
+        (),
+        (),
+        a.BybitModelFieldRefV1(position_source, "/result/list/0/autoAddMargin", "INTEGER", "0"),
+        D(0),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (position_source,),
+    )
+    document = a.BybitFeeDocumentRefV1(
+        "https://www.bybit.com/en/help-center/article/Trading-Fee-Structure",
+        "synthetic-v1",
+        stamp,
+        "d" * 64,
+        "synthetic-non-vip-usdt-linear-taker",
+        fee,
+        "FRACTION",
+        "e" * 64,
+        "synthetic-applicability-v1",
+    )
+    fees = a.BybitLinearFeeInputsV1(
+        field(fee_source, "/result/list/0/takerFeeRate", fee),
+        field(fee_source, "/result/list/0/makerFeeRate", "0"),
+        a.BybitNonVipFeeBasisV1(D(fee), document),
+        "USDT",
+        a.BybitTradeBehaviourV1(behaviour_source, True, False, False),
+        "synthetic-applicability-v1",
+    )
+    expiry = stamp + timedelta(seconds=60)
+    envelope = FixedLimitEnvelopeV2(
+        2,
+        RiskScopeV2(
+            ProductScope(scope, "LINEAR"),
+            full.instrument_pin.key,
+            StrategyReference("strategy1", "rev1"),
+        ),
+        full.instrument_pin,
+        "policy-v1",
+        "f" * 64,
+        side,
+        D(quantity),
+        D(price),
+        "LIMIT",
+        "IOC",
+        "ENTRY",
+        False,
+        "quote1",
+        expiry,
+    )
+    return a.BybitLinearPointInputV1(
+        envelope,
+        D(stop if stop is not None else ("950" if side == "BUY" else "1050")),
+        mark_field,
+        RiskObservationRefV2(
+            "mark1", "source1", "FIXTURE", "synthetic-mark-v1", stamp, stamp, "c" * 64
+        ),
+        fees,
+        full,
+        profile,
+        D(cost),
+        D(capacity),
+        D(buffer),
+        D(admission),
+        covered,
+        D(lower),
+        D(upper),
+        D(step),
+        D(10),
+        D(10),
+        expiry,
+        "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    )
+
+
+@pytest.mark.parametrize("side,expected", [("BUY", F(160000, 199)), ("SELL", F(240000, 201))])
+def test_f5_complete_selector(side: str, expected: F) -> None:
+    point = selector_point(side=side)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1
+    assert result.selected.leverage == D(5)
+    assert result.selected.reserve.required_reservation_quote == D(222)
+    assert isinstance(result.selected.liquidation.outcome, b.BybitPositiveRootPointV1)
+    assert result.selected.liquidation.outcome.exact_price == expected
+    assert [candidate.failure_codes for candidate in result.evaluated_prefix] == [
+        ("CAPACITY",)
+    ] * 4 + [()]
+    assert result.evaluated_prefix[3].reserve.required_reservation_quote == D("272.5")
+
+
+def test_rounded_reserve_changes_minimum() -> None:
+    point = selector_point(
+        quantity="1.000000001",
+        price="1",
+        mark="1",
+        stop="0.9",
+        cost="0",
+        capacity="1.000000005",
+        buffer="0",
+        admission="1.000000001",
+        upper="2",
+        fee="0",
+        rows=(("10", "0.1", "0.005", "2", "0"),),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1
+    assert result.selected.leverage == D(2)
+    assert result.evaluated_prefix[0].failure_codes == ("CAPACITY",)
+    assert result.evaluated_prefix[0].reserve.initial_margin_quote == D("1.00000001")
+    assert result.selected.reserve.required_reservation_quote == D("0.50000001")
+    assert isinstance(result.selected.liquidation.outcome, b.BybitPositiveRootPointV1)
+    assert result.selected.liquidation.outcome.exact_price == F(100, 199)
+
+
+def test_l1_no_root_does_not_force_higher_leverage() -> None:
+    point = selector_point(capacity="2000")
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1
+    assert result.selected.leverage == D(1)
+    assert result.selected.liquidation_buffer_result == "MODEL_NO_POSITIVE_TRIGGER"
+    assert len(result.evaluated_prefix) == 1
+
+
+def test_capacity_failure_cannot_hide_unknown_lp() -> None:
+    point = selector_point(
+        side="SELL",
+        price="1000",
+        mark="1000",
+        admission="1000",
+        capacity="0",
+        fee="0",
+        upper="2",
+        rows=(("1500", "0.1", "0.005", "2", "0"),),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitModelRejectedV1
+    assert result.reason == "ROOT_OUTSIDE_CAPTURED_TABLE"
+    assert result.candidate_leverage == D(1)
+    assert result.evaluated_prefix == ()
+
+
+def test_imr_independent_from_max_leverage() -> None:
+    point = selector_point(capacity="0", upper="3", rows=(("3000", "0.4", "0.005", "3", "0"),))
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitModelRejectedV1
+    assert result.public_code == "RISK_V2_LEVERAGE_UNSATISFIABLE"
+    assert result.evaluated_prefix[-1].failure_codes == ("IMR", "CAPACITY")
+
+
+def test_fatal_later_lp_retains_only_complete_earlier_prefix() -> None:
+    point = selector_point(
+        mark="100",
+        admission="100",
+        capacity="0",
+        upper="2",
+        fee="0",
+        rows=(("150", "0.1", "0.005", "2", "0"),),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitModelRejectedV1
+    assert result.reason == "ROOT_OUTSIDE_CAPTURED_TABLE" and result.candidate_leverage == D(2)
+    assert [(c.grid_index, c.leverage, c.failure_codes) for c in result.evaluated_prefix] == [
+        (0, D(1), ("CAPACITY",))
+    ]
+
+
+@pytest.mark.parametrize(
+    "capacity,codes", [("222", ()), ("221.999999999", ("CAPACITY",)), ("222.000000001", ())]
+)
+def test_selector_capacity_uses_rounded_exact_boundary(
+    capacity: str, codes: tuple[str, ...]
+) -> None:
+    point = selector_point(capacity=capacity, lower="5", upper="5")
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.evaluated_prefix[-1].failure_codes == codes
+
+
+@pytest.mark.parametrize(
+    "stop,buffer,code",
+    [
+        ("60", "0.1", ()),
+        ("50", "0", ("LIQUIDATION_BUFFER",)),
+        ("60", "0.100000001", ("LIQUIDATION_BUFFER",)),
+    ],
+)
+def test_selector_buffer_requires_positive_gap_and_inclusive_fraction(
+    stop: str, buffer: str, code: tuple[str, ...]
+) -> None:
+    # LONG L2 with MMR .01: LP=(100-50)/.99=5000/99; choose
+    # P99 instead so exact LP50, gap10 and buffer*P9.9 for stop60.
+    point = selector_point(
+        price="99",
+        mark="99",
+        stop=stop,
+        admission="99",
+        capacity="100",
+        cost="0",
+        fee="0",
+        lower="2",
+        upper="2",
+        buffer=buffer,
+        rows=(("200", "0.1", "0.01", "2", "0"),),
+    )
+    if stop == "60":
+        # Exact equality uses gap=9.9, not a rounded display of a repeating root.
+        point = replace(point, stop_price=D("59.9"))
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert isinstance(result.evaluated_prefix[-1].liquidation.outcome, b.BybitPositiveRootPointV1)
+    assert result.evaluated_prefix[-1].liquidation.outcome.exact_price == F(50)
+    assert result.evaluated_prefix[-1].failure_codes == code
+
+
+def test_selector_failure_reasons_are_complete_fixed_order() -> None:
+    point = selector_point(
+        capacity="0", lower="3", upper="3", stop="600", rows=(("3000", "0.4", "0.005", "3", "0"),)
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.evaluated_prefix[0].failure_codes == ("IMR", "CAPACITY", "LIQUIDATION_BUFFER")
+
+
+def test_selector_zero_origin_fractional_grid() -> None:
+    point = selector_point(lower="1.1", upper="2.1", step="0.5", capacity="2000")
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1
+    assert result.selected.leverage == D("1.5") and result.selected.grid_index == 0
+    assert result.selected.margin.quantity == F(1) and result.selected.margin.entry_limit == F(1000)
+    assert point.stop_price == D(950) and point.planned_cost_allowance_quote == D(20)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"admission_upper_quote": D(1000)},
+        {"admission_covered_tier_ids": ("2",)},
+        {"continuous_leverage_upper": D(6)},
+        {"leverage_step": D(10)},
+    ],
+)
+def test_selector_supplied_bound_mismatches_are_upfront(changes: dict[str, Any]) -> None:
+    point = replace(selector_point(), **changes)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitModelRejectedV1
+    assert result.public_code == "RISK_V2_INPUT_INVALID" and result.reason == "INPUT_MISMATCH"
+    assert result.candidate_leverage is None and result.evaluated_prefix == ()
+
+
+def test_selector_admission_boundary_and_full_table_coverage() -> None:
+    full_rows = (("1010", "0.1", "0.005", "5", "0"), ("3000", "0.2", "0.01", "4", "5.05"))
+    point = selector_point(side="SELL", rows=full_rows)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1
+    assert point.admission_covered_tier_ids == ("1",)
+    assert result.selected.liquidation.consumed_tier_ids == ("1", "2")
+    assert isinstance(result.selected.liquidation.outcome, b.BybitPositiveRootPointV1)
+    assert result.selected.liquidation.outcome.candidate_tier_id == "2"
+    missing = selector_point(
+        rows=(("1000", "0.1", "0.005", "5", "0"), ("3000", "0.2", "0.01", "4", "5")), upper="4"
+    )
+    rejected: Any = b.select_smallest_bybit_leverage_v1(
+        missing, now=missing.table.pages[0].received_at
+    )
+    assert rejected.reason == "INPUT_MISMATCH" and rejected.evaluated_prefix == ()
+    outside = selector_point(rows=(("1000", "0.1", "0.005", "5", "0"),))
+    assert (
+        cast(
+            Any,
+            b.select_smallest_bybit_leverage_v1(outside, now=outside.table.pages[0].received_at),
+        ).reason
+        == "INPUT_MISMATCH"
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "selected_open_order_ids",
+        "selected_conditional_order_ids",
+        "local_unresolved_entry_ids",
+        "prospective_extra_margin_usdt",
+    ],
+)
+def test_selector_rejects_selected_activity_and_added_margin(field: str) -> None:
+    point = selector_point()
+    profile = replace(
+        point.profile, **{field: D(1) if field == "prospective_extra_margin_usdt" else ("active1",)}
+    )
+    point = replace(point, profile=profile)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "PROFILE_UNSUPPORTED" and result.evaluated_prefix == ()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"lpa_perp": False},
+        {"futures_mnt_fee_deduction": True},
+        {"delta_enable": None},
+        {"delta_enable": True},
+    ],
+)
+def test_selector_requires_explicit_supported_behaviour(change: dict[str, Any]) -> None:
+    point = selector_point()
+    point = replace(point, fee=replace(point.fee, behaviour=replace(point.fee.behaviour, **change)))
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "PROFILE_UNSUPPORTED" and result.evaluated_prefix == ()
+
+
+def test_selector_rejects_nonflat_selected_quantity_and_keeps_all_profile_sources() -> None:
+    point = selector_point(capacity="2000")
+    quantity = point.profile.selected_position_quantity
+    nonflat = replace(
+        quantity, value=D(1), reference=replace(quantity.reference, wire_spelling="1")
+    )
+    rejected: Any = b.select_smallest_bybit_leverage_v1(
+        replace(point, profile=replace(point.profile, selected_position_quantity=nonflat)),
+        now=point.table.pages[0].received_at,
+    )
+    assert rejected.reason == "PROFILE_UNSUPPORTED"
+    # Additional supplied account evidence is retained and hashed. A point has
+    # no whole-account held-position/order carrier; D must bind actual held Y.
+    extra = replace(
+        point.profile.source_records[0],
+        observation_id="wallet1",
+        path="/v5/account/wallet-balance",
+        query=(),
+    )
+    augmented = replace(
+        point, profile=replace(point.profile, source_records=(*point.profile.source_records, extra))
+    )
+    selected: Any = b.select_smallest_bybit_leverage_v1(
+        augmented, now=point.table.pages[0].received_at
+    )
+    assert type(selected) is b.BybitLeverageSearchV1 and len(augmented.profile.source_records) == 2
+    assert selected.point_input_sha256 != a.bybit_point_input_sha256_v1(point)
+
+
+def test_selector_consumes_explicit_nonvip_field_basis_and_rejects_out_of_range_rate() -> None:
+    point = selector_point(capacity="2000")
+    observed = point.fee.account_taker_rate.reference
+    as_field = replace(
+        point,
+        fee=replace(
+            point.fee,
+            closing_order_reserve_nonvip_rate=a.BybitNonVipFeeBasisV1(D("0.00055"), observed),
+        ),
+    )
+    selected: Any = b.select_smallest_bybit_leverage_v1(
+        as_field, now=point.table.pages[0].received_at
+    )
+    assert type(selected) is b.BybitLeverageSearchV1
+    field = replace(
+        point.fee.account_taker_rate, value=D(1), reference=replace(observed, wire_spelling="1")
+    )
+    invalid = replace(point, fee=replace(point.fee, account_taker_rate=field))
+    rejected: Any = b.select_smallest_bybit_leverage_v1(
+        invalid, now=point.table.pages[0].received_at
+    )
+    assert rejected.reason == "INPUT_MISMATCH" and rejected.public_code == "RISK_V2_INPUT_INVALID"
+
+
+@pytest.mark.parametrize("kind,spelling", [("STRING", "0"), ("INTEGER", "1"), ("INTEGER", "-0")])
+def test_selector_amr_is_observed_integer_zero(kind: str, spelling: str) -> None:
+    point = selector_point()
+    point = replace(
+        point,
+        profile=replace(
+            point.profile,
+            auto_add_margin=replace(
+                point.profile.auto_add_margin, wire_kind=kind, wire_spelling=spelling
+            ),
+        ),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "PROFILE_UNSUPPORTED" and result.evaluated_prefix == ()
+
+
+@pytest.mark.parametrize(
+    "kind", ["source", "scope", "generation", "symbol", "markref", "membership", "applicability"]
+)
+def test_selector_rejects_borrowed_source_links(kind: str) -> None:
+    point = selector_point()
+    if kind in ("source", "scope", "generation", "symbol"):
+        original = point.fee.account_taker_rate.reference.source
+        source_changes: dict[str, dict[str, Any]] = {
+            "source": {"account_scope": None, "path": "/v5/market/tickers"},
+            "scope": {"account_scope": ProtectionScope("other-account", "DEMO")},
+            "generation": {"source_generation": "gen2"},
+            "symbol": {"query": (("category", "linear"), ("symbol", "ETHUSDT"))},
+        }
+        changes = source_changes[kind]
+        field = replace(
+            point.fee.account_taker_rate,
+            reference=replace(
+                point.fee.account_taker_rate.reference, source=replace(original, **changes)
+            ),
+        )
+        point = replace(point, fee=replace(point.fee, account_taker_rate=field))
+    elif kind == "markref":
+        point = replace(
+            point,
+            selected_mark_reference=replace(
+                point.selected_mark_reference, source_id="other-source"
+            ),
+        )
+    elif kind == "membership":
+        original = point.profile.auto_add_margin.source
+        point = replace(
+            point,
+            profile=replace(
+                point.profile, source_records=(replace(original, observation_id="other1"),)
+            ),
+        )
+    else:
+        point = replace(
+            point, fee=replace(point.fee, nonvip_applicability_revision="other-revision")
+        )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "INPUT_MISMATCH" and result.evaluated_prefix == ()
+
+
+@pytest.mark.parametrize(
+    "delta,expected",
+    [
+        (0, None),
+        (10_000_000, None),
+        (10_000_001, "RISK_V2_STALE_EVIDENCE"),
+        (-1, "RISK_V2_FUTURE_EVIDENCE"),
+    ],
+)
+def test_selector_inclusive_source_age_and_future(delta: int, expected: str | None) -> None:
+    point = selector_point(capacity="2000")
+    now = point.table.pages[0].received_at + timedelta(microseconds=delta)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=now)
+    if expected:
+        assert result.public_code == expected and result.evaluated_prefix == ()
+    else:
+        assert type(result) is b.BybitLeverageSearchV1
+
+
+def test_selector_quote_age_expiry_and_individual_source_time() -> None:
+    point = selector_point(capacity="2000")
+    stamp = point.table.pages[0].received_at
+    quote = replace(point, max_quote_age_seconds=D(0))
+    assert (
+        cast(
+            Any, b.select_smallest_bybit_leverage_v1(quote, now=stamp + timedelta(microseconds=1))
+        ).public_code
+        == "RISK_V2_STALE_EVIDENCE"
+    )
+    longer = replace(point, max_evidence_age_seconds=D(100), max_quote_age_seconds=D(100))
+    assert (
+        cast(Any, b.select_smallest_bybit_leverage_v1(longer, now=longer.valid_until)).public_code
+        == "RISK_V2_EXPIRED"
+    )
+    assert (
+        cast(
+            Any,
+            b.select_smallest_bybit_leverage_v1(
+                replace(longer, valid_until=longer.valid_until + timedelta(microseconds=1)),
+                now=stamp,
+            ),
+        ).public_code
+        == "RISK_V2_CAUSAL_ORDER_INVALID"
+    )
+    # Aggregate reference max does not rescue a separately supplied old request.
+    source = replace(
+        point.profile.source_records[0], request_started_at=stamp - timedelta(seconds=11)
+    )
+    profile = replace(
+        point.profile,
+        source_records=(source,),
+        auto_add_margin=replace(point.profile.auto_add_margin, source=source),
+        selected_position_quantity=replace(
+            point.profile.selected_position_quantity,
+            reference=replace(point.profile.selected_position_quantity.reference, source=source),
+        ),
+    )
+    assert (
+        cast(
+            Any, b.select_smallest_bybit_leverage_v1(replace(point, profile=profile), now=stamp)
+        ).public_code
+        == "RISK_V2_STALE_EVIDENCE"
+    )
+
+
+@pytest.mark.parametrize(
+    "changed", ["quantity", "entry_price", "leverage", "extra_margin", "taker_rate", "table"]
+)
+def test_selector_replays_actual_five_lp_inputs_and_full_table(
+    monkeypatch: pytest.MonkeyPatch, changed: str
+) -> None:
+    point = selector_point(capacity="2000")
+    real = b.solve_bybit_liquidation_v1
+
+    def foreign(**kwargs: Any) -> Any:
+        # A real, complete foreign calculation is structurally hash-valid; only
+        # replay using the actual point originals can reject its preimage.
+        kwargs[changed] = {
+            "quantity": D(2),
+            "entry_price": D(1001),
+            "leverage": D(2),
+            "extra_margin": D(1),
+            "taker_rate": D("0.001"),
+            "table": table((("3000", "0.1", "0.0050", "5", "0"),)),
+        }[changed]
+        return real(**kwargs)
+
+    monkeypatch.setattr(b, "solve_bybit_liquidation_v1", foreign)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.public_code == "RISK_V2_SOURCE_MISMATCH" and result.evaluated_prefix == ()
+
+
+def test_search_digest_has_independent_recipe_and_golden() -> None:
+    point = selector_point()
+    search: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    expected = canonical(
+        "BybitLeverageSearchV1",
+        {
+            "point_input_sha256": a.bybit_point_input_sha256_v1(point),
+            "selected": b.bybit_candidate_evaluation_sha256_v1(search.selected),
+            "evaluated_prefix": [
+                b.bybit_candidate_evaluation_sha256_v1(c) for c in search.evaluated_prefix
+            ],
+            "selection_rule": "SMALLEST_FEASIBLE_PERMITTED_GRID_V1",
+            "model_rule_revision": "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+        },
+    )
+    assert b.bybit_leverage_search_sha256_v1(search) == expected
+    raw = b'{"fields":{"evaluated_prefix":["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],"model_rule_revision":"BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1","point_input_sha256":"0000000000000000000000000000000000000000000000000000000000000000","selected":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","selection_rule":"SMALLEST_FEASIBLE_PERMITTED_GRID_V1"},"record_type":"BybitLeverageSearchV1","schema":"RISK_V2_CANONICAL_V1"}'
+    assert (
+        len(raw) == 452
+        and hashlib.sha256(raw).hexdigest()
+        == "a8505f6e635d718c7632e1dd28bc6cdd1545838e88f6a78483a63838107886e8"
+    )
+    assert (
+        canonical("BybitLeverageSearchV1", json.loads(raw)["fields"])
+        == hashlib.sha256(raw).hexdigest()
+    )
+    for change in (
+        {"evaluated_prefix": ()},
+        {"evaluated_prefix": search.evaluated_prefix[1:]},
+        {"evaluated_prefix": tuple(reversed(search.evaluated_prefix))},
+        {"selected": search.evaluated_prefix[0]},
+        {"point_input_sha256": "x" * 64},
+    ):
+        with pytest.raises(RiskV2Rejected):
+            b.bybit_leverage_search_sha256_v1(forged(search, **change))
+
+
+def test_selector_large_grid_may_succeed_at_first_and_derived_quantity_keeps_role() -> None:
+    point = selector_point(
+        quantity="1" * 300,
+        price="1",
+        mark="1",
+        stop="0.9",
+        admission="1" * 300,
+        capacity="1E+500",
+        cost="0",
+        fee="0",
+        upper="5000",
+        rows=(("1E+500", "0.0001", "0.00001", "5000", "0"),),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert type(result) is b.BybitLeverageSearchV1 and len(result.evaluated_prefix) == 1
+    assert result.selected.leverage == D(1) and result.selected.margin.quantity == F(int("1" * 300))
+
+
+def test_selector_ambient_context_and_staged_authority_limits() -> None:
+    point = selector_point(capacity="2000")
+    digit_limit = sys.get_int_max_str_digits()
+    with localcontext() as context:
+        context.prec = 1
+        context.rounding = "ROUND_FLOOR"
+        context.capitals = 0
+        for signal in context.traps:
+            context.traps[signal] = True
+        before = (
+            context.prec,
+            context.rounding,
+            context.capitals,
+            context.flags.copy(),
+            context.traps.copy(),
+        )
+        first: Any = b.select_smallest_bybit_leverage_v1(
+            point, now=point.table.pages[0].received_at
+        )
+        second: Any = b.select_smallest_bybit_leverage_v1(
+            point, now=point.table.pages[0].received_at + timedelta(seconds=1)
+        )
+        assert b.bybit_leverage_search_sha256_v1(first) == b.bybit_leverage_search_sha256_v1(second)
+        assert before == (
+            context.prec,
+            context.rounding,
+            context.capitals,
+            context.flags.copy(),
+            context.traps.copy(),
+        )
+    assert sys.get_int_max_str_digits() == digit_limit
+    # No UTA status/applied margin mode/readback or whole-account held Y field
+    # exists in PointInput. A successful synthetic local search supplies none.
+    assert {f.name for f in fields(type(point))}.isdisjoint(
+        {"account_mode", "flat_leverage", "held_positions", "held_orders"}
+    )
+    assert point.profile.source_records == (
+        point.profile.selected_position_quantity.reference.source,
+    )
+
+
+def test_selector_budget_stops_only_when_next_candidate_remains() -> None:
+    point = selector_point(
+        price="1",
+        mark="1",
+        stop="0.9999",
+        admission="1",
+        capacity="0",
+        cost="0",
+        fee="0",
+        buffer="0",
+        upper="4097",
+        rows=(("10", "0.0001", "0.00001", "5000", "0"),),
+    )
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "RESOURCE_LIMIT" and result.public_code == "RISK_V2_RESOURCE_LIMIT"
+    assert result.candidate_leverage == D(4097) and len(result.evaluated_prefix) == 4096
+    assert result.evaluated_prefix[0].leverage == D(1) and result.evaluated_prefix[
+        -1
+    ].leverage == D(4096)
+    assert all(
+        c.grid_index == i and c.failure_codes == ("CAPACITY",)
+        for i, c in enumerate(result.evaluated_prefix)
+    )
+
+
+def test_selector_final_canonical_bound_keeps_complete_failure_prefix() -> None:
+    point = selector_point(
+        price="1",
+        mark="1",
+        stop="0.9999",
+        admission="1",
+        capacity="0.00091",
+        cost="0",
+        fee="0",
+        buffer="0",
+        upper="1200",
+        rows=(("10", "0.0001", "0.00001", "1200", "0"),),
+    )
+    # ceil_q(1/1098)=.00091075 > capacity, ceil_q(1/1099)=.00090992
+    # fits. The full unpruned search hash exceeds the independent 64 KiB cap.
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.reason == "RESOURCE_LIMIT" and result.candidate_leverage == D(1099)
+    assert len(result.evaluated_prefix) == 1098 and result.evaluated_prefix[-1].leverage == D(1098)
+    assert all(c.failure_codes == ("CAPACITY",) for c in result.evaluated_prefix)
+
+
+@pytest.mark.parametrize(
+    "code", ["RISK_V2_RESOURCE_LIMIT", "RISK_V2_SOURCE_MISMATCH", "RISK_V2_FUTURE_EVIDENCE"]
+)
+def test_selector_fatal_scalar_failure_preserves_prior_complete_prefix(
+    monkeypatch: pytest.MonkeyPatch, code: str
+) -> None:
+    point = selector_point()
+    real = b.calculate_bybit_margin_point_v1
+
+    def fail_second(**kwargs: Any) -> Any:
+        if kwargs["leverage"] == D(2):
+            raise RiskV2Rejected(code)
+        return real(**kwargs)
+
+    monkeypatch.setattr(b, "calculate_bybit_margin_point_v1", fail_second)
+    result: Any = b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+    assert result.public_code == code and result.candidate_leverage == D(2)
+    assert len(result.evaluated_prefix) == 1 and result.evaluated_prefix[0].failure_codes == (
+        "CAPACITY",
+    )
+
+
+def test_selector_unlisted_and_programmer_errors_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
+    point = selector_point()
+
+    def unlisted(*args: Any, **kwargs: Any) -> Any:
+        raise RiskV2Rejected("RISK_V2_TRADE_LOSS_LIMIT")
+
+    monkeypatch.setattr(b, "calculate_bybit_margin_point_v1", unlisted)
+    with pytest.raises(RiskV2Rejected, match="TRADE_LOSS_LIMIT"):
+        b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
+
+    def fault(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("synthetic-fault")
+
+    monkeypatch.setattr(b, "calculate_bybit_margin_point_v1", fault)
+    with pytest.raises(RuntimeError, match="synthetic-fault"):
+        b.select_smallest_bybit_leverage_v1(point, now=point.table.pages[0].received_at)
 
 
 def margin(side: str = "LONG", **updates: Any) -> Any:

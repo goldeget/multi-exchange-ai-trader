@@ -5,15 +5,21 @@ receipt, or order. No clock, transport, or issuer is created here.
 """
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from math import gcd
 from typing import Literal, NoReturn, cast
 
 from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
+    BybitFeeDocumentRefV1,
+    BybitLinearPointInputV1,
     BybitLinearTierTableV1,
+    BybitModelFieldRefV1,
+    BybitModelSourceRefV1,
     _rational_payload_v1,
     bybit_instrument_pin_sha256_v1,
+    bybit_point_input_sha256_v1,
     bybit_tier_table_sha256_v1,
 )
 from multi_exchange_trader.execution.risk_v2_contracts import (
@@ -24,6 +30,7 @@ from multi_exchange_trader.execution.risk_v2_contracts import (
     _identifier_v2,
     _literal_v2,
     _observation_payload_v2,
+    _utc_v2,
 )
 from multi_exchange_trader.execution.risk_v2_math import (
     RiskV2Rejected,
@@ -31,6 +38,8 @@ from multi_exchange_trader.execution.risk_v2_math import (
     decimal_fraction_v2,
     decimal_text_v2,
     finite_decimal_v2,
+    is_zero_origin_member_v2,
+    zero_origin_lattice_v2,
 )
 
 Side = Literal["LONG", "SHORT"]
@@ -968,3 +977,356 @@ def bybit_liquidation_proof_sha256_v1(
 
 def bybit_candidate_evaluation_sha256_v1(value: BybitCandidateEvaluationV1) -> str:
     return _canonical_sha256_v2("BybitCandidateEvaluationV1", _candidate_payload(value))
+
+
+@dataclass(frozen=True)
+class BybitLeverageSearchV1:
+    point_input_sha256: str
+    selected: BybitCandidateEvaluationV1
+    evaluated_prefix: tuple[BybitCandidateEvaluationV1, ...]
+    selection_rule: Literal["SMALLEST_FEASIBLE_PERMITTED_GRID_V1"]
+    model_rule_revision: Literal["BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1"]
+
+    def __post_init__(self) -> None:
+        _search_payload(self)
+
+
+def _search_payload(value: BybitLeverageSearchV1) -> dict[str, object]:
+    _fields_v2(value, BybitLeverageSearchV1)
+    _digest_v2(value.point_input_sha256)
+    _literal_v2(value.selection_rule, ("SMALLEST_FEASIBLE_PERMITTED_GRID_V1",))
+    _literal_v2(value.model_rule_revision, ("BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",))
+    _tuple(value.evaluated_prefix, 4096)
+    if not value.evaluated_prefix:
+        _reject()
+    selected = bybit_candidate_evaluation_sha256_v1(value.selected)
+    prefix = tuple(bybit_candidate_evaluation_sha256_v1(c) for c in value.evaluated_prefix)
+    for i, candidate in enumerate(value.evaluated_prefix):
+        if candidate.grid_index != i or bool(candidate.failure_codes) != (i < len(prefix) - 1):
+            _reject()
+        if (
+            i
+            and _cmp(_number(candidate.leverage), _number(value.evaluated_prefix[i - 1].leverage))
+            <= 0
+        ):
+            _reject()
+    if value.selected != value.evaluated_prefix[-1] or value.selected.failure_codes:
+        _reject()
+    return {
+        "point_input_sha256": value.point_input_sha256,
+        "selected": selected,
+        "evaluated_prefix": prefix,
+        "selection_rule": value.selection_rule,
+        "model_rule_revision": value.model_rule_revision,
+    }
+
+
+def _age(stamp: datetime, *, now: datetime, maximum: Fraction) -> None:
+    stamp = _utc_v2(stamp)
+    if stamp > now:
+        _reject("RISK_V2_FUTURE_EVIDENCE")
+    delta = now - stamp
+    seconds = Fraction(
+        (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds, 1_000_000
+    )
+    if _cmp(seconds, maximum) > 0:
+        _reject("RISK_V2_STALE_EVIDENCE")
+
+
+def _source_server(source: BybitModelSourceRefV1) -> datetime | None:
+    if source.envelope_time_ms is None:
+        return None
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms)
+
+
+def _point_sources(inputs: BybitLinearPointInputV1, *, now: datetime) -> None:
+    """Only represented links; opaque raw/mark payload preimages belong to issuers."""
+    envelope, profile, fee = inputs.envelope, inputs.profile, inputs.fee
+    pin = envelope.instrument_pin
+    mark_source = inputs.selected_mark.reference.source
+    mark_ref = inputs.selected_mark_reference
+    if (
+        inputs.table.instrument_pin != pin
+        or profile.symbol != pin.key.symbol
+        or mark_source.account_scope is not None
+        or mark_source.source_environment != pin.source_environment
+        or dict(mark_source.query).get("category") != "linear"
+        or dict(mark_source.query).get("symbol") != pin.key.symbol
+        or mark_ref.source_id != mark_source.source_id
+        or mark_ref.source_environment != mark_source.source_environment
+        or mark_ref.received_at != mark_source.received_at
+        or mark_ref.server_observed_at != _source_server(mark_source)
+    ):
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    if (
+        profile.selected_position_quantity.reference.source not in profile.source_records
+        or profile.auto_add_margin.source not in profile.source_records
+    ):
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    if (
+        _number(profile.selected_position_quantity.value, zero=True) != 0
+        or profile.selected_open_order_ids
+        or profile.selected_conditional_order_ids
+        or profile.local_unresolved_entry_ids
+        or profile.auto_add_margin.wire_kind != "INTEGER"
+        or profile.auto_add_margin.wire_spelling != "0"
+        or _number(profile.prospective_extra_margin_usdt, zero=True) != 0
+        or fee.behaviour.lpa_perp is not True
+        or fee.behaviour.futures_mnt_fee_deduction is not False
+        or fee.behaviour.delta_enable is not False
+    ):
+        _reject("RISK_V2_UNSUPPORTED_MODE")
+    for value in (
+        fee.account_taker_rate.value,
+        fee.account_maker_rate.value,
+        fee.closing_order_reserve_nonvip_rate.value,
+    ):
+        _rate(value)
+    private = (
+        *profile.source_records,
+        fee.account_taker_rate.reference.source,
+        fee.account_maker_rate.reference.source,
+        fee.behaviour.source,
+    )
+    f0 = fee.closing_order_reserve_nonvip_rate.reference
+    if type(f0) is BybitModelFieldRefV1:
+        private += (f0.source,)
+    elif type(f0) is BybitFeeDocumentRefV1:
+        if f0.applicability_revision != fee.nonvip_applicability_revision:
+            _reject("RISK_V2_REVISION_MISMATCH")
+        _age(f0.captured_at, now=now, maximum=_number(inputs.max_evidence_age_seconds, zero=True))
+    # Child digests have already rejected hostile fields before these comparisons.
+    observations: dict[str, BybitModelSourceRefV1] = {}
+    generations: dict[str, str] = {}
+    for source in (*inputs.table.pages, mark_source, *private):
+        previous = observations.setdefault(source.observation_id, source)
+        generation = generations.setdefault(source.source_id, source.source_generation)
+        if previous != source or generation != source.source_generation:
+            _reject("RISK_V2_SOURCE_MISMATCH")
+        if (pin.source_environment == "FIXTURE") != (source.source_environment == "FIXTURE"):
+            _reject("RISK_V2_SOURCE_MISMATCH")
+        query = dict(source.query)
+        if ("symbol" in query and query["symbol"] != pin.key.symbol) or (
+            "category" in query and query["category"] != "linear"
+        ):
+            _reject("RISK_V2_SOURCE_MISMATCH")
+        maximum = _number(
+            inputs.max_quote_age_seconds
+            if source == mark_source
+            else inputs.max_evidence_age_seconds,
+            zero=True,
+        )
+        for stamp in (source.request_started_at, source.received_at, _source_server(source)):
+            if stamp is not None:
+                _age(stamp, now=now, maximum=maximum)
+    for source in private:
+        if (
+            source.account_scope != envelope.scope.product_scope.account
+            or source.source_environment
+            not in ("FIXTURE", envelope.scope.product_scope.account.environment)
+        ):
+            _reject("RISK_V2_SCOPE_MISMATCH")
+    for stamp in (
+        pin.response_time,
+        pin.received_at,
+        inputs.table.reference.server_observed_at,
+        inputs.table.reference.received_at,
+    ):
+        _age(stamp, now=now, maximum=_number(inputs.max_evidence_age_seconds, zero=True))
+    for stamp in (mark_ref.server_observed_at, mark_ref.received_at):
+        _age(stamp, now=now, maximum=_number(inputs.max_quote_age_seconds, zero=True))
+    if _utc_v2(inputs.valid_until) > _utc_v2(envelope.valid_until):
+        _reject("RISK_V2_CAUSAL_ORDER_INVALID")
+    if now >= _utc_v2(inputs.valid_until) or now >= _utc_v2(envelope.valid_until):
+        _reject("RISK_V2_EXPIRED")
+
+
+def _point_grid(inputs: BybitLinearPointInputV1) -> tuple[Fraction, Fraction, Fraction]:
+    quantity = _number(inputs.envelope.base_quantity)
+    mark = _number(inputs.selected_mark.value, source=True)
+    upper = _number(inputs.admission_upper_quote)
+    if (
+        _cmp(_mul(quantity, mark), upper) != 0
+        or _cmp(upper, _number(inputs.table.rows[-1].upper_inclusive_usdt.value, source=True)) > 0
+    ):
+        _reject()
+    admission = tuple(row for row in inputs.table.rows if _cmp(row.lower_exclusive_usdt, upper) < 0)
+    if inputs.admission_covered_tier_ids != tuple(str(row.risk_id) for row in admission):
+        _reject()
+    lower, last, step = (
+        _number(v)
+        for v in (
+            inputs.continuous_leverage_lower,
+            inputs.continuous_leverage_upper,
+            inputs.leverage_step,
+        )
+    )
+    for row in admission:
+        if _cmp(last, _number(row.max_leverage.value, source=True)) > 0:
+            _reject()
+    # Preflight the public lattice's unreduced ratio products using the root's
+    # stronger rule, then use the accepted zero-origin helper unchanged.
+    for bound in (lower, last):
+        _product(bound.numerator, step.denominator)
+        _product(bound.denominator, step.numerator)
+    first, final = zero_origin_lattice_v2(lower, last, step)
+    _fraction(first)
+    _fraction(final)
+    return first, final, step
+
+
+def _search_rejection(
+    error: RiskV2Rejected,
+    *,
+    phase: Phase,
+    leverage: Decimal | None,
+    prefix: tuple[BybitCandidateEvaluationV1, ...],
+) -> BybitModelRejectedV1:
+    # B owns this exact finite map; all unlisted errors still propagate.
+    converted = _converted(error, leverage if leverage is not None else Decimal(1))
+    return replace(converted, phase=phase, candidate_leverage=leverage, evaluated_prefix=prefix)
+
+
+def select_smallest_bybit_leverage_v1(
+    inputs: BybitLinearPointInputV1, *, now: datetime
+) -> BybitLeverageSearchV1 | BybitModelRejectedV1:
+    prefix: tuple[BybitCandidateEvaluationV1, ...] = ()
+    leverage: Decimal | None = None
+    phase: Phase = "SOURCE"
+    try:
+        point_hash = bybit_point_input_sha256_v1(inputs)
+        now = _utc_v2(now)
+        _point_sources(inputs, now=now)
+        first, last, step = _point_grid(inputs)
+        side: Side = "LONG" if inputs.envelope.side == "BUY" else "SHORT"
+        stop = _number(inputs.stop_price, source=True)
+        price = _number(inputs.envelope.limit_price, source=True)
+        if (side == "LONG" and _cmp(stop, price) >= 0) or (
+            side == "SHORT" and _cmp(stop, price) <= 0
+        ):
+            _reject()
+        current = first
+        phase = "SEARCH"
+        while _cmp(current, last) <= 0:
+            leverage = finite_decimal_v2(current)
+            if len(prefix) == 4096:
+                _reject("RISK_V2_RESOURCE_LIMIT")
+            _product(current.numerator, step.denominator)
+            _product(current.denominator, step.numerator)
+            if not is_zero_origin_member_v2(current, first=first, last=last, step=step):
+                _reject()
+            failures: list[Failure] = []
+            for row in inputs.table.rows:
+                if str(row.risk_id) in inputs.admission_covered_tier_ids:
+                    if _cmp(current, _number(row.max_leverage.value, source=True)) > 0:
+                        _reject()
+                    if (
+                        _cmp(
+                            _mul(current, _number(row.initial_margin_rate.value, source=True)),
+                            Fraction(1),
+                        )
+                        > 0
+                        and "IMR" not in failures
+                    ):
+                        failures.append("IMR")
+            phase = "MARGIN"
+            margin = calculate_bybit_margin_point_v1(
+                side=side,
+                quantity=inputs.envelope.base_quantity,
+                entry_limit=inputs.envelope.limit_price,
+                mark=inputs.selected_mark.value,
+                leverage=leverage,
+                taker_rate=inputs.fee.account_taker_rate.value,
+                order_close_rate=inputs.fee.closing_order_reserve_nonvip_rate.value,
+            )
+            phase = "BRIDGE"
+            reserve = bridge_bybit_reserve_v1(
+                margin,
+                planned_cost_allowance_quote=inputs.planned_cost_allowance_quote,
+                reserve_quantum_usdt=_Q,
+                reserve_rounding_revision="APP_RESERVE_CEILING_QUANTUM_V1",
+            )
+            if (
+                _cmp(
+                    _number(reserve.required_reservation_quote, zero=True),
+                    _number(inputs.capacity_quote, zero=True),
+                )
+                > 0
+            ):
+                failures.append("CAPACITY")
+            phase = "LIQUIDATION"
+            liquidation = solve_bybit_liquidation_v1(
+                side=side,
+                quantity=inputs.envelope.base_quantity,
+                entry_price=inputs.envelope.limit_price,
+                leverage=leverage,
+                extra_margin=inputs.profile.prospective_extra_margin_usdt,
+                taker_rate=inputs.fee.account_taker_rate.value,
+                table=inputs.table,
+            )
+            if isinstance(liquidation, BybitModelRejectedV1):
+                return replace(liquidation, candidate_leverage=leverage, evaluated_prefix=prefix)
+            # Standalone candidate/hash validation cannot authenticate the actual
+            # LP originals. Replay B with this point's five inputs and full table.
+            bybit_liquidation_proof_sha256_v1(
+                liquidation,
+                side=side,
+                quantity=inputs.envelope.base_quantity,
+                entry_price=inputs.envelope.limit_price,
+                leverage=leverage,
+                extra_margin=inputs.profile.prospective_extra_margin_usdt,
+                taker_rate=inputs.fee.account_taker_rate.value,
+                table=inputs.table,
+            )
+            buffer_result: Literal["GAP_SATISFIED", "MODEL_NO_POSITIVE_TRIGGER"] | None
+            if isinstance(liquidation.outcome, BybitNoPositiveRootPointV1):
+                buffer_result = "MODEL_NO_POSITIVE_TRIGGER"
+            else:
+                gap = (
+                    _sub(stop, liquidation.outcome.exact_price)
+                    if side == "LONG"
+                    else _sub(liquidation.outcome.exact_price, stop)
+                )
+                buffer_result = (
+                    "GAP_SATISFIED"
+                    if _cmp(gap, Fraction(0)) > 0
+                    and _cmp(
+                        gap, _mul(_number(inputs.liquidation_buffer_fraction, zero=True), price)
+                    )
+                    >= 0
+                    else None
+                )
+                if buffer_result is None:
+                    failures.append("LIQUIDATION_BUFFER")
+            candidate = BybitCandidateEvaluationV1(
+                len(prefix), leverage, margin, reserve, liquidation, buffer_result, tuple(failures)
+            )
+            phase = "SEARCH"
+            if not failures:
+                result = BybitLeverageSearchV1(
+                    point_hash,
+                    candidate,
+                    prefix + (candidate,),
+                    "SMALLEST_FEASIBLE_PERMITTED_GRID_V1",
+                    "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+                )
+                bybit_leverage_search_sha256_v1(result)
+                return result
+            prefix += (candidate,)
+            if _cmp(current, last) == 0:
+                break
+            current = _add(current, step)
+        return BybitModelRejectedV1(
+            "REJECTED",
+            "SEARCH",
+            "NO_FEASIBLE_LEVERAGE",
+            "RISK_V2_LEVERAGE_UNSATISFIABLE",
+            None,
+            prefix,
+        )
+    except RiskV2Rejected as error:
+        return _search_rejection(error, phase=phase, leverage=leverage, prefix=prefix)
+
+
+def bybit_leverage_search_sha256_v1(value: BybitLeverageSearchV1) -> str:
+    return _canonical_sha256_v2("BybitLeverageSearchV1", _search_payload(value))

@@ -10,6 +10,7 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
+from test_bybit_linear_model_v1 import selector_point  # type: ignore[import-not-found]
 
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
@@ -33,7 +34,11 @@ from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     normalize_bybit_tier_rows_v1,
 )
 from multi_exchange_trader.execution.protection import ProtectionScope
-from multi_exchange_trader.execution.risk_v2_contracts import InstrumentPinV2, _canonical_sha256_v2
+from multi_exchange_trader.execution.risk_v2_contracts import (
+    InstrumentPinV2,
+    _canonical_sha256_v2,
+    envelope_sha256_v2,
+)
 from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected, decimal_fraction_v2
 from multi_exchange_trader.market_data.instrument_definition import (
     LINEAR_SOURCE_RULE_REVISION,
@@ -46,6 +51,130 @@ ROW = (
     '"initialMargin":0.5,"maintenanceMargin":0.1,"maxLeverage":"2",'
     '"mmDeduction":"0","isLowestRisk":1}'
 )
+
+
+def test_point_digest_has_complete_supplied_recipe() -> None:
+    value = selector_point()
+    expected = {
+        "envelope": envelope_sha256_v2(value.envelope),
+        "stop_price": "950",
+        "selected_mark": a1.bybit_decimal_field_sha256_v1(value.selected_mark),
+        "selected_mark_reference": {
+            "observation_id": "mark1",
+            "source_id": "source1",
+            "source_environment": "FIXTURE",
+            "source_rule_revision": "synthetic-mark-v1",
+            "server_observed_at": "1970-01-01T00:00:00.001000+00:00",
+            "received_at": "1970-01-01T00:00:00.001000+00:00",
+            "payload_sha256": "c" * 64,
+        },
+        "fee": a1.bybit_fee_inputs_sha256_v1(value.fee),
+        "table": a1.bybit_tier_table_sha256_v1(value.table),
+        "profile": a1.bybit_selected_profile_sha256_v1(value.profile),
+        "planned_cost_allowance_quote": "20",
+        "capacity_quote": "225",
+        "liquidation_buffer_fraction": "0.01",
+        "admission_upper_quote": "1010",
+        "admission_covered_tier_ids": ["1"],
+        "continuous_leverage_lower": "1",
+        "continuous_leverage_upper": "5",
+        "leverage_step": "1",
+        "max_evidence_age_seconds": "10",
+        "max_quote_age_seconds": "10",
+        "valid_until": "1970-01-01T00:01:00.001000+00:00",
+        "model_rule_revision": "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    }
+    raw = json.dumps(
+        {
+            "schema": "RISK_V2_CANONICAL_V1",
+            "record_type": "BybitLinearPointInputV1",
+            "fields": expected,
+        },
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    assert a1.bybit_point_input_sha256_v1(value) == hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("stop_price", Decimal(0)),
+        ("planned_cost_allowance_quote", Decimal(-1)),
+        ("capacity_quote", Decimal(-1)),
+        ("liquidation_buffer_fraction", Decimal(1)),
+        ("admission_upper_quote", Decimal(0)),
+        ("continuous_leverage_lower", Decimal("0.9")),
+        ("continuous_leverage_upper", Decimal("0.9")),
+        ("leverage_step", Decimal(0)),
+        ("max_evidence_age_seconds", Decimal(-1)),
+        ("max_quote_age_seconds", Decimal(-1)),
+        ("admission_covered_tier_ids", ("1", "1")),
+        ("admission_covered_tier_ids", ["1"]),
+        ("model_rule_revision", "other"),
+        ("valid_until", datetime(1970, 1, 1)),
+    ],
+)
+def test_point_validates_fixed_scalar_types_and_bounds(field: str, bad: Any) -> None:
+    point = selector_point()
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        replace(point, **{field: bad})
+
+
+def test_point_digest_revalidates_forged_children_and_preserves_source_spelling() -> None:
+    point = selector_point()
+    forged = object.__new__(type(point))
+    for item in fields(type(point)):
+        object.__setattr__(forged, item.name, getattr(point, item.name))
+    object.__setattr__(forged, "capacity_quote", True)
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1.bybit_point_input_sha256_v1(forged)
+    mark = point.selected_mark
+    altered = replace(
+        mark, value=Decimal("1010.0"), reference=replace(mark.reference, wire_spelling="1010.0")
+    )
+    assert a1.bybit_point_input_sha256_v1(
+        replace(point, selected_mark=altered)
+    ) != a1.bybit_point_input_sha256_v1(point)
+    assert a1.bybit_point_input_sha256_v1(
+        replace(point, capacity_quote=Decimal("225.0"))
+    ) != a1.bybit_point_input_sha256_v1(point)
+    with pytest.raises(RiskV2Rejected, match="RESOURCE_LIMIT"):
+        replace(point, stop_price=Decimal("1" * 257))
+
+
+def test_point_codec_does_not_invent_absent_mark_authority_or_rewrite_refs() -> None:
+    point = selector_point()
+    altered = replace(
+        point,
+        selected_mark_reference=replace(point.selected_mark_reference, payload_sha256="9" * 64),
+    )
+    # This opaque owner-specific payload is bound, without guessing a raw/semantic
+    # preimage recipe. Both point hashes can be structurally valid; neither is a
+    # qualified source receipt, full generic preparation or applied UTA readback.
+    assert a1.bybit_point_input_sha256_v1(point) != a1.bybit_point_input_sha256_v1(altered)
+    assert tuple(item.name for item in fields(type(point))) == (
+        "envelope",
+        "stop_price",
+        "selected_mark",
+        "selected_mark_reference",
+        "fee",
+        "table",
+        "profile",
+        "planned_cost_allowance_quote",
+        "capacity_quote",
+        "liquidation_buffer_fraction",
+        "admission_upper_quote",
+        "admission_covered_tier_ids",
+        "continuous_leverage_lower",
+        "continuous_leverage_upper",
+        "leverage_step",
+        "max_evidence_age_seconds",
+        "max_quote_age_seconds",
+        "valid_until",
+        "model_rule_revision",
+    )
 
 
 def body(rows: str = ROW, cursor: str = "") -> bytes:
@@ -554,7 +683,6 @@ def test_fee_document_empty_fragment_and_port_are_not_absent() -> None:
     for url in ("https://bybit.com/x#", "https://bybit.com:/x"):
         with pytest.raises(RiskV2Rejected):
             replace(fee_document(), document_url=url)
-
 
 
 # A1 expected payloads below are handwritten maps, encoded independently by the
