@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import FrozenInstanceError
 
 import pytest
+from fixtures.runtime_policy_v1 import commit_policy_change
 from test_monitoring_receipts import session, target_core  # noqa: F401
 from test_native_monitor_client import client  # noqa: F401
 
@@ -56,30 +57,40 @@ async def test_refresh_owner_change_cannot_reach_native_start(prepared, mutation
     worker, blocked, started, release = core[2], *core[4:]
     blocked[0] = True
     attempt = asyncio.create_task(worker.resume_restored_monitoring())
-    await started.wait()
-    if mutation == 'binding':
-        worker.binding = object()
-    elif mutation == 'client':
-        worker._assembly.execution_client = object()
-    elif mutation == 'lease':
-        worker._lock.release()
-        worker._lock.acquire()
-    elif mutation == 'key':
-        worker.session._api_key = 'different-synthetic-key'
-    elif mutation == 'store':
-        worker._store = object()
-    elif mutation == 'policy':
-        snap = worker.policy_book.read()
-        worker.policy_book.save(snap['revision'], snap['policy'])
-    else:
-        await worker.session.aclose()
-    release.set()
-    with pytest.raises((RuntimeBlocked, ValueError)):
-        await attempt
-    assert worker._node_task is None and worker._operations == 0
-    assert worker.monitoring_status.phase == 'ATTENTION'
-    if mutation == 'lease':
-        worker._lock.release()
+    try:
+        await started.wait()
+        if mutation == 'binding':
+            worker.binding = object()
+        elif mutation == 'client':
+            worker._assembly.execution_client = object()
+        elif mutation == 'lease':
+            worker._lock.release()
+            worker._lock.acquire()
+        elif mutation == 'key':
+            worker.session._api_key = 'different-synthetic-key'
+        elif mutation == 'store':
+            worker._store = object()
+        elif mutation == 'policy':
+            snap = worker.policy_book.read()
+            assert snap['schema_version'] == 2
+            changed = commit_policy_change(worker.policy_book, {
+                **snap['policy'], 'legacy_v1': {**snap['policy']['legacy_v1'], 'max_positions': 1}})
+            assert changed['revision'] == snap['revision'] + 1
+            assert worker.policy_book.read() == changed
+        else:
+            await worker.session.aclose()
+        release.set()
+        with pytest.raises((RuntimeBlocked, ValueError)):
+            await attempt
+        assert worker._node_task is None and worker._operations == 0
+        assert worker.monitoring_status.phase == 'ATTENTION'
+    finally:
+        release.set()
+        if not attempt.done():
+            attempt.cancel()
+        await asyncio.gather(attempt, return_exceptions=True)
+        if mutation == 'lease':
+            worker._lock.release()
 
 
 async def test_cancel_settles_read_and_retains_unproven_resources(prepared):
@@ -108,7 +119,7 @@ async def test_readonly_no_capital_pre_matches_then_native_start_fails_closed(pr
     # has no runnable Linux node; it cannot pass readiness or produce MONITORING.
     worker = prepared[2]
     original_binding = worker.binding
-    assert worker.policy_book.read()['policy']['capital_usdt'] is None
+    assert worker.policy_book.read()['policy']['legacy_v1']['capital_usdt'] is None
     with pytest.raises((ValueError, RuntimeBlocked)):
         await worker.connect_monitoring()
     controller = worker._monitoring
@@ -154,15 +165,24 @@ async def test_mutation_after_genuine_pre_read_cannot_arm(prepared, monkeypatch)
     import httpx
     original = httpx.AsyncClient.send
     worker = prepared[2]
+    before = worker.policy_book.read()
+    committed = []
     async def mutate(client, request, **kwargs):
         response = await original(client, request, **kwargs)
-        if request.url.path == '/v5/position/list':
+        if request.url.path == '/v5/position/list' and not committed:
             snapshot = worker.policy_book.read()
-            worker.policy_book.save(snapshot['revision'], snapshot['policy'])
+            assert snapshot['schema_version'] == 2
+            changed = commit_policy_change(worker.policy_book, {
+                **snapshot['policy'], 'legacy_v1': {**snapshot['policy']['legacy_v1'], 'max_positions': 1}})
+            committed.append(changed)
         return response
     monkeypatch.setattr(httpx.AsyncClient, 'send', mutate)
     with pytest.raises(ValueError):
         await worker.resume_restored_monitoring()
+    # A failed write in the HTTP hook cannot supply the expected owner-fence error.
+    assert len(committed) == 1
+    assert committed[0]['revision'] == before['revision'] + 1
+    assert worker.policy_book.read() == committed[0]
     assert not worker._monitoring.armed and worker._node_task is None
     assert not worker.session._monitoring_receipts
 

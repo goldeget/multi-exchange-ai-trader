@@ -182,3 +182,20 @@ def load_v1():
     # The source is a static, hashed original; execution is restricted to this test fixture.
     exec(compile(SOURCE, "<frozen-runtime-policy-v1>", "exec"), module.__dict__)  # noqa: S102
     return module.RuntimePolicyBook
+
+
+def commit_policy_change(book, draft):
+    """Commit a changed test policy and prove the current reader observes it."""
+    before = book.read()
+    assert draft != before["policy"]
+    if before["schema_version"] == 1:
+        historical = load_v1()(book.path)
+        historical.save(before["revision"], draft)
+    else:
+        assert before["schema_version"] == 2
+        book.save_v2(before["revision"], draft, expected_strategy_generation=None)
+    after = book.read()
+    assert after["revision"] == before["revision"] + 1
+    assert after["policy"] == draft
+    assert after["policy"] != before["policy"]
+    return after
