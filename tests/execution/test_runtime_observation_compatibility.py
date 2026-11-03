@@ -353,3 +353,91 @@ def test_v2_prior_credit_cannot_explain_a_foreign_legacy_owner(setup: Any) -> No
     with pytest.raises(module.RuntimeBlocked):
         module.NativeExecutionRuntime(**kwargs)
     assert rows(journal, store) == before and not strategy.commands
+
+
+def add_second_proved_foreign(fixture: Any, original: Any, prior: Any) -> None:
+    worker, _, store, _, _, _ = fixture
+    first = worker.projection('position-1')
+    candidate = replace(original, fill=replace(original.fill, position_id='b-other',
+        client_order_id='ec_' + 'f' * 32), venue_order_id='second-other-venue')
+    owner = replace(first.orders[0], position_id=candidate.fill.position_id,
+        client_order_id=candidate.fill.client_order_id)
+    worker._register(p.ProtectionProjection(first.scope, owner.position_id, owner.instrument_id, owner.side), owner)
+    state = worker.projection(owner.position_id)
+    quarantine = FillQuarantineRecord(candidate, 'AUTHENTICATED_EXECUTION_CORROBORATION_REQUIRED')
+    worker._persist(quarantine, worker._reduce_event(state, quarantine, {}))
+    decision = ExecutionCorroborationConflict(worker._candidate_identity(candidate), first.scope,
+        candidate.fill.instrument_id, candidate.fill.execution_id, candidate.venue_order_id,
+        candidate.fill.client_order_id, prior.source, prior.history_variant_hash, (),
+        ('VENUE_ORDER_ID_MISMATCH',), execution_guard(first.scope,
+            original.fill.instrument_id, original.fill.execution_id))
+    reduced, replay = reduce_credit_event(worker.projection(owner.position_id), decision,
+        candidates=(candidate,), replay=CreditReplayState())
+    wire = codec.encode(decision)
+    store.apply_position_event('decision:' + hashlib.sha256(wire.encode()).hexdigest(), json.loads(wire),
+        owner.position_id, store.get_position(owner.position_id).revision,
+        json.loads(codec.encode(worker._summary(reduced,
+            {candidate.fill.execution_id: (worker._candidate_identity(candidate),)}, replay))))
+
+
+def test_two_individually_proved_foreign_graphs_refuse_the_whole_view_before_hook_or_recovery(setup: Any) -> None:
+    worker, journal, store, strategy, kwargs, module = setup
+    record, original, prior, _, _ = legacy_graph(setup)
+    add_second_proved_foreign(setup, original, prior)
+    records, states = journal.list_commands(), worker._states()
+    original_state = next(state for state in states if state.position_id == 'position-1')
+    batch = ((record, worker._request_for_state(record, original_state), False),)
+    proofs = []
+    for state in states:
+        if state.position_id == 'position-1':
+            continue
+        context = worker._projections[state.position_id][3]
+        proofs.append(worker._legacy_foreign_quarantine(
+            state, (context.candidates, context.credit, context.history), records, batch))
+        assert state.owned_quantity == 0
+    assert proofs == [True, True], 'the second graph must independently satisfy every existing proof'
+    before = rows(journal, store)
+    observation_refused = False
+    try:
+        worker.monitoring_state()
+    except module.RuntimeBlocked:
+        observation_refused = True
+    assert rows(journal, store) == before
+    with pytest.raises(module.RuntimeBlocked):
+        worker.native_owned_requests()
+    assert rows(journal, store) == before
+    worker.shutdown()
+    hooks: list[str] = []
+    restarted = None
+    cold_refused = False
+    try:
+        restarted = module.NativeExecutionRuntime(**kwargs, _pre_recovery=lambda resolver: hooks.append('hook'))
+    except module.RuntimeBlocked:
+        cold_refused = True
+    if restarted is not None:
+        restarted.shutdown()
+    observed = {'individual_proofs': proofs, 'observation_refused': observation_refused,
+        'cold_refused': cold_refused, 'hooks': hooks, 'command_state': journal.get(record.command_key).state.value,
+        'rows_unchanged': rows(journal, store) == before, 'strategy_calls': len(strategy.commands)}
+    print('GLOBAL_BOUND_OBSERVED=' + json.dumps(observed, sort_keys=True))
+    assert observation_refused and cold_refused and not hooks, observed
+    assert journal.get(record.command_key).state.value == 'SENDING'
+    assert rows(journal, store) == before and not strategy.commands
+
+
+def test_missing_original_owned_event_refuses_cached_observation_and_cold_startup(setup: Any) -> None:
+    worker, journal, store, strategy, kwargs, module = setup
+    legacy_graph(setup)
+    owners = tuple(row for row in store.list_position_events('position-1')
+                   if type(codec.decode(row.payload_json)) is p.OwnedOrder)
+    assert len(owners) == 1
+    store._db.execute('DELETE FROM runtime_inbox WHERE event_id=?', (owners[0].event_id,))
+    before = rows(journal, store)
+    with pytest.raises(ValueError):
+        worker.monitoring_state()
+    assert rows(journal, store) == before
+    worker.shutdown()
+    hooks: list[str] = []
+    with pytest.raises(ValueError):
+        module.NativeExecutionRuntime(**kwargs, _pre_recovery=lambda resolver: hooks.append('hook'))
+    assert not hooks and rows(journal, store) == before and not strategy.commands

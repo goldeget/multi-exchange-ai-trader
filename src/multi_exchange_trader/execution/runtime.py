@@ -362,10 +362,13 @@ class NativeExecutionRuntime:
                     raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
                 continue
             result.append(NativeOwnedRequest(request, record.state, venues))
-        for state, context in zip(states, contexts, strict=True):
-            if (any(order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
-                    for order in state.orders)
-                    and not self._legacy_foreign_quarantine(state, context, records, tuple(batch))):
+        foreign = tuple((state, context) for state, context in zip(states, contexts, strict=True)
+                        if any(order.role in ("ENTRY", "EXIT") and order.client_order_id not in clients
+                               for order in state.orders))
+        if len(foreign) > 1:
+            raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
+        for state, context in foreign:
+            if not self._legacy_foreign_quarantine(state, context, records, tuple(batch)):
                 raise RuntimeBlocked("DURABLE_IMMUTABLE_MAPPING_REQUIRED")
         return tuple(batch), tuple(result)
 
