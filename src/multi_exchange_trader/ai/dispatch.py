@@ -20,7 +20,34 @@ from ..execution.modes import (
     select_all_in_one,
 )
 from .budget import BudgetBook, amount, money
-from .generation import GenerationPriceQuote, OpenRouterGenerationClient
+from .generation import GenerationPriceQuote, OpenRouterGenerationClient, validate_http_status
+
+_LEGACY_COLUMNS = (
+    (0, "request_id", "TEXT", 0, None, 1, 0),
+    (1, "binding_hash", "TEXT", 1, None, 0, 0),
+    (2, "maximum", "TEXT", 1, None, 0, 0),
+    (3, "status", "TEXT", 1, None, 0, 0),
+    (4, "failure", "TEXT", 0, None, 0, 0),
+    (5, "exact_cost", "TEXT", 0, None, 0, 0),
+    (6, "created_at", "TEXT", 1, None, 0, 0),
+    (7, "updated_at", "TEXT", 1, None, 0, 0),
+)
+_V2_COLUMNS = (*_LEGACY_COLUMNS, (8, "http_status", "INTEGER", 0, None, 0, 0))
+
+
+def _columns(db: sqlite3.Connection) -> tuple[tuple[object, ...], ...]:
+    table = db.execute(
+        "SELECT type FROM sqlite_schema WHERE name='ai_dispatches'",
+    ).fetchone()
+    if table is None or table[0] != "table":
+        raise ValueError("Invalid AI dispatch storage")
+    return tuple(tuple(row) for row in db.execute("PRAGMA table_xinfo(ai_dispatches)"))
+
+
+def _stored_http_status(row: sqlite3.Row) -> int | None:
+    if row["http_status_type"] not in {"integer", "null"}:
+        raise ValueError("Invalid HTTP status")
+    return validate_http_status(row["http_status"])
 
 
 def _now() -> datetime:
@@ -39,6 +66,10 @@ class DispatchResult:
     reservation_status: str | None = None
     exact_cost_usd: str | None = None
     selection: SelectionResult | None = field(default=None, repr=False)
+    http_status: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_http_status(self.http_status)
 
 
 class AIDispatcher:
@@ -56,47 +87,74 @@ class AIDispatcher:
         self.path, self.budget, self.client, self.clock = Path(path), budget, client, clock
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as db:
+            # Lock the complete decision, including first create and version read.
+            db.execute("BEGIN IMMEDIATE")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("Unsupported AI dispatch storage")
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS ai_dispatches (
+            objects = tuple(tuple(row) for row in db.execute(
+                """SELECT type,name FROM sqlite_schema
+                   WHERE NOT (type='index' AND name='sqlite_autoindex_ai_dispatches_1'
+                              AND tbl_name='ai_dispatches')""",
+            ))
+            if version == 0 and not objects:
+                db.execute("""CREATE TABLE ai_dispatches (
                     request_id TEXT PRIMARY KEY, binding_hash TEXT NOT NULL,
                     maximum TEXT NOT NULL, status TEXT NOT NULL, failure TEXT,
-                    exact_cost TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                PRAGMA user_version=1;
-            """)
+                    exact_cost TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    http_status INTEGER)""")
+            elif version in (0, 1):
+                if ((version == 0 and objects != (("table", "ai_dispatches"),))
+                        or _columns(db) != _LEGACY_COLUMNS):
+                    raise ValueError("Invalid AI dispatch storage")
+                db.execute("ALTER TABLE ai_dispatches ADD COLUMN http_status INTEGER")
+            if _columns(db) != _V2_COLUMNS:
+                raise ValueError("Invalid AI dispatch storage")
+            if db.execute("""SELECT 1 FROM ai_dispatches WHERE http_status IS NOT NULL
+                          AND (typeof(http_status) != 'integer'
+                               OR http_status NOT BETWEEN 100 AND 599) LIMIT 1""").fetchone():
+                raise ValueError("Invalid HTTP status")
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("AI dispatch storage corruption")
+            db.execute("PRAGMA user_version=2")
             db.commit()
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA synchronous=FULL")
         try:
+            db.execute("PRAGMA synchronous=FULL")
             yield db
+        except BaseException:
+            db.rollback()
+            raise
         finally:
             db.close()
 
     def _record(
         self, request_id: str, status: str, failure: str | None, cost: str | None = None,
+        *, http_status: int | None = None,
     ) -> None:
+        validate_http_status(http_status)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._record_locked(db, request_id, status, failure, cost)
+            self._record_locked(db, request_id, status, failure, cost, http_status=http_status)
             db.commit()
 
     def _record_locked(
         self, db: sqlite3.Connection, request_id: str, status: str,
         failure: str | None, cost: str | None = None,
+        *, http_status: int | None = None,
     ) -> None:
+        validate_http_status(http_status)
         db.execute("""UPDATE ai_dispatches SET status=?,failure=?,
-                   exact_cost=COALESCE(?,exact_cost),updated_at=? WHERE request_id=?""",
-                   (status, failure, cost, self.clock().isoformat(), request_id))
+                   exact_cost=COALESCE(?,exact_cost),http_status=COALESCE(?,http_status),
+                   updated_at=? WHERE request_id=?""",
+                   (status, failure, cost, http_status, self.clock().isoformat(), request_id))
 
     def _apply_charge_locked(self, db: sqlite3.Connection, row: sqlite3.Row) -> None:
+        _stored_http_status(row)
         # The budget commit may outlive a dispatch-storage crash. settle is idempotent,
         # so retry only this local accounting operation, never generation or selection.
         if row["exact_cost"] is None:
@@ -107,10 +165,12 @@ class AIDispatcher:
     def status(self, request_id: str) -> DispatchResult | None:
         """No network, replay, automatic charge release, or selection reconstruction."""
         with self._connect() as db:
-            row = db.execute("SELECT * FROM ai_dispatches WHERE request_id=?",
+            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type
+                             FROM ai_dispatches WHERE request_id=?""",
                              (request_id,)).fetchone()
         if row is None:
             return None
+        http_status = _stored_http_status(row)
         status = row["status"]
         if status not in {"CLAIMED", "DISPATCHING", "CHARGED", "SETTLED", "UNCERTAIN", "BLOCKED"}:
             raise ValueError("Invalid AI dispatch storage")
@@ -122,16 +182,19 @@ class AIDispatcher:
         # CLAIMED may represent a crash before/after reserving. It is never permission.
         if status in {"CLAIMED", "DISPATCHING"}:
             status = "UNCERTAIN"
-        return DispatchResult(request_id, status, row["failure"], reservation, row["exact_cost"])
+        return DispatchResult(request_id, status, row["failure"], reservation, row["exact_cost"],
+                              http_status=http_status)
 
     def reconcile_charge(self, request_id: str) -> DispatchResult:
         """Apply already persisted exact provider charge after a settlement/storage crash."""
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM ai_dispatches WHERE request_id=?",
+            row = db.execute("""SELECT *,typeof(http_status) AS http_status_type
+                             FROM ai_dispatches WHERE request_id=?""",
                              (request_id,)).fetchone()
             if row is None:
                 raise ValueError("AI dispatch not found")
+            _stored_http_status(row)
             if row["exact_cost"] is not None:
                 self._apply_charge_locked(db, row)
             db.commit()
@@ -181,13 +244,16 @@ class AIDispatcher:
                     return DispatchResult(request_id, "BLOCKED", "IDEMPOTENCY_CONFLICT")
                 return DispatchResult(request_id, "BLOCKED", "ALREADY_DISPATCHED")
             stamp = self.clock().isoformat()
-            db.execute("INSERT INTO ai_dispatches VALUES (?,?,?,?,?,?,?,?)",
+            db.execute("""INSERT INTO ai_dispatches
+                       (request_id,binding_hash,maximum,status,failure,exact_cost,
+                        created_at,updated_at,http_status) VALUES (?,?,?,?,?,?,?,?,NULL)""",
                        (request_id, binding, money(maximum), "CLAIMED", None, None, stamp, stamp))
             # All workers serialize known-liability repair and new reservation admission
             # under this writer lock. Provider I/O starts only after the lock is released.
             try:
                 pending = db.execute(
-                    "SELECT * FROM ai_dispatches WHERE status='CHARGED'",
+                    """SELECT *,typeof(http_status) AS http_status_type
+                       FROM ai_dispatches WHERE status='CHARGED'""",
                 ).fetchall()
                 for row in pending:
                     self._apply_charge_locked(db, row)
@@ -222,10 +288,13 @@ class AIDispatcher:
             return DispatchResult(request_id, "UNCERTAIN", "GENERATION_FAILED", "uncertain")
         if generated.exact_cost_usd is None:
             uncertain_failure = generated.failure or "COST_UNAVAILABLE"
-            self._record(request_id, "UNCERTAIN", uncertain_failure)
-            return DispatchResult(request_id, "UNCERTAIN", uncertain_failure, "uncertain")
+            self._record(request_id, "UNCERTAIN", uncertain_failure,
+                         http_status=generated.http_status)
+            return DispatchResult(request_id, "UNCERTAIN", uncertain_failure, "uncertain",
+                                  http_status=generated.http_status)
         # Record known liability durably before validating model output or releasing exposure.
-        self._record(request_id, "CHARGED", generated.failure, generated.exact_cost_usd)
+        self._record(request_id, "CHARGED", generated.failure, generated.exact_cost_usd,
+                     http_status=generated.http_status)
         self.budget.settle(reservation_id, generated.exact_cost_usd)
         selection = None
         failure = generated.failure
@@ -241,4 +310,4 @@ class AIDispatcher:
             failure, selection = "BUDGET_OVERRUN_HOLD", None
             self._record(request_id, "SETTLED", failure)
         return DispatchResult(request_id, "SETTLED", failure, "settled",
-                              generated.exact_cost_usd, selection)
+                              generated.exact_cost_usd, selection, http_status=generated.http_status)

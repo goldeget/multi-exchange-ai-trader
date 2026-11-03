@@ -155,23 +155,79 @@ def test_default_worker_cli_does_not_open_vault(monkeypatch: pytest.MonkeyPatch,
     assert '"mode": "DRY_CHECK"' in capsys.readouterr().out
 
 
-def test_private_factory_has_no_provider_effects(tmp_path: Path) -> None:
+@pytest.mark.parametrize("reasoning_enabled", [None, False, True])
+def test_private_factory_has_no_provider_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reasoning_enabled: bool | None,
+) -> None:
+    from multi_exchange_trader.ai import generation, private_factory
     from multi_exchange_trader.ai.budget import BudgetBook
     from multi_exchange_trader.ai.private_factory import create_openrouter_clients
+
     context = resolver(saved(tmp_path, AI), {})
     budget = BudgetBook(tmp_path / "budget.sqlite3")
     before = budget.settings()
+    summary = budget.summary()
+    constructors: dict[str, tuple[str, str, dict[str, Any]]] = {}
+    metadata_type = private_factory.OpenRouterMetadataClient
+    generation_type = private_factory.OpenRouterGenerationClient
 
-    def refuse(request: httpx.Request) -> httpx.Response:
+    def refuse(*args: object, **kwargs: object) -> Any:
         pytest.fail("Factory must not authenticate, quote or generate")
 
+    def metadata(key: str, model: str, **kwargs: Any) -> Any:
+        constructors["metadata"] = key, model, kwargs
+        return metadata_type(key, model, **kwargs)
+
+    def generation_client(key: str, model: str, **kwargs: Any) -> Any:
+        constructors["generation"] = key, model, kwargs
+        return generation_type(key, model, **kwargs)
+
+    monkeypatch.setattr(private_factory, "OpenRouterMetadataClient", metadata)
+    monkeypatch.setattr(private_factory, "OpenRouterGenerationClient", generation_client)
+    monkeypatch.setattr(metadata_type, "verify_key", refuse)
+    monkeypatch.setattr(metadata_type, "retrieve_model", refuse)
+    monkeypatch.setattr(generation_type, "generate", refuse)
+    monkeypatch.setattr(generation, "quote_from_metadata", refuse)
+    monkeypatch.setattr(BudgetBook, "reserve", refuse)
+    transport = httpx.MockTransport(refuse)
     bundle = create_openrouter_clients(resolver=context, budget=budget,
-        dispatch_path=tmp_path / "dispatch.sqlite3", transport=httpx.MockTransport(refuse))
+        dispatch_path=tmp_path / "dispatch.sqlite3", transport=transport,
+        reasoning_enabled=reasoning_enabled)
+    assert constructors["metadata"] == (
+        AI["OPENROUTER_API_KEY"], AI["OPENROUTER_MODEL"], {"transport": transport})
+    assert constructors["generation"] == (
+        AI["OPENROUTER_API_KEY"], AI["OPENROUTER_MODEL"],
+        {"transport": transport, "reasoning_enabled": reasoning_enabled})
     assert bundle.generation.model_id == AI["OPENROUTER_MODEL"]
     assert bundle.dispatcher.client is bundle.generation
-    assert budget.settings() == before
+    assert budget.settings() == before and budget.summary() == summary
     assert AI["OPENROUTER_API_KEY"] not in repr(bundle)
     assert bundle.dispatcher.path.read_bytes().find(AI["OPENROUTER_API_KEY"].encode()) == -1
+
+
+@pytest.mark.parametrize("value", [0, 1, "", "false", AI["OPENROUTER_API_KEY"],
+                                  0.0, 1.0, [], {}, (), set()])
+def test_private_factory_rejects_invalid_reasoning_before_source_or_storage_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: Any,
+) -> None:
+    from multi_exchange_trader.ai.budget import BudgetBook
+    from multi_exchange_trader.ai.private_factory import create_openrouter_clients
+
+    context = resolver(None, {})
+    budget = BudgetBook(tmp_path / "budget.sqlite3")
+    before = budget.settings()
+
+    def refuse(*args: object, **kwargs: object) -> Any:
+        pytest.fail("Invalid reasoning control must reject before source/storage effects")
+
+    monkeypatch.setattr(CredentialResolver, "ai_values", refuse)
+    path = tmp_path / "must-not-create.sqlite3"
+    with pytest.raises(ValueError) as caught:
+        create_openrouter_clients(resolver=context, budget=budget, dispatch_path=path,
+                                  reasoning_enabled=value)
+    assert str(caught.value) == "Invalid generation configuration"
+    assert AI["OPENROUTER_API_KEY"] not in str(caught.value)
+    assert not path.exists() and budget.settings() == before
 
 
 async def test_connections_dto_contains_no_secret_or_path(tmp_path: Path) -> None:

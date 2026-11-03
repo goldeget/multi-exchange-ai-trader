@@ -8,7 +8,7 @@ No constructor, quote, or status operation performs network I/O.
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 from time import monotonic
@@ -133,11 +133,21 @@ def quote_from_metadata(
         raise ValueError("Fresh conservative generation quote required") from None
 
 
+def validate_http_status(value: object) -> int | None:
+    if value is None or type(value) is int and 100 <= value <= 599:
+        return value
+    raise ValueError("Invalid HTTP status")
+
+
 @dataclass(frozen=True, slots=True)
 class GenerationResult:
     failure: str | None
     exact_cost_usd: str | None = None
     output: str | None = field(default=None, repr=False)
+    http_status: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_http_status(self.http_status)
 
 
 def _pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -194,11 +204,12 @@ def _safe(value: object, key: str, depth: int = 0) -> int:
 class OpenRouterGenerationClient:
     """Retains key only for one fixed-host transport; no retries or redirects."""
 
-    __slots__ = ("__key", "__max_body", "__model", "__timeout", "__transport")
+    __slots__ = ("__key", "__max_body", "__model", "__reasoning_enabled", "__timeout", "__transport")
 
     def __init__(
         self, api_key: str, model_id: str, *, transport: httpx.BaseTransport | None = None,
         timeout_seconds: float = 10.0, max_body_bytes: int = 65_536,
+        reasoning_enabled: bool | None = None,
     ) -> None:
         if (not isinstance(api_key, str) or not _KEY.fullmatch(api_key)
                 or not isinstance(model_id, str) or not _MODEL.fullmatch(model_id)
@@ -206,10 +217,12 @@ class OpenRouterGenerationClient:
                 or type(timeout_seconds) not in (int, float)
                 or not 0.1 <= timeout_seconds <= 30 or not math.isfinite(timeout_seconds)
                 or type(max_body_bytes) is not int
-                or not 1024 <= max_body_bytes <= 65_536):
+                or not 1024 <= max_body_bytes <= 65_536
+                or reasoning_enabled is not None and type(reasoning_enabled) is not bool):
             raise ValueError("Invalid generation configuration") from None
         self.__key, self.__model, self.__transport = api_key, model_id, transport
         self.__timeout, self.__max_body = float(timeout_seconds), max_body_bytes
+        self.__reasoning_enabled = reasoning_enabled
 
     def __repr__(self) -> str:
         return "OpenRouterGenerationClient()"
@@ -236,6 +249,8 @@ class OpenRouterGenerationClient:
                                        "completion": "__COMPLETION_CAP__",
                                        "request": "__REQUEST_CAP__"}},
         }
+        if self.__reasoning_enabled is not None:
+            payload["reasoning"] = {"enabled": self.__reasoning_enabled}
         encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
         # Validated plain decimals become exact JSON numbers without float rounding.
         for marker, price in (("__PROMPT_CAP__", quote.prompt_per_million_usd),
@@ -251,6 +266,7 @@ class OpenRouterGenerationClient:
         self, request: SelectionRequest, *, quote: GenerationPriceQuote, now: datetime,
     ) -> GenerationResult:
         body = self.prepare(request, quote=quote, now=now)
+        http_status: int | None = None
         try:
             started = monotonic()
             with (httpx.Client(transport=self.__transport, trust_env=False, follow_redirects=False,
@@ -259,30 +275,37 @@ class OpenRouterGenerationClient:
                       "Authorization": "Bearer " + self.__key, "Accept": "application/json",
                       "Content-Type": "application/json", "Accept-Encoding": "identity",
                   }) as response):
-                if 300 <= response.status_code < 400:
-                    return GenerationResult("REDIRECT_REJECTED")
+                try:
+                    http_status = validate_http_status(response.status_code)
+                except ValueError:
+                    pass
+                if http_status is not None and 300 <= http_status < 400:
+                    return GenerationResult("REDIRECT_REJECTED", http_status=http_status)
                 if response.headers.get("content-encoding", "identity").lower() != "identity":
-                    return GenerationResult("INVALID_RESPONSE")
+                    return GenerationResult("INVALID_RESPONSE", http_status=http_status)
                 length = response.headers.get("content-length")
                 if length is not None and (not re.fullmatch(r"[0-9]{1,20}", length)
                                            or int(length) > self.__max_body):
-                    return GenerationResult("RESPONSE_TOO_LARGE")
+                    return GenerationResult("RESPONSE_TOO_LARGE", http_status=http_status)
                 raw = bytearray()
                 for chunk in response.iter_bytes():
                     if monotonic() - started > self.__timeout:
-                        return GenerationResult("TIMEOUT")
+                        return GenerationResult("TIMEOUT", http_status=http_status)
                     if len(raw) + len(chunk) > self.__max_body:
-                        return GenerationResult("RESPONSE_TOO_LARGE")
+                        return GenerationResult("RESPONSE_TOO_LARGE", http_status=http_status)
                     raw.extend(chunk)
                 if monotonic() - started > self.__timeout:
-                    return GenerationResult("TIMEOUT")
-                return self._parse(bytes(raw), response.status_code)
+                    return GenerationResult("TIMEOUT", http_status=http_status)
+                # Invalid header evidence still permits independent bounded charge parsing.
+                # Zero is a private non-200 sentinel, never an observed response status.
+                parsed = self._parse(bytes(raw), http_status if http_status is not None else 0)
+                return replace(parsed, http_status=http_status)
         except httpx.TimeoutException:
-            return GenerationResult("TIMEOUT")
+            return GenerationResult("TIMEOUT", http_status=http_status)
         except httpx.TransportError:
-            return GenerationResult("NETWORK_ERROR")
+            return GenerationResult("NETWORK_ERROR", http_status=http_status)
         except Exception:  # noqa: BLE001 - untrusted transports may put secrets in exceptions.
-            return GenerationResult("TRANSPORT_ERROR")
+            return GenerationResult("TRANSPORT_ERROR", http_status=http_status)
 
     def _parse(self, raw: bytes, status_code: int) -> GenerationResult:
         cost: str | None = None
@@ -311,7 +334,8 @@ class OpenRouterGenerationClient:
             message = _object(choice["message"])
             output = message["content"]
             if (choice.get("finish_reason") != "stop" or message.get("role") != "assistant"
-                    or any(name in message for name in ("tool_calls", "function_call", "refusal"))
+                    or any(name in message for name in ("tool_calls", "function_call"))
+                    or message.get("refusal") is not None
                     or type(output) is not str or len(output.encode("utf-8")) > 65536):
                 raise ValueError
             return GenerationResult(None, cost, output)

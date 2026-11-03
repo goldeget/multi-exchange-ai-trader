@@ -12,11 +12,14 @@ from threading import Event
 import httpx
 import pytest
 
+from multi_exchange_trader.ai import generation
 from multi_exchange_trader.ai.budget import BudgetBook
-from multi_exchange_trader.ai.dispatch import AIDispatcher
+from multi_exchange_trader.ai.dispatch import AIDispatcher, DispatchResult
 from multi_exchange_trader.ai.generation import (
+    GenerationResult,
     OpenRouterGenerationClient,
     quote_from_metadata,
+    validate_http_status,
 )
 from multi_exchange_trader.ai.openrouter_metadata import (
     OpenRouterModelMetadata,
@@ -98,6 +101,307 @@ def dispatch(dispatcher, **changes):
     return dispatcher.dispatch(selection_request(), **arguments)
 
 
+@pytest.mark.parametrize("reasoning_enabled", [None, False, True])
+def test_reasoning_control_changes_only_explicit_prepared_request(reasoning_enabled, monkeypatch):
+    calls = []
+    priced = quote()
+
+    def receive(request):
+        calls.append(request)
+        return httpx.Response(200, json=completion())
+
+    def refuse(*args, **kwargs):
+        pytest.fail("Construction and prepare must not quote, reserve or generate")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(generation, "quote_from_metadata", refuse)
+        guarded.setattr(BudgetBook, "reserve", refuse)
+        guarded.setattr(OpenRouterGenerationClient, "generate", refuse)
+        client = OpenRouterGenerationClient(KEY, MODEL, transport=httpx.MockTransport(receive),
+                                            reasoning_enabled=reasoning_enabled)
+        # Default and explicit None must preserve the previous bytes, including price caps.
+        prepared = client.prepare(selection_request(), quote=priced, now=NOW)
+        baseline = OpenRouterGenerationClient(KEY, MODEL).prepare(
+            selection_request(), quote=priced, now=NOW)
+        assert calls == []
+    if reasoning_enabled is None:
+        assert prepared == baseline
+    else:
+        assert prepared == baseline[:-1] + (
+            b',"reasoning":{"enabled":' + (b"true" if reasoning_enabled else b"false") + b"}}")
+    payload = json.loads(prepared)
+    if reasoning_enabled is None:
+        assert "reasoning" not in payload
+    else:
+        assert payload.pop("reasoning") == {"enabled": reasoning_enabled}
+    assert payload == json.loads(baseline)
+    assert client.model_id == MODEL and KEY not in repr(client)
+    result = client.generate(selection_request(), quote=priced, now=NOW)
+    assert result.failure is None and result.http_status == 200
+    assert len(calls) == 1 and calls[0].content == prepared
+    assert calls[0].headers["authorization"] == "Bearer " + KEY
+    assert str(calls[0].url) == "https://openrouter.ai/api/v1/chat/completions"
+
+
+@pytest.mark.parametrize("value", [0, 1, "", "false", KEY, 0.0, 1.0,
+                                  Decimal(0), [], {}, (), set()])
+def test_reasoning_control_rejects_non_boolean_configuration(value):
+    with pytest.raises(ValueError) as caught:
+        OpenRouterGenerationClient(KEY, MODEL, reasoning_enabled=value)
+    assert str(caught.value) == "Invalid generation configuration"
+    assert KEY not in str(caught.value)
+
+
+def test_null_refusal_accepts_valid_selection_and_settles_exact_charge(tmp_path):
+    response = completion(choices=[{"finish_reason": "stop", "message": {
+        "role": "assistant", "content": output(), "refusal": None}}])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    assert result.status == "SETTLED" and result.failure is None
+    assert result.selection.candidate.plan_id == "private-plan"
+    assert result.http_status == 200 and result.exact_cost_usd == "0.0012"
+    assert_durable_status(dispatcher, 200)
+    assert budget.summary()["used"] == "0.00120000"
+    assert budget.summary()["reserved"] == "0.00000000"
+    assert len(calls) == 1 and KEY not in repr(result)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("refusal", value) for value in ("", "denied", False, True, 0, [], {})
+] + [(field, value) for field in ("tool_calls", "function_call")
+     for value in (None, "", False, [], {})])
+def test_non_null_refusal_and_any_tool_or_function_field_retain_exact_charge(
+    tmp_path, field, value,
+):
+    message = {"role": "assistant", "content": output(), "refusal": None, field: value}
+    response = completion(choices=[{"finish_reason": "stop", "message": message}])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    assert result.failure == "INVALID_RESPONSE" and result.selection is None
+    assert result.status == "SETTLED" and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200
+    assert budget.summary()["used"] == "0.00120000"
+    assert budget.summary()["reserved"] == "0.00000000"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("case", ["model", "role", "finish", "content-null", "content-list",
+                                  "secret", "candidate", "schema"])
+def test_null_refusal_does_not_weaken_other_response_or_selection_checks(tmp_path, case):
+    message = {"role": "assistant", "content": output(), "refusal": None}
+    choice = {"finish_reason": "stop", "message": message}
+    response = completion(choices=[choice])
+    if case == "model":
+        response["model"] = "other/model"
+    elif case == "role":
+        message["role"] = "user"
+    elif case == "finish":
+        choice["finish_reason"] = "length"
+    elif case.startswith("content-"):
+        message["content"] = None if case == "content-null" else []
+    else:
+        message["content"] = output(**{"secret": {"reason": KEY},
+                                     "candidate": {"candidate_id": "invented"},
+                                     "schema": {"leverage": 100}}[case])
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(200, json=response))
+    result = dispatch(dispatcher)
+    expected = "INVALID_SELECTION" if case in ("candidate", "schema") else "INVALID_RESPONSE"
+    assert result.failure == expected and result.selection is None
+    assert result.status == "SETTLED" and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200 and KEY not in repr(result)
+    assert budget.summary()["used"] == "0.00120000" and len(calls) == 1
+
+
+class StatusSubclass(int):
+    pass
+
+
+def test_dispatch_result_preserves_positional_arguments_and_validates_status():
+    selection = object()
+    legacy = DispatchResult("request-1", "SETTLED", None, "settled", "0.0012", selection)
+    assert legacy.selection is selection and legacy.http_status is None
+    for valid in (None, 100, 200, 599):
+        assert DispatchResult("r", "UNCERTAIN", http_status=valid).http_status is valid
+    for invalid in (True, False, 99, 600, "402", 402.0, Decimal(402), StatusSubclass(402)):
+        with pytest.raises(ValueError, match="^Invalid HTTP status$"):
+            DispatchResult("r", "UNCERTAIN", http_status=invalid)
+
+
+def assert_durable_status(dispatcher, expected):
+    current = dispatcher.status("request-1")
+    assert current.http_status == expected and current.selection is None
+    restarted = AIDispatcher(dispatcher.path, dispatcher.budget, dispatcher.client, clock=lambda: NOW)
+    assert restarted.status("request-1").http_status == expected
+    with sqlite3.connect(dispatcher.path) as db:
+        assert db.execute("SELECT http_status FROM ai_dispatches").fetchone()[0] == expected
+
+
+@pytest.mark.parametrize("value", [None, 100, 200, 599])
+def test_generation_http_status_scalar_contract(value):
+    assert validate_http_status(value) is value
+    assert GenerationResult(None, http_status=value).http_status is value
+
+
+@pytest.mark.parametrize("value", [True, False, 99, 600, "402", 402.0,
+                                   Decimal(402), StatusSubclass(402)])
+def test_generation_http_status_rejects_invalid_scalars(value):
+    for construct in (validate_http_status, lambda status: GenerationResult(None, http_status=status)):
+        with pytest.raises(ValueError) as caught:
+            construct(value)
+        assert str(caught.value) == "Invalid HTTP status"
+
+
+def test_generation_result_preserves_positional_arguments():
+    legacy = GenerationResult(None, "0.0012", "output")
+    current = GenerationResult(None, "0.0012", "output", http_status=200)
+    assert legacy.http_status is None
+    assert current.output == legacy.output == "output"
+    assert current.exact_cost_usd == legacy.exact_cost_usd == "0.0012"
+    assert "output" not in repr(current)
+
+
+def generate_fake(handler):
+    calls = []
+
+    def receive(request):
+        calls.append(request)
+        return handler(request)
+
+    client = OpenRouterGenerationClient(KEY, MODEL, transport=httpx.MockTransport(receive))
+    result = client.generate(selection_request(), quote=quote(), now=NOW)
+    assert len(calls) == 1
+    assert KEY not in repr(result)
+    return result
+
+
+@pytest.mark.parametrize("status", [200, 401, 402, 403, 404, 429, 503])
+def test_generation_status_from_actual_headers(status):
+    response = completion() if status == 200 else {"error": {"code": 402},
+                                                  "usage": {"cost": 0.0012}}
+    result = generate_fake(lambda _: httpx.Response(status, json=response))
+    assert result.http_status == status
+    assert result.failure == (None if status == 200 else "HTTP_ERROR")
+    assert result.exact_cost_usd == "0.0012"
+    assert (result.output is not None) == (status == 200)
+
+
+@pytest.mark.parametrize(("case", "status", "failure", "cost"), [
+    ("error-envelope", 200, "INVALID_RESPONSE", "0.0012"),
+    ("redirect", 302, "REDIRECT_REJECTED", None),
+    ("malformed", 402, "INVALID_RESPONSE", None),
+    ("duplicate", 404, "INVALID_RESPONSE", None),
+    ("non-utf8", 429, "INVALID_RESPONSE", None),
+    ("reflected-key", 403, "INVALID_RESPONSE", "0.0012"),
+    ("encoding", 503, "INVALID_RESPONSE", None),
+    ("invalid-length", 402, "RESPONSE_TOO_LARGE", None),
+    ("oversized-length", 404, "RESPONSE_TOO_LARGE", None),
+    ("overflow", 429, "RESPONSE_TOO_LARGE", None),
+    ("deadline", 503, "TIMEOUT", None),
+    ("empty-deadline", 402, "TIMEOUT", None),
+    ("read-timeout", 404, "TIMEOUT", None),
+    ("network-error", 429, "NETWORK_ERROR", None),
+    ("arbitrary-error", 503, "TRANSPORT_ERROR", None),
+    ("context-exit", 402, "TRANSPORT_ERROR", None),
+])
+def test_generation_status_survives_post_header_failure(monkeypatch, case, status, failure, cost):
+    clock = [0.0]
+    monkeypatch.setattr(generation, "monotonic", lambda: clock[0])
+
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            if case == "deadline":
+                clock[0] = 11.0
+            if case == "empty-deadline":
+                clock[0] = 11.0
+                return
+            if case == "read-timeout":
+                raise httpx.ReadTimeout(KEY)
+            if case == "network-error":
+                raise httpx.ReadError(KEY)
+            if case == "arbitrary-error":
+                raise RuntimeError(KEY)
+            if case == "overflow":
+                yield b"x" * 40000
+                yield b"y" * 40000
+            else:
+                yield json.dumps(completion()).encode()
+
+        def close(self):
+            if case == "context-exit":
+                raise RuntimeError(KEY)
+
+    def receive(_):
+        if case == "error-envelope":
+            return httpx.Response(status, json={"error": {"code": 402},
+                                                "usage": {"cost": 0.0012}})
+        if case == "redirect":
+            return httpx.Response(status, headers={"location": "https://fake.invalid"})
+        if case in ("malformed", "duplicate", "non-utf8"):
+            raw = {"malformed": b"{", "duplicate": b'{"usage":{},"usage":{}}',
+                   "non-utf8": b"\xff"}[case]
+            return httpx.Response(status, content=raw)
+        if case == "reflected-key":
+            return httpx.Response(status, json={"error": {"message": KEY},
+                                                "usage": {"cost": 0.0012}})
+        headers = {"encoding": {"content-encoding": "unsupported"},
+                   "invalid-length": {"content-length": "bad"},
+                   "oversized-length": {"content-length": "65537"}}.get(case, {})
+        return httpx.Response(status, headers=headers, stream=Body())
+
+    result = generate_fake(receive)
+    assert result.http_status == status
+    assert result.failure == failure
+    assert result.exact_cost_usd == cost
+    assert result.output is None
+
+
+@pytest.mark.parametrize(("error", "failure"), [(httpx.ReadTimeout, "TIMEOUT"),
+                                                (httpx.ConnectError, "NETWORK_ERROR"),
+                                                (RuntimeError, "TRANSPORT_ERROR")])
+def test_generation_status_is_none_before_headers(error, failure):
+    def receive(_):
+        raise error(KEY)
+
+    result = generate_fake(receive)
+    assert result.http_status is None
+    assert result.failure == failure
+    assert result.exact_cost_usd is None and result.output is None
+
+
+def test_transport_status_does_not_come_from_error_code():
+    result = generate_fake(lambda _: httpx.Response(404, json={"error": {"code": 402}}))
+    assert result.http_status == 404
+    assert result.failure == "HTTP_ERROR"
+    assert result.exact_cost_usd is None and result.output is None
+
+
+@pytest.mark.parametrize("status", [True, False, "402", 402.0, 99, 600])
+@pytest.mark.parametrize(("usage", "cost"), [({"cost": 0.0012}, "0.0012"),
+                                           ({}, None), ({"cost": "0.0012"}, None)])
+def test_invalid_header_status_does_not_erase_cost(tmp_path, status, usage, cost):
+    def receive(_):
+        response = httpx.Response(402, json={"error": {"code": 404, "message": "fake prose"},
+                                            "usage": usage})
+        response.status_code = status
+        return response
+
+    result = generate_fake(receive)
+    assert result.http_status is None
+    assert result.failure == "HTTP_ERROR"
+    assert result.exact_cost_usd == cost and result.output is None
+    assert "fake prose" not in repr(result)
+    dispatcher, budget, calls = setup_dispatch(tmp_path, receive)
+    dispatched = dispatch(dispatcher)
+    assert dispatched.failure == "HTTP_ERROR" and len(calls) == 1
+    assert dispatched.selection is None and dispatched.exact_cost_usd == cost
+    assert dispatched.status == ("SETTLED" if cost is not None else "UNCERTAIN")
+    assert budget.summary()["uncertain"] == ("0.00000000" if cost else "0.01000000")
+    assert budget.summary()["used"] == ("0.00120000" if cost else "0.00000000")
+
+
 def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     dispatcher, budget, calls = setup_dispatch(tmp_path)
     assert calls == []
@@ -105,6 +409,8 @@ def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     assert dispatch(dispatcher, enabled=False).failure == "GENERATION_DISABLED"
     assert calls == []
     result = dispatch(dispatcher)
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert result.status == "SETTLED" and result.failure is None
     assert result.selection.candidate.plan_id == "private-plan"
     assert result.exact_cost_usd == "0.0012"
@@ -129,7 +435,7 @@ def test_explicit_single_post_public_only_and_exact_settlement(tmp_path):
     assert restarted.status("request-1").selection is None
     assert len(calls) == 1
     with sqlite3.connect(dispatcher.path) as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
         persisted = repr(db.execute("SELECT * FROM ai_dispatches").fetchall())
     for secret in (KEY, "private-account", "private-plan", "allowed candidate"):
         assert secret not in persisted
@@ -172,6 +478,8 @@ def test_exact_charge_settles_even_when_model_or_selection_is_rejected(tmp_path,
     result = dispatch(dispatcher)
     assert result.status == "SETTLED" and result.failure is not None
     assert result.selection is None and result.exact_cost_usd == "0.0012"
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["used"] == "0.00120000"
     assert len(calls) == 1 and KEY not in repr(result)
 
@@ -183,19 +491,48 @@ def test_unknown_cost_retains_full_maximum_and_no_selection(tmp_path, usage):
         tmp_path, lambda _: httpx.Response(200, json=completion(usage=usage)))
     result = dispatch(dispatcher)
     assert result.status == "UNCERTAIN" and result.selection is None
+    assert result.http_status == 200 and result.exact_cost_usd is None
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
 
-@pytest.mark.parametrize("status", [302, 401, 429, 503])
+@pytest.mark.parametrize("status", [302, 401, 402, 404, 429, 503])
 def test_errors_never_follow_redirect_or_retry_and_never_infer_free(tmp_path, status):
+    private_values = (KEY, "fake provider prose", "fake billing detail", "flagged input",
+                      "candidate reason", "provider-response-id")
     dispatcher, budget, calls = setup_dispatch(
         tmp_path, lambda _: httpx.Response(status, headers={"location": "https://evil.invalid"},
-                                          json={"error": {"message": KEY}}))
+                                          json={"error": {"code": 499, "message": private_values},
+                                                "billing": "fake billing detail",
+                                                "id": "provider-response-id"}))
     result = dispatch(dispatcher)
     assert result.status == "UNCERTAIN" and KEY not in repr(result)
+    assert result.http_status == status and result.exact_cost_usd is None
+    assert_durable_status(dispatcher, status)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
+    with sqlite3.connect(dispatcher.path) as db:
+        persisted = repr(db.execute("SELECT * FROM ai_dispatches").fetchall())
+    for private in private_values:
+        assert private not in repr(result) and private not in persisted
+
+
+@pytest.mark.parametrize("legacy_state", ["UNCERTAIN", "CHARGED"])
+def test_migrated_consumed_dispatch_never_infers_status_or_replays(tmp_path, legacy_state):
+    dispatcher, budget, calls = setup_dispatch(tmp_path)
+    assert dispatch(dispatcher).http_status == 200
+    with sqlite3.connect(dispatcher.path) as db:
+        db.execute("ALTER TABLE ai_dispatches DROP COLUMN http_status")
+        db.execute("UPDATE ai_dispatches SET status=?", (legacy_state,))
+        db.execute("PRAGMA user_version=1")
+    restarted = AIDispatcher(dispatcher.path, budget, dispatcher.client, clock=lambda: NOW)
+    assert restarted.status("request-1").http_status is None
+    duplicate = dispatch(restarted)
+    assert duplicate.failure == "ALREADY_DISPATCHED" and duplicate.http_status is None
+    reconciled = restarted.reconcile_charge("request-1")
+    assert reconciled.http_status is None and reconciled.selection is None
+    assert len(calls) == 1
 
 
 def test_timeout_exception_secrets_are_not_exposed_and_no_retry(tmp_path):
@@ -205,6 +542,8 @@ def test_timeout_exception_secrets_are_not_exposed_and_no_retry(tmp_path):
     dispatcher, budget, calls = setup_dispatch(tmp_path, timeout)
     result = dispatch(dispatcher)
     assert result.failure == "TIMEOUT" and KEY not in repr(result)
+    assert result.http_status is None
+    assert_durable_status(dispatcher, None)
     assert budget.summary()["uncertain"] == "0.01000000"
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
@@ -222,6 +561,7 @@ def test_crash_during_paid_call_preserves_liability_across_restart(tmp_path):
     restarted = AIDispatcher(dispatcher.path, BudgetBook(budget.path), dispatcher.client,
                              clock=lambda: NOW)
     assert restarted.status("request-1").status == "UNCERTAIN"
+    assert restarted.status("request-1").http_status is None
     assert dispatch(restarted).failure == "ALREADY_DISPATCHED"
     assert budget.summary()["uncertain"] == "0.01000000" and len(calls) == 1
 
@@ -248,11 +588,15 @@ def test_exact_overrun_is_liability_and_blocks_selected_candidate(tmp_path):
         tmp_path, lambda _: httpx.Response(200, json=completion(usage={"cost": 150.125})))
     result = dispatch(dispatcher)
     assert result.failure == "BUDGET_OVERRUN_HOLD" and result.selection is None
+    assert result.http_status == 200
+    assert_durable_status(dispatcher, 200)
     assert budget.summary()["overrun_liability"] == "150.12500000" and len(calls) == 1
 
 
 def test_charge_persists_before_settlement_failure_then_local_reconcile(tmp_path):
-    dispatcher, budget, calls = setup_dispatch(tmp_path)
+    dispatcher, budget, calls = setup_dispatch(
+        tmp_path, lambda _: httpx.Response(429, json={"error": {"code": 402},
+                                                    "usage": {"cost": 0.0012}}))
     with budget.connect() as db:
         db.execute("""CREATE TRIGGER reject_settlement BEFORE UPDATE OF actual ON reservations
                       BEGIN SELECT RAISE(ABORT, 'fake storage failure'); END""")
@@ -261,12 +605,18 @@ def test_charge_persists_before_settlement_failure_then_local_reconcile(tmp_path
         dispatch(dispatcher)
     status = dispatcher.status("request-1")
     assert status.status == "CHARGED" and status.exact_cost_usd == "0.0012"
+    assert status.http_status == 429
+    assert_durable_status(dispatcher, 429)
     assert budget.summary()["uncertain"] == "0.01000000"
     with budget.connect() as db:
         db.execute("DROP TRIGGER reject_settlement")
         db.commit()
-    reconciled = dispatcher.reconcile_charge("request-1")
+    restarted = AIDispatcher(dispatcher.path, BudgetBook(budget.path), dispatcher.client,
+                             clock=lambda: NOW)
+    reconciled = restarted.reconcile_charge("request-1")
     assert reconciled.reservation_status == "settled" and reconciled.selection is None
+    assert reconciled.http_status == 429 and reconciled.exact_cost_usd == "0.0012"
+    assert_durable_status(restarted, 429)
     assert dispatch(dispatcher).failure == "ALREADY_DISPATCHED" and len(calls) == 1
 
 
@@ -299,6 +649,7 @@ def test_restart_applies_pending_overrun_before_different_request(tmp_path, monk
     assert summary["used"] == "150.12500000" and summary["overrun_count"] == 1
     assert summary["overrun_hold"] and summary["reserved"] == "0.00000000"
     assert restarted.status("request-1").status == "SETTLED"
+    assert restarted.status("request-1").http_status == 200
     assert restarted.reconcile_charge("request-1").selection is None
     assert fresh_budget.summary()["used"] == "150.12500000"
 
@@ -319,6 +670,7 @@ def test_unapplied_charge_blocks_new_reservation_when_repair_still_fails(tmp_pat
     assert result.failure == "PENDING_CHARGE_RECONCILIATION" and result.selection is None
     assert len(calls) == 1 and budget.summary()["reserved"] == "0.01000000"
     assert restarted.status("request-1").status == "CHARGED"
+    assert restarted.status("request-1").http_status == 200
     with budget.connect() as db:
         db.execute("DROP TRIGGER reject_settlement")
         db.commit()
@@ -378,6 +730,7 @@ def test_concurrent_workers_wait_for_pending_charge_repair(tmp_path, monkeypatch
     assert len(calls) == 1
     assert fresh_budget.summary()["used"] == "150.12500000"
     assert third.status("request-1").status == "SETTLED"
+    assert third.status("request-1").http_status == 200
 
 
 def test_dispatch_lock_timeout_fails_closed_without_reservation(tmp_path, monkeypatch):
