@@ -7,12 +7,31 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
-from typing import NoReturn
+from dataclasses import dataclass, field
+from typing import NoReturn, Self
 
 
 class MonitoringBudgetError(ValueError):
     """Fixed local budget codes only."""
+
+
+class ReadGroupToken:
+    """Identity only; issued by an actual receipt scope."""
+
+    __slots__ = ()
+
+    def __new__(cls) -> Self:
+        raise MonitoringBudgetError("MONITORING_GROUP_REQUIRED")
+
+    def __repr__(self) -> str:
+        return "ReadGroupToken()"
+
+
+@dataclass(frozen=True)
+class ReadGroupView:
+    deadline: float
+    logical_gets: int
+    remaining_gets: int
 
 
 @dataclass
@@ -21,6 +40,8 @@ class _ReceiptBudget:
     guard: Callable[[], None]
     owner_guard: Callable[[], None]
     logical: int = 0
+    token: ReadGroupToken = field(default_factory=lambda: object.__new__(ReadGroupToken))
+    active: bool = True
 
 
 class MonitoringReadBudget:
@@ -88,12 +109,35 @@ class MonitoringReadBudget:
     def receipt(self, *, guard: Callable[[], None] = lambda: None,
                 owner_guard: Callable[[], None] = lambda: None) -> Iterator[None]:
         self.check()
-        token = self._receipt.set(_ReceiptBudget(
-            min(self.deadline, time.monotonic() + 20), guard, owner_guard))
+        receipt = _ReceiptBudget(min(self.deadline, time.monotonic() + 20), guard, owner_guard)
+        token = self._receipt.set(receipt)
         try:
             yield
         finally:
+            receipt.active = False
             self._receipt.reset(token)
+
+    @contextmanager
+    def reuse_or_open_receipt(self) -> Iterator[ReadGroupToken]:
+        receipt = self._receipt.get()
+        if receipt is not None:
+            self.require_active_group(receipt.token)
+            yield receipt.token
+        else:
+            with self.receipt():
+                opened = self._receipt.get()
+                assert opened is not None
+                self.require_active_group(opened.token)
+                yield opened.token
+
+    def require_active_group(self, token: ReadGroupToken) -> ReadGroupView:
+        receipt = self._receipt.get()
+        if (type(self) is not MonitoringReadBudget or type(token) is not ReadGroupToken
+                or type(receipt) is not _ReceiptBudget or not receipt.active
+                or receipt.token is not token):
+            raise MonitoringBudgetError("MONITORING_GROUP_REQUIRED")
+        self.check()
+        return ReadGroupView(receipt.deadline, receipt.logical, 32 - receipt.logical)
 
     def begin_read(self) -> float:
         receipt = self._receipt.get()

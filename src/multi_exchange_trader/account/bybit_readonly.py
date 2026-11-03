@@ -21,12 +21,15 @@ import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Protocol, TypeGuard, cast
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast
 from urllib.parse import urlencode
 
 import httpx
 
 from ..credential_resolution import CredentialResolver
+from ..trading_product import InstrumentKey, bybit_category
 from .config import (
     EnvironmentName,
     MissingBybitCredentials,
@@ -35,6 +38,21 @@ from .config import (
     require_demo_credentials,
     resolve_environment,
 )
+from .instrument_envelope import (
+    _REGION_PHRASES as _REGION_PHRASES,  # noqa: PLC0414 - preserve legacy re-export
+)
+from .instrument_envelope import (
+    HttpsOrigin,
+    InstrumentEnvelopeRead,
+    InstrumentSourceError,
+    _accepted_envelope_read,
+)
+from .instrument_envelope import (
+    _region_message as _region_message,  # noqa: PLC0414 - preserve legacy re-export
+)
+
+if TYPE_CHECKING:
+    from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
 
 READ_ONLY_PATHS = frozenset(
     {
@@ -56,13 +74,6 @@ _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 RECV_WINDOW = "10000"
 _MAX_BYTES = 1_000_000
 _PAGE_LIMIT = 5
-_REGION_PHRASES = (
-    "restricted location",
-    "block access from your country",
-    "your region",
-    "your country",
-    "not available in your",
-)
 _LOGGERS = ("httpx", "httpcore")
 
 
@@ -158,13 +169,6 @@ def _mapping(value: object) -> dict[str, object]:
     return mapped
 
 
-def _region_message(value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    text = value.lower()
-    return any(phrase in text for phrase in _REGION_PHRASES)
-
-
 class _ReadOperation(Protocol):
     def check(self) -> None: ...
     def begin_read(self) -> float: ...
@@ -172,6 +176,42 @@ class _ReadOperation(Protocol):
     def response(self, status: int, headers: Mapping[str, str]) -> None: ...
     def read_failed(self) -> None: ...
     def validate_response(self, result: dict[str, object], stamp: int | None) -> None: ...
+
+
+@dataclass
+class _InstrumentRoute:
+    key: InstrumentKey
+    budget: "MonitoringReadBudget"
+    group: "ReadGroupToken"
+    started_at: datetime
+    started_mono: float
+    physical_start: int
+    attempt: int = 0
+    logical_ordinal: int = 0
+    sent_origin: HttpsOrigin | None = None
+    response_origin: HttpsOrigin | None = None
+    received_at: datetime | None = None
+    received_mono: float | None = None
+    envelope: InstrumentEnvelopeRead | None = None
+
+    def check(self) -> None:
+        self.budget.require_active_group(self.group)
+
+
+def _exact_origin(request: httpx.Request) -> HttpsOrigin:
+    url = request.url
+    if url.userinfo or (url.port is not None and url.port != 443):
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    return HttpsOrigin(url.scheme, url.host, 443 if url.port is None else url.port)
+
+
+def _check_exact_request(request: httpx.Request, key: InstrumentKey) -> HttpsOrigin:
+    expected_query = _query([("category", bybit_category(key.product)), ("symbol", key.symbol)])
+    if (request.method != "GET" or request.url.raw_path.split(b"?", 1)[0]
+            != b"/v5/market/instruments-info" or request.url.query != expected_query.encode("ascii")
+            or request.url.fragment):
+        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+    return _exact_origin(request)
 
 
 class BybitReadOnlyClient:
@@ -199,6 +239,8 @@ class BybitReadOnlyClient:
         self._api_key = key
         self._api_secret = secret
         self._credential_check: Callable[[str], bool] | None = None
+        self._public_source_environment: Literal["PUBLIC_MAINNET", "PUBLIC_TESTNET"] | None = None
+        self._injected_transport = transport is not None
         self._server_ms: int | None = None
         self._mono: float | None = None
         self.retry_waits = (0.4, 0.8)
@@ -210,12 +252,44 @@ class BybitReadOnlyClient:
             logger.addFilter(self._log_filter)
         # trust_env stays at the library default so an existing proxy is used
         # unchanged. This client does not set or remove a proxy.
+        self._initialize_http(transport=transport, public=False)
+
+    def _initialize_http(self, *, transport: httpx.AsyncBaseTransport | None,
+                         public: bool) -> None:
+        options: dict[str, object] = {"trust_env": False, "verify": True} if public else {}
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(10.0),
             follow_redirects=False,
             transport=transport,
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+            **options,  # type: ignore[arg-type]
         )
+
+    @classmethod
+    def for_public_instruments(
+        cls, *, source_environment: Literal["PUBLIC_MAINNET", "PUBLIC_TESTNET"],
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> "BybitReadOnlyClient":
+        if (cls is not BybitReadOnlyClient or type(source_environment) is not str
+                or source_environment not in ("PUBLIC_MAINNET", "PUBLIC_TESTNET")):
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_SOURCE_UNSUPPORTED")
+        client = object.__new__(cls)
+        client.environment = "mainnet" if source_environment == "PUBLIC_MAINNET" else "testnet"
+        client.base_url = allowed_host(client.environment)
+        client._public_source_environment = source_environment
+        client._injected_transport = transport is not None
+        client._api_key = ""
+        client._api_secret = ""
+        client._credential_check = None
+        client._server_ms = None
+        client._mono = None
+        client.retry_waits = (0.4, 0.8)
+        client._operation = ContextVar("bybit_read_operation", default=None)
+        client._sleeper = asyncio.sleep
+        client._log_filter = _DropCredentialLogs(())
+        client._loggers = []
+        client._initialize_http(transport=transport, public=True)
+        return client
 
     @classmethod
     def from_environment(
@@ -269,6 +343,8 @@ class BybitReadOnlyClient:
         await self._client.aclose()
 
     def anchor_server_time(self, server_ms: int) -> None:
+        if self._public_source_environment is not None:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_INPUT_INVALID")
         if not _is_int(server_ms):
             raise BybitReadError("invalid_json")
         if server_ms <= 0:
@@ -325,23 +401,93 @@ class BybitReadOnlyClient:
         signed: bool,
         deadline: float | None = None,
     ) -> tuple[dict[str, object], int | None]:
+        if self._public_source_environment is not None:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_INPUT_INVALID")
+        return await self._read(path, params, signed=signed, deadline=deadline)
+
+    async def read_instrument_envelope(
+        self, key: InstrumentKey, *, budget: "MonitoringReadBudget", group: "ReadGroupToken",
+    ) -> InstrumentEnvelopeRead:
+        # Runtime budget import stays local: importing account does not load execution/native.
+        from ..execution.monitoring_budget import MonitoringBudgetError, MonitoringReadBudget
+        from ..market_data.instrument_definition import CatalogRejected, _key_payload
+
+        if type(budget) is not MonitoringReadBudget:
+            raise InstrumentSourceError("INSTRUMENT_SOURCE_BUDGET_REQUIRED")
+        code: str | None = None
+        try:
+            budget.require_active_group(group)
+        except MonitoringBudgetError as error:
+            code = ("INSTRUMENT_SOURCE_GROUP_REQUIRED" if error.args == ("MONITORING_GROUP_REQUIRED",)
+                    else "INSTRUMENT_SOURCE_BUDGET_EXHAUSTED")
+        if code is not None:
+            raise InstrumentSourceError(code)
+        try:
+            _key_payload(key)
+        except CatalogRejected:
+            code = "INSTRUMENT_SOURCE_INPUT_INVALID"
+        if code is not None:
+            raise InstrumentSourceError(code)
+        route = _InstrumentRoute(key, budget, group, datetime.now(UTC), time.monotonic(),
+                                 budget.physical_attempts)
+        try:
+            with self._monitoring_operation(budget):
+                await self._read("/v5/market/instruments-info",
+                                 [("category", bybit_category(key.product)), ("symbol", key.symbol)],
+                                 signed=False, route=route)
+        except InstrumentSourceError as error:
+            code = error.code
+        except BybitBlocked:
+            code = "INSTRUMENT_SOURCE_ACCESS_RESTRICTED"
+        except BybitReadError as error:
+            code = {
+                "timeout": "TIMEOUT", "proxy": "NETWORK", "dns": "NETWORK", "network": "NETWORK",
+                "response_too_large": "RESOURCE_LIMIT", "invalid_json": "JSON_INVALID",
+                "redirect": "ORIGIN_MISMATCH", "http_403": "ACCESS_RESTRICTED",
+                "http_451": "ACCESS_RESTRICTED", "ret_10006": "RATE_LIMITED",
+                "http_status": "HTTP_REJECTED", "monitoring_operation_overlap": "OVERLAP",
+            }.get(error.code, "RESPONSE_INVALID")
+            code = "INSTRUMENT_SOURCE_" + code
+        except MonitoringBudgetError as error:
+            code = ("INSTRUMENT_SOURCE_GROUP_REQUIRED" if error.args == ("MONITORING_GROUP_REQUIRED",)
+                    else "INSTRUMENT_SOURCE_BUDGET_EXHAUSTED")
+        if code is not None:
+            # Preserve the original safe classification while terminalizing the shared parent.
+            try:
+                budget.read_failed()
+            except MonitoringBudgetError:
+                pass
+            raise InstrumentSourceError(code)
+        assert route.envelope is not None
+        return route.envelope
+
+    async def _read(
+        self, path: str, params: list[tuple[str, str]], *, signed: bool,
+        deadline: float | None = None, route: _InstrumentRoute | None = None,
+    ) -> tuple[dict[str, object], int | None]:
         if path not in READ_ONLY_PATHS:
             raise ReadOnlyViolation()
         operation = self._operation.get()
         if operation is not None:
             bounded = operation.begin_read()
             deadline = bounded if deadline is None else min(deadline, bounded)
+        if route is not None:
+            route.logical_ordinal = route.budget.require_active_group(route.group).logical_gets
         attempt = 0
         while True:
             self._raise_if_deadline(deadline)
             request = self._build_request(path, params, signed=signed)
-            if operation is not None:
+            if route is not None:
+                request.headers["Accept-Encoding"] = "identity"
+                route.check()
+                route.attempt = attempt
+            if operation is not None and route is None:
                 operation.before_attempt(attempt)
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
                 raise BybitReadError("timeout")
             try:
-                send = self._bounded_response(request)
+                send = self._bounded_response(request, route=route)
                 if remaining is None:
                     response = await asyncio.wait_for(send, timeout=10.0)
                 else:
@@ -363,18 +509,40 @@ class BybitReadOnlyClient:
                 ):
                     raise BybitReadError("dns") from None
                 raise BybitReadError("network") from None
-            if operation is not None:
+            if route is not None:
+                route.check()
+            if operation is not None and route is None:
                 operation.response(response.status_code, response.headers)
             if response.status_code in _RETRY_STATUSES and attempt < len(self.retry_waits):
                 await response.aclose()
                 self._raise_if_deadline(deadline)
                 await self._sleeper(self.retry_waits[attempt])
+                if route is not None:
+                    route.check()
                 attempt += 1
                 continue
             # Account info can return retCode 0 with no envelope time.
             # Wallet, positions, and orders still require a positive server time.
             try:
-                accepted = self._accepted(response, require_time=path != "/v5/account/info")
+                if route is None:
+                    accepted = self._accepted(response, require_time=path != "/v5/account/info")
+                else:
+                    if 300 <= response.status_code < 400:
+                        raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+                    if response.status_code != 200:
+                        raise InstrumentSourceError("INSTRUMENT_SOURCE_HTTP_REJECTED")
+                    assert route.sent_origin is not None and route.response_origin is not None
+                    assert route.received_at is not None and route.received_mono is not None
+                    envelope, result, stamp = _accepted_envelope_read(
+                        key=route.key, sent_origin=route.sent_origin,
+                        response_origin=route.response_origin, request_started_at=route.started_at,
+                        received_at=route.received_at, started_mono=route.started_mono,
+                        received_mono=route.received_mono, raw=response.content,
+                        accepted_attempt=attempt, physical_start=route.physical_start,
+                        physical_end=route.budget.physical_attempts,
+                        logical_ordinal=route.logical_ordinal)
+                    route.envelope = envelope
+                    accepted = result, stamp
             except (BybitReadError, BybitBlocked):
                 if operation is not None:
                     operation.read_failed()
@@ -384,14 +552,82 @@ class BybitReadOnlyClient:
                 operation.check()
             return accepted
 
-    async def _bounded_response(self, request: httpx.Request) -> httpx.Response:
+    async def _bounded_response(self, request: httpx.Request, *,
+                                route: _InstrumentRoute | None = None) -> httpx.Response:
+        if route is not None:
+            route.check()
+            route.sent_origin = _check_exact_request(request, route.key)
+            # wait_for schedules this coroutine. Charge only after the final
+            # group proof, immediately before the one physical send.
+            route.budget.before_attempt(route.attempt)
         response = await self._client.send(request, stream=True)
         try:
+            if route is not None:
+                # Quota/ban observation must precede any encoding/body/origin rejection.
+                from ..execution.monitoring_budget import MonitoringBudgetError
+
+                quota_code: str | None = None
+                quota = response.headers.get("x-bapi-limit-status")
+                unparseable_quota = False
+                if quota is not None and quota.isdigit():
+                    try:
+                        int(quota)
+                    except ValueError:
+                        unparseable_quota = True
+                try:
+                    route.budget.response(response.status_code, response.headers)
+                except MonitoringBudgetError as error:
+                    if error.args == ("MONITORING_QUOTA_OR_BAN",):
+                        quota_code = ("INSTRUMENT_SOURCE_ACCESS_RESTRICTED"
+                                      if response.status_code in (403, 451)
+                                      else "INSTRUMENT_SOURCE_RATE_LIMITED")
+                    else:
+                        quota_code = "INSTRUMENT_SOURCE_BUDGET_EXHAUSTED"
+                except ValueError:
+                    # Only a proven failure in that hook's integer conversion
+                    # is expected here. A later owner's programming error must
+                    # propagate even when the header is long or non-ASCII.
+                    if not unparseable_quota:
+                        raise
+                    quota_code = "INSTRUMENT_SOURCE_RATE_LIMITED"
+                if quota_code is not None:
+                    raise InstrumentSourceError(quota_code)
+                route.check()
+                actual_request: httpx.Request | None = None
+                try:
+                    # HTTPX's application association on the ORIGINAL response;
+                    # it is not independently supplied transport/server metadata.
+                    actual_request = response.request
+                except RuntimeError:
+                    pass
+                if actual_request is None or response.history:
+                    raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+                route.response_origin = _check_exact_request(actual_request, route.key)
+                if route.response_origin != route.sent_origin:
+                    raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
+                encodings = response.headers.get_list("content-encoding")
+                if len(encodings) > 1 or (encodings and encodings[0] not in ("", "identity")):
+                    raise InstrumentSourceError("INSTRUMENT_SOURCE_ENCODING_UNSUPPORTED")
+                lengths = response.headers.get_list("content-length")
+                if lengths:
+                    length = lengths[0]
+                    if (len(lengths) != 1 or not length or not length.isascii()
+                            or not length.isdecimal()):
+                        raise InstrumentSourceError("INSTRUMENT_SOURCE_RESPONSE_INVALID")
+                    significant = length.lstrip("0") or "0"
+                    if len(significant) > 5 or int(significant) > 65536:
+                        raise InstrumentSourceError("INSTRUMENT_SOURCE_RESOURCE_LIMIT")
             data = bytearray()
             async for chunk in response.aiter_bytes():
-                if len(data) + len(chunk) > _MAX_BYTES:
+                if route is not None:
+                    route.check()
+                if len(data) + len(chunk) > (_MAX_BYTES if route is None else 65536):
                     raise BybitReadError("response_too_large")
                 data.extend(chunk)
+            if route is not None:
+                route.received_at = datetime.now(UTC)
+                route.received_mono = time.monotonic()
+                route.check()
             # aiter_bytes() already decodes content. The wire encoding/length
             # headers no longer describe this body and must not trigger decoding again.
             return httpx.Response(response.status_code, content=bytes(data), request=request,
