@@ -10,6 +10,16 @@ from decimal import Inexact, Rounded, localcontext
 from typing import Any, cast
 
 import pytest
+from risk_v2_support import (
+    DIGEST,
+    EXPIRY,
+    NOW,
+    costs_v2,
+    instrument_v2,
+    observation_ref_v2,
+    policy_v2,
+    proposal_v2,
+)
 
 from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
 from multi_exchange_trader.execution import linear_risk_v2 as r
@@ -19,16 +29,6 @@ from multi_exchange_trader.market_data.instrument_definition import (
     CatalogSource,
     InstrumentObservation,
     parse_bybit_instrument_response,
-)
-from tests.execution.risk_v2_support import (
-    DIGEST,
-    EXPIRY,
-    NOW,
-    costs_v2,
-    instrument_v2,
-    observation_ref_v2,
-    policy_v2,
-    proposal_v2,
 )
 
 

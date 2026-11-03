@@ -10,12 +10,7 @@ from fractions import Fraction
 from typing import Any, Literal, cast
 
 import pytest
-
-from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
-from multi_exchange_trader.execution import linear_risk_v2 as r
-from multi_exchange_trader.execution import risk_v2_contracts as c
-from multi_exchange_trader.execution.risk_v2_math import finite_decimal_v2
-from tests.execution.risk_v2_support import (
+from risk_v2_support import (
     DIGEST,
     EXPIRY,
     NOW,
@@ -25,6 +20,11 @@ from tests.execution.risk_v2_support import (
     policy_v2,
     proposal_v2,
 )
+
+from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+from multi_exchange_trader.execution import linear_risk_v2 as r
+from multi_exchange_trader.execution import risk_v2_contracts as c
+from multi_exchange_trader.execution.risk_v2_math import finite_decimal_v2
 
 
 def _inputs(side: Literal["LONG", "SHORT"] = "LONG") -> e.LinearRiskInputsV2:

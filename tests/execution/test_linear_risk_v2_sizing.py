@@ -9,6 +9,7 @@ from fractions import Fraction
 from typing import Any
 
 import pytest
+from risk_v2_support import NOW, costs_v2, instrument_v2, policy_v2, proposal_v2
 
 from multi_exchange_trader.execution import risk_v2_contracts as c
 from multi_exchange_trader.execution.linear_risk_v2 import size_linear_entry_v2
@@ -17,7 +18,6 @@ from multi_exchange_trader.market_data.instrument_definition import (
     KnownNotPublished,
     parse_bybit_instrument_response,
 )
-from tests.execution.risk_v2_support import NOW, costs_v2, instrument_v2, policy_v2, proposal_v2
 
 
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
