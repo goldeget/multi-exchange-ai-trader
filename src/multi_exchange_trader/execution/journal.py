@@ -287,6 +287,22 @@ def _own_pending_data_witness_v2(data: _OwnPendingDataV2) -> tuple[object, ...]:
 
 
 @dataclass(frozen=True)
+class _PostClaimEntryDataV2:
+    claimed: CommandRecord
+    reservation: ReservationV2
+    db: sqlite3.Connection
+    scope_object: ExecutionScope
+    scope_values: tuple[str, str]
+    attempt: object
+    owner_epoch: str
+    journal_revision: int
+    held_quantity_sha256: str
+    command_identity_sha256: str
+    record_witness: tuple[object, ...]
+    rows_witness: tuple[object, ...]
+
+
+@dataclass(frozen=True)
 class ProjectionRecord:
     projection_key: str
     revision: int
@@ -351,6 +367,8 @@ class CommandJournal:
         self._scope = (scope.account_id, scope.environment)
         self._own_pending_issuer_v2: CommandJournal = self
         self._own_pending_closed_v2 = False
+        self._postclaim_attempt_v2: object | None = None
+        self._postclaim_slot_v2: _PostClaimEntryDataV2 | None = None
         self._own_pending_slot_v2: tuple[
             _OwnPendingViewV2, _OwnPendingDataV2, tuple[object, ...], tuple[object, ...]
         ] | None = None
@@ -391,6 +409,8 @@ class CommandJournal:
         self.close()
 
     def close(self) -> None:
+        self._postclaim_slot_v2 = None
+        self._postclaim_attempt_v2 = None
         self._own_pending_slot_v2 = None
         self._own_pending_closed_v2 = True
         self._db.close()
@@ -646,6 +666,8 @@ class CommandJournal:
             raise ReservationLimitExceeded("explicit account plus held journal capacity exceeded")
 
     def claim(self, command_key: str) -> CommandRecord | None:
+        self._postclaim_slot_v2 = None
+        self._postclaim_attempt_v2 = None
         self._own_pending_slot_v2 = None
         with self._transaction():
             record = self._required(command_key)
@@ -1227,6 +1249,10 @@ class CommandJournal:
         expected_held_quantity_sha256: str,
         expected_command_identity_sha256: str,
     ) -> CommandRecord | None:
+        self._postclaim_slot_v2 = None
+        attempt = object()
+        self._postclaim_attempt_v2 = attempt
+        original_db, original_scope, original_values = self._db, self.scope, self._scope
         from multi_exchange_trader.execution import reservations_v2 as v2
         from multi_exchange_trader.execution import risk_v2_contracts as c
         from multi_exchange_trader.execution.protection import ProtectionScope
@@ -1265,7 +1291,161 @@ class CommandJournal:
                 c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
             self._audit(command_key, "CLAIM_ENTRY_V2", {})
             result = self._required(command_key)
+            # Retain the actual public return, but witness POST-UPDATE rows before COMMIT.
+            current = self._v2_checked_records()
+            meta = self._v2_pins(
+                current, owner_epoch, expected_journal_revision, expected_held_quantity_sha256
+            )
+            selected = next((item for item in current if item.command_key == command_key), None)
+            witness = _own_pending_record_witness_v2(result)
+            if (
+                result.kind is not CommandKind.ENTRY
+                or result.state is not CommandState.SENDING
+                or result.terminal_confirmed
+                or result.reservation is not None
+                or result.reservation_v2 is None
+                or selected is None
+                or _own_pending_record_witness_v2(selected) != witness
+                or v2.entry_command_identity_sha256_v2(
+                    ProtectionScope(*original_values), command_key,
+                    decode_entry_intent_v2(result.payload_json), result.reservation_v2
+                ) != expected_command_identity_sha256
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            candidate = _PostClaimEntryDataV2(
+                result, result.reservation_v2, original_db, original_scope, original_values,
+                attempt, meta[0], meta[1], expected_held_quantity_sha256,
+                expected_command_identity_sha256, witness,
+                self._own_pending_rows_witness_v2(current, meta),
+            )
+        # A later failed/nested claim during COMMIT must not resurrect this candidate.
+        if (
+            type(self) is CommandJournal
+            and self._own_pending_issuer_v2 is self
+            and not self._own_pending_closed_v2
+            and self._postclaim_attempt_v2 is attempt
+            and self._postclaim_slot_v2 is None
+            and self._db is original_db
+            and self.scope is original_scope
+            and self._scope is original_values
+            and type(original_scope) is ExecutionScope
+            and type(original_scope.account_id) is str
+            and type(original_scope.environment) is str
+            and (original_scope.account_id, original_scope.environment) == original_values
+        ):
+            self._postclaim_slot_v2 = candidate
         return result
+
+    def _require_postclaim_entry_v2(
+        self,
+        command_key: str,
+        *,
+        claimed: CommandRecord,
+        expected_command_identity_sha256: str,
+        owner_epoch: str,
+        expected_journal_revision: int,
+        expected_held_quantity_sha256: str,
+        now: datetime,
+    ) -> None:
+        """Recheck the original successful local return; no clock or submit authority."""
+        from multi_exchange_trader.execution import reservations_v2 as v2
+        from multi_exchange_trader.execution import risk_v2_contracts as c
+        from multi_exchange_trader.execution.protection import ProtectionScope
+        from multi_exchange_trader.execution.risk_v2_codec import decode_entry_intent_v2
+
+        try:
+            slot: _PostClaimEntryDataV2 | None = getattr(self, "_postclaim_slot_v2", None)
+            if (
+                type(self) is not CommandJournal
+                or getattr(self, "_own_pending_issuer_v2", None) is not self
+                or getattr(self, "_own_pending_closed_v2", True)
+                or type(slot) is not _PostClaimEntryDataV2
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            assert slot is not None
+
+            def require_links() -> None:
+                if (
+                    self._own_pending_issuer_v2 is not self
+                    or self._own_pending_closed_v2
+                    or self._postclaim_slot_v2 is not slot
+                    or self._postclaim_attempt_v2 is not slot.attempt
+                    or self._db is not slot.db
+                    or self.scope is not slot.scope_object
+                    or self._scope is not slot.scope_values
+                    or claimed is not slot.claimed
+                    or type(claimed) is not CommandRecord
+                    or claimed.reservation_v2 is not slot.reservation
+                ):
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+                # Close public aliases before equality/truthiness can dispatch user code.
+                values = c._fields_v2(self.scope, ExecutionScope)
+                account_id, environment = values["account_id"], values["environment"]
+                if type(account_id) is not str or type(environment) is not str:
+                    c._reject_v2()
+                c._account_payload_v2(ProtectionScope(account_id, environment))
+                witness = _own_pending_record_witness_v2(claimed)
+                if (
+                    (account_id, environment) != slot.scope_values
+                    or claimed.kind is not CommandKind.ENTRY
+                    or claimed.state is not CommandState.SENDING
+                    or claimed.terminal_confirmed
+                    or claimed.reservation is not None
+                    or witness != slot.record_witness
+                ):
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+
+            require_links()
+            c._identifier_v2(command_key)
+            c._identifier_v2(owner_epoch)
+            v2._revision(expected_journal_revision)
+            c._digest_v2(expected_held_quantity_sha256)
+            c._digest_v2(expected_command_identity_sha256)
+            now = c._utc_v2(now)
+            if (
+                command_key != claimed.command_key
+                or (owner_epoch, expected_journal_revision, expected_held_quantity_sha256,
+                    expected_command_identity_sha256)
+                != (slot.owner_epoch, slot.journal_revision, slot.held_quantity_sha256,
+                    slot.command_identity_sha256)
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            intent = decode_entry_intent_v2(claimed.payload_json)
+            account = ProtectionScope(*slot.scope_values)
+            if (
+                v2.entry_command_identity_sha256_v2(
+                    account, command_key, intent, slot.reservation
+                ) != slot.command_identity_sha256
+                or not intent.assessment.assessed_at <= now < intent.envelope.valid_until
+            ):
+                c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            with self._transaction():
+                records = self._v2_checked_records()
+                meta = self._v2_pins(
+                    records, owner_epoch, expected_journal_revision,
+                    expected_held_quantity_sha256,
+                )
+                if self._own_pending_rows_witness_v2(records, meta) != slot.rows_witness:
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+                selected = next(
+                    (item for item in records if item.command_key == command_key), None
+                )
+                if (
+                    selected is None
+                    or _own_pending_record_witness_v2(selected) != slot.record_witness
+                    or selected.reservation_v2 is None
+                    or v2.entry_command_identity_sha256_v2(
+                        account, command_key, decode_entry_intent_v2(selected.payload_json),
+                        selected.reservation_v2,
+                    ) != slot.command_identity_sha256
+                ):
+                    c._reject_v2("RISK_V2_LOCAL_ADMISSION_CONFLICT")
+            require_links()
+        except BaseException:
+            # Only this caller dictionary is changed, even for an ordinary copied J.
+            self._postclaim_slot_v2 = None
+            self._postclaim_attempt_v2 = None
+            raise
 
     def audit_events(self) -> tuple[AuditRecord, ...]:
         rows = self._db.execute(
