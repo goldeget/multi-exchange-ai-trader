@@ -683,6 +683,9 @@ class NativeBybitBridge:
                         or strategy_id != expected_strategy_id):
                     raise ValueError("NATIVE_ORDER_CHANGED")
                 final_associations()
+                previous = self._cancellations.get(client_order_id)
+                if previous is not None:
+                    return previous
             result = NativeSubmission(client_order_id, "SUBMITTING", "NATIVE_SUBMIT_INVOKED")
             self._cancellations[client_order_id] = result
             try:

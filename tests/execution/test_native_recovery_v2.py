@@ -629,3 +629,62 @@ def test_actual_fourth_ci_gate_requires_individual_zero_counters(tmp_path: Any,
     else:
         with pytest.raises((SystemExit, ValueError, ET.ParseError, FileNotFoundError)):
             execute()
+
+
+def final_getter_cancel_reentry(trigger: int | None, ambiguous: bool) -> Any:
+    state: dict[str, Any] = {'trigger': None, 'fired': 0, 'nested': None}
+    bridge: Any = None
+    class Strategy(a.Strategy):
+        @property
+        def id(self) -> str:
+            self.reads += 1
+            if self.reads == state['trigger'] and state['fired'] == 0:
+                state['fired'] += 1
+                state['nested'] = bridge.cancel_owned(a.ID)
+            return self.identity
+        @id.setter
+        def id(self, value: str) -> None:
+            self.identity = value
+        def __init__(self, factory: Any) -> None:
+            self.reads = 0
+            super().__init__(factory)
+    factory = a.Factory()
+    strategy = Strategy(factory)
+    request = a.request()
+    bindings = n.NativeBindings(str, str, str, str, str,
+        n.FixedLimitBindingsV2(a.Limit, a.Init, a.Updated, a.Kind.LIMIT, a.Tif.IOC))
+    bridge = n.NativeBybitBridge(scope=request.scope, native_account_id='BYBIT-UNIFIED',
+        factory=factory, strategy=strategy, bindings=bindings)
+    bridge.submit_fixed_limit_v2(request)
+    a.activate(factory)
+    if ambiguous:
+        def fail_after_invocation() -> None:
+            raise RuntimeError('FAKE_CANCEL_HANDOFF_AMBIGUOUS')
+        strategy.cancel_callback = fail_after_invocation
+    strategy.reads = 0
+    state['trigger'] = trigger
+    outer = bridge.cancel_owned(a.ID)
+    final_read = strategy.reads
+    retry = bridge.cancel_owned(a.ID)
+    return SimpleNamespace(state=state, bridge=bridge, strategy=strategy, factory=factory,
+        request=request, outer=outer, retry=retry, final_read=final_read)
+
+
+@pytest.mark.parametrize('ambiguous', [False, True])
+def test_final_strategy_getter_cancel_reentry_returns_exact_inner_result_once(ambiguous: bool) -> None:
+    control = final_getter_cancel_reentry(None, ambiguous)
+    assert control.state['fired'] == 0 and control.state['nested'] is None
+    assert len(control.strategy.cancels) == len(control.bridge._cancellations) == 1
+    assert control.outer is control.retry is control.bridge._cancellations[a.ID]
+    # The unchanged same-type control discovers the actual final ID read.
+    changed = final_getter_cancel_reentry(control.final_read, ambiguous)
+    assert changed.state['fired'] == 1
+    assert len(changed.strategy.cancels) == len(changed.bridge._cancellations) == 1
+    assert changed.outer is changed.state['nested'] is changed.retry is changed.bridge._cancellations[a.ID]
+    for result in (control, changed):
+        assert result.outer.state == ('UNKNOWN' if ambiguous else 'SUBMITTING')
+        assert result.outer.code == ('NATIVE_SUBMIT_AMBIGUOUS' if ambiguous else 'NATIVE_SUBMIT_INVOKED')
+        assert result.strategy.identity == result.factory.order.strategy_id == 'STRATEGY-001'
+        assert result.bridge._requests[a.ID] is result.request
+        assert len(result.strategy.submits) == 1
+        assert result.strategy.cancels[0][0] is result.factory.order
