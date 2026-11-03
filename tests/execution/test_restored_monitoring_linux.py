@@ -17,6 +17,7 @@ from decimal import Decimal
 
 import httpx
 import pytest
+from fixtures.runtime_policy_v1 import commit_policy_change
 from restored_monitoring_io_support import (
     KEY,
     SCOPE,
@@ -75,7 +76,8 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
 async def test_readonly_binding_without_capital_or_trading_permission(tmp_path, monkeypatch):
     async with restored_case(tmp_path / "readonly", monkeypatch) as h:
         policy = h.book.read()
-        h.book.save(policy["revision"], {**policy["policy"], "capital_usdt": None})
+        changed = commit_policy_change(h.book, {**policy["policy"], "capital_usdt": None})
+        assert changed["revision"] == policy["revision"] + 1
         assert h.book.read()["policy"]["capital_usdt"] is None
         identity = h.session.require_observation_binding(h.worker.binding, scope=SCOPE)
         assert identity.read_only and not identity.has_permission("Wallet", "Capital")
