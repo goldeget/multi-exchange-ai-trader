@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .runtime_policy import RuntimePolicyBook, parse_json
 
 AUTOMATIC_BODY_LIMIT = 64 * 1024
+CAPABILITY_HEADER = {"X-Automatic-Policy-Sections-Version": "1"}
 
 
 def install(application: FastAPI) -> None:
@@ -24,7 +25,7 @@ def install(application: FastAPI) -> None:
     @router.get("/settings")
     async def read(request: Request) -> Any:
         try:
-            return await asyncio.to_thread(book(request).read)
+            return JSONResponse(content=await asyncio.to_thread(book(request).read), headers=CAPABILITY_HEADER)
         except (ValueError, TypeError, OSError, sqlite3.Error):
             return JSONResponse(status_code=503, content={"reason": "automatic_storage_unavailable"})
 
@@ -49,14 +50,21 @@ def install(application: FastAPI) -> None:
             value = parse_json(bytes(chunks))
             expected = {"schema_version", "revision"} if migration else {
                 "schema_version", "revision", "policy", "expected_strategy_generation"}
+            if not migration and type(value) is dict and "policy_sections_version" in value:
+                expected.add("policy_sections_version")
+                if type(value["policy_sections_version"]) is not int or value["policy_sections_version"] != 1:
+                    raise ValueError("settings capability")
             if (type(value) is not dict or set(value) != expected
                     or type(value["schema_version"]) is not int
                     or value["schema_version"] != (1 if migration else 2)):
                 raise ValueError("settings fields")
             if migration:
-                return await asyncio.to_thread(book(request).migrate_v1, value["revision"])
-            return await asyncio.to_thread(book(request).save_v2, value["revision"], value["policy"],
-                                           expected_strategy_generation=value["expected_strategy_generation"])
+                result = await asyncio.to_thread(book(request).migrate_v1, value["revision"])
+            else:
+                result = await asyncio.to_thread(book(request).save_v2, value["revision"], value["policy"],
+                    expected_strategy_generation=value["expected_strategy_generation"],
+                    policy_sections_version=value.get("policy_sections_version"))
+            return JSONResponse(content=result, headers=CAPABILITY_HEADER)
         except (ValueError, TypeError):
             return JSONResponse(status_code=409, content={"reason": "automatic_settings_conflict_or_invalid"})
         except (OSError, sqlite3.Error):

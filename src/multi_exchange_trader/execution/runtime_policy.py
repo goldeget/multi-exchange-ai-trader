@@ -9,7 +9,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
+from .policy_sections import (
+    RISK_DECIMALS,
+    catalog_from_wire,
+    eligible_references,
+    section_missing_fields,
+    validate_sections_v2,
+)
 from .risk import RiskScope, UserRiskPolicy
+from .risk_v2_contracts import LinearCapitalCapsV2, LinearRiskPolicyV2, RiskScopeV2, RiskV2Rejected
+from .strategy_catalog import ApprovalEnvironment, require_strategy_references
 
 DECIMALS = (
     "capital_usdt", "leverage_min", "leverage_max", "per_trade_loss", "max_daily_loss",
@@ -104,11 +113,25 @@ def validate_revision(value: object, *, increment: bool = False) -> int:
 
 
 def validate_v2(value: object) -> dict[str, Any]:
-    if (type(value) is not dict or set(value) != V2_SECTIONS
-            or any(value[key] is not None for key in ("scope", "strategy", "risk_v2"))):
+    if type(value) is not dict or set(value) != V2_SECTIONS:
         raise ValueError("policy v2 fields")
-    return {"legacy_v1": validate_draft(value["legacy_v1"]),
-            "scope": None, "strategy": None, "risk_v2": None}
+    result = {"legacy_v1": validate_draft(value["legacy_v1"]),
+              **validate_sections_v2(value["scope"], value["strategy"], value["risk_v2"])}
+    _encoded_policy(result)
+    return result
+
+
+def _encoded_policy(policy: dict[str, Any]) -> str:
+    payload = json.dumps(policy, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+    if len(payload.encode("utf-8")) > 64 * 1024:
+        raise ValueError("policy body limit")
+    return payload
+
+
+def _parse_v2(raw: str) -> object:
+    if len(raw.encode("utf-8")) > 64 * 1024:
+        raise ValueError("policy body limit")
+    return parse_json(raw)
 
 
 def _fences() -> dict[str, str]:
@@ -190,13 +213,19 @@ class RuntimePolicyBook:
             row = cls._row(db, "runtime_policy_v2")
             if tables & historical and row["revision"] <= original["revision"]:
                 raise ValueError("policy archive revision")
-            draft = validate_v2(parse_json(row["payload"]))
-            missing = ["risk_v2", "scope", "strategy"]
+            draft = validate_v2(_parse_v2(row["payload"]))
+            missing = section_missing_fields(draft)
             blocker = "POLICY_V2_ADMISSION_REQUIRED"
+        blockers = [blocker, "NATIVE_RUNTIME_NOT_QUALIFIED", "WORKER_NOT_CONNECTED"]
+        if version == 2:
+            if draft["strategy"] is not None:
+                blockers.append("STRATEGY_CURRENT_PUBLICATION_REQUIRED")
+            if draft["scope"] is not None and draft["scope"]["selected_product"] == "SPOT":
+                blockers.append("POLICY_SPOT_RISK_UNSUPPORTED")
         return {"schema_version": version, "revision": row["revision"], "policy": draft,
                 "missing_fields": missing, "desired_state": "STOPPED",
                 "live_order_enabled": False, "worker_running": False,
-                "blockers": [blocker, "NATIVE_RUNTIME_NOT_QUALIFIED", "WORKER_NOT_CONNECTED"]}
+                "blockers": blockers}
 
     def read(self) -> dict[str, Any]:
         with closing(self.connect()) as db, db:
@@ -228,22 +257,76 @@ class RuntimePolicyBook:
             return self._read(db)
 
     def save_v2(self, revision: object, draft: object, *,
-                expected_strategy_generation: object) -> dict[str, Any]:
+                expected_strategy_generation: object, policy_sections_version: object = None) -> dict[str, Any]:
         revision = validate_revision(revision, increment=True)
         if expected_strategy_generation is not None:
             raise ValueError("policy strategy generation")
+        if policy_sections_version is not None and (type(policy_sections_version) is not int or policy_sections_version != 1):
+            raise ValueError("policy sections capability")
         with closing(self.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            # This older writer must not erase pins introduced by a future capable writer.
+            # Validate persisted pins before capability checks and revision CAS.
             current = self._read(db)
             policy = validate_v2(draft)
             if current["schema_version"] != 2 or current["revision"] != revision:
                 raise ValueError("policy revision conflict")
-            payload = json.dumps(policy, sort_keys=True, separators=(",", ":"))
+            if policy_sections_version is None and any(
+                    source[key] is not None for source in (current["policy"], policy)
+                    for key in ("scope", "strategy", "risk_v2")):
+                raise ValueError("policy sections capability")
+            payload = _encoded_policy(policy)
             if db.execute("UPDATE runtime_policy_v2 SET revision=revision+1,payload=? "
                           "WHERE id=1 AND revision=?", (payload, revision)).rowcount != 1:
                 raise ValueError("policy revision conflict")
             return self._read(db)
+
+    def risk_policy_v2(self, scope: RiskScopeV2) -> LinearRiskPolicyV2:
+        snapshot = self.read()
+        if snapshot["schema_version"] != 2:
+            raise ValueError("POLICY_V1_MIGRATION_REQUIRED")
+        policy = validate_v2(snapshot["policy"])
+        stored_scope, strategy, risk = (policy[name] for name in ("scope", "strategy", "risk_v2"))
+        # Reconstruct the exact public scope to reject forged/partially initialized DTOs.
+        if type(scope) is not RiskScopeV2:
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+        try:
+            RiskScopeV2(scope.product_scope, scope.instrument, scope.strategy)
+        except (AttributeError, TypeError, ValueError):
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH") from None
+        if (scope.product_scope.product == "SPOT" or stored_scope is not None
+                and stored_scope["selected_product"] == "SPOT"):
+            raise RiskV2Rejected("RISK_V2_UNSUPPORTED_PRODUCT")
+        caps = risk["caps"] if risk is not None else None
+        if (caps is None or any(caps[name] is None for name in (
+                "max_order_admission_notional", "max_account_admission_notional", "valuation_rule", "turnover_requirement"))
+                or caps["turnover_requirement"] == "HARD_EXECUTION_QUOTE_CAP" and caps["max_execution_quote_amount"] is None):
+            raise RiskV2Rejected("RISK_V2_CAP_POLICY_MIGRATION_REQUIRED")
+        if section_missing_fields(policy):
+            raise ValueError("POLICY_V2_ADMISSION_REQUIRED")
+        universe = stored_scope["selected_instruments" if stored_scope["mode"] == "FULL_AUTO" else "allowed_instruments"]
+        if (scope.product_scope.account.account_id != stored_scope["account"]["account_id"]
+                or scope.product_scope.account.environment != stored_scope["account"]["environment"]
+                or scope.product_scope.product != stored_scope["selected_product"]
+                or {"venue": scope.instrument.venue, "product": scope.instrument.product,
+                    "symbol": scope.instrument.symbol} not in universe):
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+        allowed, selected = eligible_references(stored_scope, strategy, scope.instrument)
+        if not allowed or scope.strategy not in (selected if stored_scope["mode"] == "FULL_AUTO" else allowed):
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+        catalog = catalog_from_wire(strategy["catalog"])
+        selection = require_strategy_references(catalog, expected_catalog_revision=catalog.revision,
+                    allowed=allowed, selected=selected, instrument=scope.instrument,
+                    environment=cast(ApprovalEnvironment, scope.product_scope.account.environment))
+        if (tuple(entry.reference for entry in selection.allowed) != allowed
+                or tuple(entry.reference for entry in selection.selected) != selected):
+            raise ValueError("POLICY_V2_ADMISSION_REQUIRED")
+        cap_values: dict[str, Any] = {name: (Decimal(value) if name in {"max_order_admission_notional",
+                      "max_account_admission_notional", "max_execution_quote_amount"} and value is not None else value)
+                      for name, value in caps.items()}
+        values: dict[str, Any] = {name: Decimal(value) if name in RISK_DECIMALS else value
+                  for name, value in risk.items() if name not in {"section_version", "product", "caps"}}
+        return LinearRiskPolicyV2(scope=scope, revision=str(snapshot["revision"]),
+                                  caps=LinearCapitalCapsV2(**cap_values), **values)
 
     def risk_policy(self, scope: RiskScope) -> UserRiskPolicy:
         snapshot = self.read()

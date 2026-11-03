@@ -23,6 +23,132 @@ OFFLINE = runpy.run_path(str(TOOL))
 state = state_fixture
 
 
+def typed_policy():
+    fixtures = runpy.run_path(str(ROOT / "tests/execution/test_policy_sections.py"))
+    return fixtures["policy_fixture"]()
+
+
+@pytest.mark.parametrize("fault", [None, "partial", "orphan", "spot", "future", "hash", "global", "decimal", "size"])
+def test_typed_pure_application_offline_parity(fault):
+    policy = typed_policy()
+    accepted = fault in {None, "partial", "orphan", "spot"}
+    if fault == "partial":
+        policy["risk_v2"]["caps"] = None
+        policy["scope"]["account"] = None
+    elif fault == "orphan":
+        key = {"venue": "BYBIT", "product": "LINEAR", "symbol": "SOLUSDT"}
+        policy["scope"]["allowed_instruments"].append(key)
+        policy["scope"]["selected_instruments"].append(key)
+    elif fault == "spot":
+        policy["scope"].update(selected_product="SPOT", allowed_products=["SPOT"],
+                               allowed_instruments=None, selected_instruments=None)
+        policy["risk_v2"] = policy["strategy"] = None
+    elif fault == "future":
+        policy["strategy"]["section_version"] = 2
+    elif fault == "hash":
+        policy["strategy"]["catalog"]["entries"][0]["implementation_sha256"] = "d" * 64
+    elif fault == "global":
+        policy["strategy"]["allowed"].append({"strategy_id": "unknown", "revision": "r1"})
+    elif fault == "decimal":
+        policy["risk_v2"]["per_trade_loss"] = "1e2"
+    elif fault == "size":
+        import copy
+
+        from multi_exchange_trader.execution.policy_sections import catalog_from_wire
+
+        policy["legacy_v1"]["allowed_symbols"] = [f"A{i:03}" + "x" * 92 for i in range(100)]
+        policy["legacy_v1"]["selected_symbols"] = policy["legacy_v1"]["allowed_symbols"]
+        policy["legacy_v1"]["allowed_strategies"] = policy["legacy_v1"]["allowed_symbols"]
+        policy["legacy_v1"]["selected_strategies"] = policy["legacy_v1"]["allowed_symbols"]
+        policy["scope"]["account"]["account_id"] = "한" * 256
+        original = policy["strategy"]["catalog"]["entries"][0]
+        entries = []
+        for index in range(100):
+            entry = copy.deepcopy(original)
+            entry["reference"]["strategy_id"] = f"strategy{index:03}" + "x" * 80
+            entries.append(entry)
+        policy["strategy"]["catalog"]["entries"] = entries
+        policy["strategy"]["catalog"]["revision"] = catalog_from_wire(policy["strategy"]["catalog"], check_revision=False).revision
+        policy["strategy"]["allowed"] = policy["strategy"]["selected"] = []
+    results = []
+    for check in (validate_v2, OFFLINE["check_policy_sections"]):
+        try:
+            check(policy)
+        except ValueError:
+            results.append(False)
+        else:
+            results.append(True)
+    assert results == [accepted, accepted]
+
+
+@pytest.mark.parametrize("section,field,value", [
+    ("scope", "account", {"account_id": " fixture ", "environment": "DEMO"}),
+    ("scope", "mode", True), ("scope", "selected_product", "OTHER"),
+    ("scope", "allowed_products", ["LINEAR", "LINEAR"]),
+    ("scope", "permission_profile_revision", "future"),
+    ("scope", "selected_instruments", [{"venue": "BYBIT", "product": "LINEAR", "symbol": "SOLUSDT"}]),
+    ("strategy", "allowed", [{"strategy_id": "alpha", "revision": "latest"}]),
+    ("strategy", "selected", [{"strategy_id": "unknown", "revision": "r1"}]),
+    ("risk_v2", "section_version", True), ("risk_v2", "product", "SPOT"),
+    ("risk_v2", "per_trade_loss", "0"), ("risk_v2", "per_trade_loss", "01"),
+    ("risk_v2", "per_trade_loss", "10000000000000000"),
+    ("risk_v2", "per_trade_loss", "1.123456789"), ("risk_v2", "max_positions", 1000001),
+    ("risk_v2", "liquidation_buffer_fraction", "1"), ("risk_v2", "position_mode", "HEDGE"),
+])
+def test_typed_scalar_refusals_match_finite_application_offline_boundaries(section, field, value):
+    policy = typed_policy()
+    policy[section][field] = value
+    with pytest.raises(ValueError):
+        validate_v2(policy)
+    with pytest.raises(OFFLINE["SnapshotError"], match="Unsupported policy V2 sections"):
+        OFFLINE["check_policy_sections"](policy)
+
+
+def test_typed_catalog_and_global_order_remains_semantic_and_roundtrippable():
+    policy = typed_policy()
+    policy["strategy"]["catalog"]["entries"].reverse()
+    policy["strategy"]["allowed"].reverse()
+    policy["scope"]["mode"] = "ALL_IN_ONE"
+    policy["scope"]["selected_instruments"] = None
+    policy["strategy"]["selected"] = None
+    assert validate_v2(policy) == policy
+    OFFLINE["check_policy_sections"](policy)
+
+
+@pytest.mark.parametrize("kind", ["typed", "partial", "spot"])
+def test_three_file_bundle_recovers_typed_sections_without_application(state, tmp_path, kind):
+    book, _ = policy_book(state, "migrated")
+    policy = typed_policy()
+    policy["legacy_v1"]["capital_usdt"] = "90.00"
+    if kind == "partial":
+        policy["risk_v2"]["caps"] = None
+    elif kind == "spot":
+        policy["scope"].update(selected_product="SPOT", allowed_products=["SPOT"],
+                               allowed_instruments=None, selected_instruments=None)
+        policy["risk_v2"] = policy["strategy"] = None
+    expected = book.save_v2(2, policy, expected_strategy_generation=None, policy_sections_version=1)
+    before = state_bytes(state)
+    bundle, elsewhere = tmp_path / "bundle", tmp_path / "elsewhere"
+    bundle.mkdir()
+    elsewhere.mkdir()
+    names = ("state_snapshot.py", "history_snapshot_validation.py", "native_restart_format.py")
+    for name in names:
+        shutil.copyfile(TOOL.with_name(name), bundle / name)
+    executions = []
+    for args in (("snapshot", "--source", state, "--target", tmp_path / "backup", "--writers-stopped"),
+                 ("verify", "--source", tmp_path / "backup"),
+                 ("restore", "--source", tmp_path / "backup", "--target", tmp_path / "restored")):
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", str(bundle / "state_snapshot.py"), *map(str, args)],
+                                cwd=elsewhere, capture_output=True, text=True, timeout=60, check=False)
+        executions.append({"argv": result.args, "cwd": str(elsewhere), "stdout": result.stdout,
+                           "stderr": result.stderr, "exit": result.returncode})
+        (tmp_path / "bundle-execution.json").write_text(json.dumps(executions, indent=2), encoding="utf-8")
+        assert result.returncode == 0, result.stderr
+    assert {path.name for path in bundle.iterdir()} == set(names)
+    assert state_bytes(state) == before == state_bytes(tmp_path / "restored")
+    assert RuntimePolicyBook(tmp_path / "restored/runtime-policy.sqlite3").read() == expected
+
+
 def policy_book(directory: Path, kind: str) -> tuple[RuntimePolicyBook, str | None]:
     path = directory / "runtime-policy.sqlite3"
     if kind == "fresh":
@@ -42,8 +168,10 @@ def policy_book(directory: Path, kind: str) -> tuple[RuntimePolicyBook, str | No
     with closing(sqlite3.connect(path)) as db, db:
         db.execute("UPDATE runtime_policy SET payload=?", (raw,))
     book = RuntimePolicyBook(path)
-    if kind == "migrated":
+    if kind in {"migrated", "typed"}:
         book.migrate_v1(1)
+    if kind == "typed":
+        book.save_v2(2, typed_policy(), expected_strategy_generation=None, policy_sections_version=1)
     return book, raw
 
 
@@ -298,7 +426,7 @@ def test_complete_v2_section_refusals_match_application_and_offline(tmp_path, se
         OFFLINE["check_policy_v2"](db)
 
 
-@pytest.mark.parametrize("kind", ["fresh", "migrated"])
+@pytest.mark.parametrize("kind", ["fresh", "migrated", "typed"])
 def test_real_recovery_opens_only_disposable_readonly_copies(state, tmp_path, monkeypatch, kind):
     policy_book(state, kind)
     before = state_bytes(state)
@@ -323,3 +451,70 @@ def test_real_recovery_opens_only_disposable_readonly_copies(state, tmp_path, mo
     assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "REPLACE", "VACUUM"))
                    or "WAL_CHECKPOINT" in sql.upper() for sql in statements)
     assert state_bytes(state) == before == state_bytes(backup / "data") == state_bytes(restored)
+
+
+@pytest.mark.parametrize("defect", ["future_section", "typed_hash", "extra_view"])
+def test_rehashed_invalid_typed_policy_never_publishes_or_modifies_inputs(state, tmp_path, defect, capsys):
+    policy_book(state, "typed")
+    backup = tmp_path / "backup"
+    invoke = OFFLINE["main"]
+    assert invoke(["snapshot", "--source", str(state), "--target", str(backup), "--writers-stopped"]) == 0
+    for path in (state / "runtime-policy.sqlite3", backup / "data/runtime-policy.sqlite3"):
+        with sqlite3.connect(path) as db:
+            if defect == "extra_view":
+                db.execute("CREATE VIEW extra AS SELECT * FROM runtime_policy_v2")
+            else:
+                raw = json.loads(db.execute("SELECT payload FROM runtime_policy_v2").fetchone()[0])
+                if defect == "future_section":
+                    raw["scope"]["section_version"] = 2
+                else:
+                    raw["strategy"]["catalog"]["entries"][1]["config_sha256"] = "d" * 64
+                db.execute("UPDATE runtime_policy_v2 SET payload=?", (json.dumps(raw),))
+    before_source, before_backup = state_bytes(state), state_bytes(backup / "data")
+    rehash_manifest(backup)
+    invalid, restored = tmp_path / "invalid", tmp_path / "restored"
+    assert invoke(["snapshot", "--source", str(state), "--target", str(invalid), "--writers-stopped"]) == 1
+    assert invoke(["restore", "--source", str(backup), "--target", str(restored)]) == 1
+    assert not invalid.exists() and not restored.exists()
+    assert state_bytes(state) == before_source
+    assert state_bytes(backup / "data") == before_backup
+    assert "Recovery refused:" in capsys.readouterr().err
+
+
+def test_portable_policy_codec_source_matches_the_application_stdlib_region():
+    source = (ROOT / "src/multi_exchange_trader/execution/policy_sections.py").read_text(encoding="utf-8")
+    offline = TOOL.read_text(encoding="utf-8")
+    begin, end = "# BEGIN PORTABLE POLICY SECTIONS", "# END PORTABLE POLICY SECTIONS"
+    assert source[source.index(begin):source.index(end)] == offline[offline.index(begin):offline.index(end)]
+
+
+def test_typed_committed_wal_roundtrip_preserves_source_and_archive(state, tmp_path):
+    book, raw = policy_book(state, "migrated")
+    policy = typed_policy()
+    program = """import json,os,sqlite3,sys
+from pathlib import Path
+from multi_exchange_trader.execution.runtime_policy import RuntimePolicyBook
+keeper=sqlite3.connect(sys.argv[1])
+assert keeper.execute('PRAGMA journal_mode=WAL').fetchone()==('wal',)
+keeper.execute('BEGIN')
+keeper.execute('SELECT * FROM runtime_policy_v2').fetchall()
+RuntimePolicyBook(Path(sys.argv[1])).save_v2(2,json.loads(sys.argv[2]),expected_strategy_generation=None,policy_sections_version=1)
+assert Path(sys.argv[1]+'-wal').stat().st_size>0
+os._exit(0)
+"""
+    result = subprocess.run([sys.executable, "-B", "-c", program, str(book.path), json.dumps(policy)],
+                            check=False, timeout=60, capture_output=True, text=True)
+    (tmp_path / "wal-execution.json").write_text(json.dumps({"argv": result.args, "stdout": result.stdout,
+        "stderr": result.stderr, "exit": result.returncode}, indent=2), encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    before = state_bytes(state)
+    assert before["runtime-policy.sqlite3-wal"]
+    invoke = OFFLINE["main"]
+    backup, restored = tmp_path / "backup", tmp_path / "restored"
+    assert invoke(["snapshot", "--source", str(state), "--target", str(backup), "--writers-stopped"]) == 0
+    assert invoke(["restore", "--source", str(backup), "--target", str(restored)]) == 0
+    assert state_bytes(state) == before == state_bytes(restored)
+    actual = RuntimePolicyBook(restored / book.path.name).read()
+    assert actual["revision"] == 3 and actual["policy"] == policy
+    with sqlite3.connect(restored / book.path.name) as db:
+        assert db.execute("SELECT payload FROM runtime_policy_v1_archive").fetchone() == (raw,)
