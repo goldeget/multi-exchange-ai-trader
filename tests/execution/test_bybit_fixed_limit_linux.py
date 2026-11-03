@@ -349,8 +349,28 @@ async def test_exact_base_quantity_and_price() -> None:
     assert type(actual_price) is Decimal and actual_price == request.limit_price
     assert order.price.precision == len(price_text.partition('.')[2])
     assert str(order.price) == price_text
-    with pytest.raises(ValueError):
-        replace(request, envelope=replace(request.envelope, limit_price=Decimal('100.000000001')))
+    original_command = h.commands[0]
+    original_price_state = (actual_price, order.price.precision, str(order.price))
+    unsupported_h, fresh = _harness(), _request(suffix=2)
+    precision = module('model.objects').FIXED_PRECISION
+    assert type(precision) is int and precision in (9, 16)
+    unsupported_text = '100.' + '0' * precision + '1'
+    unsupported_price = Decimal(unsupported_text)
+    unsupported = replace(fresh, envelope=replace(fresh.envelope, limit_price=unsupported_price))
+    assert format(unsupported.limit_price, 'f') == unsupported_text
+    assert unsupported.limit_price.as_tuple().exponent == -(precision + 1)
+    unsupported_bridge = _bridge(unsupported_h, unsupported)
+    assert not unsupported_h.commands and not unsupported_h.cache.orders()
+    assert not unsupported_bridge._submissions
+    with pytest.raises(ValueError, match='^NATIVE_ORDER_BUILD_FAILED$'):
+        unsupported_bridge.submit_fixed_limit_v2(unsupported)
+    assert not unsupported_h.commands and not unsupported_h.cache.orders()
+    assert not unsupported_bridge._submissions and not unsupported_bridge._building_v2
+    assert unsupported.limit_price is unsupported_price
+    assert format(unsupported.limit_price, 'f') == unsupported_text
+    assert len(h.commands) == 1 and h.commands[0] is original_command
+    assert original_command.order is order
+    assert (order.price.as_decimal(), order.price.precision, str(order.price)) == original_price_state
 
 
 def test_ioc_and_order_kind_revalidation() -> None:
