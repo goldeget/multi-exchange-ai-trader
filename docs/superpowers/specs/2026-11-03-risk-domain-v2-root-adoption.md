@@ -13,4 +13,3 @@ Adopted for fresh independent design review, not code authorization yet:
 8. Honest scope: builder verifies supplied bodies/totals/current visible timestamps; pure hash lacks account/reservation/catalog/now and cannot reestablish their completeness/freshness. Both lack actual native/private/issuer authenticity. Unsupported account/shared-debt/activity and current-generation/fees/leverage/DEMO/PC-off remain actual gates.
 
 No financial/operator choice/default/order/AI/server spending is introduced. Code/DB/SDK/network/source calls not performed for this adoption. Root will act on concrete scoped design findings before source write gate.
-
