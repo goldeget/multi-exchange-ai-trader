@@ -1,4 +1,14 @@
-# Current root adoption — Risk V2 Task1 core value contracts
+# Current root adoption — Risk V2 Task2 fixed-limit sizing
+
+Task1 is complete at10e683e549d7080f6e5368c9ad0858f471bd6ea2 with clean independent spec/quality review. CURRENT IMPLEMENTATION is original Task2 ONLY: new execution/linear_risk_v2.py and tests/execution/test_linear_risk_v2_sizing.py. Reuse the frozen eleven contracts/four hashes and math helpers; do not alter them or the existing test support/V1. Local fixture variants may be defined in the new test. No mark/minimum/tier/margin/native/account/runtime admission is implemented by this task. R/worktree/branch remain below; root records the new seed.
+
+Root closes two Task2 boundary details. Available source/computation ages use exact integer microseconds against explicit max_evidence_age_seconds with inclusive age<=maximum (zero allows only equal timestamps); valid_until expiry remains strict now<valid_until. Instrument response/receipt, fee/funding server/receipt and cost completion all require available causal/future/freshness checks; cost completion must follow the full instrument receipt as well. Original quote age and unresolved cost/gap input times cannot be inferred from IDs and remain actual-registry checks later. Preserve the fixed proposal's limit/origin/valid_until exactly in the new envelope, while separately checking cost validity at the supplied now; a sizing value is not authority after its cost source expires. No hidden min-TTL rewriting or new quote/source time is created.
+
+Every incoming full object is revalidated before attribute equality/arithmetic, including forged/subclass values. Pure exact derived Q is floor(loss/unit_loss/step)*step; reject min/max violations without clamping, preserve LIMIT versus MARKET caps and KnownNotPublished. Use only the fixed existing Python/offline variables. Source/math whole-review corrections are being made in another worktree and will be integrated from accepted main before the risk branch's hosted gate, preserving the current baseline evidence. No shared source is changed here.
+
+---
+
+# Historical root adoption — Risk V2 Task1 core value contracts
 
 Current worktree F:/자동매매프로그램/worktrees/risk-v2-core-20261103, branch gpt/bybit-risk-v2-core-20261103, source BASE3f130cfcbc77db61cb15bf145f227fad6bcf20a7; root records the seed commit separately. The accepted remote main is61ff7270100b0ad8fda42bb86e68b2f5bf8ed42b with CI125 success. The source branch's T2 is separately under correction/review; it is not consumed or modified by this task. Task0 math and frozen A02 definitions/shared types are the reviewed dependencies.
 
