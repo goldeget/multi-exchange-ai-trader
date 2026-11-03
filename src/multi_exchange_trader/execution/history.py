@@ -21,15 +21,37 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Literal, cast
 from uuid import uuid4
 
-from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
+import httpx
+from httpx._client import ClientState
+
+from ..account.bybit_readonly import BybitReadOnlyClient
+from ..account.instrument_envelope import CurrentCatalogReceipt, InstrumentSourceError
+from ..account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
+from ..market_data.instrument_definition import InstrumentObservation
+from ..market_data.instrument_producer import (
+    BybitInstrumentCatalogProducer,
+    _risk_receipt,
+    _RiskCaptureState,
+)
+from .account_binding import (
+    AccountBindingError,
+    AuthenticatedAccountBinding,
+    BybitAccountIdentity,
+    BybitDemoAccountSession,
+)
+from .bybit_linear_model_inputs_v1 import BybitRiskLimitCaptureV1, project_bybit_tier_snapshot_v1
+from .linear_risk_evidence_v2 import LinearTierSnapshotV2
+from .monitoring_budget import MonitoringBudgetError, MonitoringReadBudget
 from .protection import ProtectionScope
 from .risk import RiskTier
+from .risk_v2_math import RiskV2Rejected
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 MAX_WINDOW_MS = 7 * 86400 * 1000
@@ -408,6 +430,93 @@ def validate_history_snapshot(snapshot: HistorySnapshot) -> None:
             raise HistoryError("HISTORY_EXECUTION_ORDER_TOTAL_CONFLICT")
 
 
+class _RiskHistoryState:
+    """Original session/reader references; raw checks issue no authority."""
+
+    def __init__(self, reader: BybitHistoryReader) -> None:
+        session, binding, scope = reader._session, reader._binding, reader.scope
+        if (type(reader) is not BybitHistoryReader or type(session) is not BybitDemoAccountSession
+                or type(binding) is not AuthenticatedAccountBinding or type(scope) is not ProtectionScope
+                or type(scope.account_id) is not str or type(scope.environment) is not str):
+            raise AccountBindingError("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED")
+        self.reader, self.session, self.binding, self.scope = reader, session, binding, scope
+        client, identity, pair = session._client, session._identity, session._credential_pair
+        if (type(client) is not BybitReadOnlyClient or type(client._client) is not httpx.AsyncClient
+                or type(identity) is not BybitAccountIdentity or type(pair) is not tuple or len(pair) != 2
+                or any(type(value) is not str for value in pair)
+                or type(session._api_key) is not str or type(session._api_secret) is not str
+                or type(client._api_key) is not str or type(client._api_secret) is not str
+                or type(client.environment) is not str or type(client.base_url) is not str
+                or type(client._operation) is not ContextVar):
+            raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+        self.raw_client: httpx.AsyncClient = client._client
+        # References stay in memory only. No credentials are normalized/copied,
+        # hashed, logged or persisted by this risk operation.
+        self.refs: tuple[tuple[object, str, object], ...] = (
+            (reader, "_session", session), (reader, "_binding", binding), (reader, "scope", scope),
+            (reader, "_clock", reader._clock), (reader, "_max_age", reader._max_age),
+            (reader, "_max_pages", reader._max_pages),
+            (scope, "account_id", scope.account_id), (scope, "environment", scope.environment),
+            (session, "_binding", session._binding), (session, "_identity", identity),
+            (session, "_client", client), (session, "_credential_client", session._credential_client),
+            (session, "_credential_pair", pair), (session, "_api_key", session._api_key),
+            (session, "_api_secret", session._api_secret), (session, "_attested", session._attested),
+            (session, "_history_generation", session._history_generation),
+            (session, "_monitoring_generation", session._monitoring_generation),
+            (session, "_issued_mono", session._issued_mono), (session, "_max_age", session._max_age),
+            (session, "_clock", session._clock), (session, "_monotonic", session._monotonic),
+            (session, "_transport_injected", session._transport_injected),
+            (client, "_client", client._client), (client, "_api_key", client._api_key),
+            (client, "_api_secret", client._api_secret), (client, "environment", client.environment),
+            (client, "base_url", client.base_url), (client, "_operation", client._operation),
+            (identity, "uid", identity.uid), (identity, "parent_uid", identity.parent_uid),
+            (identity, "is_master", identity.is_master), (identity, "read_only", identity.read_only),
+            (identity, "permissions", identity.permissions), (identity, "observed_at", identity.observed_at),
+            (identity, "server_observed_at", identity.server_observed_at),
+            (identity, "transport_injected", identity.transport_injected),
+        )
+        self.operation: object = client._operation.get()
+        self.last_wall: datetime | None = None
+
+    def raw(self) -> None:
+        if self.session._closed is not False or self.session._binding_freshness_revoked is not False:
+            raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+        state = self.raw_client._state
+        if (type(state) is not ClientState
+                or (state is not ClientState.UNOPENED and state is not ClientState.OPENED)):
+            raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+        for record, name, value in self.refs:
+            if object.__getattribute__(record, name) is not value:
+                raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+        if self.session._client._operation.get() is not self.operation:
+            raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
+
+    def check(self, public: _RiskCaptureState,
+              pages: tuple[BybitRiskLimitEnvelopeReadV1, ...]) -> None:
+        self.session.require_binding(self.binding, scope=self.scope)
+        wall = self.reader._clock()
+        if (type(wall) is not datetime or wall.tzinfo is not UTC
+                or (self.last_wall is not None and wall < self.last_wall)):
+            raise RiskV2Rejected("RISK_V2_CAUSAL_ORDER_INVALID")
+        self.last_wall = wall
+        public_wall, mono = public.owner._clock()
+        public.fresh_deadline(mono)
+        public.fresh_pages(pages, wall, mono)
+        public.fresh_pages(pages, public_wall, mono)
+        self.raw()  # All producer/session/reader clock callbacks have completed.
+
+
+_RISK_SOURCE_MAP = {
+    **dict.fromkeys(("INPUT_INVALID", "JSON_INVALID", "RESPONSE_INVALID", "ENCODING_UNSUPPORTED",
+                     "BUDGET_REQUIRED", "GROUP_REQUIRED", "OVERLAP"), "INPUT_INVALID"),
+    **dict.fromkeys(("RESOURCE_LIMIT", "BUDGET_EXHAUSTED"), "RESOURCE_LIMIT"),
+    "ORIGIN_MISMATCH": "SOURCE_MISMATCH", "CLOCK_INVALID": "CAUSAL_ORDER_INVALID", "EXPIRED": "EXPIRED",
+    **dict.fromkeys(("SOURCE_UNSUPPORTED", "PROVIDER_REJECTED", "HTTP_REJECTED", "ACCESS_RESTRICTED",
+                     "RATE_LIMITED", "NETWORK", "TIMEOUT", "RETIRED", "CLOSED", "LOOP_REQUIRED",
+                     "RECEIPT_REQUIRED", "INJECTED_TRANSPORT", "INCOMPLETE"), "RISK_TIER_UNVERIFIED"),
+}
+
+
 class BybitHistoryReader:
     """The session authenticates UID/host/credentials; no arbitrary client is accepted."""
 
@@ -425,6 +534,77 @@ class BybitHistoryReader:
     def _fresh(self, observed: datetime) -> None:
         if not timedelta(0) <= utc(self._clock()) - observed <= self._max_age:
             raise HistoryError("HISTORY_STALE")
+
+    async def read_risk_limit_capture_v1(
+        self, instrument: InstrumentObservation, *, public_owner: BybitInstrumentCatalogProducer,
+        catalog_receipt: CurrentCatalogReceipt, expected_catalog_revision: str,
+        budget: MonitoringReadBudget,
+    ) -> BybitRiskLimitCaptureV1:
+        result = await self._read_risk_capture(
+            instrument, public_owner=public_owner, catalog_receipt=catalog_receipt,
+            expected_catalog_revision=expected_catalog_revision, budget=budget, project=False)
+        assert type(result) is BybitRiskLimitCaptureV1
+        return result
+
+    async def read_risk_limits_v2(
+        self, instrument: InstrumentObservation, *, public_owner: BybitInstrumentCatalogProducer,
+        catalog_receipt: CurrentCatalogReceipt, expected_catalog_revision: str,
+        budget: MonitoringReadBudget,
+    ) -> LinearTierSnapshotV2:
+        result = await self._read_risk_capture(
+            instrument, public_owner=public_owner, catalog_receipt=catalog_receipt,
+            expected_catalog_revision=expected_catalog_revision, budget=budget, project=True)
+        assert type(result) is LinearTierSnapshotV2
+        return result
+
+    async def _read_risk_capture(
+        self, instrument: InstrumentObservation, *, public_owner: BybitInstrumentCatalogProducer,
+        catalog_receipt: CurrentCatalogReceipt, expected_catalog_revision: str,
+        budget: MonitoringReadBudget, project: bool,
+    ) -> BybitRiskLimitCaptureV1 | LinearTierSnapshotV2:
+        try:
+            if type(public_owner) is not BybitInstrumentCatalogProducer:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_INPUT_INVALID")
+            if type(budget) is not MonitoringReadBudget:
+                raise InstrumentSourceError("INSTRUMENT_SOURCE_BUDGET_REQUIRED")
+            account = _RiskHistoryState(self)
+            public = _RiskCaptureState(public_owner, instrument, catalog_receipt,
+                                       expected_catalog_revision, budget, self._max_age,
+                                       public_owner._risk_pending)
+            with _risk_receipt(budget) as group:
+                public.bind_group(group)
+                public.check(owner_guard=lambda: account.check(public, ()))
+                capture = await public_owner.capture_linear_risk_limit_v1(
+                    instrument, catalog_receipt=catalog_receipt,
+                    expected_catalog_revision=expected_catalog_revision, budget=budget,
+                    max_age=self._max_age, max_pages=self._max_pages,
+                    owner_guard=lambda: account.check(public, ()))
+                public.retain_pages(capture.raw_pages)
+                public.check(capture.raw_pages, lambda: account.check(public, capture.raw_pages))
+                result: BybitRiskLimitCaptureV1 | LinearTierSnapshotV2 = capture
+                if project:
+                    result = project_bybit_tier_snapshot_v1(capture.table, instrument=instrument)
+                public.check(capture.raw_pages, lambda: account.check(public, capture.raw_pages))
+                # E1 has reset its entered budget. Projection may not select it
+                # again through the original ContextVar before this return.
+                if public.operation_context.get() is not public.operation:
+                    raise InstrumentSourceError("INSTRUMENT_SOURCE_OVERLAP")
+            return result
+        except InstrumentSourceError as error:
+            prefix = "INSTRUMENT_SOURCE_"
+            if type(error.code) is not str or not error.code.startswith(prefix):
+                raise
+            mapped = _RISK_SOURCE_MAP.get(error.code[len(prefix):])
+            if mapped is None:
+                raise
+            raise RiskV2Rejected("RISK_V2_" + mapped) from None
+        except MonitoringBudgetError as error:
+            if error.args == ("MONITORING_GROUP_REQUIRED",):
+                raise RiskV2Rejected("RISK_V2_INPUT_INVALID") from None
+            if error.args in (("MONITORING_DEADLINE_OR_CLOCK",), ("MONITORING_LOGICAL_GET_LIMIT",),
+                               ("MONITORING_PHYSICAL_ATTEMPTS",), ("MONITORING_READ_FAILED",)):
+                raise RiskV2Rejected("RISK_V2_RESOURCE_LIMIT") from None
+            raise
 
     async def _pages(self, path: str, params: list[tuple[str, str]], *, signed: bool,
                      category: bool, limit: int | None, deadline: float,
