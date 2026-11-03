@@ -298,7 +298,7 @@ def _verify_built_order(order: object, request: NativeOrderRequest) -> None:
 
 
 def _verify_fixed_limit_order_v2(order: Any, request: LinearFixedLimitNativeOrderRequestV2,
-                               binding: FixedLimitBindingsV2, strategy: NativeStrategy, *,
+                               binding: FixedLimitBindingsV2, expected_strategy_id: object, *,
                                building: bool) -> None:
     """Finite current/seed check; no whole-history or native-channel proof."""
     if type(order) is not binding.limit_order_type:
@@ -316,7 +316,8 @@ def _verify_fixed_limit_order_v2(order: Any, request: LinearFixedLimitNativeOrde
         if (str(current.client_order_id) != request.owned.client_order_id
                 or str(current.instrument_id) != request.owned.instrument_id
                 or current.strategy_id is None
-                or current.strategy_id != getattr(strategy, "id", None)
+                or type(current.strategy_id) is not type(expected_strategy_id)
+                or current.strategy_id != expected_strategy_id
                 or current.trader_id is None or current.trader_id != order.trader_id
                 or getattr(current.side, "name", current.side) != request.owned.side
                 or bounded_decimal(str(current.quantity)) != request.owned.quantity):
@@ -485,8 +486,13 @@ class NativeBybitBridge:
                     if _fixed_limit_identity_v2(request) != self._identities_v2[key]:
                         raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
                     params = _fixed_limit_params_v2(request)
-                    _verify_fixed_limit_order_v2(order, request, binding, context.strategy,
+                    expected_strategy_id = getattr(context.strategy, "id", None)
+                    _verify_fixed_limit_order_v2(order, request, binding, expected_strategy_id,
                                                 building=True)
+                    strategy_id = getattr(context.strategy, "id", None)
+                    if (type(strategy_id) is not type(expected_strategy_id)
+                            or strategy_id != expected_strategy_id):
+                        raise ValueError("NATIVE_ORDER_CHANGED")
                     self._registered_identity_v2(key)
                     if _fixed_limit_identity_v2(request) != self._identities_v2[key]:
                         raise ValueError("IMMUTABLE_NATIVE_COMMAND_CONFLICT")
@@ -581,9 +587,14 @@ class NativeBybitBridge:
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
                 try:
                     assert context is not None
+                    expected_strategy_id = getattr(context.strategy, "id", None)
                     _verify_fixed_limit_order_v2(order, request,
-                        context.verifier_binding(), context.strategy,
+                        context.verifier_binding(), expected_strategy_id,
                         building=False)
+                    strategy_id = getattr(context.strategy, "id", None)
+                    if (type(strategy_id) is not type(expected_strategy_id)
+                            or strategy_id != expected_strategy_id):
+                        raise ValueError("NATIVE_ORDER_CHANGED")
                 except Exception:  # noqa: BLE001 - native fields are untrusted.
                     raise ValueError("NATIVE_ORDER_CHANGED") from None
                 self._registered_identity_v2(client_order_id)
@@ -597,6 +608,10 @@ class NativeBybitBridge:
                     or getattr(order, "is_pending_cancel", None) is not False):
                 raise ValueError("NATIVE_CANCEL_ACTIVE_SCOPED_ORDER_REQUIRED")
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
+                strategy_id = getattr(strategy, "id", None)
+                if (type(strategy_id) is not type(expected_strategy_id)
+                        or strategy_id != expected_strategy_id):
+                    raise ValueError("NATIVE_ORDER_CHANGED")
                 self._registered_identity_v2(client_order_id)
             return order
 

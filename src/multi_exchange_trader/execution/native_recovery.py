@@ -10,9 +10,20 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass, field
 from importlib.metadata import version
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
-from .bybit_native import NATIVE_VERSION, NativeBindings, NativeOrderRequest
+from .bybit_native import (
+    NATIVE_VERSION,
+    FixedLimitBindingsV2,
+    LinearFixedLimitNativeOrderRequestV2,
+    NativeBindings,
+    NativeOrderRequest,
+    NativeRequest,
+    _fixed_limit_bindings_v2,
+    _fixed_limit_identity_v2,
+    _verify_fixed_limit_order_v2,
+    load_native_bindings,
+)
 from .native_events import bounded_decimal
 from .protection import ProtectionScope
 
@@ -57,7 +68,7 @@ class RecoveryCheckpoint:
 
 @dataclass(frozen=True)
 class OwnedCacheExpectation:
-    request: NativeOrderRequest
+    request: NativeRequest
     native_account_id: str
     trader_id: str
     strategy_id: str
@@ -65,13 +76,94 @@ class OwnedCacheExpectation:
     expected_native_position_id: str | None
 
     def __post_init__(self) -> None:
-        if type(self.request) is not NativeOrderRequest:
+        if (type(self) is not OwnedCacheExpectation
+                or type(self.request) not in (NativeOrderRequest, LinearFixedLimitNativeOrderRequestV2)):
             raise ValueError("INVALID_RECOVERY_RECORD")
+        if type(self.request) is LinearFixedLimitNativeOrderRequestV2:
+            try:
+                _fixed_limit_identity_v2(self.request)
+            except Exception:  # noqa: BLE001 - retain fixed construction error without payload.
+                raise ValueError("INVALID_RECOVERY_RECORD") from None
         for value in (self.native_account_id, self.trader_id, self.strategy_id):
             _text(value)
         for optional in (self.venue_order_id, self.expected_native_position_id):
             if optional is not None:
                 _text(optional)
+
+
+@dataclass(frozen=True)
+class _V2ExpectationPin:
+    owner: OwnedCacheExpectation
+    refs: tuple[object, ...]
+    values: tuple[object, ...]
+    key: str
+
+
+def _pin_expectation_v2(owner: OwnedCacheExpectation) -> _V2ExpectationPin:
+    if type(owner) is not OwnedCacheExpectation:
+        raise ValueError("INVALID_RECOVERY_RECORD")
+    OwnedCacheExpectation.__post_init__(owner)
+    request = owner.request
+    if type(request) is not LinearFixedLimitNativeOrderRequestV2:
+        raise ValueError("INVALID_RECOVERY_RECORD")
+    envelope, scope = request.envelope, request.envelope.scope
+    refs = (owner, request, request.owned, request.product_scope, request.product_scope.account,
+            envelope, scope, scope.product_scope, scope.product_scope.account, scope.instrument,
+            scope.strategy, envelope.instrument_pin, envelope.instrument_pin.key, request.attached)
+    values = (_fixed_limit_identity_v2(request), owner.native_account_id, owner.trader_id,
+              owner.strategy_id, owner.venue_order_id, owner.expected_native_position_id)
+    return _V2ExpectationPin(owner, refs, values, request.owned.client_order_id)
+
+
+def _expectation_pins_v2(owners: tuple[OwnedCacheExpectation, ...]) -> tuple[_V2ExpectationPin, ...]:
+    if (type(owners) is not tuple or any(type(owner) is not OwnedCacheExpectation
+            or type(owner.request) not in (NativeOrderRequest, LinearFixedLimitNativeOrderRequestV2)
+            for owner in owners)):
+        raise ValueError("INVALID_RECOVERY_RECORD")
+    return tuple(_pin_expectation_v2(owner) for owner in owners
+                 if type(owner.request) is LinearFixedLimitNativeOrderRequestV2)
+
+
+def _check_expectation_pins_v2(owners: tuple[OwnedCacheExpectation, ...],
+                              pins: tuple[_V2ExpectationPin, ...]) -> None:
+    actual = _expectation_pins_v2(owners)
+    if (len(actual) != len(pins) or any(
+            fresh.values != original.values
+            or any(type(a) is not type(b) or a is not b for a, b in
+                   zip(fresh.refs, original.refs, strict=True))
+            for fresh, original in zip(actual, pins, strict=True))):
+        raise ValueError("INVALID_RECOVERY_RECORD")
+
+
+@dataclass(frozen=True)
+class _V2BindingsPin:
+    parent: NativeBindings
+    fixed: FixedLimitBindingsV2
+    selections: tuple[object, ...]
+    converters: tuple[object, ...]
+
+    def verifier(self) -> FixedLimitBindingsV2:
+        return FixedLimitBindingsV2(cast(type[object], self.selections[0]),
+            cast(type[object], self.selections[1]), cast(type[object], self.selections[2]),
+            self.selections[3], self.selections[4])
+
+    def check(self) -> None:
+        fresh = _pin_bindings_v2(self.parent)
+        if (fresh.fixed is not self.fixed or any(a is not b for a, b in
+                zip(fresh.selections + fresh.converters, self.selections + self.converters, strict=True))):
+            raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
+
+
+def _pin_bindings_v2(bindings: NativeBindings) -> _V2BindingsPin:
+    if type(bindings) is not NativeBindings:
+        raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
+    fixed = _fixed_limit_bindings_v2(bindings.fixed_limit_v2)
+    converters = (bindings.instrument_id, bindings.client_order_id, bindings.quantity,
+                  bindings.price, bindings.order_side)
+    if not all(callable(value) for value in converters):
+        raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
+    return _V2BindingsPin(bindings, fixed, (fixed.limit_order_type, fixed.initialized_event_type,
+        fixed.updated_event_type, fixed.order_type_limit, fixed.time_in_force_ioc), converters)
 
 
 RecoveryIssueCode = Literal[
@@ -120,16 +212,33 @@ def _native_types() -> dict[str, type]:
     return result
 
 
+def _load_v2_bindings() -> NativeBindings:
+    try:
+        return load_native_bindings(include_fixed_limit_v2=True)
+    except ValueError as error:
+        if type(error) is ValueError and error.args == ("PINNED_NATIVE_VERSION_REQUIRED",):
+            raise _NativeVersionMismatch("NATIVE_VERSION_MISMATCH") from None
+        raise
+
+
 def _exact(value: object, expected: object) -> bool:
     return type(value) is type(expected) and value == expected
 
 
 def _inspect_order(order: object, expected: OwnedCacheExpectation, bindings: NativeBindings,
-                   types: dict[str, type]) -> set[RecoveryIssueCode]:
+                   types: dict[str, type], fixed: _V2BindingsPin | None = None) -> set[RecoveryIssueCode]:
     codes: set[RecoveryIssueCode] = set()
     request, owned = expected.request, expected.request.owned
     if type(order) is not types["MarketOrder" if request.order_type == "MARKET" else "LimitOrder"]:
         return {"CACHED_ORDER_TYPE_MISMATCH"}
+    if type(request) is LinearFixedLimitNativeOrderRequestV2:
+        try:
+            if fixed is None:
+                raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
+            _verify_fixed_limit_order_v2(order, request, fixed.verifier(),
+                types["StrategyId"](expected.strategy_id), building=False)
+        except Exception:  # noqa: BLE001 - native accessors remain redacted.
+            codes.add("CACHED_ORDER_IDENTITY_MISMATCH")
     # The lazy registry deliberately avoids importing native stubs on portable hosts.
     instrument_type = types["InstrumentId"]
     instrument_id = instrument_type.from_str(owned.instrument_id)  # type: ignore[attr-defined]
@@ -180,6 +289,11 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
             or type(bindings) is not NativeBindings or type(expectations) is not tuple
             or any(type(item) is not OwnedCacheExpectation for item in expectations)):
         raise ValueError("INVALID_RECOVERY_INPUT")
+    try:
+        pins = _expectation_pins_v2(expectations)
+        binding_pin = _pin_bindings_v2(bindings) if pins else None
+    except Exception:  # noqa: BLE001 - construction/input errors retain fixed ownership.
+        raise ValueError("INVALID_RECOVERY_INPUT") from None
     issues: set[NativeRecoveryIssue] = set()
 
     def add(code: RecoveryIssueCode, key: str | None = None) -> None:
@@ -198,17 +312,46 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
         add("NATIVE_VERSION_MISMATCH")
     try:
         types = _native_types()
+        loaded_pin = _pin_bindings_v2(_load_v2_bindings()) if pins else None
+        if (binding_pin is not None and loaded_pin is not None
+                and (any(a is not b for a, b in zip(binding_pin.selections, loaded_pin.selections, strict=True))
+                    or types["LimitOrder"] is not binding_pin.selections[0]
+                    or ("OrderInitialized" in types and types["OrderInitialized"] is not binding_pin.selections[1]))):
+            raise ValueError("NATIVE_FIXED_LIMIT_BINDINGS_REQUIRED")
     except _NativeVersionMismatch:
         types = None
+        loaded_pin = None
         add("NATIVE_VERSION_MISMATCH")
     except Exception:  # noqa: BLE001 - dependency errors must not expose local/provider data.
         types = None
+        loaded_pin = None
         add("NATIVE_BINDINGS_UNAVAILABLE")
+
+    safe_keys = {id(pin.owner): pin.key for pin in pins}
+    def original_inputs() -> bool:
+        try:
+            for binding_context in (binding_pin, loaded_pin):
+                if binding_context is not None:
+                    binding_context.check()
+            _check_expectation_pins_v2(expectations, pins)
+            return True
+        except Exception:  # noqa: BLE001 - retain only safe pre-callback owned keys.
+            for owner_pin in pins:
+                add("CACHED_ORDER_IDENTITY_MISMATCH", owner_pin.key)
+            return False
+    if not original_inputs():
+        ordered = tuple(sorted(issues, key=lambda issue: (issue.client_order_id or "", issue.code)))
+        return NativeRecoveryCheck("BLOCKED", ordered)
 
     by_id: dict[str, OwnedCacheExpectation] = {}
     for expected in expectations:
-        key = expected.request.owned.client_order_id
-        if key in by_id and by_id[key] != expected:
+        key = safe_keys.get(id(expected), expected.request.owned.client_order_id)
+        current_pin = next((pin for pin in pins if pin.owner is expected), None)
+        previous_pin = next((pin for pin in pins if key in by_id and pin.owner is by_id[key]), None)
+        conflict = (previous_pin.values != current_pin.values
+                    if previous_pin is not None and current_pin is not None
+                    else key in by_id and by_id[key] != expected)
+        if key in by_id and conflict:
             add("CONTRADICTORY_OWNED_EXPECTATIONS", key)
         by_id[key] = expected
         if (expected.request.scope != application_checkpoint.scope
@@ -236,9 +379,12 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
         inventory = None
         add("NATIVE_CACHE_READ_FAILED")
 
+    if not original_inputs():
+        ordered = tuple(sorted(issues, key=lambda issue: (issue.client_order_id or "", issue.code)))
+        return NativeRecoveryCheck("BLOCKED", ordered)
     for expected in expectations:
         owned = expected.request.owned
-        key = owned.client_order_id
+        key = safe_keys.get(id(expected), owned.client_order_id)
         permitted_position = owned.instrument_id + "-" + expected.strategy_id
         if (expected.expected_native_position_id is not None
                 and expected.expected_native_position_id != permitted_position):
@@ -260,7 +406,7 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
             else:
                 if inventory is not None and inventory.get(key) is not order:
                     add("NATIVE_CACHE_INDEX_MISMATCH", key)
-                for code in _inspect_order(order, expected, bindings, types):
+                for code in _inspect_order(order, expected, bindings, types, binding_pin):
                     add(code, key)
         except Exception:  # noqa: BLE001 - inspect remaining orders and links after a failure.
             add("NATIVE_CACHE_READ_FAILED", key)
@@ -274,5 +420,6 @@ def inspect_native_recovery(*, cache: NativeCacheReader, bindings: NativeBinding
         except Exception:  # noqa: BLE001 - never return raw cache/property errors.
             add("NATIVE_CACHE_READ_FAILED", key)
 
+    original_inputs()
     ordered = tuple(sorted(issues, key=lambda issue: (issue.client_order_id or "", issue.code)))
     return NativeRecoveryCheck("BLOCKED" if ordered else "CONSISTENT", ordered)
