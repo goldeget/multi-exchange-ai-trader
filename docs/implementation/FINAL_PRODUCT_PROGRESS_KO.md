@@ -90,18 +90,53 @@ generation dispatch를 한 번 수행했으나 `UNCERTAIN` / `HTTP_ERROR`를 반
 세부 HTTP 상태를 보존하지 않아 정확한 상태 코드와 원인은 아직 확인되지 않았다. 유료 재시도는
 수행하지 않았다. 이 결과를 청구 0, 테스트 통과, 모델 생성 접근 확인 또는 유료 테스트
 전체 완료로 해석하지 않는다. 완료된 프로필 검토·CI·main·실제 채택/새 인증과 이 유료 호출의
-미해결 원인·비용은 구분한다. 프로필 확인 중 새 AI generation 요청은 0이며 기존 유료
-시도는 이 한 번뿐이다. root가 보낸 실제 주문 0·새 서버 0이며 LIVE 주문은 계속 금지된다.
+미해결 원인·비용은 구분한다. 해당 프로필 확인 중 새 AI generation 요청은 0이었고,
+이 문단의 기존 Qwen 유료 시도는 1회다. 이후 별도 Haiku 1회 결과는 아래에 구분한다.
+root가 보낸 실제 주문 0·새 서버 0이며 LIVE 주문은 계속 금지된다.
 
 이후 사용자는 현재 OpenRouter 키가 하이쿠 5.5 전용이라고 명시하고 해당 모델의 최소
 실호출을 요청했다. root는 기존 Qwen 선택이 요청 모델과 맞지 않았음을 확인하고, 같은
 키와 두 Bybit 쌍을 보존한 채 저장 모델을 `anthropic/claude-haiku-5.5`로 수정하여 revision3을
-다시 읽어 확인했다. 원본 메모·환경 파일은 읽지 않았다. 새 프로세스의 실제 키 인증·정확한
-하이쿠 모델 목록과 유료 가격도 확인했으나 아직 하이쿠 생성 성공은 검증하지 않았다.
-기존 Qwen 시도·미확정 비용을 하이쿠 결과로 바꾸거나 초기화하지 않는다. 이 키로 다른
-모델·무료 모델·자동 대체를 사용하지 않는다. 짧은 하이쿠 시험을 위한 명시적 추론 설정과
-정상 null refusal 응답 호환을 코드·독립 검토·전체 CI/main gate 안에서 추가한다.
+다시 읽어 확인했다. 원본 메모·환경 파일은 다시 읽지 않았다. 새 프로세스의 실제 키 인증·
+정확한 하이쿠 모델 목록과 유료 가격도 확인했다. 기존 Qwen 시도·미확정 비용을 하이쿠
+결과로 바꾸거나 초기화하지 않는다. 이 키로 다른 모델·무료 모델·자동 대체를 사용하지 않는다.
+
+명시적 추론 설정과 정상 null refusal 응답 호환은 PR26의 독립 검토와 전체 CI를 거쳐
+main `aab53709abf52b90887c7c973a5fc078a0d5e621`에 병합되었다. 정확한 PR26 CI117
+(run `41551892298`)은 7개 job 모두 성공했고, main CI118(run `41552973786`)은 실행 가능한
+6개 job 성공과 PR 전용 dependency-review의 예상 skip이 확인되었다. Python은
+3521 passed·기존 56 skipped·79 warnings·28 subtests이며 frontend 256개, operations 244개,
+browser 102개가 통과했다. browser의 24개 skip은 의도된 viewport 범위이며,
+native36·restart6·restored12는 skip 없이 실행되었다. 이는 해당 코드 회귀 검증과 main
+반영의 증거이며 실제 선택 계약이나 제품 전체 완료의 증거와 구분한다.
+
+root는 이 main의 소스 120개 파일을 동결하고 byte 일치와 12개 import 출처를 확인한 뒤,
+승인된 Haiku generation을 정확히 1회 호출했다. 공개 영수증의 HTTP 상태는 `200`, 공급자
+보고 비용은 `0.0000846 USD`이며 generation 응답 외형 검증은 통과했다. 비용은 `SETTLED`로
+정산되었지만 후속 선택 검증은 `INVALID_SELECTION`으로 실패했고 선택 결과는 없다.
+`response_contract_valid=false`, `paid_smoke_passed=false`이므로 **유료 선택 계약 검증은
+실패**다. `SETTLED`나 HTTP 200을 성공 판정으로 바꾸지 않는다.
+
+별도 새 프로세스의 로컬 재확인에서는 비용 일치(`EXACT_COST_MATCHED`), 예약액 0,
+불확실액 0, overrun hold 없음이 확인되었다. 같은 Haiku 시도의 중복 활성화는 dispatch 전에
+차단되어 추가 호출은 0이었다. 이 결과는 Haiku 전용 장부의 정산이며, 기존 Qwen의 비용
+미확정과 `0.01 USD` 불확실 예약은 그대로 유지한다. 실제 응답 원문과 구체적인 선택 거절
+코드가 없어 Haiku 실패 원인은 미확인이다. 토큰 제한·TTL·특정 모델 출력이나 설정 실수를
+실제 원인으로 단정하지 않는다. 외부 증거는 `HAIKU_PAID_TRIAL_RECEIPT.json`,
+`HAIKU_LOCAL_READBACK_RECEIPT.json`, `HAIKU_DUPLICATE_GUARD_RECEIPT.json`이다.
+실제 주문·재시도·새 서버 지출은 모두 0이다.
+
+후속 설계
+[openrouter-selection-evidence-design.md](../superpowers/specs/2026-11-03-openrouter-selection-evidence-design.md)와
+[openrouter-selection-evidence.md](../superpowers/plans/2026-11-03-openrouter-selection-evidence.md)의
+두 작업은 진행 중이다. 기존 요청의 이유 문자 수·응답 UTF-8 바이트 제한을 프롬프트에
+명시하고, 고정 허용 목록의 선택 거절 코드만 schema3에 안전하게 보존하는 범위다.
+이 문서 갱신 시점에는 구현 완료·검증 완료·main 병합으로 판정하지 않는다. 과거 응답이나
+거절 코드를 복원·역채움하지 않으며, 이번 실패 원인을 확인하거나 수정했다는 주장도 아니다.
+모델·토큰·TTL·선택 파서 기준을 완화하거나 실제 저장소를 migration하거나 유료 재시도를
+수행하는 작업은 포함하지 않는다. 후속 코드 검토·정확한 hosted CI·main gate는 별도로 남는다.
 
 최신 승인 범위에는 root 담당자의 실제 DEMO 및 최소 비용 유료 AI 확인이 포함된다.
-그 실행과 영수증은 별도 외부 증거로 판정하며 이 코드·문서 변경으로 수행되거나 성공한
-것으로 계산하지 않는다. LIVE 주문과 새 서버 비용 지출은 계속 금지된다.
+실행 결과는 별도 외부 영수증으로 판정하며 문서 갱신을 실행 성공이나 추가 완료 개수로
+계산하지 않는다. canonical 63개 작업과 기존 부분 상태, E16 상품 분리, 실제 주문·보호·복구·
+서버 수용 경계는 유지한다. LIVE 주문과 새 서버 비용 지출은 계속 금지된다.
