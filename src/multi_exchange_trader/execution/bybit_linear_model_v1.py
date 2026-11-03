@@ -11,6 +11,10 @@ from fractions import Fraction
 from math import gcd
 from typing import Literal, NoReturn, cast
 
+from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a
+from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+from multi_exchange_trader.execution import risk_domain_v2 as d
+from multi_exchange_trader.execution import risk_v2_contracts as c
 from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     BybitFeeDocumentRefV1,
     BybitLinearPointInputV1,
@@ -1330,3 +1334,314 @@ def select_smallest_bybit_leverage_v1(
 
 def bybit_leverage_search_sha256_v1(value: BybitLeverageSearchV1) -> str:
     return _canonical_sha256_v2("BybitLeverageSearchV1", _search_payload(value))
+
+
+@dataclass(frozen=True)
+class BybitBoundModelCalculationV1:
+    model_input_sha256: str
+    point_input_sha256: str
+    binding_sha256: str
+    risk_domain_sha256: str
+    requirements_sha256: str
+    search: BybitLeverageSearchV1
+    exact_calculation_sha256: str
+    valid_until: datetime
+
+    def __post_init__(self) -> None:
+        if self.exact_calculation_sha256 != bybit_bound_calculation_sha256_v1(self):
+            _reject("RISK_V2_SOURCE_MISMATCH")
+
+
+def _bound_payload(value: BybitBoundModelCalculationV1) -> dict[str, object]:
+    _fields_v2(value, BybitBoundModelCalculationV1)
+    payload: dict[str, object] = {
+        name: _digest_v2(getattr(value, name))
+        for name in (
+            "model_input_sha256",
+            "point_input_sha256",
+            "binding_sha256",
+            "risk_domain_sha256",
+            "requirements_sha256",
+        )
+    }
+    _digest_v2(value.exact_calculation_sha256)
+    payload["search"] = bybit_leverage_search_sha256_v1(value.search)
+    payload["valid_until"] = c._time_text_v2(value.valid_until)
+    if value.search.point_input_sha256 != value.point_input_sha256:
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    return payload
+
+
+def bybit_bound_calculation_sha256_v1(value: BybitBoundModelCalculationV1) -> str:
+    return _canonical_sha256_v2("BybitBoundModelCalculationV1", _bound_payload(value))
+
+
+def calculate_bound_bybit_model_v1(
+    inputs: a.BybitLinearModelInputsV1, *, now: datetime
+) -> BybitBoundModelCalculationV1 | BybitModelRejectedV1:
+    # Generic and full-domain failures keep their owner before local C conversion.
+    a.bybit_model_inputs_sha256_v1(inputs)
+    now = _utc_v2(now)
+    rebound = a.bind_bybit_model_inputs_v1(
+        inputs.risk_inputs,
+        preparation=inputs.preparation,
+        domain=inputs.domain,
+        venue=inputs.venue,
+        catalog=inputs.catalog,
+        selected_mark=inputs.point.selected_mark,
+        now=now,
+    )
+    model_hash = a.bybit_model_inputs_sha256_v1(rebound)
+    if model_hash != a.bybit_model_inputs_sha256_v1(inputs):
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    search = select_smallest_bybit_leverage_v1(rebound.point, now=now)
+    if type(search) is BybitModelRejectedV1:
+        return search
+    search = cast(BybitLeverageSearchV1, search)
+    point_hash = bybit_point_input_sha256_v1(rebound.point)
+    binding_hash = e.binding_sha256_v2(rebound.preparation.binding)
+    domain_hash = d.risk_domain_sha256_v2(rebound.domain)
+    requirements_hash = e.requirements_sha256_v2(rebound.risk_inputs.requirements)
+    exact = _canonical_sha256_v2(
+        "BybitBoundModelCalculationV1",
+        {
+            "model_input_sha256": model_hash,
+            "point_input_sha256": point_hash,
+            "binding_sha256": binding_hash,
+            "risk_domain_sha256": domain_hash,
+            "requirements_sha256": requirements_hash,
+            "search": bybit_leverage_search_sha256_v1(search),
+            "valid_until": c._time_text_v2(rebound.valid_until),
+        },
+    )
+    return BybitBoundModelCalculationV1(
+        model_hash,
+        point_hash,
+        binding_hash,
+        domain_hash,
+        requirements_hash,
+        search,
+        exact,
+        rebound.valid_until,
+    )
+
+
+def _replay_bound(
+    calculation: BybitBoundModelCalculationV1 | BybitModelRejectedV1,
+    inputs: a.BybitLinearModelInputsV1,
+    *,
+    now: datetime,
+) -> BybitBoundModelCalculationV1:
+    if type(calculation) is BybitModelRejectedV1:
+        rejected = calculation
+        _rejected(rejected)
+        _reject(rejected.public_code)
+    calculation = cast(BybitBoundModelCalculationV1, calculation)
+    _bound_payload(calculation)
+    if bybit_bound_calculation_sha256_v1(calculation) != calculation.exact_calculation_sha256:
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    replayed = calculate_bound_bybit_model_v1(inputs, now=now)
+    if type(replayed) is BybitModelRejectedV1:
+        _reject(replayed.public_code)
+    replayed = cast(BybitBoundModelCalculationV1, replayed)
+    if (
+        _bound_payload(replayed) != _bound_payload(calculation)
+        or replayed.exact_calculation_sha256 != calculation.exact_calculation_sha256
+    ):
+        _reject("RISK_V2_SOURCE_MISMATCH")
+    return replayed
+
+
+def _completion_predecessors(inputs: a.BybitLinearModelInputsV1) -> tuple[datetime, ...]:
+    i, venue = inputs.risk_inputs, inputs.venue
+    times = (
+        i.costs.reference.computed_at,
+        i.minimum_amount.reference.computed_at,
+        i.costs.fee_reference.server_observed_at,
+        i.costs.fee_reference.received_at,
+        i.costs.funding_reference.server_observed_at,
+        i.costs.funding_reference.received_at,
+        i.account.reference.server_observed_at,
+        i.account.reference.received_at,
+        i.reservations.observed_at,
+        *(
+            stamp
+            for mark in i.marks
+            for stamp in (mark.reference.server_observed_at, mark.reference.received_at)
+        ),
+        *(
+            stamp
+            for o in inputs.catalog.observations
+            for stamp in (o.response_time, o.source.received_at)
+        ),
+        *(
+            stamp
+            for member in inputs.domain.members
+            for stamp in (
+                member.instrument_pin.response_time,
+                member.instrument_pin.received_at,
+                member.tiers.reference.server_observed_at,
+                member.tiers.reference.received_at,
+                member.account_margin_reference.server_observed_at,
+                member.account_margin_reference.received_at,
+                member.account_risk_reference.computed_at,
+            )
+        ),
+        *(
+            stamp
+            for source in venue.source_records
+            for stamp in (source.request_started_at, source.received_at)
+        ),
+        *(
+            _utc_v2(_source_server(source))
+            for source in venue.source_records
+            if source.envelope_time_ms is not None
+        ),
+    )
+    fee_reference = venue.fee.closing_order_reserve_nonvip_rate.reference
+    if type(fee_reference) is BybitFeeDocumentRefV1:
+        times += (fee_reference.captured_at,)
+    return times
+
+
+def _completion(
+    reference: c.RiskComputationRefV2,
+    *,
+    inputs: a.BybitLinearModelInputsV1,
+    expected_input: str,
+    model_revision: str,
+    public_code: str,
+    now: datetime,
+    after: datetime | None = None,
+) -> None:
+    c._computation_payload_v2(reference)
+    now = _utc_v2(now)
+    c._target_environment_v2(reference.target_environment, inputs.risk_inputs.policy.scope)
+    if reference.input_sha256 != expected_input or reference.model_revision != model_revision:
+        _reject(public_code)
+    maximum = decimal_fraction_v2(inputs.risk_inputs.policy.max_evidence_age_seconds)
+    c._fresh_v2(reference.computed_at, now=now, maximum=maximum)
+    completed = _utc_v2(reference.computed_at)
+    if now >= _utc_v2(inputs.valid_until):
+        _reject("RISK_V2_EXPIRED")
+    if (
+        completed >= _utc_v2(inputs.valid_until)
+        or any(_utc_v2(t) > completed for t in _completion_predecessors(inputs))
+        or (after is not None and _utc_v2(after) > completed)
+    ):
+        _reject("RISK_V2_CAUSAL_ORDER_INVALID")
+
+
+def build_bybit_margin_assessment_v1(
+    calculation: BybitBoundModelCalculationV1,
+    *,
+    inputs: a.BybitLinearModelInputsV1,
+    reference: c.RiskComputationRefV2,
+    now: datetime,
+) -> e.LinearMarginAssessmentV2:
+    c._computation_payload_v2(reference)
+    actual = _replay_bound(calculation, inputs, now=now)
+    requirements = inputs.risk_inputs.requirements
+    _completion(
+        reference,
+        inputs=inputs,
+        expected_input=actual.binding_sha256,
+        model_revision=requirements.margin_model_revision,
+        public_code="RISK_V2_MARGIN_UNVERIFIED",
+        now=now,
+    )
+    selected = actual.search.selected
+    return e.LinearMarginAssessmentV2(
+        actual.binding_sha256,
+        reference,
+        requirements.margin_model_revision,
+        inputs.point.envelope.base_quantity,
+        selected.leverage,
+        requirements.leverage_grid_rule,
+        actual.search.selection_rule,
+        selected.reserve.initial_margin_quote,
+        selected.reserve.venue_required_total_reserve_quote,
+        inputs.point.admission_covered_tier_ids,
+        actual.valid_until,
+        requirements.margin_reserve_basis,
+        requirements.reserve_rounding_revision,
+        requirements.reserve_quantum_usdt,
+        actual.model_input_sha256,
+        actual.exact_calculation_sha256,
+    )
+
+
+def build_bybit_liquidation_assessment_v1(
+    calculation: BybitBoundModelCalculationV1,
+    *,
+    inputs: a.BybitLinearModelInputsV1,
+    margin: e.LinearMarginAssessmentV2,
+    reference: c.RiskComputationRefV2,
+    now: datetime,
+) -> e.LinearLiquidationAssessmentV2:
+    e._margin_payload_v2(margin)
+    c._computation_payload_v2(reference)
+    actual = _replay_bound(calculation, inputs, now=now)
+    expected_margin = build_bybit_margin_assessment_v1(
+        calculation, inputs=inputs, reference=margin.reference, now=now
+    )
+    if e._margin_payload_v2(margin) != e._margin_payload_v2(expected_margin):
+        _reject("RISK_V2_MARGIN_UNVERIFIED")
+    margin_hash = e.margin_assessment_sha256_v2(margin)
+    requirements = inputs.risk_inputs.requirements
+    _completion(
+        reference,
+        inputs=inputs,
+        expected_input=margin_hash,
+        model_revision=requirements.liquidation_model_revision,
+        public_code="RISK_V2_LIQUIDATION_UNVERIFIED",
+        now=now,
+        after=margin.reference.computed_at,
+    )
+    selected = actual.search.selected
+    lp = selected.liquidation
+    outcome: e.LiquidationPositiveRootV2 | e.LiquidationNoPositiveRootV2
+    if type(lp.outcome) is BybitPositiveRootPointV1:
+        price = lp.outcome.exact_price
+        outcome = e.LiquidationPositiveRootV2(
+            "POSITIVE_ROOT",
+            e.ExactRiskRatioV2(
+                finite_decimal_v2(Fraction(price.numerator)),
+                finite_decimal_v2(Fraction(price.denominator)),
+            ),
+            lp.outcome.candidate_tier_id,
+            lp.domain_upper_quote,
+            lp.full_table_sha256,
+            lp.raw_manifest_sha256,
+            lp.consumed_tier_ids,
+            lp.rule_revision,
+        )
+    else:
+        outcome = e.LiquidationNoPositiveRootV2(
+            "NO_POSITIVE_ROOT",
+            "NON_POSITIVE_LONG_INTERCEPT",
+            lp.domain_upper_quote,
+            lp.full_table_sha256,
+            lp.raw_manifest_sha256,
+            lp.consumed_tier_ids,
+            lp.rule_revision,
+            actual.model_input_sha256,
+            lp.proof_sha256,
+        )
+    return e.LinearLiquidationAssessmentV2(
+        actual.binding_sha256,
+        margin_hash,
+        reference,
+        requirements.liquidation_model_revision,
+        inputs.point.envelope.base_quantity,
+        selected.leverage,
+        inputs.risk_inputs.proposal.side,
+        inputs.point.envelope.limit_price,
+        inputs.risk_inputs.policy.margin_mode,
+        inputs.risk_inputs.policy.position_mode,
+        inputs.point.admission_covered_tier_ids,
+        outcome,
+        actual.valid_until,
+        actual.model_input_sha256,
+        actual.exact_calculation_sha256,
+    )

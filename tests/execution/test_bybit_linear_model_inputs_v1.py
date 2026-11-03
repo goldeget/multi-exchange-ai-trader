@@ -7,7 +7,7 @@ from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 from fractions import Fraction
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from test_bybit_linear_model_v1 import selector_point  # type: ignore[import-not-found]
@@ -16,6 +16,10 @@ from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.account.risk_limit_envelope import BybitRiskLimitEnvelopeReadV1
 from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a1
 from multi_exchange_trader.execution import bybit_linear_model_v1 as c_model
+from multi_exchange_trader.execution import linear_risk_evidence_v2 as d_e
+from multi_exchange_trader.execution import linear_risk_v2 as d_r
+from multi_exchange_trader.execution import risk_domain_v2 as d_domain
+from multi_exchange_trader.execution import risk_v2_contracts as d_c
 from multi_exchange_trader.execution.bybit_linear_model_inputs_v1 import (
     BybitDecimalFieldV1,
     BybitFeeDocumentRefV1,
@@ -41,9 +45,13 @@ from multi_exchange_trader.execution.risk_v2_contracts import (
     envelope_sha256_v2,
 )
 from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected, decimal_fraction_v2
+from multi_exchange_trader.market_data.instrument_catalog import build_instrument_catalog
 from multi_exchange_trader.market_data.instrument_definition import (
+    INSTRUMENT_ENDPOINT,
     LINEAR_SOURCE_RULE_REVISION,
     PARSER_REVISION,
+    CatalogSource,
+    parse_bybit_instrument_response,
 )
 from multi_exchange_trader.trading_product import InstrumentKey
 
@@ -1845,3 +1853,986 @@ def test_a1_capture_replays_full_rows_even_with_coherent_shortened_table_hashes(
     assert len(shortened.rows) == 1
     with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
         a1.BybitRiskLimitCaptureV1(shortened, capture.raw_pages)
+
+
+def full_d_graph(
+    *,
+    y_minimum: str = "2",
+    unused_received: datetime | None = None,
+    selected_received: datetime | None = None,
+    allocation: str = "60",
+    two_rows: bool = False,
+    risk_upper: str = "3000",
+    short: bool = False,
+) -> dict[str, Any]:
+    """Real synthetic X flat/Y held+pending/Z spot graph; no issuer preimages."""
+    from risk_v2_support import (  # type: ignore[import-not-found]
+        NOW,
+        costs_v2,
+        instrument_v2,
+        observation_ref_v2,
+        policy_v2,
+        proposal_v2,
+    )
+
+    observations = []
+    for symbol, product, row_minimum in (
+        ("XAAUSDT", "LINEAR", "1"),
+        ("YBBUSDT", "LINEAR", y_minimum),
+        ("ZCCUSDT", "SPOT", "1"),
+    ):
+        row = json.loads(instrument_v2().raw_row_canonical)
+        row.update(symbol=symbol, baseCoin=symbol[:3])
+        row["leverageFilter"].update(minLeverage=row_minimum, maxLeverage="5", leverageStep="1")
+        observation = parse_bybit_instrument_response(
+            {
+                "retCode": 0,
+                "result": {"category": product.lower(), "list": [row]},
+                "time": 1793663999000,
+            },
+            expected=InstrumentKey("BYBIT", cast(Any, product), symbol),
+            source=CatalogSource(
+                "FIXTURE_CATALOG",
+                "FIXTURE",
+                INSTRUMENT_ENDPOINT,
+                unused_received
+                if product == "SPOT" and unused_received is not None
+                else selected_received
+                if symbol == "XAAUSDT" and selected_received is not None
+                else NOW,
+            ),
+        )
+        observations.append(observation)
+    catalog = build_instrument_catalog(
+        tuple(observations),
+        declared_universe=tuple(o.key for o in observations),
+        now=NOW,
+        max_age=timedelta(seconds=30),
+    )
+    x, y, _ = observations
+    policy = replace(policy_v2(), leverage_max=Decimal(5), margin_allocation=Decimal(allocation))
+    scope = policy.scope.product_scope.account
+    stamp = NOW
+    source = BybitModelSourceRefV1(
+        "private",
+        "private-source",
+        "GENERATION_V1",
+        scope,
+        "FIXTURE",
+        HttpsOrigin("https", "api.bybit.com", 443),
+        "/v5/position/list",
+        (),
+        stamp,
+        stamp,
+        1793664000000,
+        "f" * 64,
+        1,
+        1,
+    )
+
+    def raw_source(
+        identifier: str, path: str, *, symbol: str | None = None
+    ) -> BybitModelSourceRefV1:
+        return replace(
+            source,
+            observation_id=identifier,
+            source_id="public-source" if path.startswith("/v5/market/") else "private-source",
+            path=path,
+            account_scope=None if path.startswith("/v5/market/") else scope,
+            query=() if symbol is None else (("category", "linear"), ("symbol", symbol)),
+        )
+
+    def field(s: BybitModelSourceRefV1, name: str, value: str) -> BybitDecimalFieldV1:
+        return BybitDecimalFieldV1(
+            Decimal(value), BybitModelFieldRefV1(s, "/result/" + name, "STRING", value)
+        )
+
+    tables = []
+    for observation in (x, y):
+        row = (
+            '{"id":1,"symbol":"'
+            + observation.key.symbol
+            + '","riskLimitValue":"'
+            + risk_upper
+            + '","initialMargin":0.1,"maintenanceMargin":0.005,"maxLeverage":"5","mmDeduction":"0","isLowestRisk":1}'
+        )
+        if two_rows:
+            row += (
+                ',{"id":2,"symbol":"'
+                + observation.key.symbol
+                + '","riskLimitValue":"6000","initialMargin":0.1,"maintenanceMargin":0.01,"maxLeverage":"4","mmDeduction":"15","isLowestRisk":0}'
+            )
+        raw = (
+            '{"retCode":0,"result":{"category":"linear","list":['
+            + row
+            + '],"nextPageCursor":""},"time":1793664000000}'
+        ).encode()
+        envelope = BybitRiskLimitEnvelopeReadV1(
+            observation.key,
+            "GET",
+            "/v5/market/risk-limit",
+            (("category", "linear"), ("symbol", observation.key.symbol)),
+            source.origin,
+            source.origin,
+            200,
+            NOW,
+            NOW,
+            0.0,
+            1.0,
+            NOW,
+            raw,
+            hashlib.sha256(raw).hexdigest(),
+            1,
+            0,
+            1,
+            1,
+            "page-" + observation.key.symbol,
+            "public-source",
+            "GENERATION_V1",
+            "FIXTURE",
+        )
+        tables.append(
+            a1.parse_bybit_risk_limit_table_v1(
+                (envelope,),
+                instrument_pin=d_c.pin_instrument_v2(
+                    observation, catalog_revision=catalog.revision
+                ),
+                observation_id="table-" + observation.key.symbol,
+            ).table
+        )
+    marks = tuple(
+        d_c.LinearMarkQuoteV2(
+            o.key,
+            replace(
+                observation_ref_v2("mark-" + o.key.symbol),
+                source_id="public-source",
+                server_observed_at=NOW,
+            ),
+            Decimal("140" if index == 0 else "50"),
+        )
+        for index, o in enumerate((x, y))
+    )
+    account = d_c.LinearAccountRiskSnapshotV2(
+        scope,
+        observation_ref_v2("ACCOUNT"),
+        "COVERAGE_V1",
+        (d_c.ExposureQuantityV2("AY", y.key, "ACCOUNT_POSITION", "SELL", Decimal(2)),),
+        "UTC_REALIZED_NET_FEES_FUNDING",
+        NOW.date(),
+        Decimal(1000),
+        Decimal(500),
+        Decimal(7),
+        Decimal(8),
+        1,
+        Decimal(0),
+        Decimal(0),
+        0,
+        "ISOLATED",
+        "ONE_WAY",
+        (),
+    )
+    reservations = d_c.LinearReservationSnapshotV2(
+        scope,
+        "RESERVATION",
+        "GENERATION_V1",
+        1,
+        "a" * 64,
+        NOW,
+        None,
+        (d_c.ExposureQuantityV2("RY", y.key, "PENDING_ENTRY", "BUY", Decimal(".5")),),
+        Decimal(3),
+        Decimal(4),
+        1,
+    )
+    tiers = tuple(
+        d_e.LinearTierSnapshotV2(
+            o.key,
+            table.reference,
+            o.specification_revision,
+            (
+                d_e.LinearRiskTierV2(
+                    "1",
+                    Decimal(0),
+                    Decimal(risk_upper),
+                    Decimal("1" if index == 0 else y_minimum),
+                    Decimal(5),
+                    Decimal(".1"),
+                    Decimal(".005"),
+                    Decimal(0),
+                ),
+            )
+            + (
+                (
+                    d_e.LinearRiskTierV2(
+                        "2",
+                        Decimal(3000),
+                        Decimal(6000),
+                        Decimal("1" if index == 0 else y_minimum),
+                        Decimal(4),
+                        Decimal(".1"),
+                        Decimal(".01"),
+                        Decimal(15),
+                    ),
+                )
+                if two_rows
+                else ()
+            ),
+        )
+        for index, (o, table) in enumerate(zip((x, y), tables, strict=True))
+    )
+    members = tuple(
+        d_domain.LinearRiskDomainMemberV2(
+            table.instrument_pin,
+            mark,
+            tier,
+            () if index == 0 else ("AY",),
+            () if index == 0 else ("RY",),
+            Decimal(0 if index == 0 else 7),
+            Decimal(0 if index == 0 else 8),
+            0 if index == 0 else 1,
+            Decimal(0 if index == 0 else 3),
+            Decimal(0 if index == 0 else 4),
+            0 if index == 0 else 1,
+            observation_ref_v2("margin-" + o.key.symbol),
+            d_c.RiskComputationRefV2("risk-" + o.key.symbol, "risk-v1", "FIXTURE", NOW, "b" * 64),
+        )
+        for index, (o, table, mark, tier) in enumerate(
+            zip((x, y), tables, marks, tiers, strict=True)
+        )
+    )
+    domain = d_domain.build_linear_risk_domain_coverage_v2(
+        policy=policy,
+        catalog=catalog,
+        catalog_revision=catalog.revision,
+        coverage_revision="DOMAIN_V1",
+        source_generation="GENERATION_V1",
+        account=account,
+        reservations=reservations,
+        marks=marks,
+        members=members,
+        source_record_sha256s=("a" * 64,),
+        now=NOW,
+    )
+    proposal = proposal_v2()
+    if short:
+        proposal = replace(
+            proposal,
+            side="SHORT",
+            stop_price=Decimal(110),
+            entry=replace(proposal.entry, side="SELL"),
+        )
+    costs = replace(
+        costs_v2(),
+        policy_sha256=d_c.risk_policy_sha256_v2(policy),
+        instrument_revision=x.specification_revision,
+    )
+    if short:
+        costs = replace(costs, side="SHORT", stop_price=Decimal(110))
+    sizing = d_r.size_linear_entry_v2(
+        policy=policy,
+        proposal=proposal,
+        instrument=x,
+        catalog_revision=catalog.revision,
+        costs=costs,
+        now=NOW,
+    )
+    minimum = d_e.MinimumAmountAssessmentV2(
+        policy.scope,
+        d_c.RiskComputationRefV2("minimum", "minimum-v1", "FIXTURE", NOW, "b" * 64),
+        d_c.envelope_sha256_v2(sizing.envelope),
+        x.specification_revision,
+        "minimum-v1",
+        ("instrument", "ltp"),
+        Decimal(95),
+        Decimal(5),
+        Decimal(95),
+        proposal.entry.valid_until,
+    )
+    requirements = d_e.RiskRequirementsV2(
+        "mapping-v1",
+        "minimum-v1",
+        costs.cost_rule_revision,
+        costs.fee_rule_revision,
+        costs.funding_rule_revision,
+        costs.stop_gap_model_revision,
+        "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
+        "LOCAL_ZERO_ORIGIN_LATTICE_V1",
+        "margin-v1",
+        "lp-v1",
+        "POINT_ESTIMATE_WITH_RECONCILIATION_V1",
+        "POINT_ESTIMATE_TWO_IM_ENVELOPE_V1",
+        "APP_RESERVE_CEILING_QUANTUM_V1",
+        Decimal(".00000001"),
+    )
+    inputs = d_e.LinearRiskInputsV2(
+        policy,
+        proposal,
+        x,
+        catalog.revision,
+        costs,
+        account,
+        reservations,
+        marks,
+        tiers[0],
+        d_domain.risk_domain_sha256_v2(domain),
+        minimum,
+        requirements,
+    )
+    profile_source = raw_source("profile", "/v5/position/list", symbol=x.key.symbol)
+    profile = BybitSelectedEntryProfileV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+        x.key.symbol,
+        0,
+        field(profile_source, "size", "0"),
+        (),
+        (),
+        (),
+        BybitModelFieldRefV1(profile_source, "/result/autoAddMargin", "INTEGER", "0"),
+        Decimal(0),
+        "NEW_SELECTED_FLAT_NO_ADD_V1",
+        (profile_source,),
+    )
+    fee_source = raw_source("fee", "/v5/account/fee-rate", symbol=x.key.symbol)
+    behaviour_source = raw_source("behaviour", "/v5/account/info")
+    doc = replace(
+        fee_document(),
+        captured_at=NOW,
+        displayed_rate_spelling="0.00055",
+        displayed_unit="FRACTION",
+        applicability_revision="applicability-v1",
+    )
+    fee = BybitLinearFeeInputsV1(
+        field(fee_source, "takerFeeRate", "0.00055"),
+        field(fee_source, "makerFeeRate", "0"),
+        BybitNonVipFeeBasisV1(Decimal(".00055"), doc),
+        "USDT",
+        BybitTradeBehaviourV1(behaviour_source, True, False, False),
+        "applicability-v1",
+    )
+    wallet_source = raw_source("wallet", "/v5/account/wallet-balance")
+    wallet = BybitUsdtWalletV1(
+        wallet_source,
+        *(
+            field(wallet_source, name, value)
+            for name, value in (
+                ("walletBalance", "520"),
+                ("equity", "1000"),
+                ("totalPositionIM", "8"),
+                ("totalOrderIM", "4"),
+                ("locked", "3"),
+                ("bonus", "5"),
+                ("borrowAmount", "0"),
+                ("spotBorrow", "0"),
+                ("accruedInterest", "0"),
+                ("unrealisedPnl", "480"),
+            )
+        ),
+    )
+    held_source = raw_source("held-Y", "/v5/position/list", symbol=y.key.symbol)
+    held = BybitHeldPositionV1(
+        held_source,
+        tables[1].instrument_pin,
+        0,
+        "Sell",
+        field(held_source, "size", "2"),
+        field(held_source, "avgPrice", "50"),
+        field(held_source, "markPrice", "50"),
+        field(held_source, "leverage", "2"),
+        field(held_source, "positionIM", "8"),
+        field(held_source, "positionIMByMp", "8"),
+        field(held_source, "positionMM", "1"),
+        field(held_source, "positionMMByMp", "1"),
+        None,
+        0,
+        1,
+        field(held_source, "riskLimitValue", "3000"),
+        "Normal",
+        False,
+        1,
+        1793664000000,
+    )
+    mode_source = raw_source("mode", "/v5/account/info")
+    flat_source = raw_source("flat", "/v5/position/symbol-info", symbol=x.key.symbol)
+    mark_source = raw_source("mark-" + x.key.symbol, "/v5/market/tickers", symbol=x.key.symbol)
+    raw_mark = field(mark_source, "markPrice", "140")
+    sources = (
+        behaviour_source,
+        fee_source,
+        flat_source,
+        held_source,
+        mode_source,
+        profile_source,
+        wallet_source,
+        mark_source,
+        *(t.pages[0] for t in tables),
+    )
+    return {
+        "inputs": inputs,
+        "preparation": d_r.prepare_linear_entry_v2(inputs, now=NOW),
+        "domain": domain,
+        "catalog": catalog,
+        "selected_mark": raw_mark,
+        "venue_fields": (
+            BybitUtaModeV1(mode_source, 5, "ISOLATED_MARGIN", 1793664000000),
+            BybitFlatLeverageV1(
+                flat_source,
+                x.key.symbol,
+                0,
+                field(flat_source, "leverage", "2"),
+                "/v5/position/symbol-info",
+            ),
+            fee,
+            wallet,
+            (held,),
+            (),
+            tuple(tables),
+            profile,
+            tuple(sorted(sources, key=lambda s: s.observation_id)),
+            NOW + timedelta(seconds=20),
+        ),
+        "now": NOW,
+    }
+
+
+def bind_d_graph(graph: dict[str, Any]) -> Any:
+    return a1.bind_bybit_model_inputs_v1(
+        graph["inputs"],
+        preparation=graph["preparation"],
+        domain=graph["domain"],
+        venue=a1.BybitVenueStateV1(*graph["venue_fields"]),
+        catalog=graph["catalog"],
+        selected_mark=graph["selected_mark"],
+        now=graph["now"],
+    )
+
+
+def test_d_all_held_y_bound_when_selection_only_x() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    assert bound.point.envelope.base_quantity == Decimal(1)
+    assert bound.point.capacity_quote == Decimal(60)
+    assert bound.point.admission_upper_quote == Decimal(140)
+    assert bound.domain.members[1].tiers.rows[0].min_leverage == Decimal(2)
+    assert bound.venue.held_positions[0].size.value == Decimal(2)
+    assert bound.valid_until == graph["now"] + timedelta(seconds=1)
+    assert len(a1.bybit_model_inputs_sha256_v1(bound)) == 64
+
+
+def test_d_full_projection_keeps_y_instrument_minimum() -> None:
+    graph = full_d_graph(y_minimum="2.5")
+    projected = a1.project_bybit_tier_snapshot_v1(
+        graph["venue_fields"][6][1], instrument=graph["catalog"].observations[1]
+    )
+    assert projected.rows[0].min_leverage == Decimal("2.5")
+    assert projected.rows[0].upper_inclusive_quote == Decimal(3000)
+
+
+def test_d_raw_selected_mark_is_mandatory_and_not_inferred() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    assert bound.point.selected_mark is graph["selected_mark"]
+    wrong = dict(
+        graph,
+        selected_mark=replace(
+            graph["selected_mark"],
+            value=Decimal(141),
+            reference=replace(graph["selected_mark"].reference, wire_spelling="141"),
+        ),
+    )
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        bind_d_graph(wrong)
+
+
+def d_reprepare(graph: dict[str, Any], inputs: Any, *, members: Any = None) -> dict[str, Any]:
+    old = graph["domain"]
+    domain = d_domain.build_linear_risk_domain_coverage_v2(
+        policy=inputs.policy,
+        catalog=graph["catalog"],
+        catalog_revision=inputs.catalog_revision,
+        coverage_revision=old.coverage_revision,
+        source_generation=old.source_generation,
+        account=inputs.account,
+        reservations=inputs.reservations,
+        marks=inputs.marks,
+        members=old.members if members is None else members,
+        source_record_sha256s=old.source_record_sha256s,
+        now=graph["now"],
+    )
+    inputs = replace(inputs, risk_domain_sha256=d_domain.risk_domain_sha256_v2(domain))
+    return dict(
+        graph,
+        inputs=inputs,
+        domain=domain,
+        preparation=d_r.prepare_linear_entry_v2(inputs, now=graph["now"]),
+    )
+
+
+@pytest.mark.parametrize("kind", ["missing", "size", "side", "opposing-net-equal", "extra-x"])
+def test_d_generic_position_per_side_nonnet_coverage(kind: str) -> None:
+    graph = full_d_graph()
+    original = graph["inputs"].account.components[0]
+    components = {
+        "missing": (),
+        "size": (replace(original, base_quantity=Decimal(1)),),
+        "side": (replace(original, side="BUY"),),
+        "opposing-net-equal": (
+            replace(original, base_quantity=Decimal(3)),
+            replace(original, component_id="AY2", side="BUY", base_quantity=Decimal(1)),
+        ),
+        "extra-x": (
+            d_c.ExposureQuantityV2(
+                "AX", graph["inputs"].instrument.key, "ACCOUNT_POSITION", "BUY", Decimal(1)
+            ),
+            original,
+        ),
+    }[kind]
+    account = replace(graph["inputs"].account, components=components)
+    members = tuple(
+        replace(
+            m,
+            account_component_ids=tuple(
+                c.component_id for c in components if c.instrument == m.instrument_pin.key
+            ),
+        )
+        for m in graph["domain"].members
+    )
+    graph = d_reprepare(graph, replace(graph["inputs"], account=account), members=members)
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        bind_d_graph(graph)
+
+
+@pytest.mark.parametrize("kind", ["missing", "size", "side", "extra-x"])
+def test_d_raw_position_per_side_nonnet_coverage(kind: str) -> None:
+    graph = full_d_graph()
+    fields_ = list(graph["venue_fields"])
+    original = fields_[4][0]
+    size = replace(
+        original.size,
+        value=Decimal(1),
+        reference=replace(original.size.reference, wire_spelling="1"),
+    )
+    extra = replace(original, instrument_pin=fields_[6][0].instrument_pin)
+    fields_[4] = {
+        "missing": (),
+        "size": (replace(original, size=size),),
+        "side": (replace(original, side="Buy"),),
+        "extra-x": (extra, original),
+    }[kind]
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        bind_d_graph(dict(graph, venue_fields=tuple(fields_)))
+
+
+def test_d_same_side_components_sum_without_inventing_cardinality_or_native_id() -> None:
+    graph = full_d_graph()
+    component = graph["inputs"].account.components[0]
+    components = (
+        replace(component, base_quantity=Decimal(1)),
+        replace(component, component_id="AY2", base_quantity=Decimal(1)),
+    )
+    members = (
+        graph["domain"].members[0],
+        replace(graph["domain"].members[1], account_component_ids=("AY", "AY2")),
+    )
+    graph = d_reprepare(
+        graph,
+        replace(graph["inputs"], account=replace(graph["inputs"].account, components=components)),
+        members=members,
+    )
+    bound = bind_d_graph(graph)
+    assert len(bound.risk_inputs.account.components) == 2
+    assert len(bound.venue.held_positions) == 1
+    assert bound.domain.source_record_sha256s == ("a" * 64,)
+    assert all(
+        a1.bybit_source_ref_sha256_v1(source) != "a" * 64 for source in bound.venue.source_records
+    )
+    assert not hasattr(bound, "qualified") and not hasattr(bound, "native_id_mapping")
+
+
+def test_d_pending_x_is_generic_coverage_but_profile_unsupported() -> None:
+    graph = full_d_graph()
+    pending = graph["inputs"].reservations.components[0]
+    pending = replace(pending, instrument=graph["inputs"].instrument.key)
+    reservations = replace(graph["inputs"].reservations, components=(pending,))
+    members = tuple(
+        replace(
+            m,
+            reservation_component_ids=("RY",) if index == 0 else (),
+            reserved_risk_quote=Decimal(3 if index == 0 else 0),
+            reserved_margin_quote=Decimal(4 if index == 0 else 0),
+            reserved_position_count=1 if index == 0 else 0,
+        )
+        for index, m in enumerate(graph["domain"].members)
+    )
+    graph = d_reprepare(graph, replace(graph["inputs"], reservations=reservations), members=members)
+    assert graph["domain"].members[0].reservation_component_ids == ("RY",)
+    with pytest.raises(RiskV2Rejected, match="UNSUPPORTED_MODE"):
+        bind_d_graph(graph)
+
+
+@pytest.mark.parametrize("target", ["wallet", "table", "domain-total", "profile", "fee-document"])
+def test_d_rejects_whole_graph_omissions_and_totals_before_selector(target: str) -> None:
+    graph = full_d_graph()
+    fields_ = list(graph["venue_fields"])
+    if target == "wallet":
+        wallet = fields_[3]
+        fields_[3] = replace(
+            wallet,
+            locked=replace(
+                wallet.locked,
+                value=Decimal(4),
+                reference=replace(wallet.locked.reference, wire_spelling="4"),
+            ),
+        )
+    elif target == "table":
+        fields_[6] = fields_[6][:1]
+    elif target == "domain-total":
+        graph["domain"] = replace(
+            graph["domain"],
+            members=(
+                graph["domain"].members[0],
+                replace(graph["domain"].members[1], account_margin_quote=Decimal(9)),
+            ),
+        )
+    elif target == "profile":
+        fields_[7] = replace(fields_[7], selected_open_order_ids=("unknown",))
+    else:
+        fee = fields_[2]
+        fields_[2] = replace(
+            fee,
+            closing_order_reserve_nonvip_rate=replace(
+                fee.closing_order_reserve_nonvip_rate,
+                reference=replace(
+                    fee.closing_order_reserve_nonvip_rate.reference, applicability_revision="other"
+                ),
+            ),
+        )
+    with pytest.raises(RiskV2Rejected):
+        bind_d_graph(dict(graph, venue_fields=tuple(fields_)))
+
+
+def test_d_unused_z_receipt_and_raw_row_are_catalog_committed() -> None:
+    graph = full_d_graph()
+    original = bind_d_graph(graph)
+    changed = bind_d_graph(full_d_graph(unused_received=graph["now"] - timedelta(microseconds=1)))
+    assert changed.catalog.revision == original.catalog.revision
+    assert changed.catalog.expires_at == original.catalog.expires_at
+    assert a1._catalog_input_sha256_v1(changed.catalog) != a1._catalog_input_sha256_v1(
+        original.catalog
+    )
+    assert a1.bybit_model_inputs_sha256_v1(changed) != a1.bybit_model_inputs_sha256_v1(original)
+    z = original.catalog.observations[2]
+    row = json.loads(z.raw_row_canonical)
+    row["unconsumedSourceField"] = "retained"
+    changed_z = parse_bybit_instrument_response(
+        {"retCode": 0, "result": {"category": "spot", "list": [row]}, "time": 1793663999000},
+        expected=z.key,
+        source=z.source,
+    )
+    catalog = build_instrument_catalog(
+        (*original.catalog.observations[:2], changed_z),
+        declared_universe=original.catalog.declared_universe,
+        now=graph["now"],
+        max_age=original.catalog.max_age,
+    )
+    assert catalog.revision == original.catalog.revision
+    assert a1._catalog_input_sha256_v1(catalog) != a1._catalog_input_sha256_v1(original.catalog)
+
+
+def test_d_catalog_and_compact_model_independent_full_graph_payloads() -> None:
+    bound = bind_d_graph(full_d_graph())
+    catalog = bound.catalog
+    payload = {
+        "schema_version": 1,
+        "revision": catalog.revision,
+        "declared_universe": [
+            {"venue": "BYBIT", "product": product, "symbol": symbol}
+            for product, symbol in (
+                ("LINEAR", "XAAUSDT"),
+                ("LINEAR", "YBBUSDT"),
+                ("SPOT", "ZCCUSDT"),
+            )
+        ],
+        "max_age_microseconds": 30000000,
+        "expires_at": "2026-11-03T00:00:29.000000+00:00",
+        "observations": tuple(
+            {
+                "key": {"venue": "BYBIT", "product": o.key.product, "symbol": o.key.symbol},
+                "native_instrument_id": o.key.symbol + "-" + o.key.product + ".BYBIT",
+                "parser_revision": "BYBIT_INSTRUMENT_PARSER_V1",
+                "source_rule_revision": "BYBIT_LINEAR_USDT_PERPETUAL_V1"
+                if o.key.product == "LINEAR"
+                else "BYBIT_SPOT_USDT_REGULAR_V1",
+                "specification_revision": o.specification_revision,
+                "source": {
+                    "source_id": "FIXTURE_CATALOG",
+                    "source_environment": "FIXTURE",
+                    "endpoint": "/v5/market/instruments-info",
+                    "received_at": "2026-11-03T00:00:00.000000+00:00",
+                },
+                "response_time": "2026-11-02T23:59:59.000000+00:00",
+                "raw_row_sha256": hashlib.sha256(o.raw_row_canonical).hexdigest(),
+            }
+            for o in catalog.observations
+        ),
+    }
+    catalog_hash = expected_hash("BybitInstrumentCatalogInputsV1", payload)
+    assert a1._catalog_input_sha256_v1(catalog) == catalog_hash
+    compact: dict[str, object] = {
+        "binding_sha256": d_e.binding_sha256_v2(bound.preparation.binding),
+        "risk_domain_sha256": d_domain.risk_domain_sha256_v2(bound.domain),
+        "requirements_sha256": d_e.requirements_sha256_v2(bound.risk_inputs.requirements),
+        "venue_state_sha256": a1.bybit_venue_state_sha256_v1(bound.venue),
+        "point_input_sha256": a1.bybit_point_input_sha256_v1(bound.point),
+        "catalog_input_sha256": catalog_hash,
+        "valid_until": "2026-11-03T00:00:01.000000+00:00",
+        "model_rule_revision": "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    }
+    assert a1.bybit_model_inputs_sha256_v1(bound) == expected_hash(
+        "BybitLinearModelInputsV1", compact
+    )
+
+
+@pytest.mark.parametrize(
+    "bound", ["proposal", "cost", "funding", "holding", "minimum", "venue", "catalog"]
+)
+def test_d_exact_eight_bound_minimum_and_strict_expiry(bound: str) -> None:
+    graph = full_d_graph()
+    inputs = graph["inputs"]
+    if bound == "catalog":
+        policy = replace(
+            inputs.policy, max_quote_age_seconds=Decimal(60), max_evidence_age_seconds=Decimal(60)
+        )
+        inputs = replace(
+            inputs,
+            policy=policy,
+            costs=replace(inputs.costs, policy_sha256=d_c.risk_policy_sha256_v2(policy)),
+        )
+    now = graph["now"]
+    late = now + timedelta(seconds=60)
+    early = now + timedelta(microseconds=100)
+    proposal = replace(
+        inputs.proposal,
+        entry=replace(inputs.proposal.entry, valid_until=early if bound == "proposal" else late),
+    )
+    costs = replace(
+        inputs.costs,
+        valid_until=early if bound == "cost" else late,
+        next_funding_at=early if bound == "funding" else late,
+        holding_until=early if bound == "holding" else late,
+    )
+    sized = d_r.size_linear_entry_v2(
+        policy=inputs.policy,
+        proposal=proposal,
+        instrument=inputs.instrument,
+        catalog_revision=inputs.catalog_revision,
+        costs=costs,
+        now=now,
+    )
+    minimum = replace(
+        inputs.minimum_amount,
+        envelope_sha256=d_c.envelope_sha256_v2(sized.envelope),
+        valid_until=early if bound == "minimum" else late,
+    )
+    fields_ = list(graph["venue_fields"])
+    fields_[-1] = early if bound == "venue" else late
+    inputs = replace(inputs, proposal=proposal, costs=costs, minimum_amount=minimum)
+    graph = d_reprepare(dict(graph, venue_fields=tuple(fields_)), inputs)
+    result = bind_d_graph(graph)
+    # Sizing envelope expiry is exactly the proposal expiry: both bounds are
+    # retained, with no independently forged shorter envelope admitted.
+    want = graph["catalog"].expires_at if bound == "catalog" else early
+    assert result.valid_until == result.point.valid_until == want
+    assert result.preparation.sizing.envelope.valid_until == proposal.entry.valid_until
+    with pytest.raises(RiskV2Rejected, match="EXPIRED|INPUT_INVALID"):
+        a1.bind_bybit_model_inputs_v1(
+            inputs,
+            preparation=result.preparation,
+            domain=result.domain,
+            venue=result.venue,
+            catalog=result.catalog,
+            selected_mark=result.point.selected_mark,
+            now=want,
+        )
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        replace(result, valid_until=now + timedelta(microseconds=1))
+
+
+def test_d_all_raw_orders_remain_committed_without_invented_ack_or_registry_mapping() -> None:
+    graph = full_d_graph()
+    bound = bind_d_graph(graph)
+    held = bound.venue.held_positions[0]
+    field = held.size
+    order = BybitHeldOrderV1(
+        held.source,
+        "native-order-not-a-component-id",
+        "",
+        held.instrument_pin,
+        0,
+        "Buy",
+        "Limit",
+        held.mark_price,
+        field,
+        field,
+        "New",
+        False,
+        False,
+        None,
+        held.updated_time_ms,
+    )
+    venue = replace(bound.venue, held_orders=(order,))
+    amended = a1.bind_bybit_model_inputs_v1(
+        bound.risk_inputs,
+        preparation=bound.preparation,
+        domain=bound.domain,
+        venue=venue,
+        catalog=bound.catalog,
+        selected_mark=bound.point.selected_mark,
+        now=graph["now"],
+    )
+    assert amended.venue.held_orders == (order,)
+    assert a1.bybit_model_inputs_sha256_v1(amended) != a1.bybit_model_inputs_sha256_v1(bound)
+    assert amended.domain.source_record_sha256s == bound.domain.source_record_sha256s
+    assert amended.domain.members[1].reservation_component_ids == ("RY",)
+    assert not hasattr(amended, "disjointness_proven")
+    with pytest.raises(RiskV2Rejected, match="UNSUPPORTED_MODE"):
+        a1.bind_bybit_model_inputs_v1(
+            bound.risk_inputs,
+            preparation=bound.preparation,
+            domain=bound.domain,
+            venue=replace(venue, held_orders=(replace(order, status="Filled"),)),
+            catalog=bound.catalog,
+            selected_mark=bound.point.selected_mark,
+            now=graph["now"],
+        )
+
+
+@pytest.mark.parametrize("target", ["hard-fee", "sell-hard-quote"])
+def test_d_generic_hard_errors_propagate_before_selector(target: str) -> None:
+    graph = full_d_graph()
+    if target == "hard-fee":
+        inputs = replace(
+            graph["inputs"],
+            requirements=replace(
+                graph["inputs"].requirements, cost_assessment_basis="HARD_EXECUTION_FEE_UPPER_V1"
+            ),
+        )
+        graph = d_reprepare(graph, inputs)
+        code = "MARGIN_UNVERIFIED"
+    else:
+        old = graph["inputs"]
+        policy = replace(
+            old.policy,
+            caps=replace(
+                old.policy.caps,
+                turnover_requirement="HARD_EXECUTION_QUOTE_CAP",
+                max_execution_quote_amount=Decimal(500),
+            ),
+        )
+        proposal = replace(
+            old.proposal,
+            side="SHORT",
+            stop_price=Decimal(110),
+            entry=replace(old.proposal.entry, side="SELL"),
+        )
+        costs = replace(
+            old.costs,
+            policy_sha256=d_c.risk_policy_sha256_v2(policy),
+            side="SHORT",
+            stop_price=Decimal(110),
+        )
+        sizing = d_r.size_linear_entry_v2(
+            policy=policy,
+            proposal=proposal,
+            instrument=old.instrument,
+            catalog_revision=old.catalog_revision,
+            costs=costs,
+            now=graph["now"],
+        )
+        # Genuine generic preparation owns SELL's unavailable hard upper; an
+        # old otherwise-valid supplied preparation must not hide that failure.
+        graph["inputs"] = replace(
+            old,
+            policy=policy,
+            proposal=proposal,
+            costs=costs,
+            minimum_amount=replace(
+                old.minimum_amount, envelope_sha256=d_c.envelope_sha256_v2(sizing.envelope)
+            ),
+        )
+        code = "SELL_EXECUTION_UPPER_UNAVAILABLE"
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_" + code + "$"):
+        bind_d_graph(graph)
+
+
+def test_d_every_new_input_boundary_rejects_partial_and_hostile_exact_children() -> None:
+    bound = bind_d_graph(full_d_graph())
+    for cls, digest in (
+        (a1.BybitVenueStateV1, a1.bybit_venue_state_sha256_v1),
+        (a1.BybitLinearModelInputsV1, a1.bybit_model_inputs_sha256_v1),
+    ):
+        with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+            cast(Any, digest)(object.__new__(cls))
+    bad_catalog = object.__new__(type(bound.catalog))
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1._catalog_input_sha256_v1(bad_catalog)
+    for field in fields(bound.catalog):
+        object.__setattr__(bad_catalog, field.name, getattr(bound.catalog, field.name))
+    object.__setattr__(
+        bad_catalog, "observations", (object.__new__(type(bound.catalog.observations[0])),)
+    )
+    with pytest.raises(RiskV2Rejected, match="INPUT_INVALID"):
+        a1._catalog_input_sha256_v1(bad_catalog)
+
+
+def test_d_seven_key_framing_is_superseded_by_independent_eight_key_literal() -> None:
+    literal = b'{"fields":{"binding_sha256":"1111111111111111111111111111111111111111111111111111111111111111","catalog_input_sha256":"2222222222222222222222222222222222222222222222222222222222222222","model_rule_revision":"BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1","point_input_sha256":"3333333333333333333333333333333333333333333333333333333333333333","requirements_sha256":"4444444444444444444444444444444444444444444444444444444444444444","risk_domain_sha256":"5555555555555555555555555555555555555555555555555555555555555555","valid_until":"2026-11-03T00:00:10.000000+00:00","venue_state_sha256":"6666666666666666666666666666666666666666666666666666666666666666"},"record_type":"BybitLinearModelInputsV1","schema":"RISK_V2_CANONICAL_V1"}'
+    assert len(literal) == 722
+    assert (
+        hashlib.sha256(literal).hexdigest()
+        == "476db19b6adeaac6439ee95e637ea48c4bf2b0a04b5bd1b869f71bb757fceefd"
+    )
+    # This independently encoded framing is not an admissible full graph.
+    parsed = json.loads(literal)
+    assert len(parsed["fields"]) == 8
+    assert (
+        _canonical_sha256_v2("BybitLinearModelInputsV1", parsed["fields"])
+        == hashlib.sha256(literal).hexdigest()
+    )
+
+
+def test_d_model_digest_rejects_missing_selected_table_with_closed_error() -> None:
+    bound = bind_d_graph(full_d_graph())
+    venue = replace(bound.venue, tier_tables=bound.venue.tier_tables[1:])
+    with pytest.raises(RiskV2Rejected, match="HELD_COVERAGE_REQUIRED"):
+        replace(bound, venue=venue)
+
+
+def test_d_full_table_projection_retains_rows_above_selected_admission() -> None:
+    bound = bind_d_graph(full_d_graph(two_rows=True))
+    assert bound.point.admission_covered_tier_ids == ("1",)
+    assert tuple(row.tier_id for row in bound.risk_inputs.tiers.rows) == ("1", "2")
+    assert tuple(row.min_leverage for row in bound.domain.members[1].tiers.rows) == (
+        Decimal(2),
+        Decimal(2),
+    )
+    assert bound.domain.members[1].tiers.rows[1].maintenance_margin_deduction == Decimal(15)
+    assert len(bound.venue.tier_tables[0].rows) == len(bound.venue.tier_tables[1].rows) == 2
+
+
+def test_d_venue_digest_independent_named_child_recipe() -> None:
+    venue = bind_d_graph(full_d_graph()).venue
+    payload: dict[str, object] = {
+        "account_mode": a1.bybit_uta_mode_sha256_v1(venue.account_mode),
+        "flat_leverage": a1.bybit_flat_leverage_sha256_v1(venue.flat_leverage),
+        "fee": a1.bybit_fee_inputs_sha256_v1(venue.fee),
+        "wallet": a1.bybit_wallet_sha256_v1(venue.wallet),
+        "held_positions": [a1.bybit_held_position_sha256_v1(venue.held_positions[0])],
+        "held_orders": [],
+        "tier_tables": [a1.bybit_tier_table_sha256_v1(table) for table in venue.tier_tables],
+        "selected_profile": a1.bybit_selected_profile_sha256_v1(venue.selected_profile),
+        "source_records": [
+            a1.bybit_source_ref_sha256_v1(source) for source in venue.source_records
+        ],
+        "valid_until": "2026-11-03T00:00:20.000000+00:00",
+    }
+    assert a1.bybit_venue_state_sha256_v1(venue) == expected_hash("BybitVenueStateV1", payload)

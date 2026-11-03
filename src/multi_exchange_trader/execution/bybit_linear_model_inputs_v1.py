@@ -27,6 +27,10 @@ from multi_exchange_trader.account.risk_limit_envelope import (
     _text_v1,
     _validated_risk_body_v1,
 )
+from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+from multi_exchange_trader.execution import linear_risk_v2 as r
+from multi_exchange_trader.execution import risk_domain_v2 as d
+from multi_exchange_trader.execution import risk_v2_contracts as c
 from multi_exchange_trader.execution.protection import ProtectionScope
 from multi_exchange_trader.execution.risk_v2_contracts import (
     FixedLimitEnvelopeV2,
@@ -47,9 +51,18 @@ from multi_exchange_trader.execution.risk_v2_contracts import (
     envelope_sha256_v2,
 )
 from multi_exchange_trader.execution.risk_v2_math import (
+    _compare,
+    _fraction,
     decimal_fraction_v2,
     decimal_text_v2,
     finite_decimal_v2,
+)
+from multi_exchange_trader.market_data.instrument_catalog import InstrumentCatalog
+from multi_exchange_trader.market_data.instrument_definition import (
+    CatalogRejected,
+    InstrumentObservation,
+    LinearInstrumentSpec,
+    validate_instrument_observation,
 )
 from multi_exchange_trader.trading_product import InstrumentKey
 
@@ -1594,3 +1607,599 @@ def _point_payload_v1(value: BybitLinearPointInputV1) -> dict[str, object]:
 
 def bybit_point_input_sha256_v1(value: BybitLinearPointInputV1) -> str:
     return _canonical_sha256_v2("BybitLinearPointInputV1", _point_payload_v1(value))
+
+
+@dataclass(frozen=True)
+class BybitVenueStateV1:
+    account_mode: BybitUtaModeV1
+    flat_leverage: BybitFlatLeverageV1
+    fee: BybitLinearFeeInputsV1
+    wallet: BybitUsdtWalletV1
+    held_positions: tuple[BybitHeldPositionV1, ...]
+    held_orders: tuple[BybitHeldOrderV1, ...]
+    tier_tables: tuple[BybitLinearTierTableV1, ...]
+    selected_profile: BybitSelectedEntryProfileV1
+    source_records: tuple[BybitModelSourceRefV1, ...]
+    valid_until: datetime
+
+    def __post_init__(self) -> None:
+        _venue_payload_v1(self)
+
+
+def _venue_payload_v1(value: BybitVenueStateV1) -> dict[str, object]:
+    _fields_v2(value, BybitVenueStateV1)
+    payload: dict[str, object] = {
+        "account_mode": bybit_uta_mode_sha256_v1(value.account_mode),
+        "flat_leverage": bybit_flat_leverage_sha256_v1(value.flat_leverage),
+        "fee": bybit_fee_inputs_sha256_v1(value.fee),
+        "wallet": bybit_wallet_sha256_v1(value.wallet),
+        "selected_profile": bybit_selected_profile_sha256_v1(value.selected_profile),
+        "valid_until": _time_text_v2(value.valid_until),
+    }
+    _tuple_v1(value.held_positions, 1024)
+    _tuple_v1(value.held_orders, 1024)
+    _tuple_v1(value.tier_tables, 100, minimum=1)
+    _tuple_v1(value.source_records, 1024, minimum=1)
+    payload["held_positions"] = tuple(
+        bybit_held_position_sha256_v1(p) for p in value.held_positions
+    )
+    payload["held_orders"] = tuple(bybit_held_order_sha256_v1(o) for o in value.held_orders)
+    payload["tier_tables"] = tuple(bybit_tier_table_sha256_v1(t) for t in value.tier_tables)
+    payload["source_records"] = tuple(bybit_source_ref_sha256_v1(s) for s in value.source_records)
+    position_order = tuple(
+        (*c._key_order_v2(p.instrument_pin.key), p.position_idx) for p in value.held_positions
+    )
+    order_order = tuple(
+        (*c._key_order_v2(o.instrument_pin.key), o.order_id) for o in value.held_orders
+    )
+    table_order = tuple(c._key_order_v2(t.instrument_pin.key) for t in value.tier_tables)
+    source_order = tuple(s.observation_id for s in value.source_records)
+    if (
+        position_order != tuple(sorted(set(position_order)))
+        or order_order != tuple(sorted(set(order_order)))
+        or table_order != tuple(sorted(set(table_order)))
+        or source_order != tuple(sorted(set(source_order)))
+    ):
+        _reject_v1()
+    return payload
+
+
+def bybit_venue_state_sha256_v1(value: BybitVenueStateV1) -> str:
+    return _canonical_sha256_v2("BybitVenueStateV1", _venue_payload_v1(value))
+
+
+def _catalog_input_sha256_v1(catalog: InstrumentCatalog) -> str:
+    """Commit all validated A02 preimages, including non-risk products."""
+    v = _fields_v2(catalog, InstrumentCatalog)
+    if type(v["schema_version"]) is not int or v["schema_version"] != 1:
+        _reject_v1()
+    _digest_v2(catalog.revision)
+    _utc_v2(catalog.expires_at)
+    if type(catalog.max_age) is not timedelta or catalog.max_age <= timedelta(0):
+        _reject_v1()
+    _tuple_v1(catalog.declared_universe, 100, minimum=1)
+    _tuple_v1(catalog.observations, 100, minimum=1)
+    keys = tuple(_key_payload_v2(key) for key in catalog.declared_universe)
+    try:
+        # A02 alone owns row parsing, raw hash/spec revision and product rules.
+        for observation in catalog.observations:
+            validate_instrument_observation(observation)
+        complete = catalog.complete_for_declared_universe
+        if complete is not True:
+            _reject_v1()
+    except CatalogRejected:
+        _reject_v1()
+    observations = tuple(
+        {
+            "key": _key_payload_v2(o.key),
+            "native_instrument_id": o.native_instrument_id,
+            "parser_revision": o.parser_revision,
+            "source_rule_revision": o.source_rule_revision,
+            "specification_revision": o.specification_revision,
+            "source": {
+                "source_id": o.source.source_id,
+                "source_environment": o.source.source_environment,
+                "endpoint": o.source.endpoint,
+                "received_at": _time_text_v2(o.source.received_at),
+            },
+            "response_time": _time_text_v2(o.response_time),
+            "raw_row_sha256": o.raw_row_sha256,
+        }
+        for o in catalog.observations
+    )
+    return _canonical_sha256_v2(
+        "BybitInstrumentCatalogInputsV1",
+        {
+            "schema_version": catalog.schema_version,
+            "revision": catalog.revision,
+            "declared_universe": keys,
+            "max_age_microseconds": (catalog.max_age.days * 86400 + catalog.max_age.seconds)
+            * 1000000
+            + catalog.max_age.microseconds,
+            "expires_at": _time_text_v2(catalog.expires_at),
+            "observations": observations,
+        },
+    )
+
+
+def project_bybit_tier_snapshot_v1(
+    table: BybitLinearTierTableV1, *, instrument: InstrumentObservation
+) -> e.LinearTierSnapshotV2:
+    _table_v1(table)
+    pin = c.pin_instrument_v2(instrument, catalog_revision=table.instrument_pin.catalog_revision)
+    if _pin_payload_v2(pin) != _pin_payload_v2(table.instrument_pin):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    spec = instrument.spec
+    if type(spec) is not LinearInstrumentSpec:
+        _reject_v1("RISK_V2_UNSUPPORTED_PRODUCT")
+    return e.LinearTierSnapshotV2(
+        pin.key,
+        table.reference,
+        pin.specification_revision,
+        tuple(
+            e.LinearRiskTierV2(
+                _integer_text_v1(row.risk_id),
+                Decimal(0) if index == 0 else table.rows[index - 1].upper_inclusive_usdt.value,
+                row.upper_inclusive_usdt.value,
+                spec.min_leverage.value,
+                row.max_leverage.value,
+                row.initial_margin_rate.value,
+                row.maintenance_margin_rate.value,
+                row.mm_deduction_usdt.value,
+            )
+            for index, row in enumerate(table.rows)
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class BybitLinearModelInputsV1:
+    risk_inputs: e.LinearRiskInputsV2
+    preparation: e.LinearEntryPreparationV2
+    domain: d.LinearRiskDomainCoverageV2
+    venue: BybitVenueStateV1
+    point: BybitLinearPointInputV1
+    catalog: InstrumentCatalog
+    valid_until: datetime
+    model_rule_revision: Literal["BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1"]
+
+    def __post_init__(self) -> None:
+        _model_payload_v1(self)
+
+
+def _economic_preparation_v1(value: e.LinearEntryPreparationV2) -> dict[str, object]:
+    payload = e._preparation_payload_v2(value)
+    # These are the only inherited audit exclusions.
+    sizing = cast(dict[str, object], payload["sizing"])
+    valuation = cast(dict[str, object], payload["valuation"])
+    del sizing["assessed_at"]
+    del valuation["assessed_at"]
+    return payload
+
+
+def _model_expiry_v1(
+    inputs: e.LinearRiskInputsV2,
+    preparation: e.LinearEntryPreparationV2,
+    venue: BybitVenueStateV1,
+    catalog: InstrumentCatalog,
+) -> datetime:
+    return min(
+        _utc_v2(expiry)
+        for expiry in (
+            preparation.sizing.envelope.valid_until,
+            inputs.proposal.entry.valid_until,
+            inputs.costs.valid_until,
+            inputs.costs.next_funding_at,
+            inputs.costs.holding_until,
+            inputs.minimum_amount.valid_until,
+            venue.valid_until,
+            catalog.expires_at,
+        )
+    )
+
+
+def _project_point_v1(
+    inputs: e.LinearRiskInputsV2,
+    preparation: e.LinearEntryPreparationV2,
+    venue: BybitVenueStateV1,
+    selected_mark: BybitDecimalFieldV1,
+    expiry: datetime,
+) -> BybitLinearPointInputV1:
+    marks = tuple(
+        mark for mark in inputs.marks if mark.instrument == inputs.policy.scope.instrument
+    )
+    tables = tuple(
+        table
+        for table in venue.tier_tables
+        if table.instrument_pin.key == inputs.policy.scope.instrument
+    )
+    if len(marks) != 1:
+        _reject_v1("RISK_V2_MARK_COVERAGE_REQUIRED")
+    if len(tables) != 1:
+        _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+    mark = marks[0]
+    bound = preparation.tier_bound
+    return BybitLinearPointInputV1(
+        preparation.sizing.envelope,
+        preparation.sizing.stop_price,
+        selected_mark,
+        mark.reference,
+        venue.fee,
+        tables[0],
+        venue.selected_profile,
+        preparation.sizing.cost_allowance_quote,
+        preparation.capacity_quote,
+        inputs.policy.liquidation_buffer_fraction,
+        bound.symbol_gross_upper_quote,
+        bound.covered_tier_ids,
+        bound.continuous_leverage_lower,
+        bound.continuous_leverage_upper,
+        bound.leverage_step,
+        inputs.policy.max_evidence_age_seconds,
+        inputs.policy.max_quote_age_seconds,
+        expiry,
+        "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    )
+
+
+def _model_payload_v1(value: BybitLinearModelInputsV1) -> dict[str, object]:
+    _fields_v2(value, BybitLinearModelInputsV1)
+    e._inputs_payload_v2(value.risk_inputs)
+    e._preparation_payload_v2(value.preparation)
+    domain_hash = d.risk_domain_sha256_v2(value.domain)
+    venue_hash = bybit_venue_state_sha256_v1(value.venue)
+    point_hash = bybit_point_input_sha256_v1(value.point)
+    catalog_hash = _catalog_input_sha256_v1(value.catalog)
+    expiry = _utc_v2(value.valid_until)
+    _literal_v2(value.model_rule_revision, ("BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",))
+    if (
+        domain_hash != value.risk_inputs.risk_domain_sha256
+        or domain_hash != value.preparation.binding.risk_domain_sha256
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    if expiry != _model_expiry_v1(value.risk_inputs, value.preparation, value.venue, value.catalog):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    expected = _project_point_v1(
+        value.risk_inputs, value.preparation, value.venue, value.point.selected_mark, expiry
+    )
+    if _point_payload_v1(expected) != _point_payload_v1(value.point):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    return {
+        "binding_sha256": e.binding_sha256_v2(value.preparation.binding),
+        "risk_domain_sha256": domain_hash,
+        "requirements_sha256": e.requirements_sha256_v2(value.risk_inputs.requirements),
+        "venue_state_sha256": venue_hash,
+        "point_input_sha256": point_hash,
+        "catalog_input_sha256": catalog_hash,
+        "valid_until": _time_text_v2(expiry),
+        "model_rule_revision": value.model_rule_revision,
+    }
+
+
+def bybit_model_inputs_sha256_v1(value: BybitLinearModelInputsV1) -> str:
+    return _canonical_sha256_v2("BybitLinearModelInputsV1", _model_payload_v1(value))
+
+
+def _venue_sources_v1(venue: BybitVenueStateV1) -> tuple[BybitModelSourceRefV1, ...]:
+    sources = (
+        venue.account_mode.source,
+        venue.flat_leverage.source,
+        venue.fee.behaviour.source,
+        venue.fee.account_taker_rate.reference.source,
+        venue.fee.account_maker_rate.reference.source,
+        venue.wallet.source,
+        *venue.selected_profile.source_records,
+        *(page for table in venue.tier_tables for page in table.pages),
+        *(p.source for p in venue.held_positions),
+        *(o.source for o in venue.held_orders),
+    )
+    fee_ref = venue.fee.closing_order_reserve_nonvip_rate.reference
+    if type(fee_ref) is BybitModelFieldRefV1:
+        sources += (fee_ref.source,)
+    return sources
+
+
+def _venue_links_v1(
+    inputs: e.LinearRiskInputsV2,
+    domain: d.LinearRiskDomainCoverageV2,
+    venue: BybitVenueStateV1,
+    catalog: InstrumentCatalog,
+    selected_mark: BybitDecimalFieldV1,
+    *,
+    now: datetime,
+) -> None:
+    profile, fee = venue.selected_profile, venue.fee
+    if (
+        profile.symbol != inputs.policy.scope.instrument.symbol
+        or _decimal_field_v1(profile.selected_position_quantity) != 0
+        or profile.selected_open_order_ids
+        or profile.selected_conditional_order_ids
+        or profile.local_unresolved_entry_ids
+        or profile.auto_add_margin.wire_kind != "INTEGER"
+        or profile.auto_add_margin.wire_spelling != "0"
+        or decimal_fraction_v2(profile.prospective_extra_margin_usdt) != 0
+        or fee.behaviour.lpa_perp is not True
+        or fee.behaviour.futures_mnt_fee_deduction is not False
+        or fee.behaviour.delta_enable is not False
+    ):
+        _reject_v1("RISK_V2_UNSUPPORTED_MODE")
+    if (
+        profile.selected_position_quantity.reference.source not in profile.source_records
+        or profile.auto_add_margin.source not in profile.source_records
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    for rate in (
+        fee.account_taker_rate.value,
+        fee.account_maker_rate.value,
+        fee.closing_order_reserve_nonvip_rate.value,
+    ):
+        if not 0 <= decimal_fraction_v2(rate) < 1:
+            _reject_v1("RISK_V2_MARGIN_UNVERIFIED")
+    nonvip = fee.closing_order_reserve_nonvip_rate.reference
+    if type(nonvip) is BybitFeeDocumentRefV1:
+        if nonvip.applicability_revision != fee.nonvip_applicability_revision:
+            _reject_v1("RISK_V2_REVISION_MISMATCH")
+        c._fresh_v2(
+            nonvip.captured_at,
+            now=now,
+            maximum=decimal_fraction_v2(inputs.policy.max_evidence_age_seconds),
+        )
+    required = tuple(member.instrument_pin.key for member in domain.members)
+    if tuple(t.instrument_pin.key for t in venue.tier_tables) != required:
+        _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+    observations = {o.key: o for o in catalog.observations}
+    for member, table in zip(domain.members, venue.tier_tables, strict=True):
+        projected = project_bybit_tier_snapshot_v1(
+            table, instrument=observations[member.instrument_pin.key]
+        )
+        if e._tier_snapshot_payload_v2(projected) != e._tier_snapshot_payload_v2(member.tiers):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    selected = inputs.policy.scope.instrument
+    table = next(t for t in venue.tier_tables if t.instrument_pin.key == selected)
+    if e.tier_snapshot_sha256_v2(
+        project_bybit_tier_snapshot_v1(table, instrument=inputs.instrument)
+    ) != e.tier_snapshot_sha256_v2(inputs.tiers):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    mark = next(m for m in inputs.marks if m.instrument == selected)
+    source = selected_mark.reference.source
+    if _decimal_field_v1(selected_mark) != decimal_fraction_v2(mark.mark_price) or (
+        source.account_scope is not None
+        or dict(source.query).get("category") != "linear"
+        or dict(source.query).get("symbol") != selected.symbol
+        or source.observation_id != mark.reference.observation_id
+        or source.source_id != mark.reference.source_id
+        or source.source_environment != mark.reference.source_environment
+        or _utc_v2(source.received_at) != _utc_v2(mark.reference.received_at)
+        or source.envelope_time_ms is None
+        or _EPOCH + timedelta(milliseconds=source.envelope_time_ms)
+        != _utc_v2(mark.reference.server_observed_at)
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    all_sources = (*_venue_sources_v1(venue), source)
+    records = {s.observation_id: s for s in venue.source_records}
+    generations: dict[str, str] = {}
+    for s in (*venue.source_records, *all_sources):
+        if s.observation_id not in records or bybit_source_ref_sha256_v1(
+            records[s.observation_id]
+        ) != bybit_source_ref_sha256_v1(s):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        if generations.setdefault(s.source_id, s.source_generation) != s.source_generation:
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        if s.account_scope is not None and s.account_scope != inputs.account.account:
+            _reject_v1("RISK_V2_SCOPE_MISMATCH")
+        if (table.instrument_pin.source_environment == "FIXTURE") != (
+            s.source_environment == "FIXTURE"
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        maximum = decimal_fraction_v2(
+            inputs.policy.max_quote_age_seconds
+            if s.observation_id == source.observation_id
+            else inputs.policy.max_evidence_age_seconds
+        )
+        for stamp in (s.request_started_at, s.received_at):
+            c._fresh_v2(stamp, now=now, maximum=maximum)
+        if s.envelope_time_ms is not None:
+            c._fresh_v2(
+                _EPOCH + timedelta(milliseconds=s.envelope_time_ms), now=now, maximum=maximum
+            )
+    for s in (
+        *profile.source_records,
+        fee.account_taker_rate.reference.source,
+        fee.account_maker_rate.reference.source,
+        venue.flat_leverage.source,
+    ):
+        query = dict(s.query)
+        if ("symbol" in query and query["symbol"] != selected.symbol) or (
+            "category" in query and query["category"] != "linear"
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    scope = inputs.account.account
+    for s in (
+        venue.account_mode.source,
+        venue.flat_leverage.source,
+        venue.wallet.source,
+        *venue.selected_profile.source_records,
+        venue.fee.behaviour.source,
+        venue.fee.account_taker_rate.reference.source,
+        venue.fee.account_maker_rate.reference.source,
+        *(p.source for p in venue.held_positions),
+        *(o.source for o in venue.held_orders),
+    ):
+        if s.account_scope != scope:
+            _reject_v1("RISK_V2_SCOPE_MISMATCH")
+    if type(nonvip) is BybitModelFieldRefV1 and nonvip.source.account_scope != scope:
+        _reject_v1("RISK_V2_SCOPE_MISMATCH")
+    if (
+        venue.flat_leverage.symbol != selected.symbol
+        or venue.flat_leverage.source.path != venue.flat_leverage.read_path
+    ):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    if venue.flat_leverage.leverage.reference.source != venue.flat_leverage.source:
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    for name in (
+        "wallet_balance",
+        "equity",
+        "total_position_im",
+        "total_order_im",
+        "locked",
+        "bonus",
+        "borrow_amount",
+        "spot_borrow",
+        "accrued_interest",
+        "unrealised_pnl",
+    ):
+        if (
+            cast(BybitDecimalFieldV1, getattr(venue.wallet, name)).reference.source
+            != venue.wallet.source
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    if any(
+        _decimal_field_v1(f) != 0
+        for f in (
+            venue.wallet.borrow_amount,
+            venue.wallet.spot_borrow,
+            venue.wallet.accrued_interest,
+        )
+    ):
+        _reject_v1("RISK_V2_UNSUPPORTED_MODE")
+    free = _decimal_field_v1(venue.wallet.wallet_balance)
+    for amount in (
+        venue.wallet.total_position_im,
+        venue.wallet.total_order_im,
+        venue.wallet.locked,
+        venue.wallet.bonus,
+    ):
+        free = _fraction(free - _decimal_field_v1(amount))
+    if _compare(free, decimal_fraction_v2(inputs.account.available_margin)) != 0:
+        _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+    for p in venue.held_positions:
+        if (
+            p.side not in ("Buy", "Sell")
+            or p.position_idx != 0
+            or p.position_status != "Normal"
+            or p.auto_add_margin != 0
+        ):
+            _reject_v1("RISK_V2_UNSUPPORTED_MODE")
+        if p.instrument_pin.key not in required:
+            _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+        if _pin_payload_v2(p.instrument_pin) != _pin_payload_v2(
+            c.pin_instrument_v2(
+                observations[p.instrument_pin.key], catalog_revision=catalog.revision
+            )
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        for name in (
+            "size",
+            "avg_price",
+            "mark_price",
+            "leverage",
+            "position_im",
+            "position_im_by_mp",
+            "position_mm",
+            "position_mm_by_mp",
+            "risk_limit_value",
+            "liq_price",
+        ):
+            field = cast(BybitDecimalFieldV1 | None, getattr(p, name))
+            if field is not None and field.reference.source != p.source:
+                _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    for o in venue.held_orders:
+        if (
+            o.side not in ("Buy", "Sell")
+            or o.order_type not in ("Limit", "Market")
+            or o.status not in ("New", "PartiallyFilled", "Untriggered")
+            or o.position_idx != 0
+        ):
+            _reject_v1("RISK_V2_UNSUPPORTED_MODE")
+        if o.instrument_pin.key not in observations:
+            _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+        if _pin_payload_v2(o.instrument_pin) != _pin_payload_v2(
+            c.pin_instrument_v2(
+                observations[o.instrument_pin.key], catalog_revision=catalog.revision
+            )
+        ):
+            _reject_v1("RISK_V2_SOURCE_MISMATCH")
+        for field in (o.price, o.quantity, o.leaves_quantity, o.trigger_price):
+            if field is not None and field.reference.source != o.source:
+                _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    for key in required:
+        for side, raw_side in (("BUY", "Buy"), ("SELL", "Sell")):
+            generic = Fraction(0)
+            raw = Fraction(0)
+            for component in inputs.account.components:
+                if (
+                    component.instrument == key
+                    and component.origin == "ACCOUNT_POSITION"
+                    and component.side == side
+                ):
+                    generic = _fraction(generic + decimal_fraction_v2(component.base_quantity))
+            for p in venue.held_positions:
+                if p.instrument_pin.key == key and p.side == raw_side:
+                    raw = _fraction(raw + _decimal_field_v1(p.size))
+            if _compare(generic, raw) != 0:
+                _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+    if (
+        any(p.instrument_pin.key == selected for p in venue.held_positions)
+        or any(o.instrument_pin.key == selected for o in venue.held_orders)
+        or any(
+            component.instrument == selected
+            for component in (*inputs.account.components, *inputs.reservations.components)
+        )
+    ):
+        _reject_v1("RISK_V2_UNSUPPORTED_MODE")
+
+
+def bind_bybit_model_inputs_v1(
+    inputs: e.LinearRiskInputsV2,
+    *,
+    preparation: e.LinearEntryPreparationV2,
+    domain: d.LinearRiskDomainCoverageV2,
+    venue: BybitVenueStateV1,
+    catalog: InstrumentCatalog,
+    selected_mark: BybitDecimalFieldV1,
+    now: datetime,
+) -> BybitLinearModelInputsV1:
+    e._inputs_payload_v2(inputs)
+    e._preparation_payload_v2(preparation)
+    d.risk_domain_sha256_v2(domain)
+    _venue_payload_v1(venue)
+    _catalog_input_sha256_v1(catalog)
+    _decimal_field_v1(selected_mark)
+    now = _utc_v2(now)
+    actual = r.prepare_linear_entry_v2(inputs, now=now)
+    if _economic_preparation_v1(actual) != _economic_preparation_v1(preparation):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    rebuilt = d.build_linear_risk_domain_coverage_v2(
+        policy=inputs.policy,
+        catalog=catalog,
+        catalog_revision=inputs.catalog_revision,
+        coverage_revision=domain.coverage_revision,
+        source_generation=domain.source_generation,
+        account=inputs.account,
+        reservations=inputs.reservations,
+        marks=inputs.marks,
+        members=domain.members,
+        source_record_sha256s=domain.source_record_sha256s,
+        now=now,
+    )
+    if d.risk_domain_sha256_v2(rebuilt) != inputs.risk_domain_sha256 or d.risk_domain_sha256_v2(
+        rebuilt
+    ) != d.risk_domain_sha256_v2(domain):
+        _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    if inputs.requirements.cost_assessment_basis != "POINT_ESTIMATE_WITH_RECONCILIATION_V1":
+        _reject_v1("RISK_V2_MARGIN_UNVERIFIED")
+    _venue_links_v1(inputs, domain, venue, catalog, selected_mark, now=now)
+    expiry = _model_expiry_v1(inputs, actual, venue, catalog)
+    if now >= expiry:
+        _reject_v1("RISK_V2_EXPIRED")
+    point = _project_point_v1(inputs, actual, venue, selected_mark, expiry)
+    return BybitLinearModelInputsV1(
+        inputs,
+        actual,
+        domain,
+        venue,
+        point,
+        catalog,
+        expiry,
+        "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    )

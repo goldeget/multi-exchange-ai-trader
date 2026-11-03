@@ -1535,3 +1535,322 @@ def test_ambient_context_digit_limit_and_stamps_unchanged() -> None:
         "time" not in field.name and "computed_at" != field.name
         for field in fields(b.BybitLiquidationCalculationV1)
     )
+
+
+def full_d_bound() -> Any:
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, full_d_graph  # type: ignore[import-not-found]
+
+    return bind_d_graph(full_d_graph())
+
+
+def d_success_calculation(bound: Any, *, now: datetime) -> b.BybitBoundModelCalculationV1:
+    result = b.calculate_bound_bybit_model_v1(bound, now=now)
+    assert isinstance(result, b.BybitBoundModelCalculationV1)
+    return result
+
+
+def test_d_bound_calculation_replays_real_preparation_and_complete_selector() -> None:
+    bound = full_d_bound()
+    calculation = d_success_calculation(bound, now=bound.preparation.sizing.assessed_at)
+    assert type(calculation) is b.BybitBoundModelCalculationV1
+    assert calculation.search.selected.leverage == D(3)
+    assert calculation.search.selected.reserve.required_reservation_quote == D("48.66666667")
+    assert isinstance(calculation.search.selected.liquidation.outcome, b.BybitPositiveRootPointV1)
+    assert calculation.search.selected.liquidation.outcome.exact_price == F(40000, 597)
+    assert tuple(candidate.failure_codes for candidate in calculation.search.evaluated_prefix) == (
+        ("CAPACITY",),
+        ("CAPACITY",),
+        (),
+    )
+    assert calculation.exact_calculation_sha256 == b.bybit_bound_calculation_sha256_v1(calculation)
+
+
+def test_d_two_stage_owner_completion_and_generic_plan_blocker() -> None:
+    from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+    from multi_exchange_trader.execution import linear_risk_v2 as r
+    from multi_exchange_trader.execution.risk_v2_contracts import RiskComputationRefV2
+
+    bound = full_d_bound()
+    now = bound.preparation.sizing.assessed_at
+    events = ["economic-calculation"]
+    calculation = d_success_calculation(bound, now=now)
+    events.append("owner-margin-completion")
+    margin_ref = RiskComputationRefV2(
+        "margin", "margin-v1", "FIXTURE", now, calculation.binding_sha256
+    )
+    margin = b.build_bybit_margin_assessment_v1(
+        calculation, inputs=bound, reference=margin_ref, now=now
+    )
+    events += ["margin-assembly", "additional-lp-work", "owner-lp-completion"]
+    lp_ref = RiskComputationRefV2(
+        "lp", "lp-v1", "FIXTURE", now, e.margin_assessment_sha256_v2(margin)
+    )
+    lp = b.build_bybit_liquidation_assessment_v1(
+        calculation, inputs=bound, margin=margin, reference=lp_ref, now=now
+    )
+    events.append("lp-assembly")
+    assert events == [
+        "economic-calculation",
+        "owner-margin-completion",
+        "margin-assembly",
+        "additional-lp-work",
+        "owner-lp-completion",
+        "lp-assembly",
+    ]
+    assert margin.initial_margin_quote == D("46.66666667")
+    assert isinstance(lp.outcome, e.LiquidationPositiveRootV2)
+    assert lp.outcome.exact_price.numerator.as_tuple() == D(40000).as_tuple()
+    assert lp.outcome.exact_price.denominator.as_tuple() == D(597).as_tuple()
+    assert lp.outcome.consumed_tier_ids == ("1",)
+    assessment = r.assess_entry_v2(
+        bound.risk_inputs,
+        now=now,
+        stage="PLAN",
+        margin=margin,
+        liquidation=lp,
+        leverage_readback=None,
+    )
+    assert assessment.required_reservation_quote == D("48.66666667")
+    assert assessment.blockers == ("RISK_V2_LEVERAGE_READBACK_UNVERIFIED",)
+    assert assessment.liquidation_buffer_result == "GAP_SATISFIED"
+    assert not hasattr(calculation, "qualified") and not hasattr(lp, "qualified")
+
+
+def test_d_audit_now_preserves_economic_bound_hash() -> None:
+    bound = full_d_bound()
+    now = bound.preparation.sizing.assessed_at
+    first = d_success_calculation(bound, now=now)
+    later = d_success_calculation(bound, now=now + timedelta(microseconds=1))
+    assert first.exact_calculation_sha256 == later.exact_calculation_sha256
+
+
+@pytest.mark.parametrize("kind", ["held", "fee-document", "unused-z", "page"])
+def test_d_all_available_sources_precede_margin_completion(kind: str) -> None:
+    from dataclasses import is_dataclass
+
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, d_reprepare, full_d_graph
+
+    from multi_exchange_trader.execution import risk_v2_contracts as c
+    from multi_exchange_trader.market_data.instrument_catalog import build_instrument_catalog
+
+    graph = full_d_graph()
+    original_now = graph["now"]
+    later = original_now + timedelta(microseconds=1)
+    graph["now"] = original_now + timedelta(microseconds=2)
+
+    def move(value: Any) -> Any:
+        if type(value) is a.BybitModelSourceRefV1:
+            identifier = "held-Y" if kind == "held" else "page-XAAUSDT"
+            return (
+                replace(value, received_at=later)
+                if kind in ("held", "page") and value.observation_id == identifier
+                else value
+            )
+        if (
+            type(value) is RiskObservationRefV2
+            and kind == "page"
+            and value.observation_id == "table-XAAUSDT"
+        ):
+            return replace(value, received_at=later)
+        if type(value) is a.BybitFeeDocumentRefV1 and kind == "fee-document":
+            return replace(value, captured_at=later)
+        if type(value) is tuple:
+            return tuple(move(child) for child in value)
+        if is_dataclass(value) and not isinstance(value, type):
+            return replace(
+                value, **{field.name: move(getattr(value, field.name)) for field in fields(value)}
+            )
+        return value
+
+    if kind == "unused-z":
+        catalog = graph["catalog"]
+        z = catalog.observations[2]
+        z = replace(z, source=replace(z.source, received_at=later))
+        graph["catalog"] = build_instrument_catalog(
+            (*catalog.observations[:2], z),
+            declared_universe=catalog.declared_universe,
+            now=graph["now"],
+            max_age=catalog.max_age,
+        )
+    else:
+        graph["venue_fields"] = move(graph["venue_fields"])
+    if kind == "page":
+        graph = d_reprepare(graph, move(graph["inputs"]), members=move(graph["domain"].members))
+    bound = bind_d_graph(graph)
+    calc = d_success_calculation(bound, now=graph["now"])
+    ref = c.RiskComputationRefV2(
+        "margin", "margin-v1", "FIXTURE", original_now, calc.binding_sha256
+    )
+    with pytest.raises(RiskV2Rejected, match="CAUSAL_ORDER_INVALID"):
+        b.build_bybit_margin_assessment_v1(calc, inputs=bound, reference=ref, now=graph["now"])
+    margin = b.build_bybit_margin_assessment_v1(
+        calc, inputs=bound, reference=replace(ref, computed_at=later), now=graph["now"]
+    )
+    assert margin.reference.computed_at == later
+
+
+@pytest.mark.parametrize("child", ["unused-z", "selected-instrument"])
+def test_d_receipt_changes_cannot_reuse_old_bound_calculation(child: str) -> None:
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, full_d_graph
+
+    from multi_exchange_trader.execution.risk_v2_contracts import RiskComputationRefV2
+
+    first = full_d_bound()
+    now = first.preparation.sizing.assessed_at
+    calc = d_success_calculation(first, now=now)
+    changed = bind_d_graph(
+        full_d_graph(
+            **{
+                "unused_received" if child == "unused-z" else "selected_received": now
+                - timedelta(microseconds=1)
+            }
+        )
+    )
+    ref = RiskComputationRefV2("margin", "margin-v1", "FIXTURE", now, calc.binding_sha256)
+    with pytest.raises(RiskV2Rejected, match="SOURCE_MISMATCH"):
+        b.build_bybit_margin_assessment_v1(calc, inputs=changed, reference=ref, now=now)
+
+
+@pytest.mark.parametrize("target", ["hash", "prefix", "proof", "quantity", "shorter-expiry"])
+def test_d_complete_calculation_replay_rejects_coherent_hash_borrowing(target: str) -> None:
+    from multi_exchange_trader.execution.risk_v2_contracts import RiskComputationRefV2
+
+    bound = full_d_bound()
+    now = bound.preparation.sizing.assessed_at
+    calc = d_success_calculation(bound, now=now)
+    if target == "hash":
+        calc = forged(calc, exact_calculation_sha256="f" * 64)
+    elif target == "prefix":
+        search = forged(calc.search, evaluated_prefix=calc.search.evaluated_prefix[1:])
+        calc = forged(calc, search=search)
+    elif target == "proof":
+        selected = calc.search.selected
+        lp = forged(selected.liquidation, proof_sha256="f" * 64)
+        changed = forged(selected, liquidation=lp)
+        search = forged(
+            calc.search,
+            selected=changed,
+            evaluated_prefix=(*calc.search.evaluated_prefix[:-1], changed),
+        )
+        calc = forged(calc, search=search)
+        calc = forged(calc, exact_calculation_sha256=b.bybit_bound_calculation_sha256_v1(calc))
+    elif target == "quantity":
+        point = forged(bound.point, envelope=replace(bound.point.envelope, base_quantity=D(2)))
+        bound = forged(bound, point=point)
+    else:
+        bound = forged(bound, valid_until=now + timedelta(microseconds=1))
+    ref = RiskComputationRefV2("margin", "margin-v1", "FIXTURE", now, calc.binding_sha256)
+    with pytest.raises(RiskV2Rejected):
+        b.build_bybit_margin_assessment_v1(calc, inputs=bound, reference=ref, now=now)
+
+
+def test_d_no_root_full_bound_assembly_and_original_rejection_owner() -> None:
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, full_d_graph
+
+    from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+    from multi_exchange_trader.execution.risk_v2_contracts import RiskComputationRefV2
+
+    bound = bind_d_graph(full_d_graph(allocation="200"))
+    now = bound.preparation.sizing.assessed_at
+    calc = d_success_calculation(bound, now=now)
+    assert calc.search.selected.leverage == D(1)
+    margin = b.build_bybit_margin_assessment_v1(
+        calc,
+        inputs=bound,
+        reference=RiskComputationRefV2("margin", "margin-v1", "FIXTURE", now, calc.binding_sha256),
+        now=now,
+    )
+    lp = b.build_bybit_liquidation_assessment_v1(
+        calc,
+        inputs=bound,
+        margin=margin,
+        reference=RiskComputationRefV2(
+            "lp", "lp-v1", "FIXTURE", now, e.margin_assessment_sha256_v2(margin)
+        ),
+        now=now,
+    )
+    assert type(lp.outcome) is e.LiquidationNoPositiveRootV2
+    assert lp.outcome.model_input_sha256 == calc.model_input_sha256
+    assert lp.outcome.proof_sha256 == calc.search.selected.liquidation.proof_sha256
+    rejected_bound = bind_d_graph(full_d_graph(allocation="10"))
+    rejected = b.calculate_bound_bybit_model_v1(rejected_bound, now=now)
+    assert type(rejected) is b.BybitModelRejectedV1
+    assert rejected.public_code == "RISK_V2_LEVERAGE_UNSATISFIABLE"
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_LEVERAGE_UNSATISFIABLE$"):
+        b.build_bybit_margin_assessment_v1(
+            cast(Any, rejected), inputs=rejected_bound, reference=margin.reference, now=now
+        )
+
+
+def test_d_lp_completion_after_margin_and_exact_margin_reference() -> None:
+    from multi_exchange_trader.execution import linear_risk_evidence_v2 as e
+    from multi_exchange_trader.execution.risk_v2_contracts import RiskComputationRefV2
+
+    bound = full_d_bound()
+    now = bound.preparation.sizing.assessed_at
+    audit = now + timedelta(microseconds=2)
+    calc = d_success_calculation(bound, now=audit)
+    margin = b.build_bybit_margin_assessment_v1(
+        calc,
+        inputs=bound,
+        reference=RiskComputationRefV2(
+            "margin", "margin-v1", "FIXTURE", now + timedelta(microseconds=1), calc.binding_sha256
+        ),
+        now=audit,
+    )
+    ref = RiskComputationRefV2("lp", "lp-v1", "FIXTURE", now, e.margin_assessment_sha256_v2(margin))
+    with pytest.raises(RiskV2Rejected, match="CAUSAL_ORDER_INVALID"):
+        b.build_bybit_liquidation_assessment_v1(
+            calc, inputs=bound, margin=margin, reference=ref, now=audit
+        )
+    with pytest.raises(RiskV2Rejected, match="LIQUIDATION_UNVERIFIED"):
+        b.build_bybit_liquidation_assessment_v1(
+            calc,
+            inputs=bound,
+            margin=margin,
+            reference=replace(ref, computed_at=audit, input_sha256=calc.binding_sha256),
+            now=audit,
+        )
+    with pytest.raises(RiskV2Rejected, match="MARGIN_UNVERIFIED"):
+        b.build_bybit_liquidation_assessment_v1(
+            calc,
+            inputs=bound,
+            margin=replace(margin, initial_margin_quote=D("46.66666668")),
+            reference=replace(ref, computed_at=audit),
+            now=audit,
+        )
+
+
+def test_d_full_table_lp_and_independent_bound_digest_recipe() -> None:
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, expected_hash, full_d_graph
+
+    bound = bind_d_graph(full_d_graph(two_rows=True))
+    calc = d_success_calculation(bound, now=bound.preparation.sizing.assessed_at)
+    assert calc.search.selected.liquidation.consumed_tier_ids == ("1", "2")
+    assert len(calc.search.selected.liquidation.rows) == 2
+    payload: dict[str, object] = {
+        "model_input_sha256": calc.model_input_sha256,
+        "point_input_sha256": calc.point_input_sha256,
+        "binding_sha256": calc.binding_sha256,
+        "risk_domain_sha256": calc.risk_domain_sha256,
+        "requirements_sha256": calc.requirements_sha256,
+        "search": b.bybit_leverage_search_sha256_v1(calc.search),
+        "valid_until": "2026-11-03T00:00:01.000000+00:00",
+    }
+    assert b.bybit_bound_calculation_sha256_v1(calc) == expected_hash(
+        "BybitBoundModelCalculationV1", payload
+    )
+
+
+def test_d_actual_local_selector_rejected_is_preserved_unchanged() -> None:
+    from test_bybit_linear_model_inputs_v1 import bind_d_graph, full_d_graph
+
+    bound = bind_d_graph(full_d_graph(short=True, risk_upper="150"))
+    now = bound.preparation.sizing.assessed_at
+    direct = b.select_smallest_bybit_leverage_v1(bound.point, now=now)
+    result = b.calculate_bound_bybit_model_v1(bound, now=now)
+    assert type(result) is b.BybitModelRejectedV1
+    assert result == direct
+    assert result.reason == "ROOT_OUTSIDE_CAPTURED_TABLE"
+    assert result.public_code == "RISK_V2_LIQUIDATION_UNVERIFIED"
+    assert result.evaluated_prefix == ()
