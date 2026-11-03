@@ -590,7 +590,7 @@ def test_actual_fourth_ci_gate_requires_individual_zero_counters(tmp_path: Any,
     text = workflow.read_text(encoding='utf-8')
     block = text.split('      - name: Require all eight exact fixed limit native contracts\n', 1)[1].split(
         '      - name: Preserve separate native qualification receipts\n', 1)[0]
-    body = block.split("          .venv/bin/python - <<'PY'\n", 1)[1].rsplit('          PY\n', 1)[0]
+    body = block.split("          .venv/bin/python - <<'PY'\n", 1)[1].split('          PY\n', 1)[0]
     code = '\n'.join(line[10:] for line in body.splitlines()) + '\n'
     names = ['test_actual_limit_ioc_factory', 'test_exact_base_quantity_and_price',
         'test_ioc_and_order_kind_revalidation', 'test_no_bbo_or_post_only_override',
