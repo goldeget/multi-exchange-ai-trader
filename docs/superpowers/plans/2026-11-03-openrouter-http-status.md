@@ -165,5 +165,3 @@ No worker/factory/operator/UI/workflow changes are expected: the worker consumes
 ## Self-review result
 
 The original two tasks cover status preservation; Task3 explicitly extends the design for the latest Haiku-only minimum-test request. Task 2 consumes the exact Task 1 field/helper; no public calling signature is reordered. Constructor migration, initial positional INSERT, settled/overrun writes, status readback and local pending-charge repair are explicitly covered. No product implementation, test execution, Git operation or provider operation was performed by this draft.
-
-
