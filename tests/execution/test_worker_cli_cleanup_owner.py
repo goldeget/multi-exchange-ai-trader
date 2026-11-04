@@ -162,4 +162,3 @@ async def test_failed_startup_cleanup_cannot_publish_a_stopped_worker(
     finally:
         original_cleanup()
         await h.session.aclose()
-
