@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 
+from ..trading_product import TradingProduct, bybit_category
 from .bybit_readonly import BybitBlocked, BybitReadError, BybitReadOnlyClient
 from .config import (
     EnvironmentName,
@@ -120,7 +121,9 @@ def blank_view(
     environment: EnvironmentName | None,
     *,
     live_trading: bool,
+    product: TradingProduct = "LINEAR",
 ) -> AccountView:
+    bybit_category(product)
     connection = _connection(code)
     message = _message(code)
     if live_trading and connection == "ok":
@@ -130,6 +133,7 @@ def blank_view(
         상태코드=connection,
         환경=_ENVIRONMENT_LABELS.get(environment or "", "확인 필요"),
         환경코드=environment,
+        거래상품=product,
         구분=_distinctions(environment),
         실거래켜짐=live_trading,
         메시지=message,
@@ -312,7 +316,7 @@ def _position(row: dict[str, object]) -> PositionItem | None:
     )
 
 
-def _order(row: dict[str, object]) -> OrderItem:
+def _order(row: dict[str, object], *, product: TradingProduct = "LINEAR") -> OrderItem:
     order_type = _label(row.get("orderType"), {"Limit": "지정가", "Market": "시장가"})
     price = _decimal(row.get("price"))
     if order_type == "시장가" and price is not None and _is_zero(price):
@@ -333,6 +337,9 @@ def _order(row: dict[str, object]) -> OrderItem:
         가격=price,
         상태=_label(row.get("orderStatus"), {"New": "미체결", "PartiallyFilled": "일부 체결"}),
         줄이기만=reduce_label,
+        수량기준=("baseCoin" if row.get("marketUnit") == "baseCoin"
+                else "quoteCoin" if row.get("marketUnit") == "quoteCoin" else "unknown")
+                if product == "SPOT" else None,
     )
 
 
@@ -360,13 +367,15 @@ async def build_account_view(
     *,
     live_trading: bool | None = None,
     deadline_at: float | None = None,
+    product: TradingProduct = "LINEAR",
 ) -> AccountView:
+    bybit_category(product)
     trading = live_trading_enabled() if live_trading is None else live_trading
     if client is None:
         code = problem or "missing_credentials"
         if code not in {"missing_credentials", "config"}:
             code = "missing_credentials"
-        return blank_view(code, _environment(), live_trading=trading)
+        return blank_view(code, _environment(), live_trading=trading, product=product)
     started = datetime.now(UTC)
     deadline = time.monotonic() + VIEW_DEADLINE_SECONDS if deadline_at is None else deadline_at
     try:
@@ -376,12 +385,14 @@ async def build_account_view(
         if public_ms is None:
             raise BybitReadError("invalid_json")
         client.anchor_server_time(public_ms)
-        instrument, _ignored = await client.read(
-            "/v5/market/instruments-info",
-            [("category", "linear"), ("symbol", "BTCUSDT")],
-            signed=False,
-            deadline=deadline,
-        )
+        instrument = None
+        if product == "LINEAR":
+            instrument, _ignored = await client.read(
+                "/v5/market/instruments-info",
+                [("category", "linear"), ("symbol", "BTCUSDT")],
+                signed=False,
+                deadline=deadline,
+            )
         wallet, wallet_ms = await client.read(
             "/v5/account/wallet-balance",
             [("accountType", "UNIFIED")],
@@ -392,16 +403,23 @@ async def build_account_view(
             "/v5/account/info", [], signed=True, deadline=deadline
         )
         observed_ms = _read_age_ms(wallet_ms, public_ms)
-        positions = await client.read_pages(
-            "/v5/position/list",
-            [("category", "linear"), ("settleCoin", "USDT")],
-            deadline=deadline,
-        )
-        orders = await client.read_pages(
-            "/v5/order/realtime",
-            [("category", "linear"), ("settleCoin", "USDT")],
-            deadline=deadline,
-        )
+        positions: list[dict[str, object]] = []
+        if product == "LINEAR":
+            positions = await client.read_pages(
+                "/v5/position/list",
+                [("category", "linear"), ("settleCoin", "USDT")],
+                deadline=deadline,
+            )
+            orders = await client.read_pages(
+                "/v5/order/realtime",
+                [("category", "linear"), ("settleCoin", "USDT")],
+                deadline=deadline,
+            )
+        else:
+            orders = await client.read_pages(
+                "/v5/order/realtime", [("category", "spot"), ("openOnly", "0")],
+                deadline=deadline, expected_category="spot",
+            )
         received = datetime.now(UTC)
         margin, account_updated = _account_fields(account)
         parsed_positions: list[PositionItem] = []
@@ -415,14 +433,16 @@ async def build_account_view(
             상태코드="ok",
             환경=_ENVIRONMENT_LABELS[client.environment],
             환경코드=client.environment,
+            거래상품=product,
             구분=_distinctions(client.environment),
             실거래켜짐=trading,
             메시지=_success_message(trading),
             서버시각=_format_time(public_ms),
-            최대레버리지=_leverage(instrument),
+            최대레버리지=_leverage(instrument) if instrument is not None else None,
             잔고=_wallet(wallet),
             포지션=parsed_positions,
-            미체결주문=[_order(row) for row in orders],
+            미체결주문=[_order(row, product="SPOT").model_copy(update={"줄이기만": "현물에는 적용 안 함"})
+                        if product == "SPOT" else _order(row) for row in orders],
             오류코드=None,
             계좌마진모드=margin,
             수집시작시각=_iso(started),
@@ -434,8 +454,8 @@ async def build_account_view(
             주문판단에사용=False,
         )
     except BybitBlocked:
-        return blank_view("BLOCKED", client.environment, live_trading=trading)
+        return blank_view("BLOCKED", client.environment, live_trading=trading, product=product)
     except BybitReadError as exc:
-        return blank_view(exc.code, client.environment, live_trading=trading)
+        return blank_view(exc.code, client.environment, live_trading=trading, product=product)
     except Exception:  # noqa: BLE001 - never return exception text; it can contain a credential
-        return blank_view("unexpected", client.environment, live_trading=trading)
+        return blank_view("unexpected", client.environment, live_trading=trading, product=product)

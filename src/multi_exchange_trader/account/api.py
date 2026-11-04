@@ -11,6 +11,7 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ..public_dashboard_origin import PublicDashboardOrigin, dashboard_headers_allowed
+from ..trading_product import TradingProduct, bybit_category
 from .bybit_readonly import BybitReadOnlyClient
 from .config import live_trading_enabled
 from .freshness import CACHE_TTL_SECONDS, freshness_label
@@ -112,16 +113,18 @@ class AccountReadGate:
             return _decorate(view, age=0, cache_hit=False, shared=shared)
 
 
-async def account_view(request: Request) -> AccountView:
-    gate = getattr(request.app.state, "account_read_gate", None)
+async def account_view(request: Request, *, product: TradingProduct = "LINEAR") -> AccountView:
+    bybit_category(product)
+    gate_name = "account_read_gate" if product == "LINEAR" else "spot_account_read_gate"
+    gate = getattr(request.app.state, gate_name, None)
     if not isinstance(gate, AccountReadGate):
         gate = AccountReadGate(cache_ttl_seconds())
-        request.app.state.account_read_gate = gate
+        setattr(request.app.state, gate_name, gate)
 
     async def load() -> AccountView:
         client = _client(request)
         problem = None if client is not None else _problem(request)
-        view = await build_account_view(client, problem, live_trading=live_trading_enabled())
+        view = await build_account_view(client, problem, live_trading=live_trading_enabled(), product=product)
         return publish(view, credential_check=client._contains_credential if client else None)
 
     return await gate.get(load)
@@ -155,6 +158,7 @@ def refuse_mutation(_request: Request) -> JSONResponse:
 
 def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None = None) -> None:
     application.state.account_read_gate = AccountReadGate(cache_ttl_seconds())
+    application.state.spot_account_read_gate = AccountReadGate(cache_ttl_seconds())
     router = APIRouter(prefix="/api/v1/account/bybit")
 
     @application.middleware("http")
@@ -177,8 +181,8 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
         return await call_next(request)
 
     @router.get("/view", response_model=AccountView)
-    async def view(request: Request) -> AccountView:
-        return await account_view(request)
+    async def view(request: Request, product: TradingProduct = "LINEAR") -> AccountView:
+        return await account_view(request, product=product)
 
     @router.post("/orders")
     async def orders(request: Request) -> JSONResponse:

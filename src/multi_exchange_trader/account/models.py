@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from ..trading_product import TradingProduct
 from .config import EnvironmentName
 from .freshness import STALE_AFTER_SECONDS, UNUSABLE_AFTER_SECONDS
 
@@ -68,6 +69,7 @@ class OrderItem(BaseModel):
     가격: str | None
     상태: str
     줄이기만: str
+    수량기준: Literal["baseCoin", "quoteCoin", "unknown"] | None = None
 
 
 class AccountView(BaseModel):
@@ -77,6 +79,7 @@ class AccountView(BaseModel):
     상태코드: Connection
     환경: str
     환경코드: EnvironmentName | None
+    거래상품: TradingProduct = "LINEAR"
     구분: list[str]
     페이퍼: Literal[False] = False
     실거래켜짐: bool

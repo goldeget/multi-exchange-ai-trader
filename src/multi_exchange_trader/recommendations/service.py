@@ -324,10 +324,20 @@ class RecommendationService:
 
     async def _plan(self, exchange: str, symbol: str, market_type: str) -> Plan:
         try:
-            candles = await self.market.get_candles(
-                exchange, symbol, cast_market(market_type), INTERVAL, CANDLE_LIMIT
-            )
+            if exchange == "bybit" and market_type == "perpetual":
+                snapshot = await self.market.get_closed_snapshot(
+                    exchange, symbol, "perpetual", INTERVAL, CANDLE_LIMIT,
+                    path=self.book.path.with_name(self.book.path.stem + "-market.sqlite3"),
+                    clock=self.now)
+                candles = list(snapshot.candles)
+            else:
+                candles = await self.market.get_candles(
+                    exchange, symbol, cast_market(market_type), INTERVAL, CANDLE_LIMIT
+                )
         except MarketDataUnavailable as exc:
+            if exc.reason in {"closed_bar_conflict", "closed_bar_gap", "closed_bar_regression",
+                    "closed_bar_future", "closed_bar_unclosed", "closed_bar_alignment", "closed_bar_duplicate"}:
+                raise Refusal("시세가 바뀌었거나 봉이 이어지지 않습니다. 주문은 넣지 않았습니다.", 409) from None
             if exc.reason == "geographic_restriction":
                 raise Refusal(
                     "이 지역에서 시세 연결이 막혔습니다. 우회하지 않았습니다. 주문은 없습니다.",
