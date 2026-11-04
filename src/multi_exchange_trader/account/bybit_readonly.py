@@ -474,6 +474,66 @@ def _account_info_wire(request: httpx.Request) -> _RiskWire:
     return url, headers, method, reference, headers._encoding, tuple(packed)
 
 
+_PrivateAccountEndpointV1 = Literal["INFO", "WALLET", "FEE", "SETTINGS"]
+
+
+def _private_account_spec_v1(
+    endpoint: _PrivateAccountEndpointV1, symbol: str | None = None,
+) -> tuple[str, tuple[tuple[str, str], ...]]:
+    if type(endpoint) is not str:
+        _account_info_fail()
+    if endpoint == "FEE":
+        if (type(symbol) is not str or not 2 <= len(symbol) <= 48
+                or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for c in symbol)):
+            _account_info_fail()
+        return "/v5/account/fee-rate", (("category", "linear"), ("symbol", symbol))
+    if symbol is not None:
+        _account_info_fail()
+    if endpoint == "INFO":
+        return "/v5/account/info", ()
+    if endpoint == "WALLET":
+        return "/v5/account/wallet-balance", (("accountType", "UNIFIED"),)
+    if endpoint == "SETTINGS":
+        return "/v5/account/user-setting-config", ()
+    _account_info_fail()
+
+
+def _private_account_query_v1(
+    endpoint: _PrivateAccountEndpointV1, query: tuple[tuple[str, str], ...],
+) -> str:
+    if type(query) is not tuple or len(query) > 2:
+        _account_info_fail()
+    for pair in query:
+        if (type(pair) is not tuple or len(pair) != 2
+                or any(type(leaf) is not str for leaf in pair)):
+            _account_info_fail()
+    symbol = query[1][1] if endpoint == "FEE" and len(query) == 2 else None
+    path, expected = _private_account_spec_v1(endpoint, symbol)
+    if query != expected:
+        _account_info_fail()
+    return path
+
+
+def _private_account_endpoint_v1(
+    path: str, query: tuple[tuple[str, str], ...],
+) -> _PrivateAccountEndpointV1:
+    if type(path) is not str:
+        _account_info_fail()
+    endpoint: _PrivateAccountEndpointV1
+    if path == "/v5/account/info":
+        endpoint = "INFO"
+    elif path == "/v5/account/wallet-balance":
+        endpoint = "WALLET"
+    elif path == "/v5/account/fee-rate":
+        endpoint = "FEE"
+    elif path == "/v5/account/user-setting-config":
+        endpoint = "SETTINGS"
+    else:
+        _account_info_fail()
+    _private_account_query_v1(endpoint, query)
+    return endpoint
+
+
 @dataclass(frozen=True, repr=False)
 class _AccountInfoCaptureV1:
     owner: "BybitReadOnlyClient"
@@ -508,24 +568,30 @@ class _AccountInfoCaptureV1:
     receipt: "_ReceiptBudget"
     operation_deadline: float
     receipt_deadline: float
+    endpoint: _PrivateAccountEndpointV1 = "INFO"
+    path: str = "/v5/account/info"
+    query: tuple[tuple[str, str], ...] = ()
 
 
 def _account_info_capture_data_v1(value: _AccountInfoCaptureV1) -> tuple[object, ...]:
     """Bounded closed data only: no callback, import, clock, hash or JSON work."""
     if type(value) is not _AccountInfoCaptureV1:
         _account_info_fail()
-    if (type(value.owner) is not BybitReadOnlyClient
-            or value.owner._account_info_self is not value.owner
-            or value.owner._account_info_generation is not value.generation
+    if type(value.owner) is not BybitReadOnlyClient:
+        _account_info_fail()
+    generation, generation_text, source_id = value.owner._private_account_state_v1(value.endpoint)
+    if (type(value.path) is not str
+            or value.path != _private_account_query_v1(value.endpoint, value.query)):
+        _account_info_fail()
+    if (value.owner._account_info_self is not value.owner
+            or generation is not value.generation
             or value.owner._client is not value.http_client
             or type(value.http_client) is not httpx.AsyncClient
             or type(value.http_client._state) is not ClientState
             or value.http_client._state not in (ClientState.UNOPENED, ClientState.OPENED)
             or type(value.source_id) is not str or type(value.source_generation) is not str
-            or type(value.owner._account_info_source_id) is not str
-            or type(value.owner._account_info_generation_text) is not str
-            or value.owner._account_info_source_id != value.source_id
-            or value.owner._account_info_generation_text != value.source_generation
+            or type(source_id) is not str or type(generation_text) is not str
+            or source_id != value.source_id or generation_text != value.source_generation
             or type(value.request) is not httpx.Request
             or type(value.response) is not httpx.Response
             or value.response.request is not value.request
@@ -574,7 +640,7 @@ def _account_info_capture_data_v1(value: _AccountInfoCaptureV1) -> tuple[object,
             value.envelope_time_ms, value.accepted_attempt, value.source_id,
             value.source_generation, value.observation_id, value.logical_ordinal,
             value.physical_start, value.physical_end, value.operation_deadline,
-            value.receipt_deadline)
+            value.receipt_deadline, value.endpoint, value.path, value.query)
 
 
 def _account_info_capture_preimage(value: _AccountInfoCaptureV1) -> tuple[object, ...]:
@@ -635,21 +701,26 @@ class _AccountInfoRoute:
     receipt_deadline: float = 0.0
     wire_attempt: int = -1
     last_mono: float = 0.0
+    endpoint: _PrivateAccountEndpointV1 = "INFO"
+    path: str = "/v5/account/info"
+    query: tuple[tuple[str, str], ...] = ()
 
     def _current(self) -> None:
         from ..execution.monitoring_budget import _ReceiptBudget
 
-        if (self.retired or type(self.owner) is not BybitReadOnlyClient
-                or self.owner._account_info_self is not self.owner
+        if type(self.owner) is not BybitReadOnlyClient:
+            _account_info_fail()
+        generation, generation_text, source_id = self.owner._private_account_state_v1(self.endpoint)
+        if self.path != _private_account_query_v1(self.endpoint, self.query):
+            _account_info_fail()
+        if (self.retired or self.owner._account_info_self is not self.owner
                 or self.owner._account_info_pending is not self
-                or self.owner._account_info_generation is not self.generation
+                or generation is not self.generation
                 or self.owner._client is not self.client or type(self.client) is not httpx.AsyncClient
                 or type(self.client._state) is not ClientState
                 or self.client._state not in (ClientState.UNOPENED, ClientState.OPENED)
-                or type(self.owner._account_info_source_id) is not str
-                or type(self.owner._account_info_generation_text) is not str
-                or self.owner._account_info_source_id != self.source_id
-                or self.owner._account_info_generation_text != self.source_generation
+                or type(source_id) is not str or type(generation_text) is not str
+                or source_id != self.source_id or generation_text != self.source_generation
                 or self.owner.environment != "demo" or self.owner.base_url != allowed_host("demo")
                 or self.owner._injected_transport is not False):
             _account_info_fail()
@@ -684,13 +755,17 @@ class _AccountInfoRoute:
         self.raw_body = None
 
     def request_origin(self, request: httpx.Request) -> HttpsOrigin:
+        if self.path != _private_account_query_v1(self.endpoint, self.query):
+            _account_info_fail()
+        expected_query = _query(list(self.query))
+        expected_raw = self.path.encode("ascii") + (b"?" + expected_query.encode("ascii") if expected_query else b"")
         wire = _account_info_wire(request)
         reference = wire[3]
         if (wire[2] != "GET" or reference.scheme != "https"
                 or reference.host != "api-demo.bybit.com" or reference.userinfo
-                or reference.path != "/v5/account/info" or reference.query not in (None, "")
+                or reference.path != self.path or (reference.query or "") != expected_query
                 or reference.fragment not in (None, "")
-                or request.url.raw_path != b"/v5/account/info"
+                or request.url.raw_path != expected_raw
                 or request.headers.get_list("accept-encoding") != ["identity"]
                 or request.headers.get_list("x-bapi-api-key") != [self.owner._api_key]
                 or request.headers.get_list("x-bapi-recv-window") != [RECV_WINDOW]):
@@ -698,7 +773,7 @@ class _AccountInfoRoute:
         timestamps = request.headers.get_list("x-bapi-timestamp")
         if (len(timestamps) != 1 or not timestamps[0].isascii() or not timestamps[0].isdigit()
                 or request.headers.get_list("x-bapi-sign") != [sign_v5(
-                    self.owner._api_secret, self.owner._api_key, timestamps[0], RECV_WINDOW, "")]):
+                    self.owner._api_secret, self.owner._api_key, timestamps[0], RECV_WINDOW, expected_query)]):
             _account_info_fail()
         return HttpsOrigin("https", "api-demo.bybit.com", 443)
 
@@ -809,6 +884,43 @@ class BybitReadOnlyClient:
         self._account_info_generation_text = uuid4().hex
         self._account_info_source_id = uuid4().hex
         self._account_info_pending = None
+        self._account_wallet_generation, self._account_wallet_generation_text = object(), uuid4().hex
+        self._account_wallet_source_id = uuid4().hex
+        self._account_fee_generation, self._account_fee_generation_text = object(), uuid4().hex
+        self._account_fee_source_id = uuid4().hex
+        self._account_settings_generation, self._account_settings_generation_text = object(), uuid4().hex
+        self._account_settings_source_id = uuid4().hex
+
+    def _private_account_state_v1(self, endpoint: _PrivateAccountEndpointV1) -> tuple[object, str, str]:
+        if type(endpoint) is not str:
+            _account_info_fail()
+        if endpoint == "INFO":
+            return self._account_info_generation, self._account_info_generation_text, self._account_info_source_id
+        if endpoint == "WALLET":
+            return self._account_wallet_generation, self._account_wallet_generation_text, self._account_wallet_source_id
+        if endpoint == "FEE":
+            return self._account_fee_generation, self._account_fee_generation_text, self._account_fee_source_id
+        if endpoint == "SETTINGS":
+            return self._account_settings_generation, self._account_settings_generation_text, self._account_settings_source_id
+        _account_info_fail()
+
+    def _retire_private_account_v1(self, endpoint: _PrivateAccountEndpointV1) -> None:
+        if endpoint == "INFO":
+            self._retire_account_info_v1()
+        elif endpoint == "WALLET":
+            self._account_wallet_generation, self._account_wallet_generation_text = object(), uuid4().hex
+        elif endpoint == "FEE":
+            self._account_fee_generation, self._account_fee_generation_text = object(), uuid4().hex
+        elif endpoint == "SETTINGS":
+            self._account_settings_generation, self._account_settings_generation_text = object(), uuid4().hex
+        else:
+            _account_info_fail()
+        if self._account_info_pending is not None and self._account_info_pending.endpoint == endpoint:
+            self._account_info_pending.retired = True
+
+    def _retire_private_accounts_v1(self) -> None:
+        for endpoint in ("INFO", "WALLET", "FEE", "SETTINGS"):
+            self._retire_private_account_v1(endpoint)
 
     def _retire_account_info_v1(self) -> None:
         self._account_info_generation = object()
@@ -820,22 +932,45 @@ class BybitReadOnlyClient:
         self, *, budget: "MonitoringReadBudget", group: "ReadGroupToken",
         owner_guard: Callable[[], None],
     ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("INFO", budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_account_wallet_v1(
+        self, *, budget: "MonitoringReadBudget", group: "ReadGroupToken", owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("WALLET", budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_account_fee_rate_v1(
+        self, *, symbol: str, budget: "MonitoringReadBudget", group: "ReadGroupToken", owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("FEE", symbol=symbol, budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_account_settings_v1(
+        self, *, budget: "MonitoringReadBudget", group: "ReadGroupToken", owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("SETTINGS", budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_private_account_v1(
+        self, endpoint: _PrivateAccountEndpointV1, *, symbol: str | None = None, budget: "MonitoringReadBudget", group: "ReadGroupToken",
+        owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
         from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
 
+        path, query = _private_account_spec_v1(endpoint, symbol)
         if type(self) is not BybitReadOnlyClient or self._account_info_self is not self:
             _account_info_fail()
         if self._account_info_pending is not None:
-            self._retire_account_info_v1()
+            self._retire_private_accounts_v1()
             _account_info_fail()
-        self._retire_account_info_v1()
+        self._retire_private_account_v1(endpoint)
+        generation, generation_text, source_id = self._private_account_state_v1(endpoint)
         if (type(budget) is not MonitoringReadBudget or type(group) is not ReadGroupToken
                 or not callable(owner_guard) or self.environment != "demo"
                 or self._injected_transport is not False):
             _account_info_fail()
         route = _AccountInfoRoute(self, self._client, budget, group,
-            self._account_info_generation, owner_guard, datetime.now(UTC), time.monotonic(),
-            budget.physical_attempts, self._account_info_source_id,
-            self._account_info_generation_text, uuid4().hex)
+            generation, owner_guard, datetime.now(UTC), time.monotonic(),
+            budget.physical_attempts, source_id, generation_text, uuid4().hex,
+            endpoint=endpoint, path=path, query=query)
         self._account_info_pending = route
         complete = False
         try:
@@ -848,7 +983,7 @@ class BybitReadOnlyClient:
                 route.operation_deadline = budget.deadline
                 route.receipt_deadline = route.receipt.deadline
                 route.check()
-                _result, stamp = await self._read("/v5/account/info", [], signed=True, route=route)
+                _result, stamp = await self._read(path, list(query), signed=True, route=route)
                 route.check()
                 if (route.request is None or route.response is None or route.wire is None
                         or route.sent_origin is None or route.response_origin is None
@@ -867,7 +1002,7 @@ class BybitReadOnlyClient:
                     route.observation_id, route.logical_ordinal, route.physical_start,
                     budget.physical_attempts, budget, group, route.operation_context,
                     route.receipt_context, route.receipt, route.operation_deadline,
-                    route.receipt_deadline)
+                    route.receipt_deadline, endpoint=endpoint, path=path, query=query)
                 _account_info_capture_preimage(capture)
                 route.check()
                 complete = True
@@ -877,7 +1012,7 @@ class BybitReadOnlyClient:
         finally:
             if self._account_info_pending is route:
                 if not complete:
-                    self._retire_account_info_v1()
+                    self._retire_private_account_v1(endpoint)
                 self._account_info_pending = None
         raise BybitReadError("account_info_capture_failed") from None
 
@@ -966,7 +1101,7 @@ class BybitReadOnlyClient:
         )
 
     async def aclose(self) -> None:
-        self._retire_account_info_v1()
+        self._retire_private_accounts_v1()
         if self._public_source_environment is not None:
             # Revoke in-flight raw risk reads before awaiting transport cleanup.
             self._risk_generation = None
@@ -1214,7 +1349,10 @@ class BybitReadOnlyClient:
         self, path: str, params: list[tuple[str, str]], *, signed: bool,
         deadline: float | None = None, route: _InstrumentRoute | _AccountInfoRoute | None = None,
     ) -> tuple[dict[str, object], int | None]:
-        if path not in READ_ONLY_PATHS:
+        if path not in READ_ONLY_PATHS and not (
+                type(route) is _AccountInfoRoute and route.owner is self
+                and route.endpoint == "SETTINGS" and path == "/v5/account/user-setting-config"
+                and type(params) is list and not params and signed is True):
             raise ReadOnlyViolation()
         operation = self._operation.get()
         if operation is not None:

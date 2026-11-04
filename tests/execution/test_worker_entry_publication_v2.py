@@ -568,7 +568,7 @@ async def test_final_original_binding_callback_cannot_install_changed_owner_valu
                 elif mutation == "scope-environment":
                     object.__setattr__(h.worker.scope, "environment", "LIVE")
                 elif mutation == "pair-reference":
-                    h.session._credential_pair = tuple(list(h.session._credential_pair))
+                    h.session._credential_pair = (pair[0], pair[1])
                 elif mutation == "client-environment":
                     h.session._client.environment = "testnet"
                 elif mutation == "client-base-url":
@@ -693,7 +693,7 @@ async def test_owner_guard_cannot_readopt_coherent_changed_binding_owners(
             changed = True
             if mutation == "client-pair":
                 owner._client = owner._credential_client = copy.copy(client)
-                owner._credential_pair = tuple(list(pair))
+                owner._credential_pair = (pair[0], pair[1])
             elif mutation == "credentials-pair":
                 owner._api_key = client._api_key = "CHANGED-KEY"
                 owner._api_secret = client._api_secret = "CHANGED-SECRET"
@@ -740,9 +740,9 @@ async def test_authenticate_await_cannot_readopt_changed_original_binding_owners
         await asyncio.wait_for(entered.wait(), 5)
         if mutation == "client-pair":
             owner._client = owner._credential_client = copy.copy(client)
-            owner._credential_pair = tuple(list(pair))
+            owner._credential_pair = (pair[0], pair[1])
         elif mutation == "pair":
-            owner._credential_pair = tuple(list(pair))
+            owner._credential_pair = (pair[0], pair[1])
         elif mutation == "http-client":
             client._client = copy.copy(http_client)
         else:
