@@ -381,6 +381,7 @@ class ExecutionWorker:
         """Explicit approved closed-bar signal; never stages or dispatches an order."""
         self._require_admission()
         self._retire_entry_publications_v2()
+        self._require_model_observation_not_stopped_v2()
         if (self._operations or self._staging or self._entry_publication_frame_v2 is not None
                 or self._entry_binding_refresh_v2 is not None):
             raise RuntimeBlocked("WORKER_STRATEGY_SIGNAL_OPERATION_IN_PROGRESS")
@@ -395,6 +396,11 @@ class ExecutionWorker:
     def consume_builtin_signal_v1(self, handle: WorkerStrategySignalV1) -> WorkerStrategySignalDataV1:
         """Consume the same current original signal data, never financial admission."""
         self._require_admission()
+        try:
+            self._require_model_observation_not_stopped_v2()
+        except BaseException:
+            self._retire_entry_publications_v2()
+            raise
         owner = self._strategy_signal_owner_v1
         if (type(owner) is not WorkerStrategySignalOwnerV1 or self._operations or self._staging
                 or self._entry_publication_frame_v2 is not None):

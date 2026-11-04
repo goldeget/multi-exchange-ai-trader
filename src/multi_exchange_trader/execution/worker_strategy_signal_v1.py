@@ -137,10 +137,26 @@ class WorkerStrategySignalOwnerV1:
         self._derive_code = self._derive.__code__
 
     def _roots(self) -> tuple[object, ...]:
+        import asyncio
+
         worker = self._worker
         session = worker.session
         identity = session._identity
+        phase = worker._model_observation_phase_v2
+        if phase is None:
+            phase_stop_event = phase_original_stop_event = None
+        else:
+            from .model_observation_phase_v2 import ModelObservationPhaseV2
+
+            if type(phase) is not ModelObservationPhaseV2:
+                _reject("MODEL_OBSERVATION_STOP_REQUESTED")
+            phase_stop_event = phase._stop_event
+            phase_original_stop_event = phase._original_stop_event_v2
+            if (type(phase_stop_event) is not asyncio.Event
+                    or type(phase_original_stop_event) is not asyncio.Event):
+                _reject("MODEL_OBSERVATION_STOP_REQUESTED")
         return (worker, worker._loop, worker.scope, worker.session, worker.binding, worker.policy_book,
+            phase, phase_stop_event, phase_original_stop_event,
             worker._journal, worker._store, worker._history_store, worker._runtime, worker._assembly,
             worker._lock, worker.clock, worker.directory, session._binding, identity,
             None if identity is None else identity.uid, None if identity is None else identity.observed_at,
@@ -153,6 +169,11 @@ class WorkerStrategySignalOwnerV1:
 
     def _closed_guard(self, token: object, epoch: object, roots: tuple[object, ...]) -> None:
         worker = self._worker
+        try:
+            worker._require_model_observation_not_stopped_v2()
+        except BaseException:
+            self.retire()
+            raise
         if (self._busy is not token or self._epoch is not epoch
                 or worker._strategy_signal_owner_v1 is not self
                 or self._book is not worker.policy_book or self._clock is not worker.clock
@@ -165,6 +186,11 @@ class WorkerStrategySignalOwnerV1:
 
     def _guard(self) -> None:
         worker = self._worker
+        try:
+            worker._require_model_observation_not_stopped_v2()
+        except BaseException:
+            self.retire()
+            raise
         worker._require_admission()
         worker.runtime._guard()
         worker.session.require_binding(worker.binding, scope=worker.scope)

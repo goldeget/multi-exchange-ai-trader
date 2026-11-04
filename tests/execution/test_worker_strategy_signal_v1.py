@@ -230,3 +230,179 @@ async def test_same_watermark_keeps_first_signal_time_and_retires_previous_handl
     with pytest.raises(ValueError):
         state.worker.consume_builtin_signal_v1(handle)
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+def model_phase_stop_context(worker: Any) -> Any:
+    """Bind the genuine negative cancellation owner; no native admission is fabricated."""
+    import asyncio
+
+    from multi_exchange_trader.execution.model_observation_phase_v2 import ModelObservationPhaseV2
+
+    stop = asyncio.Event()
+    phase = ModelObservationPhaseV2(worker)
+    phase._stop_event = phase._original_stop_event_v2 = stop
+    worker._model_observation_phase_v2 = phase
+    phase.require_not_stopped(worker)
+    return stop
+
+
+async def test_original_phase_stop_during_public_bar_await_rejects_signal(model_worker: Any) -> None:
+    import asyncio
+    from contextlib import suppress
+
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    scope = approved_fixture(state)
+    stop = model_phase_stop_context(state.worker)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class AwaitingBars(Bars):
+        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
+            rows = await super().get_candles(*_args, **_kwargs)
+            entered.set()
+            await release.wait()
+            return rows
+
+    source = AwaitingBars(state.fixture.clock())
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
+        scope=scope, market=MarketDataService({"bybit": source})))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert not task.done() and not state.worker._stopping
+        stop.set()
+        release.set()
+        with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    assert state.worker._strategy_signal_owner_v1._current is None
+    assert state.worker._operations == 0 and source.calls == 1
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_original_phase_stop_retires_previously_issued_signal(model_worker: Any) -> None:
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    stop = model_phase_stop_context(state.worker)
+    _scope, handle, _source = await captured(state)
+    assert not state.worker.consume_builtin_signal_v1(handle).financial_authority
+    stop.set()
+    assert not state.worker._stopping
+    with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
+        state.worker.consume_builtin_signal_v1(handle)
+    assert state.worker._strategy_signal_owner_v1._current is None
+    source = Bars(state.fixture.clock())
+    with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
+        await state.worker.capture_builtin_signal_v1(scope=_scope, market=MarketDataService({"bybit": source}))
+    assert source.calls == 0 and state.worker._strategy_signal_owner_v1._current is None
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_original_phase_stop_after_final_callback_rejects_signal_consume(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    stop = model_phase_stop_context(state.worker)
+    _scope, handle, _source = await captured(state)
+    owner = state.worker._strategy_signal_owner_v1
+    original_guard = owner._guard
+    calls = 0
+
+    def stop_after_final_original_guard() -> None:
+        nonlocal calls
+        original_guard()
+        calls += 1
+        if calls == 2:
+            stop.set()
+
+    monkeypatch.setattr(owner, "_guard", stop_after_final_original_guard)
+    with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
+        state.worker.consume_builtin_signal_v1(handle)
+    assert calls == 2 and owner._current is None
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_replaced_original_phase_during_public_bar_await_rejects_signal(model_worker: Any) -> None:
+    import asyncio
+    from contextlib import suppress
+
+    state = model_worker
+    scope = approved_fixture(state)
+    stop = model_phase_stop_context(state.worker)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class AwaitingBars(Bars):
+        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
+            rows = await super().get_candles(*_args, **_kwargs)
+            entered.set()
+            await release.wait()
+            return rows
+
+    source = AwaitingBars(state.fixture.clock())
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
+        scope=scope, market=MarketDataService({"bybit": source})))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        stop.set()
+        state.worker._model_observation_phase_v2 = None
+        release.set()
+        with pytest.raises(ValueError):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    assert state.worker._strategy_signal_owner_v1._current is None
+    assert source.calls == 1 and state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_rebound_original_phase_stop_event_during_public_bar_await_rejects_signal(
+    model_worker: Any,
+) -> None:
+    import asyncio
+    from contextlib import suppress
+
+    state = model_worker
+    scope = approved_fixture(state)
+    stop = model_phase_stop_context(state.worker)
+    phase = state.worker._model_observation_phase_v2
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class AwaitingBars(Bars):
+        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
+            rows = await super().get_candles(*_args, **_kwargs)
+            entered.set()
+            await release.wait()
+            return rows
+
+    source = AwaitingBars(state.fixture.clock())
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
+        scope=scope, market=MarketDataService({"bybit": source})))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        stop.set()
+        replacement = asyncio.Event()
+        phase._stop_event = phase._original_stop_event_v2 = replacement
+        release.set()
+        with pytest.raises(ValueError):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+    assert state.worker._strategy_signal_owner_v1._current is None
+    assert source.calls == 1 and state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
