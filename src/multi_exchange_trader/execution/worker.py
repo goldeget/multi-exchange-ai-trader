@@ -64,6 +64,10 @@ from .runtime_policy import RuntimePolicyBook
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback
 from .worker_entry_model_v2 import WorkerEntryModelOwnerV2, WorkerModelPlanV2
+from .worker_signal_risk_plan_v1 import (
+    WorkerSignalRiskPlanV1,
+    bind_worker_signal_risk_plan_v1,
+)
 from .worker_strategy_signal_v1 import (
     WorkerStrategySignalDataV1,
     WorkerStrategySignalOwnerV1,
@@ -234,6 +238,13 @@ class ExecutionWorker:
 
     def _retire_entry_publications_v2(self) -> None:
         """Withdraw local attempts; cleanup must never refuse because of this hook."""
+        self._retire_entry_model_plan_v2()
+        signal_owner = self._strategy_signal_owner_v1
+        if type(signal_owner) is WorkerStrategySignalOwnerV1:
+            WorkerStrategySignalOwnerV1.retire(signal_owner)
+
+    def _retire_entry_model_plan_v2(self) -> None:
+        """Withdraw model plans while preserving the independently checked signal."""
         self._entry_publication_generation_v2 = object()
         frame = self._entry_publication_frame_v2
         if frame is not None:
@@ -241,9 +252,6 @@ class ExecutionWorker:
         owner = self._entry_model_owner_v2
         if type(owner) is WorkerEntryModelOwnerV2:
             WorkerEntryModelOwnerV2.retire(owner)
-        signal_owner = self._strategy_signal_owner_v1
-        if type(signal_owner) is WorkerStrategySignalOwnerV1:
-            WorkerStrategySignalOwnerV1.retire(signal_owner)
 
     def _entry_publication_links_v2(self, *,
             fresh_binding: AuthenticatedAccountBinding | None = None) -> tuple[object, ...]:
@@ -458,6 +466,30 @@ class ExecutionWorker:
         with self._entry_publication_section_v2():
             yield owner.require(handle)
             owner.require(handle)
+
+    def consume_builtin_signal_risk_plan_v1(
+            self, signal_handle: WorkerStrategySignalV1, plan_handle: WorkerModelPlanV2,
+    ) -> WorkerSignalRiskPlanV1:
+        """Bind one current accepted signal to one current Bybit DEMO LINEAR PLAN.
+
+        This returns an expiring evaluation snapshot only. It does not stage an
+        entry, mutate the journal, claim J, or call the native execution path.
+        """
+        try:
+            self._require_admission()
+            signal = self.consume_builtin_signal_v1(signal_handle)
+            with self.entry_model_publication_v2(plan_handle) as prepared:
+                result = bind_worker_signal_risk_plan_v1(signal, prepared, now=self.clock())
+            if self.consume_builtin_signal_v1(signal_handle) is not signal:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_SIGNAL_REPLACED")
+            if contracts_v2._utc_v2(self.clock()) >= result.valid_until:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_EXPIRED")
+            return result
+        except BaseException:
+            # A failed joint check must not leave a model handle independently
+            # reusable after the signal that was supposed to qualify it failed.
+            self._retire_entry_publications_v2()
+            raise
 
     async def _refresh_binding_v2(self, *, expected_uid: str, expected_parent_uid: str,
                                   expected_is_master: bool) -> None:
