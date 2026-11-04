@@ -11,7 +11,7 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import pairwise
 from math import gcd
-from typing import Literal, cast
+from typing import Any, ClassVar, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
@@ -1609,6 +1609,69 @@ def bybit_point_input_sha256_v1(value: BybitLinearPointInputV1) -> str:
     return _canonical_sha256_v2("BybitLinearPointInputV1", _point_payload_v1(value))
 
 
+class _BybitModeSourceV1(Protocol):
+    @property
+    def source(self) -> BybitModelSourceRefV1: ...
+
+class _BybitVenueDataV1(Protocol):
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+    @property
+    def account_mode(self) -> _BybitModeSourceV1: ...
+
+    @property
+    def flat_leverage(self) -> BybitFlatLeverageV1: ...
+
+    @property
+    def fee(self) -> BybitLinearFeeInputsV1: ...
+
+    @property
+    def wallet(self) -> BybitUsdtWalletV1: ...
+
+    @property
+    def held_positions(self) -> tuple[BybitHeldPositionV1, ...]: ...
+
+    @property
+    def held_orders(self) -> tuple[BybitHeldOrderV1, ...]: ...
+
+    @property
+    def tier_tables(self) -> tuple[BybitLinearTierTableV1, ...]: ...
+
+    @property
+    def selected_profile(self) -> BybitSelectedEntryProfileV1: ...
+
+    @property
+    def source_records(self) -> tuple[BybitModelSourceRefV1, ...]: ...
+
+    @property
+    def valid_until(self) -> datetime: ...
+
+class _BybitModelDataV1(Protocol):
+    @property
+    def risk_inputs(self) -> e.LinearRiskInputsV2: ...
+
+    @property
+    def preparation(self) -> e.LinearEntryPreparationV2: ...
+
+    @property
+    def domain(self) -> d.LinearRiskDomainCoverageV2: ...
+
+    @property
+    def venue(self) -> _BybitVenueDataV1: ...
+
+    @property
+    def point(self) -> BybitLinearPointInputV1: ...
+
+    @property
+    def catalog(self) -> InstrumentCatalog: ...
+
+    @property
+    def valid_until(self) -> datetime: ...
+
+    @property
+    def model_rule_revision(self) -> str: ...
+
+
 @dataclass(frozen=True)
 class BybitVenueStateV1:
     account_mode: BybitUtaModeV1
@@ -1628,8 +1691,12 @@ class BybitVenueStateV1:
 
 def _venue_payload_v1(value: BybitVenueStateV1) -> dict[str, object]:
     _fields_v2(value, BybitVenueStateV1)
+    return _venue_economic_payload_v1(value, mode_hash=bybit_uta_mode_sha256_v1(value.account_mode))
+
+
+def _venue_economic_payload_v1(value: _BybitVenueDataV1, *, mode_hash: str) -> dict[str, object]:
     payload: dict[str, object] = {
-        "account_mode": bybit_uta_mode_sha256_v1(value.account_mode),
+        "account_mode": mode_hash,
         "flat_leverage": bybit_flat_leverage_sha256_v1(value.flat_leverage),
         "fee": bybit_fee_inputs_sha256_v1(value.fee),
         "wallet": bybit_wallet_sha256_v1(value.wallet),
@@ -1780,7 +1847,7 @@ def _economic_preparation_v1(value: e.LinearEntryPreparationV2) -> dict[str, obj
 def _model_expiry_v1(
     inputs: e.LinearRiskInputsV2,
     preparation: e.LinearEntryPreparationV2,
-    venue: BybitVenueStateV1,
+    venue: _BybitVenueDataV1,
     catalog: InstrumentCatalog,
 ) -> datetime:
     return min(
@@ -1801,7 +1868,7 @@ def _model_expiry_v1(
 def _project_point_v1(
     inputs: e.LinearRiskInputsV2,
     preparation: e.LinearEntryPreparationV2,
-    venue: BybitVenueStateV1,
+    venue: _BybitVenueDataV1,
     selected_mark: BybitDecimalFieldV1,
     expiry: datetime,
 ) -> BybitLinearPointInputV1:
@@ -1844,14 +1911,19 @@ def _project_point_v1(
 
 def _model_payload_v1(value: BybitLinearModelInputsV1) -> dict[str, object]:
     _fields_v2(value, BybitLinearModelInputsV1)
+    return _model_economic_payload_v1(value, venue_hash=bybit_venue_state_sha256_v1(value.venue),
+        model_rule_revision="BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1")
+
+
+def _model_economic_payload_v1(value: _BybitModelDataV1, *, venue_hash: str, model_rule_revision: str) -> dict[str, object]:
     e._inputs_payload_v2(value.risk_inputs)
     e._preparation_payload_v2(value.preparation)
     domain_hash = d.risk_domain_sha256_v2(value.domain)
-    venue_hash = bybit_venue_state_sha256_v1(value.venue)
+    _digest_v2(venue_hash)
     point_hash = bybit_point_input_sha256_v1(value.point)
     catalog_hash = _catalog_input_sha256_v1(value.catalog)
     expiry = _utc_v2(value.valid_until)
-    _literal_v2(value.model_rule_revision, ("BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",))
+    _literal_v2(value.model_rule_revision, (model_rule_revision,))
     if (
         domain_hash != value.risk_inputs.risk_domain_sha256
         or domain_hash != value.preparation.binding.risk_domain_sha256
@@ -1880,7 +1952,7 @@ def bybit_model_inputs_sha256_v1(value: BybitLinearModelInputsV1) -> str:
     return _canonical_sha256_v2("BybitLinearModelInputsV1", _model_payload_v1(value))
 
 
-def _venue_sources_v1(venue: BybitVenueStateV1) -> tuple[BybitModelSourceRefV1, ...]:
+def _venue_sources_v1(venue: _BybitVenueDataV1) -> tuple[BybitModelSourceRefV1, ...]:
     sources = (
         venue.account_mode.source,
         venue.flat_leverage.source,
@@ -1902,7 +1974,7 @@ def _venue_sources_v1(venue: BybitVenueStateV1) -> tuple[BybitModelSourceRefV1, 
 def _venue_links_v1(
     inputs: e.LinearRiskInputsV2,
     domain: d.LinearRiskDomainCoverageV2,
-    venue: BybitVenueStateV1,
+    venue: _BybitVenueDataV1,
     catalog: InstrumentCatalog,
     selected_mark: BybitDecimalFieldV1,
     *,
@@ -2168,6 +2240,30 @@ def bind_bybit_model_inputs_v1(
     _catalog_input_sha256_v1(catalog)
     _decimal_field_v1(selected_mark)
     now = _utc_v2(now)
+    actual, expiry, point = _bind_bybit_model_economics_v1(inputs, preparation=preparation, domain=domain,
+        venue=venue, catalog=catalog, selected_mark=selected_mark, now=now)
+    return BybitLinearModelInputsV1(
+        inputs,
+        actual,
+        domain,
+        venue,
+        point,
+        catalog,
+        expiry,
+        "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
+    )
+
+
+def _bind_bybit_model_economics_v1(
+    inputs: e.LinearRiskInputsV2,
+    *,
+    preparation: e.LinearEntryPreparationV2,
+    domain: d.LinearRiskDomainCoverageV2,
+    venue: _BybitVenueDataV1,
+    catalog: InstrumentCatalog,
+    selected_mark: BybitDecimalFieldV1,
+    now: datetime,
+) -> tuple[e.LinearEntryPreparationV2, datetime, BybitLinearPointInputV1]:
     actual = r.prepare_linear_entry_v2(inputs, now=now)
     if _economic_preparation_v1(actual) != _economic_preparation_v1(preparation):
         _reject_v1("RISK_V2_SOURCE_MISMATCH")
@@ -2195,13 +2291,4 @@ def bind_bybit_model_inputs_v1(
     if now >= expiry:
         _reject_v1("RISK_V2_EXPIRED")
     point = _project_point_v1(inputs, actual, venue, selected_mark, expiry)
-    return BybitLinearModelInputsV1(
-        inputs,
-        actual,
-        domain,
-        venue,
-        point,
-        catalog,
-        expiry,
-        "BYBIT_LINEAR_ISOLATED_POINT_MODEL_V1",
-    )
+    return actual, expiry, point
