@@ -23,6 +23,7 @@ from ..credential_resolution import CredentialResolver, CredentialStartup
 from ..credentials import CredentialStoreError
 from ..execution.account_binding import AccountBindingError, BybitDemoAccountSession
 from ..execution.protection import ProtectionScope
+from ..trading_product import TradingProduct, bybit_category
 from .freshness import VIEW_DEADLINE_SECONDS
 from .models import AccountView
 from .service import blank_view, build_account_view, publish
@@ -36,8 +37,10 @@ _MESSAGES = {
 }
 
 
-def _failure(code: str, *, configuration: bool = False) -> AccountView:
-    view = blank_view("config" if configuration else "unexpected", "demo", live_trading=False)
+def _failure(code: str, *, configuration: bool = False,
+             product: TradingProduct = "LINEAR") -> AccountView:
+    view = blank_view("config" if configuration else "unexpected", "demo",
+                      live_trading=False, product=product)
     return view.model_copy(update={"오류코드": code, "메시지": _MESSAGES[code]})
 
 
@@ -66,10 +69,11 @@ class BybitDemoAccountViewV1:
             profiles = None
         return cls(resolver=context, profile_store=profiles)
 
-    async def view(self) -> AccountView:
+    async def view(self, *, product: TradingProduct = "LINEAR") -> AccountView:
         """Read only after complete saved expectations; cancellation closes and propagates."""
+        bybit_category(product)
         session: BybitDemoAccountSession | None = None
-        view = _failure("DEMO_PROFILE_REQUIRED", configuration=True)
+        view = _failure("DEMO_PROFILE_REQUIRED", configuration=True, product=product)
         try:
             profiles = self._profile_store
             if profiles is None:
@@ -80,7 +84,7 @@ class BybitDemoAccountViewV1:
             expected = snapshot.resolve_expectations(supported_policies=_POLICIES)
             key, secret = self._resolver.bybit_pair("demo")
             if not key or not secret:
-                return blank_view("missing_credentials", "demo", live_trading=False)
+                return blank_view("missing_credentials", "demo", live_trading=False, product=product)
             credential_check = self._resolver._bybit_publication_check()
             scope = ProtectionScope(expected._uid, "DEMO")
             deadline = time.monotonic() + VIEW_DEADLINE_SECONDS
@@ -89,7 +93,7 @@ class BybitDemoAccountViewV1:
             binding = await session.authenticate(expected_uid=expected._uid,
                 expected_parent_uid=expected._parent_uid, expected_is_master=expected._is_master)
             client = session.read_client(binding, scope=scope)
-            view = await build_account_view(client, None, live_trading=False, deadline_at=deadline)
+            view = await build_account_view(client, None, live_trading=False, deadline_at=deadline, product=product)
             view = publish(view, credential_check=credential_check)
             # Final genuine scope/two-clock check follows all reads and DTO callbacks.
             # Closing the request-owned Session below revokes its binding; this DTO
@@ -98,19 +102,19 @@ class BybitDemoAccountViewV1:
         except AccountProfileError as error:
             code = ("DEMO_PROFILE_PENDING" if error.code == "PROFILE_PENDING"
                     else "DEMO_PROFILE_REQUIRED")
-            view = _failure(code, configuration=True)
+            view = _failure(code, configuration=True, product=product)
         except CredentialStoreError:
-            view = blank_view("missing_credentials", "demo", live_trading=False)
+            view = blank_view("missing_credentials", "demo", live_trading=False, product=product)
         except AccountBindingError:
-            view = _failure("DEMO_AUTHENTICATION_REQUIRED")
+            view = _failure("DEMO_AUTHENTICATION_REQUIRED", product=product)
         except Exception:  # noqa: BLE001 - provider/configuration text can contain secrets.
-            view = blank_view("unexpected", "demo", live_trading=False)
+            view = blank_view("unexpected", "demo", live_trading=False, product=product)
         finally:
             if session is not None:
                 try:
                     await session.aclose()
                 except Exception:  # noqa: BLE001 - never expose transport close diagnostics.
-                    view = _failure("DEMO_SESSION_CLOSE_FAILED")
+                    view = _failure("DEMO_SESSION_CLOSE_FAILED", product=product)
         return view
 
 
@@ -120,13 +124,13 @@ def install(application: FastAPI, *, credential_context: CredentialStartup) -> N
     service: BybitDemoAccountViewV1 | None = None
 
     @router.get("/view", response_model=AccountView)
-    async def demo_view() -> AccountView:
+    async def demo_view(product: TradingProduct = "LINEAR") -> AccountView:
         nonlocal service
         if service is None:
             try:
                 service = BybitDemoAccountViewV1.from_environment(resolver=credential_context.get())
             except Exception:  # noqa: BLE001 - configuration diagnostics can contain secrets.
-                return _failure("DEMO_PROFILE_REQUIRED", configuration=True)
-        return await service.view()
+                return _failure("DEMO_PROFILE_REQUIRED", configuration=True, product=product)
+        return await service.view(product=product)
 
     application.include_router(router)

@@ -643,6 +643,11 @@ class BybitHistoryReader:
                 if type(row) is not dict or any(type(key) is not str for key in row):
                     raise HistoryError("HISTORY_ROW_INVALID")
                 rows.append(row)
+            # Observed DEMO transaction-log follow-up: requested prior cursor, then empty/null.
+            # Missing fields and every other endpoint retain the original string contract.
+            if (path == "/v5/account/transaction-log" and self.scope.environment == "DEMO"
+                    and cursor and not page and "nextPageCursor" in result and result["nextPageCursor"] is None):
+                return rows
             cursor = _text(result.get("nextPageCursor"), empty=True)
             if not cursor:
                 return rows

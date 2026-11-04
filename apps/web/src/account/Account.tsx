@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { connectionLabel, environmentSentences, screenText } from "../ko";
-import { AccountScreen } from "./AccountScreen";
+import { AccountScreen, formatSpotOrderQuantity } from "./AccountScreen";
 import { ACCOUNT_FIXTURE, ACCOUNT_FIXTURE_NOW } from "./fixture";
 
+export type AccountProduct = "LINEAR" | "SPOT";
 type Money = string | null;
 type Coin = { 코인: string; 지갑잔고: Money; 자산평가: Money; 예시USD평가?: Money };
 type Position = {
@@ -29,12 +30,14 @@ type OpenOrder = {
   가격: Money;
   상태: string;
   줄이기만: string;
+  수량기준?: "baseCoin" | "quoteCoin" | "unknown" | null;
 };
 export type AccountView = {
   연결상태: string;
   상태코드: string;
   환경: string;
   환경코드: "mainnet" | "demo" | "testnet" | null;
+  거래상품?: AccountProduct;
   구분: string[];
   페이퍼: false;
   실거래켜짐: boolean;
@@ -120,6 +123,8 @@ function isOrder(value: unknown): value is OpenOrder {
     isText(value.수량) &&
     isText(value.상태) &&
     isText(value.줄이기만) &&
+    (value.수량기준 === undefined || value.수량기준 === null || value.수량기준 === "baseCoin" ||
+      value.수량기준 === "quoteCoin" || value.수량기준 === "unknown") &&
     isMoney(value.가격)
   );
 }
@@ -131,6 +136,7 @@ export function isAccountView(value: unknown): value is AccountView {
   if (!isText(row.메시지) || row.페이퍼 !== false || row.주문보냄 !== false) return false;
   if (typeof row.실거래켜짐 !== "boolean") return false;
   if (!isEnvironment(row.환경코드)) return false;
+  if (row.거래상품 !== undefined && row.거래상품 !== "LINEAR" && row.거래상품 !== "SPOT") return false;
   if (row.순차조회 !== true || row.주문판단에사용 !== false) return false;
   if (row.지연기준초 !== 45 || row.확인불가기준초 !== 120) return false;
   if (!isText(row.신선도표시) || !isText(row.계좌마진모드) || !isText(row.계좌마진설명)) return false;
@@ -165,6 +171,8 @@ export function isAccountView(value: unknown): value is AccountView {
       isText(leverage.최소) &&
       isText(leverage.간격));
   if (!leverageOk) return false;
+  if (row.거래상품 === "SPOT" && (leverage !== null ||
+      positions !== null && (!Array.isArray(positions) || positions.length !== 0))) return false;
   if (row.상태코드 === "ok") {
     return wallet !== null && Array.isArray(positions) && Array.isArray(orders) && isText(row.수집완료시각);
   }
@@ -218,6 +226,7 @@ type AccountSource = "demo" | "mainnet";
 export default function Account(props: AccountProps) {
   const fixture = props.fixture ?? (props.demo ? ACCOUNT_FIXTURE : undefined);
   const [source, setSource] = useState<AccountSource>("demo");
+  const [product, setProduct] = useState<AccountProduct>("LINEAR");
   if (fixture) return <AccountController key="fixture" {...props} fixture={fixture} />;
   return <>
     <section className="account-heading" aria-label="조회 계좌 선택">
@@ -227,11 +236,17 @@ export default function Account(props: AccountProps) {
         <p>{source === "demo" ? "DEMO 연습 계좌를 조회합니다. 실계좌가 아닙니다." : "실계좌 잔고를 읽기만 합니다."} 주문은 보내지 않습니다.</p>
       </div>
     </section>
-    <AccountController key={source} {...props} source={source} />
+    <section className="account-heading" aria-label="조회 상품 선택">
+      <div>
+        <button className="secondary" aria-pressed={product === "LINEAR"} onClick={() => setProduct("LINEAR")}>선물</button>
+        <button className="secondary" aria-pressed={product === "SPOT"} onClick={() => setProduct("SPOT")}>현물</button>
+      </div>
+    </section>
+    <AccountController key={`${source}:${product}`} {...props} source={source} product={product} />
   </>;
 }
 
-function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture, source = "demo" }: AccountProps & { source?: AccountSource }) {
+function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture, source = "demo", product = "LINEAR" }: AccountProps & { source?: AccountSource; product?: AccountProduct }) {
   const [storedView, setView] = useState<AccountView | null>(null);
   const view = fixture ?? storedView;
   const [problem, setProblem] = useState("");
@@ -268,11 +283,13 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
       setRefreshing(true);
       const deadline = window.setTimeout(() => controller.abort(), deadlineMs);
       try {
-        const path = source === "demo" ? "/api/v1/account/bybit/demo/view" : "/api/v1/account/bybit/view";
+        const basePath = source === "demo" ? "/api/v1/account/bybit/demo/view" : "/api/v1/account/bybit/view";
+        const path = product === "SPOT" ? `${basePath}?product=SPOT` : basePath;
         const response = await fetch(path, { signal: controller.signal });
         const body: unknown = response.ok ? await response.json() : null;
         if (disposed || myGeneration !== generation) return;
         if (!response.ok || !isAccountView(body) || body.환경코드 !== source ||
+            (body.거래상품 ?? "LINEAR") !== product ||
             (source === "demo" && body.실거래켜짐 !== false)) {
           setProblem(
             response.ok
@@ -321,7 +338,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
       refresh.current = () => undefined;
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [deadlineMs, pollIntervalMs, fixture, source]);
+  }, [deadlineMs, pollIntervalMs, fixture, product, source]);
 
   const age = view ? dataAgeSeconds(view.수집완료시각, nowMs) : null;
   const shownFreshness = view
@@ -337,7 +354,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
   if (polished) return <AccountScreen view={view} loading={loading} problem={problem}
     freshness={shownFreshness} age={age} past={past} failed={latestFailed} refreshing={refreshing}
     fixture={!!fixture} notice={fixtureRefreshes ? "고정 예시를 다시 표시했습니다. 실제 계좌를 조회하지 않았습니다." : ""}
-    onRefresh={() => fixture ? setFixtureRefreshes(value => value + 1) : refresh.current()} />;
+    onRefresh={() => fixture ? setFixtureRefreshes(value => value + 1) : refresh.current()} product={product} />;
 
   return (
     <main className="account">
@@ -349,7 +366,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
         <span className="safety">읽기만 합니다. 주문은 없습니다.</span>
       </header>
       <p className="account-warning">
-        이 화면은 USDT 선물만 봅니다. 주문, 레버리지 변경, 포지션 변경을 하지 않습니다. 이미
+        {product === "SPOT" ? "현물 미체결 주문과 통합 계좌 잔고를 읽습니다. 선물 레버리지를 적용하지 않습니다." : "이 화면은 USDT 선물만 봅니다."} 주문, 레버리지 변경, 포지션 변경을 하지 않습니다. 이미
         있는 포지션과 주문은 외부에서 연 것이며 이 프로그램이 관리하지 않습니다. 시세
         화면에서는 바이비트 가격을 볼 수 있습니다.
       </p>
@@ -452,8 +469,10 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
             )}
           </section>
           <section className="account-panel" aria-labelledby="account-positions">
-            <h2 id="account-positions">포지션</h2>
-            {view.포지션 === null ? (
+            <h2 id="account-positions">{product === "SPOT" ? "현물 보유" : "포지션"}</h2>
+            {product === "SPOT" ? (
+              <p>통합 계좌 잔고에서 현물 보유 수량을 확인하세요. 프로그램이 매수한 수량과 다를 수 있습니다.</p>
+            ) : view.포지션 === null ? (
               <p>포지션을 가져오지 못했습니다.</p>
             ) : view.포지션.length === 0 ? (
               <p>열린 포지션이 없습니다.</p>
@@ -521,7 +540,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
                         <th scope="row">{row.종목}</th>
                         <td>{row.방향 === "Buy" ? "매수" : row.방향 === "Sell" ? "매도" : row.방향}</td>
                         <td>{row.유형 === "Limit" ? "지정가" : row.유형 === "Market" ? "시장가" : row.유형}</td>
-                        <td>{row.수량}</td>
+                        <td>{product === "SPOT" ? formatSpotOrderQuantity(row.수량, row.수량기준) : row.수량}</td>
                         <td>{text(row.가격)}</td>
                         <td>
                           {row.상태 === "New"

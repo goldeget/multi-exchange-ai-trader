@@ -77,7 +77,11 @@ def _plain(text: str) -> None:
 async def session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rows: list[Candle] | None = None
 ) -> AsyncIterator[tuple[httpx.AsyncClient, Scripted, object, Clock]]:
-    monkeypatch.setenv("BYBIT_ENV_FILE", "off")
+    for name in ("TRADER_CREDENTIAL_FILE", "TRADER_ACCOUNT_PROFILE_FILE",
+            "BYBIT_ENV_FILE", "AI_ENV_FILE", "ANTHROPIC_ENV_FILE"):
+        monkeypatch.setenv(name, "off")
+    for name in ("BYBIT_DEMO", "BYBIT_TESTNET", "LIVE_TRADING_ENABLED"):
+        monkeypatch.setenv(name, "false")
     monkeypatch.setenv("PAPER_DB_PATH", str(tmp_path / "paper.sqlite3"))
     monkeypatch.setenv("RECOMMENDATION_DB_PATH", str(tmp_path / "reco.sqlite3"))
     script = Scripted(list(rows or RISING))
@@ -437,7 +441,10 @@ async def test_uncertain_demo_cannot_be_retried_through_a_different_card(tmp_pat
         first = await preview(client)
         app.state.recommendation_book.claim_practice(first["번호"], now=NOW)
         app.state.recommendation_book.remember_flag(first["번호"], "demo_uncertain")
-        script.rows = FALLING
+        # A different card uses a newly closed bar; sealed history is immutable.
+        script.rows = [*RISING, Candle(timestamp=RISING[-1].timestamp + INTERVAL_DELTA,
+            open=Decimal(60), high=Decimal(61), low=Decimal(59), close=Decimal(60),
+            volume=Decimal(1), is_closed=True)]
         second = await preview(client)
         assert second["번호"] != first["번호"]
         assert second["승인가능"] is False
@@ -459,7 +466,10 @@ async def test_different_demo_cards_cannot_claim_concurrently_in_two_books(tmp_p
 
     async with session(tmp_path, monkeypatch) as (client, script, _app, _clock):
         first = await preview(client)
-        script.rows = FALLING
+        # A different card uses a newly closed bar; sealed history is immutable.
+        script.rows = [*RISING, Candle(timestamp=RISING[-1].timestamp + INTERVAL_DELTA,
+            open=Decimal(60), high=Decimal(61), low=Decimal(59), close=Decimal(60),
+            volume=Decimal(1), is_closed=True)]
         second = await preview(client)
         inputs = [(RecommendationBook(tmp_path / "reco.sqlite3"), card["번호"]) for card in (first, second)]
         with ThreadPoolExecutor(max_workers=2) as pool:

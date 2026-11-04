@@ -1802,7 +1802,10 @@ class BybitReadOnlyClient:
         params: list[tuple[str, str]],
         *,
         deadline: float | None = None,
+        expected_category: Literal["spot", "linear"] | None = None,
     ) -> list[dict[str, object]]:
+        if expected_category is not None and expected_category not in ("spot", "linear"):
+            raise BybitReadError("invalid_json")
         rows: list[dict[str, object]] = []
         cursor = ""
         for _ in range(_PAGE_LIMIT):
@@ -1811,6 +1814,8 @@ class BybitReadOnlyClient:
             if cursor:
                 page.append(("cursor", cursor))
             result, _server_ms = await self.read(path, page, signed=True, deadline=deadline)
+            if expected_category is not None and result.get("category") != expected_category:
+                raise BybitReadError("invalid_json")
             for item in _as_list(result.get("list")):
                 rows.append(_mapping(item))
             cursor = _next_cursor(result)
