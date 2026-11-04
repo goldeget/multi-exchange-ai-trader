@@ -22,6 +22,7 @@ from typing import Any, Concatenate
 from ..account.bybit_readonly import BybitReadOnlyClient
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
+from . import account_reconciliation_v1 as account_reconciliation
 from . import modes
 from .account_binding import (
     AuthenticatedAccountBinding,
@@ -723,6 +724,141 @@ class ExecutionWorker:
         if history.scope != self.scope:
             raise RuntimeBlocked("WORKER_HISTORY_SCOPE_REQUIRED")
         return daily_realized_loss(history, baseline, now=self.clock(), max_age=self.max_age)
+
+    def _account_observation_guard_v1(self, symbol: str) -> Callable[[], None]:
+        # A nested attempt invalidates the outer operation even if caught inside a callback.
+        self._retire_entry_publications_v2()
+        if (self._operations != 1 or self._staging or self._entry_binding_refresh_v2 is not None
+                or self._entry_publication_frame_v2 is not None or symbol not in self.symbols):
+            raise RuntimeBlocked("ACCOUNT_OBSERVATION_EXCLUSIVE_OPERATION_REQUIRED")
+        binding, session, scope = self.binding, self.session, self.scope
+        generation = self._entry_publication_generation_v2
+        original = self._entry_publication_links_v2(fresh_binding=binding)
+
+        def require_owner() -> None:
+            self._require_admission()
+            if (self._operations != 1 or self._staging or self._entry_binding_refresh_v2 is not None
+                    or self._entry_publication_generation_v2 is not generation):
+                raise RuntimeBlocked("ACCOUNT_OBSERVATION_OWNER_CHANGED")
+            current = self._entry_publication_links_v2(fresh_binding=binding)
+            if any(actual is not expected for actual, expected in zip(current, original, strict=True)):
+                raise RuntimeBlocked("ACCOUNT_OBSERVATION_OWNER_CHANGED")
+            session.require_observation_binding(binding, scope=scope)
+
+        require_owner()
+        return require_owner
+
+    async def _account_observation_sources_v1(self, symbol: str, guard: Callable[[], None]
+            ) -> tuple[Callable[[], account_reconciliation._AccountObservationV1], Callable[[], None]]:
+        from .monitoring_budget import MonitoringReadBudget
+
+        session, binding, scope = self.session, self.binding, self.scope
+        budget = MonitoringReadBudget(guard=guard)
+        info = await session._capture_linear_account_info_v1(binding, scope=scope, budget=budget, owner_guard=guard)
+        wallet = await session._capture_linear_wallet_v1(binding, scope=scope, budget=budget, owner_guard=guard)
+        fee = await session._capture_linear_fee_rate_v1(binding, scope=scope, symbol=symbol, budget=budget, owner_guard=guard)
+        settings = await session._capture_linear_settings_v1(binding, scope=scope, budget=budget, owner_guard=guard)
+        flat = await session._capture_linear_flat_leverage_v1(binding, scope=scope, symbol=symbol, budget=budget, owner_guard=guard)
+        positions = await session._capture_linear_positions_v1(binding, scope=scope, budget=budget, owner_guard=guard)
+        orders = await session._capture_linear_orders_v1(binding, scope=scope, budget=budget, owner_guard=guard)
+
+        def require_sources() -> None:
+            guard()
+            session._require_linear_account_info_v1(info, binding=binding, scope=scope)
+            session._require_linear_wallet_v1(wallet, binding=binding, scope=scope)
+            session._require_linear_fee_rate_v1(fee, symbol=symbol, binding=binding, scope=scope)
+            session._require_linear_settings_v1(settings, binding=binding, scope=scope)
+            session._require_linear_flat_leverage_v1(flat, symbol=symbol, binding=binding, scope=scope)
+            session._require_linear_positions_v1(positions, binding=binding, scope=scope)
+            session._require_linear_orders_v1(orders, binding=binding, scope=scope)
+            guard()
+
+        require_sources()
+        wallet_slot, position_slot, order_slot = (session._linear_wallet_current,
+            session._linear_positions_current, session._linear_orders_current)
+        assert wallet_slot is not None and wallet_slot.capture is not None
+        assert position_slot is not None and order_slot is not None
+        wallet_capture, position_pages, order_pages = wallet_slot.capture, position_slot.pages, order_slot.pages
+        raw_wallet = wallet_capture.raw_body
+        raw_positions = tuple(page.capture.raw_body for page in position_pages)
+        raw_orders = tuple(page.capture.raw_body for page in order_pages)
+
+        def observe() -> account_reconciliation._AccountObservationV1:
+            require_sources()
+            value = account_reconciliation.observe_account_sources_v1(scope=scope, symbol=symbol,
+                sources=(info, wallet, fee, settings, flat, *positions, *orders),
+                wallet_source=wallet, wallet_raw=raw_wallet, position_raw=raw_positions, order_raw=raw_orders,
+                application=self.runtime.monitoring_state(), now=self.clock())
+            require_sources()
+            if (session._linear_wallet_current is not wallet_slot or wallet_slot.capture is not wallet_capture
+                    or wallet_capture.raw_body is not raw_wallet or position_slot.pages is not position_pages
+                    or order_slot.pages is not order_pages):
+                raise RuntimeBlocked("ACCOUNT_OBSERVATION_OWNER_CHANGED")
+            return value
+
+        return observe, require_sources
+
+    @_admitted
+    async def begin_account_observation_v1(self, symbol: str
+            ) -> account_reconciliation.AccountObservationCheckpointV1:
+        """Explicit post-start observation; never a UTC day or trading baseline."""
+        guard = self._account_observation_guard_v1(symbol)
+        journal = self.runtime.journal
+        if journal.get_projection(account_reconciliation.PROJECTION_KEY) is not None:
+            raise RuntimeBlocked("ACCOUNT_OBSERVATION_ALREADY_STARTED")
+        observe, require_sources = await self._account_observation_sources_v1(symbol, guard)
+        checkpoint = account_reconciliation.begin_account_checkpoint_v1(observe())
+        payload = account_reconciliation.checkpoint_payload_v1(checkpoint)
+        require_sources()
+        journal.apply_event("account-start-" + checkpoint.checkpoint_id, payload,
+            account_reconciliation.PROJECTION_KEY, 0,
+            {"schema_version": 1, "checkpoint": payload, "latest_report": None})
+        return checkpoint
+
+    @_admitted
+    async def collect_account_reconciliation_v1(self
+            ) -> account_reconciliation.AccountReconciliationReportV1:
+        """Collect source-bound diagnostics; unknown risk values never become zero."""
+        journal = self.runtime.journal
+        saved = journal.get_projection(account_reconciliation.PROJECTION_KEY)
+        if saved is None:
+            raise RuntimeBlocked("ACCOUNT_OBSERVATION_NOT_STARTED")
+        try:
+            document = json.loads(saved.payload_json)
+            if (type(document) is not dict or set(document) != {"schema_version", "checkpoint", "latest_report"}
+                    or type(document["schema_version"]) is not int or document["schema_version"] != 1):
+                raise ValueError
+            checkpoint = account_reconciliation.decode_account_checkpoint_v1(document["checkpoint"], scope=self.scope)
+        except Exception:  # noqa: BLE001 - stored account details must not escape the fixed code.
+            raise RuntimeBlocked("ACCOUNT_OBSERVATION_CHECKPOINT_INVALID") from None
+        guard = self._account_observation_guard_v1(checkpoint.symbol)
+        start_ms = int(checkpoint.wallet_request_started_at.timestamp() * 1000)
+        through_ms = int(self.clock().timestamp() * 1000)
+        observe, require_sources = await self._account_observation_sources_v1(checkpoint.symbol, guard)
+        snapshots: list[HistorySnapshot] = []
+        observation_keys: list[str] = []
+        conflicts: set[str] = set()
+        for symbol in self.symbols:
+            async with self._history_accounting_receipt(symbol, start_ms=start_ms,
+                    end_ms=through_ms) as (_, _, _, history, ingestion, require_history):
+                guard()
+                require_history()
+                snapshots.append(history)
+                observation_keys.append(ingestion.observation_key)
+                conflicts.update(ingestion.conflict_keys)
+                assert self._history_store is not None
+                coverage = self._history_store.coverage(symbol, start_ms=start_ms, end_ms=through_ms)
+                conflicts.update(item.conflict_key for item in coverage.conflicts)
+        report = account_reconciliation.reconcile_account_observation_v1(checkpoint, observe(),
+            histories=tuple(snapshots), observation_keys=tuple(observation_keys),
+            conflict_keys=tuple(sorted(conflicts)), start_ms=start_ms, through_ms=through_ms)
+        require_sources()
+        payload = account_reconciliation.report_payload_v1(report)
+        guard()
+        journal.apply_event("account-report-" + report.report_id, payload,
+            account_reconciliation.PROJECTION_KEY, saved.revision,
+            {"schema_version": 1, "checkpoint": document["checkpoint"], "latest_report": payload})
+        return report
 
     @_admitted
     async def apply_leverage(self, command_key: str, entry_key: str) -> CommandRecord:

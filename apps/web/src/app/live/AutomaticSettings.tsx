@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Field,Panel} from '../../ui/components';
-import {automaticPolicyEqual,automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,policyInstrumentName,policyReferenceName,policyRiskCounts,policyRiskDecimals,validateAutomaticPolicy,type AutomaticPolicy,type AutomaticSettingsSnapshot,type LegacyPolicy,type PolicyCaps,type PolicyInstrument,type PolicyProduct,type PolicyReference,type PolicyRisk,type PolicyScope} from './contracts';
+import {automaticPolicyEqual,automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,parseStrategyPublication,policyInstrumentName,policyReferenceName,policyRiskCounts,policyRiskDecimals,validateAutomaticPolicy,type AutomaticPolicy,type AutomaticSettingsSnapshot,type LegacyPolicy,type PolicyCaps,type PolicyInstrument,type PolicyProduct,type PolicyReference,type PolicyRisk,type PolicyScope,type StrategyPublicationSnapshot} from './contracts';
 const amounts:Record<string,string>={capital_usdt:'자동매매에 맡길 최대 자금 (USDT)',leverage_min:'최소 레버리지',leverage_max:'최대 레버리지',per_trade_loss:'거래당 최대 손실 (USDT)',max_daily_loss:'일일 최대 손실 (USDT)',max_drawdown:'최대 누적 낙폭 (USDT)',max_total_notional:'전체 포지션 최대 명목 금액 (USDT)',max_total_risk:'전체 포지션 최대 위험액 (USDT)',max_total_margin:'전체 최대 증거금 (USDT)',margin_allocation:'거래당 증거금 배정액 (USDT)',liquidation_buffer_fraction:'청산가 안전 여유 비율 (0 이상 1 미만)',max_quote_age_seconds:'시세 최대 경과 시간 (초)',max_evidence_age_seconds:'계좌 확인 최대 경과 시간 (초)'};
 const counts:Record<string,string>={max_consecutive_losses:'최대 연속 손실 횟수',max_positions:'최대 동시 포지션 수'};
 const choices:Record<string,Record<string,string>>={mode:{FULL_AUTO:'완전 자동 — 직접 고른 종목·전략',ALL_IN_ONE:'올인원 자동 — AI가 허용 후보에서 선택'},environment:{DEMO:'Bybit 연습계좌',LIVE:'Bybit 실제 계좌'},sizing_rule:{LOSS_FIXED:'거래당 손실액 기준'},margin_mode:{ISOLATED:'격리 증거금',CROSS:'교차 증거금'},position_mode:{ONE_WAY:'단방향',HEDGE:'양방향'}};
@@ -28,7 +28,7 @@ export function AutomaticSettings(){
 }
 
 function AutomaticSettingsEditor(){
- const [source,setSource]=useState<{data:AutomaticSettingsSnapshot|null;capable:boolean;loading:boolean;error:boolean}>({data:null,capable:false,loading:true,error:false});
+ const [source,setSource]=useState<{data:AutomaticSettingsSnapshot|null;capable:boolean;loading:boolean;error:boolean;publication:StrategyPublicationSnapshot|null}>({data:null,capable:false,loading:true,error:false,publication:null});
  const [readNonce,setReadNonce]=useState(0);
  const [edit,setEdit]=useState<{revision:number;policy:AutomaticPolicy;instrumentText:InstrumentText}|null>(null);
  const [notice,setNotice]=useState('');const [saving,setSaving]=useState(false);const [uncertain,setUncertain]=useState(false);
@@ -46,8 +46,12 @@ function AutomaticSettingsEditor(){
   const controller=new AbortController();let disposed=false,timer:number|undefined;
   async function read(){
    try{
-    const {response,data}=await Promise.race([
-     (async()=>{const response=await fetch('/api/v1/automatic/settings',{signal:controller.signal});const data=await parseAutomaticSettings(await response.text());return {response,data}})(),
+    const {response,data,publication}=await Promise.race([
+     (async()=>{const response=await fetch('/api/v1/automatic/settings',{signal:controller.signal});const raw=await response.text();let publication:StrategyPublicationSnapshot|null=null;
+      if(disposed||controller.signal.aborted)throw new Error('read_cancelled');
+      const version=response.headers.get('X-Automatic-Strategy-Publication-Version');
+      if(version!==null){if(version!=='1')throw new Error('publication_version');const current=await fetch('/api/v1/automatic/strategies',{signal:controller.signal});const parsed=await parseStrategyPublication(await current.text());if(!current.ok||current.headers.get('X-Automatic-Strategy-Publication-Version')!=='1'||parsed===undefined)throw new Error('publication_contract');publication=parsed}
+      const data=await parseAutomaticSettings(raw,publication);return {response,data,publication}})(),
      new Promise<never>((_resolve,reject)=>{timer=window.setTimeout(()=>{controller.abort();reject(new Error('read_timeout'))},15000)}),
     ]);
     if(disposed||controller.signal.aborted)return;
@@ -62,7 +66,7 @@ function AutomaticSettingsEditor(){
     // Capability uncertainty always blocks writes, including a stale GET. Its
     // old contents cannot replace the newer saved snapshot or any dirty edits.
     const newest=snapshot.current&&snapshot.current.revision>data.revision?snapshot.current:data;
-    snapshot.current=newest;setSource({data:newest,capable,loading:false,error:false});
+    snapshot.current=newest;setSource({data:newest,capable:capable&&(publication===null||newest===data),loading:false,error:false,publication});
    }catch{if(!disposed)setSource(old=>({...old,capable:false,loading:false,error:true}))}
    finally{window.clearTimeout(timer)}
   }
@@ -71,6 +75,7 @@ function AutomaticSettingsEditor(){
  const disabled=saving||source.loading||source.error||!source.capable||uncertain;
  const invalid=rawInvalid||!!policy&&validation?.policy===policy&&!validation.valid;
  const typed=source.data?.schema_version===2;
+ const publicationMismatch=source.publication!==null&&(!policy?.strategy?.catalog||!automaticPolicyEqual(policy.strategy.catalog,source.publication.catalog));
  function update(next:AutomaticPolicy,nextText:InstrumentText=text){if(revision!==undefined){const value={revision,policy:next,instrumentText:nextText};editRef.current=value;setEdit(value)}}
  function changeInstruments(name:keyof InstrumentText,value:string){
   if(!policy)return;
@@ -90,7 +95,7 @@ function AutomaticSettingsEditor(){
  }
  async function save(migration=false){
   const stored=source.data;
-  if(!stored||!policy||revision===undefined||pending.current||disabled||rawInvalid)return;
+  if(!stored||!policy||revision===undefined||pending.current||disabled||rawInvalid||!migration&&publicationMismatch)return;
   if(migration?(stored.schema_version!==1||edit!==null):stored.schema_version!==2)return;
   const submitted={revision:migration?stored.revision:revision,policy:migration?envelope(stored):policy};
   const controller=new AbortController();pending.current=controller;setSaving(true);setNotice('');
@@ -98,13 +103,13 @@ function AutomaticSettingsEditor(){
    if(!await validateAutomaticPolicy(submitted.policy)){setNotice('입력값이 서로 맞지 않거나 허용 범위를 벗어났습니다. 변경 내용을 보관했습니다.');return}
    if(!mounted.current||controller.signal.aborted)return;
    const {response,data}=await Promise.race([
-    (async()=>{const response=await fetch(migration?'/api/v1/automatic/settings/migrate':'/api/v1/automatic/settings',{method:migration?'POST':'PUT',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify(migration?{schema_version:1,revision:stored.revision}:{schema_version:2,revision,policy:submitted.policy,expected_strategy_generation:null,policy_sections_version:1})});const data=await parseAutomaticSettings(await response.text());return {response,data}})(),
+    (async()=>{const response=await fetch(migration?'/api/v1/automatic/settings/migrate':'/api/v1/automatic/settings',{method:migration?'POST':'PUT',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify(migration?{schema_version:1,revision:stored.revision}:{schema_version:2,revision,policy:submitted.policy,expected_strategy_generation:source.publication?.generation??null,policy_sections_version:1})});const data=await parseAutomaticSettings(await response.text(),source.publication);return {response,data}})(),
     new Promise<never>((_resolve,reject)=>{saveTimer.current=window.setTimeout(()=>{controller.abort();reject(new Error('save_timeout'))},15000)}),
    ]);
    if(!mounted.current)return;
    if(!response.ok){setNotice(response.status===409?'다른 곳에서 설정이 변경되었거나 입력값이 허용 범위를 벗어났습니다.':'설정을 저장하지 못했습니다.');return}
    if(!data||data.schema_version!==2||response.headers.get('X-Automatic-Policy-Sections-Version')!=='1'||data.revision!==submitted.revision+1||!automaticPolicyEqual(data.policy,submitted.policy)){reconcile(submitted);return}
-   snapshot.current=data;setSource({data,capable:true,loading:false,error:false});editRef.current=null;setEdit(null);setReadNonce(value=>value+1);setNotice(migration?'저장된 설정을 새 운용 초안으로 전환했습니다. 실제 주문은 시작되지 않습니다.':'설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+   snapshot.current=data;setSource({data,capable:true,loading:false,error:false,publication:source.publication});editRef.current=null;setEdit(null);setReadNonce(value=>value+1);setNotice(migration?'저장된 설정을 새 운용 초안으로 전환했습니다. 실제 주문은 시작되지 않습니다.':'설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
   }catch{if(mounted.current)reconcile(submitted)}
   finally{window.clearTimeout(saveTimer.current);if(pending.current===controller){pending.current=null;if(mounted.current)setSaving(false)}}
  }
@@ -140,7 +145,8 @@ function AutomaticSettingsEditor(){
      <p className="helper">대상별 미리보기는 저장 목록을 바꾸지 않습니다. 전체 허용·선택 참조와 카탈로그의 모든 핀은 원래 순서로 보관됩니다.</p>
      {pairs.map(pair=><div key={policyInstrumentName(pair.instrument)}>{pair.active.length===0?<p className="info-box">연결된 전략이 없는 거래 대상: {policyInstrumentName(pair.instrument)}</p>:<label className="field"><span>{pair.instrument.symbol}에 적용 가능한 전략</span><select defaultValue="" disabled={disabled}><option value="">미리보기 선택</option>{pair.active.map(ref=><option key={policyReferenceName(ref)} value={policyReferenceName(ref)}>{policyReferenceName(ref)}</option>)}</select></label>}</div>)}
     </>}
-    <h3>명시적으로 입력하는 LINEAR 위험관리</h3>
+     {source.publication!==null&&<><p className="helper">서버에서 현재 운용 전략 목록을 확인했습니다.</p>{publicationMismatch&&<><p role="alert">입력 중인 전략 목록이 서버의 현재 목록과 다릅니다. 자금과 위험관리 입력값은 보관됩니다.</p><button className="secondary" disabled={disabled} onClick={()=>{if(source.publication)update({...policy,strategy:{section_version:1,catalog:source.publication.catalog,allowed:null,selected:null}})}}>현재 전략 목록 적용하고 전략 선택 초기화</button></>}</>}
+     <h3>명시적으로 입력하는 LINEAR 위험관리</h3>
     {scope?.selected_product==='SPOT'&&<p className="info-box">SPOT 위험관리·보호 주문은 E16에서 지원해야 합니다. 현물 선택은 보관하며 파생상품용 0·1 값으로 변환하지 않습니다.</p>}
     {!risk&&scope?.selected_product!=='SPOT'&&<button className="secondary" disabled={disabled} onClick={()=>update({...policy,risk_v2:emptyRisk()})}>LINEAR 위험관리 입력 시작</button>}
     {risk&&<>
@@ -165,7 +171,7 @@ function AutomaticSettingsEditor(){
    {Object.entries(lists).map(([key,label])=>legacyInput(key,label))}
    <details><summary>상세 이전 위험관리 설정</summary>{Object.entries(amounts).slice(5).map(([key,label])=>legacyInput(key,label))}{Object.entries(counts).map(([key,label])=>legacyInput(key,label))}{['sizing_rule','margin_mode','position_mode'].map(key=><div key={key}>{select(choiceLabels[key],String(policy.legacy_v1[key]??''),choices[key],value=>changeLegacy(key,value||null))}</div>)}</details>
    <p className="helper">저장된 설정 중 미정 항목: {source.data?.missing_fields.length??'확인 중'}개. 현재 초안 미정 항목: {typed&&!rawInvalid&&validation?.policy===policy&&validation.valid?automaticPolicyMissing(policy).length:'확인 중'}개. 실제 운용에는 거래소·체결·보호 주문 검증과 서버 연결도 필요합니다.</p>
-   <button className="primary full" disabled={disabled||!typed||invalid||incompatible} onClick={()=>void save()}>{saving?'저장 결과 확인 중':'운용 한도 저장'}</button>
+    <button className="primary full" disabled={disabled||!typed||invalid||incompatible||publicationMismatch} onClick={()=>void save()}>{saving?'저장 결과 확인 중':'운용 한도 저장'}</button>
    <button className="secondary" disabled={saving||source.loading} onClick={()=>{if(!unresolved.current)setNotice('');reload()}}>{uncertain?'저장 결과 다시 확인하기':'저장된 설정 다시 불러오기'}</button>
   </>}
   {notice&&<p role="status">{notice}</p>}

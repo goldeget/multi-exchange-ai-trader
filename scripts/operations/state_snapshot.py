@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 MAX_FILES = 10_000
 MAX_FILE_BYTES = 512 * 1024 * 1024
@@ -339,7 +339,7 @@ def check_sqlite(root: Path, entries: list[Entry]) -> None:
                 )}
                 # Policy V2 is a current format of the same file/generation, not
                 # a caller-selected migration or a new portable dependency.
-                if name == "runtime-policy.sqlite3" and db.execute("PRAGMA user_version").fetchone()[0] == 2:
+                if name == "runtime-policy.sqlite3" and db.execute("PRAGMA user_version").fetchone()[0] in (2, 3):
                     check_policy_v2(db)
                     continue
                 optional = check_risk_v2_schema(db) if name == "execution.sqlite3" else set()
@@ -677,6 +677,196 @@ def check_policy_sections(value: object) -> None:
         raise SnapshotError("Unsupported policy V2 sections") from None
 
 
+# BEGIN PORTABLE STRATEGY PUBLICATION V1 -- copied unchanged into state_snapshot.
+PUBLICATION_TABLES_V1 = {
+    "strategy_publication_state_v1":
+        "(id INTEGER PRIMARY KEY CHECK(id=1),generation INTEGER NOT NULL,policy_revision INTEGER NOT NULL)",
+    "strategy_publication_artifacts_v1":
+        "(id INTEGER PRIMARY KEY,implementation BLOB NOT NULL,configuration BLOB NOT NULL,approval BLOB NOT NULL)",
+    "strategy_publication_history_v1":
+        "(generation INTEGER PRIMARY KEY,payload TEXT NOT NULL,previous_sha256 TEXT NOT NULL,sha256 TEXT NOT NULL)",
+}
+PUBLICATION_LIMIT_V1 = 64 * 1024
+PUBLICATION_IMPLEMENTATION_LIMIT_V1 = 1024 * 1024
+
+
+def _publication_fail_v1() -> NoReturn:
+    raise ValueError("STRATEGY_PUBLICATION_INVALID")
+
+
+def _publication_encoded_v1(value: object) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+
+
+def _publication_json_v1(raw: bytes) -> dict[str, Any]:
+    if type(raw) is not bytes or not 0 < len(raw) <= PUBLICATION_LIMIT_V1:
+        _publication_fail_v1()
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            if key in result:
+                _publication_fail_v1()
+            result[key] = value
+        return result
+    def constant(_value: str) -> NoReturn:
+        _publication_fail_v1()
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise ValueError("STRATEGY_PUBLICATION_INVALID") from None
+    if type(value) is not dict:
+        _publication_fail_v1()
+    return value
+
+
+def _publication_catalog_v1(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    canonical = [{**entry,
+                  "permitted_instruments": sorted(entry["permitted_instruments"],
+                      key=lambda key: (key["venue"], key["product"], key["symbol"])),
+                  "approval_environments": sorted(entry["approval_environments"])} for entry in entries]
+    payload = {"schema_version": 1, "entries": sorted(canonical,
+        key=lambda entry: (entry["reference"]["strategy_id"], entry["reference"]["revision"]))}
+    digest = hashlib.sha256(_publication_encoded_v1(payload).encode()).hexdigest()
+    catalog = {"schema_version": 1, "revision": "sha256:" + digest, "entries": entries}
+    _catalog_wire(catalog)
+    return catalog
+
+
+def _publication_descriptor_v1(implementation: bytes, configuration: bytes,
+                               approval: bytes) -> dict[str, Any]:
+    if type(implementation) is not bytes or not 0 < len(implementation) <= PUBLICATION_IMPLEMENTATION_LIMIT_V1:
+        _publication_fail_v1()
+    _publication_json_v1(configuration)
+    record = _publication_json_v1(approval)
+    expected = {"schema_version", "action", "reference", "implementation_sha256", "config_sha256",
+                "config_schema_version", "engine_contract_version", "permitted_instruments",
+                "approval_reference", "approval_source_reference", "approval_environments"}
+    if (set(record) != expected or type(record["schema_version"]) is not int
+            or record["schema_version"] != 1 or record["action"] != "APPROVE_STRATEGY_V1"
+            or record["implementation_sha256"] != hashlib.sha256(implementation).hexdigest()
+            or record["config_sha256"] != hashlib.sha256(configuration).hexdigest()):
+        _publication_fail_v1()
+    descriptor = {key: value for key, value in record.items() if key not in {"schema_version", "action"}}
+    descriptor.update(approval_source_sha256=hashlib.sha256(approval).hexdigest(), approval_status="APPROVED")
+    _publication_catalog_v1([descriptor])
+    return descriptor
+
+
+def _publication_fences_v1() -> dict[str, str]:
+    return {f"{table}_no_{operation.lower()}":
+            f"CREATE TRIGGER {table}_no_{operation.lower()} BEFORE {operation} ON {table} "
+            "BEGIN SELECT RAISE(ABORT,'publication immutable'); END"
+            for table in ("strategy_publication_artifacts_v1", "strategy_publication_history_v1")
+            for operation in ("UPDATE", "DELETE")}
+
+
+def _publication_policy_v1(policy: dict[str, Any], catalog: dict[str, Any]) -> None:
+    strategy = policy["strategy"]
+    if strategy is None or strategy["catalog"] != catalog:
+        _publication_fail_v1()
+    lookup = _catalog_wire(catalog)
+    for name in ("allowed", "selected"):
+        for raw in strategy[name] or []:
+            reference = _reference_wire(raw)
+            if reference not in lookup or lookup[reference]["approval_status"] != "APPROVED":
+                _publication_fail_v1()
+
+
+def _publication_read_v1(db: sqlite3.Connection, policy: dict[str, Any],
+                          policy_revision: int) -> dict[str, Any] | None:
+    objects = [(row[0], row[1], row[2]) for row in db.execute("SELECT type,name,sql FROM sqlite_master")]
+    extension = {name: (kind, sql) for kind, name, sql in objects if name.startswith("strategy_publication_")}
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if not extension and version in (1, 2):
+        return None
+    expected_objects = {name: ("table", f"CREATE TABLE {name} {layout}")
+                        for name, layout in PUBLICATION_TABLES_V1.items()}
+    expected_objects.update({name: ("trigger", sql) for name, sql in _publication_fences_v1().items()})
+    if version != 3 or extension != expected_objects:
+        _publication_fail_v1()
+    for table in PUBLICATION_TABLES_V1:
+        if (db.execute(f"PRAGMA index_list({table})").fetchone() is not None
+                or db.execute(f"PRAGMA foreign_key_list({table})").fetchone() is not None):
+            _publication_fail_v1()
+    states = [tuple(row) for row in db.execute("SELECT * FROM strategy_publication_state_v1")]
+    if (len(states) != 1 or states[0][0] != 1 or any(type(v) is not int for v in states[0])
+            or not 1 <= states[0][1] <= 1024 or states[0][2] != policy_revision):
+        _publication_fail_v1()
+    lengths = db.execute("SELECT id,length(implementation),length(configuration),length(approval) "
+                         "FROM strategy_publication_artifacts_v1 ORDER BY id").fetchmany(101)
+    if not 1 <= len(lengths) <= 100:
+        _publication_fail_v1()
+    for ordinal, row in enumerate(lengths, 1):
+        if (row[0] != ordinal or any(type(v) is not int for v in row)
+                or not 0 < row[1] <= PUBLICATION_IMPLEMENTATION_LIMIT_V1
+                or not 0 < row[2] <= PUBLICATION_LIMIT_V1 or not 0 < row[3] <= PUBLICATION_LIMIT_V1):
+            _publication_fail_v1()
+    approved: dict[str, dict[str, Any]] = {}
+    identities: dict[tuple[str, str], tuple[Any, ...]] = {}
+    for implementation, configuration, approval in db.execute(
+            "SELECT implementation,configuration,approval FROM strategy_publication_artifacts_v1 ORDER BY id"):
+        entry = _publication_descriptor_v1(implementation, configuration, approval)
+        digest = entry["approval_source_sha256"]
+        reference = _reference_wire(entry["reference"])
+        identity = tuple(entry[name] for name in ("implementation_sha256", "config_sha256",
+                                                 "config_schema_version", "engine_contract_version"))
+        if digest in approved or reference in identities and identities[reference] != identity:
+            _publication_fail_v1()
+        approved[digest] = entry
+        identities[reference] = identity
+    history = db.execute("SELECT generation,length(payload) FROM strategy_publication_history_v1 "
+                         "ORDER BY generation").fetchmany(1025)
+    if len(history) != states[0][1] or any(type(row[1]) is not int or not 0 < row[1] <= PUBLICATION_LIMIT_V1 for row in history):
+        _publication_fail_v1()
+    current: dict[tuple[str, str], Any] = {}
+    used: set[str] = set()
+    previous = "0" * 64
+    catalog: dict[str, Any] = {}
+    for ordinal, row in enumerate(db.execute("SELECT generation,payload,previous_sha256,sha256 "
+                                            "FROM strategy_publication_history_v1 ORDER BY generation"), 1):
+        generation, payload, prior, digest = row
+        if (type(generation) is not int or generation != ordinal or type(payload) is not str
+                or prior != previous or type(digest) is not str):
+            _publication_fail_v1()
+        record = _publication_json_v1(payload.encode("utf-8"))
+        actual = hashlib.sha256(b"StrategyPublicationV1\0" + previous.encode("ascii") + b"\0" + payload.encode()).hexdigest()
+        if (digest != actual or _publication_encoded_v1(record) != payload
+                or set(record) != {"generation", "action", "references", "catalog"}
+                or type(record["generation"]) is not int or record["generation"] != ordinal
+                or record["action"] not in ("APPROVE", "REVOKE")
+                or type(record["references"]) is not list or not 1 <= len(record["references"]) <= 100):
+            _publication_fail_v1()
+        references = [_reference_wire(raw) for raw in record["references"]]
+        if len(set(references)) != len(references):
+            _publication_fail_v1()
+        catalog = record["catalog"]
+        following = _catalog_wire(catalog)
+        for entry in following.values():
+            approval_hash = entry["approval_source_sha256"]
+            if (approval_hash not in approved or entry["approval_status"] not in ("APPROVED", "REVOKED")
+                    or {**entry, "approval_status": "APPROVED"} != approved[approval_hash]):
+                _publication_fail_v1()
+            used.add(approval_hash)
+        expected = dict(current)
+        if record["action"] == "APPROVE":
+            for reference in references:
+                if reference not in following or following[reference]["approval_status"] != "APPROVED":
+                    _publication_fail_v1()
+                expected[reference] = following[reference]
+        else:
+            if len(references) != 1 or references[0] not in current or current[references[0]]["approval_status"] != "APPROVED":
+                _publication_fail_v1()
+            expected[references[0]] = {**current[references[0]], "approval_status": "REVOKED"}
+        if list(expected.values()) != catalog["entries"]:
+            _publication_fail_v1()
+        current, previous = following, digest
+    if used != set(approved):
+        _publication_fail_v1()
+    _publication_policy_v1(policy, catalog)
+    return {"schema_version": 1, "generation": states[0][1], "catalog": catalog}
+# END PORTABLE STRATEGY PUBLICATION V1
+
+
 def policy_row(db: sqlite3.Connection, table: str) -> tuple[int, int, str, str]:
     expected = [(0, "id", "INTEGER", 0, None, 1, 0), (1, "revision", "INTEGER", 1, None, 0, 0),
                 (2, "payload", "TEXT", 1, None, 0, 0), (3, "desired_state", "TEXT", 1, None, 0, 0)]
@@ -695,17 +885,21 @@ def policy_row(db: sqlite3.Connection, table: str) -> tuple[int, int, str, str]:
 
 
 def check_policy_v2(db: sqlite3.Connection) -> None:
-    if db.execute("PRAGMA user_version").fetchone()[0] != 2:
+    version = db.execute("PRAGMA user_version").fetchone()[0]
+    if version not in (2, 3):
         raise SnapshotError("Unsupported policy version")
     objects = db.execute("SELECT type,name,sql FROM sqlite_master").fetchall()
     tables = {name for kind, name, _sql in objects if kind == "table"}
     historical = {"runtime_policy", "runtime_policy_v1_archive"}
-    if tables not in ({"runtime_policy_v2"}, {"runtime_policy_v2"} | historical):
+    base_tables = tables - set(PUBLICATION_TABLES_V1)
+    if base_tables not in ({"runtime_policy_v2"}, {"runtime_policy_v2"} | historical):
         raise SnapshotError("Unsupported policy table set")
     fences = {f"{table}_immutable_{action.lower()}":
               f"CREATE TRIGGER {table}_immutable_{action.lower()} BEFORE {action} ON {table} "
               "BEGIN SELECT RAISE(ABORT,'policy immutable'); END"
               for table in historical for action in ("INSERT", "UPDATE", "DELETE")} if tables & historical else {}
+    if version == 3:
+        fences.update(_publication_fences_v1())
     if (any(kind not in {"table", "trigger"} for kind, _name, _sql in objects)
             or {name: sql for kind, name, sql in objects if kind == "trigger"} != fences):
         raise SnapshotError("Unsupported policy immutable objects")
@@ -714,6 +908,10 @@ def check_policy_v2(db: sqlite3.Connection) -> None:
         raise SnapshotError("Unsupported policy V2 size")
     value = json_payload(row[2])
     check_policy_sections(value)
+    try:
+        _publication_read_v1(db, cast(dict[str, Any], value), row[1])
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError, sqlite3.Error):
+        raise SnapshotError("Unsupported strategy publication extension") from None
     if tables & historical:
         original = policy_row(db, "runtime_policy")
         archive = policy_row(db, "runtime_policy_v1_archive")

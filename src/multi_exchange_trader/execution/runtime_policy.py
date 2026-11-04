@@ -31,6 +31,7 @@ from .risk_v2_contracts import (
     risk_policy_sha256_v2,
 )
 from .strategy_catalog import ApprovalEnvironment, require_strategy_references
+from .strategy_publication_v1 import _publication_policy_v1, _publication_read_v1
 
 DECIMALS = (
     "capital_usdt", "leverage_min", "leverage_max", "per_trade_loss", "max_daily_loss",
@@ -474,8 +475,11 @@ class RuntimePolicyBook:
     def _read(cls, db: sqlite3.Connection) -> dict[str, Any]:
         version = db.execute("PRAGMA user_version").fetchone()[0]
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if version not in {1, 2}:
+        if version not in {1, 2, 3}:
             raise ValueError("policy schema version")
+        # Version 3 is the persisted publication extension, not a reinterpretation
+        # of the existing schema-2 user policy payload or its STOPPED state.
+        version = 2 if version == 3 else version
         historical = {"runtime_policy", "runtime_policy_v1_archive"}
         if version == 1:
             if tables & (historical | {"runtime_policy_v2"}) != {"runtime_policy"}:
@@ -503,9 +507,10 @@ class RuntimePolicyBook:
             draft = validate_v2(_parse_v2(row["payload"]))
             missing = section_missing_fields(draft)
             blocker = "POLICY_V2_ADMISSION_REQUIRED"
+        publication = _publication_read_v1(db, draft, row["revision"])
         blockers = [blocker, "NATIVE_RUNTIME_NOT_QUALIFIED", "WORKER_NOT_CONNECTED"]
         if version == 2:
-            if draft["strategy"] is not None:
+            if draft["strategy"] is not None and publication is None:
                 blockers.append("STRATEGY_CURRENT_PUBLICATION_REQUIRED")
             if draft["scope"] is not None and draft["scope"]["selected_product"] == "SPOT":
                 blockers.append("POLICY_SPOT_RISK_UNSUPPORTED")
@@ -518,6 +523,13 @@ class RuntimePolicyBook:
         with self._operation_v2() as db:
             db.execute("BEGIN")
             return self._read(db)
+
+    def publication_snapshot_v1(self) -> dict[str, Any] | None:
+        """One current read transaction; returned metadata grants no execution authority."""
+        with self._operation_v2() as db:
+            db.execute("BEGIN")
+            snapshot = self._read(db)
+            return _publication_read_v1(db, snapshot["policy"], snapshot["revision"])
 
     def save(self, revision: object, draft: object) -> dict[str, Any]:
         raise ValueError("POLICY_V1_MIGRATION_REQUIRED")
@@ -546,8 +558,6 @@ class RuntimePolicyBook:
     def save_v2(self, revision: object, draft: object, *,
                 expected_strategy_generation: object, policy_sections_version: object = None) -> dict[str, Any]:
         revision = validate_revision(revision, increment=True)
-        if expected_strategy_generation is not None:
-            raise ValueError("policy strategy generation")
         if policy_sections_version is not None and (type(policy_sections_version) is not int or policy_sections_version != 1):
             raise ValueError("policy sections capability")
         with self._operation_v2() as db:
@@ -555,6 +565,15 @@ class RuntimePolicyBook:
             # Validate persisted pins before capability checks and revision CAS.
             current = self._read(db)
             policy = validate_v2(draft)
+            publication = _publication_read_v1(db, current["policy"], current["revision"])
+            if publication is None:
+                if expected_strategy_generation is not None:
+                    raise ValueError("policy strategy generation")
+            else:
+                if (type(expected_strategy_generation) is not int
+                        or expected_strategy_generation != publication["generation"]):
+                    raise ValueError("policy strategy generation")
+                _publication_policy_v1(policy, publication["catalog"])
             if current["schema_version"] != 2 or current["revision"] != revision:
                 raise ValueError("policy revision conflict")
             if policy_sections_version is None and any(
@@ -565,6 +584,9 @@ class RuntimePolicyBook:
             if db.execute("UPDATE runtime_policy_v2 SET revision=revision+1,payload=? "
                           "WHERE id=1 AND revision=?", (payload, revision)).rowcount != 1:
                 raise ValueError("policy revision conflict")
+            if publication is not None:
+                db.execute("UPDATE strategy_publication_state_v1 SET policy_revision=? WHERE id=1",
+                           (revision + 1,))
             return self._read(db)
 
     def risk_policy_v2(self, scope: RiskScopeV2) -> LinearRiskPolicyV2:
