@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, TypeGuard, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
@@ -406,6 +406,337 @@ class _RiskRoute(_InstrumentRoute):
         return origin
 
 
+def _account_info_fail() -> NoReturn:
+    raise BybitReadError("account_info_source_invalid")
+
+
+_AccountInfoHeaderWire = tuple[str | None, tuple[tuple[bytes, bytes, bytes], ...]]
+
+
+def _account_info_headers(headers: httpx.Headers) -> _AccountInfoHeaderWire:
+    if type(headers) is not httpx.Headers:
+        _account_info_fail()
+    encoding = headers._encoding
+    if encoding is not None and (type(encoding) is not str or not encoding.isascii() or len(encoding) > 2048):
+        _account_info_fail()
+    entries = headers._list
+    if type(entries) is not list or len(entries) > 64:
+        _account_info_fail()
+    packed: list[tuple[bytes, bytes, bytes]] = []
+    size = 0
+    for entry in entries:
+        if type(entry) is not tuple or len(entry) != 3:
+            _account_info_fail()
+        for leaf in entry:
+            if type(leaf) is not bytes:
+                _account_info_fail()
+            size += len(leaf)
+        if size > 65536 or not entry[0] or entry[0].lower() != entry[1]:
+            _account_info_fail()
+        packed.append(entry)
+    return encoding, tuple(packed)
+
+
+def _account_info_wire(request: httpx.Request) -> _RiskWire:
+    """Private signed-wire witness; never returned by the public read API."""
+    if type(request) is not httpx.Request:
+        _account_info_fail()
+    url, headers, method = request.url, request.headers, request.method
+    if type(url) is not httpx.URL or type(headers) is not httpx.Headers or type(method) is not str:
+        _account_info_fail()
+    reference = url._uri_reference
+    if type(reference) is not ParseResult:
+        _account_info_fail()
+    for value in (reference.scheme, reference.host, reference.path, reference.userinfo):
+        if type(value) is not str or not value.isascii() or len(value) > 2048:
+            _account_info_fail()
+    if (reference.port is not None and type(reference.port) is not int
+            or reference.port not in (None, 443)):
+        _account_info_fail()
+    for optional in (reference.query, reference.fragment, headers._encoding):
+        if optional is not None and (type(optional) is not str or not optional.isascii() or len(optional) > 2048):
+            _account_info_fail()
+    entries = headers._list
+    if type(entries) is not list or len(entries) > 64:
+        _account_info_fail()
+    packed: list[tuple[bytes, bytes, bytes]] = []
+    size = 0
+    for entry in entries:
+        if type(entry) is not tuple or len(entry) != 3:
+            _account_info_fail()
+        for leaf in entry:
+            if type(leaf) is not bytes:
+                _account_info_fail()
+            size += len(leaf)
+        if size > 65536 or not entry[0] or entry[0].lower() != entry[1]:
+            _account_info_fail()
+        packed.append(entry)
+    return url, headers, method, reference, headers._encoding, tuple(packed)
+
+
+@dataclass(frozen=True, repr=False)
+class _AccountInfoCaptureV1:
+    owner: "BybitReadOnlyClient"
+    http_client: httpx.AsyncClient
+    generation: object
+    request: httpx.Request
+    response: httpx.Response
+    response_headers: httpx.Headers
+    response_header_wire: _AccountInfoHeaderWire
+    wire: _RiskWire
+    sent_origin: HttpsOrigin
+    response_origin: HttpsOrigin
+    response_status: int
+    request_started_at: datetime
+    received_at: datetime
+    started_mono: float
+    received_mono: float
+    raw_body: bytes
+    raw_body_sha256: str
+    envelope_time_ms: int | None
+    accepted_attempt: int
+    source_id: str
+    source_generation: str
+    observation_id: str
+    logical_ordinal: int
+    physical_start: int
+    physical_end: int
+    budget: "MonitoringReadBudget"
+    group: "ReadGroupToken"
+    operation_context: ContextVar[_ReadOperation | None]
+    receipt_context: "ContextVar[_ReceiptBudget | None]"
+    receipt: "_ReceiptBudget"
+    operation_deadline: float
+    receipt_deadline: float
+
+
+def _account_info_capture_data_v1(value: _AccountInfoCaptureV1) -> tuple[object, ...]:
+    """Bounded closed data only: no callback, import, clock, hash or JSON work."""
+    if type(value) is not _AccountInfoCaptureV1:
+        _account_info_fail()
+    if (type(value.owner) is not BybitReadOnlyClient
+            or value.owner._account_info_self is not value.owner
+            or value.owner._account_info_generation is not value.generation
+            or value.owner._client is not value.http_client
+            or type(value.http_client) is not httpx.AsyncClient
+            or type(value.http_client._state) is not ClientState
+            or value.http_client._state not in (ClientState.UNOPENED, ClientState.OPENED)
+            or type(value.source_id) is not str or type(value.source_generation) is not str
+            or type(value.owner._account_info_source_id) is not str
+            or type(value.owner._account_info_generation_text) is not str
+            or value.owner._account_info_source_id != value.source_id
+            or value.owner._account_info_generation_text != value.source_generation
+            or type(value.request) is not httpx.Request
+            or type(value.response) is not httpx.Response
+            or value.response.request is not value.request
+            or type(value.response.history) is not list or value.response.history
+            or type(value.response.status_code) is not int
+            or type(value.response_status) is not int
+            or value.response.status_code != value.response_status):
+        _account_info_fail()
+    # A normally closed receipt remains historical capture evidence. No active
+    # group lookup or renewed deadline is needed for an issued source.
+    for deadline in (value.operation_deadline, value.receipt_deadline):
+        if type(deadline) is not float or not math.isfinite(deadline):
+            _account_info_fail()
+    wire = _account_info_wire(value.request)
+    for stamp in (value.request_started_at, value.received_at):
+        if type(stamp) is not datetime or stamp.tzinfo is not UTC:
+            _account_info_fail()
+    for mono in (value.started_mono, value.received_mono):
+        if type(mono) is not float or not math.isfinite(mono) or mono < 0:
+            _account_info_fail()
+    if (value.request_started_at > value.received_at or value.started_mono > value.received_mono
+            or type(value.raw_body) is not bytes or len(value.raw_body) > 65536
+            or type(value.raw_body_sha256) is not str
+            or type(value.response_status) is not int or value.response_status != 200):
+        _account_info_fail()
+    for origin in (value.sent_origin, value.response_origin):
+        if (type(origin) is not HttpsOrigin or type(origin.scheme) is not str
+                or type(origin.host) is not str or type(origin.port) is not int
+                or (origin.scheme, origin.host, origin.port) != ("https", "api-demo.bybit.com", 443)):
+            _account_info_fail()
+    for number in (value.accepted_attempt, value.logical_ordinal, value.physical_end):
+        if type(number) is not int or number <= 0:
+            _account_info_fail()
+    if type(value.physical_start) is not int or not 0 <= value.physical_start < value.physical_end:
+        _account_info_fail()
+    if value.envelope_time_ms is not None and type(value.envelope_time_ms) is not int:
+        _account_info_fail()
+    for text in (value.source_id, value.source_generation, value.observation_id):
+        if type(text) is not str or not text or not text.isascii() or len(text) > 256:
+            _account_info_fail()
+    return (wire[2:], _account_info_headers(value.response.headers),
+            value.sent_origin.scheme, value.sent_origin.host, value.sent_origin.port,
+            value.response_origin.scheme, value.response_origin.host, value.response_origin.port,
+            value.response_status, value.request_started_at, value.received_at,
+            value.started_mono, value.received_mono, value.raw_body, value.raw_body_sha256,
+            value.envelope_time_ms, value.accepted_attempt, value.source_id,
+            value.source_generation, value.observation_id, value.logical_ordinal,
+            value.physical_start, value.physical_end, value.operation_deadline,
+            value.receipt_deadline)
+
+
+def _account_info_capture_preimage(value: _AccountInfoCaptureV1) -> tuple[object, ...]:
+    """Full capture validation before the final actual Session binding check."""
+    from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken, _ReceiptBudget
+
+    data = _account_info_capture_data_v1(value)
+    if (type(value.budget) is not MonitoringReadBudget or type(value.group) is not ReadGroupToken
+            or type(value.operation_context) is not ContextVar
+            or value.owner._operation is not value.operation_context
+            or type(value.receipt_context) is not ContextVar
+            or value.budget._receipt is not value.receipt_context
+            or type(value.receipt) is not _ReceiptBudget or value.receipt.token is not value.group
+            or value.response.headers is not value.response_headers
+            or _account_info_headers(value.response_headers) != value.response_header_wire
+            or hashlib.sha256(value.raw_body).hexdigest() != value.raw_body_sha256):
+        _account_info_fail()
+    wire = _account_info_wire(value.request)
+    if (wire[0] is not value.wire[0] or wire[1] is not value.wire[1]
+            or wire[2:] != value.wire[2:]):
+        _account_info_fail()
+    return data
+
+
+@dataclass(repr=False)
+class _AccountInfoRoute:
+    owner: "BybitReadOnlyClient"
+    client: httpx.AsyncClient
+    budget: "MonitoringReadBudget"
+    group: "ReadGroupToken"
+    generation: object
+    owner_guard: Callable[[], None]
+    started_at: datetime
+    started_mono: float
+    physical_start: int
+    source_id: str
+    source_generation: str
+    observation_id: str
+    deadline: float | None = None
+    attempt: int = 0
+    logical_ordinal: int = 0
+    retired: bool = False
+    sent_origin: HttpsOrigin | None = None
+    response_origin: HttpsOrigin | None = None
+    received_at: datetime | None = None
+    received_mono: float | None = None
+    request: httpx.Request | None = None
+    response: httpx.Response | None = None
+    response_headers: httpx.Headers | None = None
+    response_header_wire: _AccountInfoHeaderWire | None = None
+    response_status: int | None = None
+    wire: _RiskWire | None = None
+    raw_body: bytes | None = None
+    operation_context: ContextVar[_ReadOperation | None] | None = None
+    receipt_context: "ContextVar[_ReceiptBudget | None] | None" = None
+    receipt: "_ReceiptBudget | None" = None
+    operation_deadline: float = 0.0
+    receipt_deadline: float = 0.0
+    wire_attempt: int = -1
+    last_mono: float = 0.0
+
+    def _current(self) -> None:
+        from ..execution.monitoring_budget import _ReceiptBudget
+
+        if (self.retired or type(self.owner) is not BybitReadOnlyClient
+                or self.owner._account_info_self is not self.owner
+                or self.owner._account_info_pending is not self
+                or self.owner._account_info_generation is not self.generation
+                or self.owner._client is not self.client or type(self.client) is not httpx.AsyncClient
+                or type(self.client._state) is not ClientState
+                or self.client._state not in (ClientState.UNOPENED, ClientState.OPENED)
+                or type(self.owner._account_info_source_id) is not str
+                or type(self.owner._account_info_generation_text) is not str
+                or self.owner._account_info_source_id != self.source_id
+                or self.owner._account_info_generation_text != self.source_generation
+                or self.owner.environment != "demo" or self.owner.base_url != allowed_host("demo")
+                or self.owner._injected_transport is not False):
+            _account_info_fail()
+        if (type(self.operation_context) is not ContextVar
+                or self.owner._operation is not self.operation_context
+                or self.operation_context.get() is not self.budget
+                or type(self.receipt_context) is not ContextVar
+                or self.budget._receipt is not self.receipt_context):
+            _account_info_fail()
+        receipt = self.receipt_context.get()
+        if (type(receipt) is not _ReceiptBudget or receipt is not self.receipt
+                or receipt.token is not self.group or receipt.active is not True
+                or type(self.budget.deadline) is not float or type(receipt.deadline) is not float
+                or self.budget.deadline != self.operation_deadline
+                or receipt.deadline != self.receipt_deadline):
+            _account_info_fail()
+
+    def begin_attempt(self, attempt: int) -> None:
+        self.check()
+        if type(attempt) is not int or attempt != self.wire_attempt + 1:
+            _account_info_fail()
+        if self.response is not None and not self.response.is_closed:
+            _account_info_fail()
+        self.attempt, self.wire_attempt = attempt, attempt
+        self.request = self.response = None
+        self.response_headers, self.response_header_wire = None, None
+        self.wire = None
+        self.response_status = None
+        self.sent_origin = self.response_origin = None
+        self.received_at = None
+        self.received_mono = None
+        self.raw_body = None
+
+    def request_origin(self, request: httpx.Request) -> HttpsOrigin:
+        wire = _account_info_wire(request)
+        reference = wire[3]
+        if (wire[2] != "GET" or reference.scheme != "https"
+                or reference.host != "api-demo.bybit.com" or reference.userinfo
+                or reference.path != "/v5/account/info" or reference.query not in (None, "")
+                or reference.fragment not in (None, "")
+                or request.url.raw_path != b"/v5/account/info"
+                or request.headers.get_list("accept-encoding") != ["identity"]
+                or request.headers.get_list("x-bapi-api-key") != [self.owner._api_key]
+                or request.headers.get_list("x-bapi-recv-window") != [RECV_WINDOW]):
+            _account_info_fail()
+        timestamps = request.headers.get_list("x-bapi-timestamp")
+        if (len(timestamps) != 1 or not timestamps[0].isascii() or not timestamps[0].isdigit()
+                or request.headers.get_list("x-bapi-sign") != [sign_v5(
+                    self.owner._api_secret, self.owner._api_key, timestamps[0], RECV_WINDOW, "")]):
+            _account_info_fail()
+        return HttpsOrigin("https", "api-demo.bybit.com", 443)
+
+    def check(self, request: httpx.Request | None = None) -> None:
+        self._current()
+        self.budget.require_active_group(self.group)
+        mono = time.monotonic()
+        if (type(mono) is not float or not math.isfinite(mono)
+                or mono < max(self.started_mono, self.last_mono)
+                or self.deadline is not None and mono >= self.deadline):
+            _account_info_fail()
+        self.last_mono = mono
+        if request is not None:
+            self.sent_origin = self.request_origin(request)
+            current_wire = _account_info_wire(request)
+            if self.request is None:
+                self.request, self.wire = request, current_wire
+            elif (request is not self.request or self.wire is None
+                    or current_wire[0] is not self.wire[0] or current_wire[1] is not self.wire[1]
+                    or current_wire[2:] != self.wire[2:]):
+                _account_info_fail()
+        self.owner_guard()
+        self._current()
+        if self.request is not None:
+            assert self.wire is not None
+            wire = _account_info_wire(self.request)
+            if wire[0] is not self.wire[0] or wire[1] is not self.wire[1] or wire[2:] != self.wire[2:]:
+                _account_info_fail()
+        if self.response is not None and (
+                type(self.response) is not httpx.Response or self.response.request is not self.request
+                or self.response.headers is not self.response_headers
+                or self.response_headers is None or self.response_header_wire is None
+                or _account_info_headers(self.response_headers) != self.response_header_wire
+                or self.response.history or type(self.response.status_code) is not int
+                or self.response.status_code != self.response_status):
+            _account_info_fail()
+
+
 def _exact_origin(request: httpx.Request) -> HttpsOrigin:
     url = request.url
     if url.userinfo or (url.port is not None and url.port != 443):
@@ -428,6 +759,11 @@ class BybitReadOnlyClient:
     _risk_generation: str | None
     _risk_source_id: str
     _risk_http_client: httpx.AsyncClient
+    _account_info_self: "BybitReadOnlyClient"
+    _account_info_generation: object
+    _account_info_generation_text: str
+    _account_info_source_id: str
+    _account_info_pending: _AccountInfoRoute | None
 
     def __init__(
         self,
@@ -465,6 +801,85 @@ class BybitReadOnlyClient:
         # trust_env stays at the library default so an existing proxy is used
         # unchanged. This client does not set or remove a proxy.
         self._initialize_http(transport=transport, public=False)
+        self._initialize_account_info_v1()
+
+    def _initialize_account_info_v1(self) -> None:
+        self._account_info_self = self
+        self._account_info_generation = object()
+        self._account_info_generation_text = uuid4().hex
+        self._account_info_source_id = uuid4().hex
+        self._account_info_pending = None
+
+    def _retire_account_info_v1(self) -> None:
+        self._account_info_generation = object()
+        self._account_info_generation_text = uuid4().hex
+        if self._account_info_pending is not None:
+            self._account_info_pending.retired = True
+
+    async def _capture_account_info_v1(
+        self, *, budget: "MonitoringReadBudget", group: "ReadGroupToken",
+        owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
+
+        if type(self) is not BybitReadOnlyClient or self._account_info_self is not self:
+            _account_info_fail()
+        if self._account_info_pending is not None:
+            self._retire_account_info_v1()
+            _account_info_fail()
+        self._retire_account_info_v1()
+        if (type(budget) is not MonitoringReadBudget or type(group) is not ReadGroupToken
+                or not callable(owner_guard) or self.environment != "demo"
+                or self._injected_transport is not False):
+            _account_info_fail()
+        route = _AccountInfoRoute(self, self._client, budget, group,
+            self._account_info_generation, owner_guard, datetime.now(UTC), time.monotonic(),
+            budget.physical_attempts, self._account_info_source_id,
+            self._account_info_generation_text, uuid4().hex)
+        self._account_info_pending = route
+        complete = False
+        try:
+            with self._monitoring_operation(budget):
+                route.operation_context = self._operation
+                route.receipt_context = budget._receipt
+                route.receipt = budget._receipt.get()
+                if route.receipt is None:
+                    _account_info_fail()
+                route.operation_deadline = budget.deadline
+                route.receipt_deadline = route.receipt.deadline
+                route.check()
+                _result, stamp = await self._read("/v5/account/info", [], signed=True, route=route)
+                route.check()
+                if (route.request is None or route.response is None or route.wire is None
+                        or route.sent_origin is None or route.response_origin is None
+                        or route.received_at is None or route.received_mono is None
+                        or route.raw_body is None or route.response_status is None):
+                    _account_info_fail()
+                if route.response_headers is None or route.response_header_wire is None:
+                    _account_info_fail()
+                capture = _AccountInfoCaptureV1(self, route.client, route.generation,
+                    route.request, route.response, route.response_headers,
+                    route.response_header_wire, route.wire, route.sent_origin,
+                    route.response_origin, route.response_status, route.started_at, route.received_at,
+                    route.started_mono, route.received_mono, route.raw_body,
+                    hashlib.sha256(route.raw_body).hexdigest(), stamp, route.attempt + 1,
+                    route.source_id, route.source_generation,
+                    route.observation_id, route.logical_ordinal, route.physical_start,
+                    budget.physical_attempts, budget, group, route.operation_context,
+                    route.receipt_context, route.receipt, route.operation_deadline,
+                    route.receipt_deadline)
+                _account_info_capture_preimage(capture)
+                route.check()
+                complete = True
+                return capture
+        except Exception:  # noqa: BLE001 - neither private response nor guard text may escape.
+            complete = False
+        finally:
+            if self._account_info_pending is route:
+                if not complete:
+                    self._retire_account_info_v1()
+                self._account_info_pending = None
+        raise BybitReadError("account_info_capture_failed") from None
 
     def _initialize_http(self, *, transport: httpx.AsyncBaseTransport | None,
                          public: bool) -> None:
@@ -501,6 +916,7 @@ class BybitReadOnlyClient:
         client._log_filter = _DropCredentialLogs(())
         client._loggers = []
         client._initialize_http(transport=transport, public=True)
+        client._initialize_account_info_v1()
         client._risk_source_id = uuid4().hex
         client._risk_generation = uuid4().hex
         client._risk_http_client = client._client
@@ -550,6 +966,7 @@ class BybitReadOnlyClient:
         )
 
     async def aclose(self) -> None:
+        self._retire_account_info_v1()
         if self._public_source_environment is not None:
             # Revoke in-flight raw risk reads before awaiting transport cleanup.
             self._risk_generation = None
@@ -795,7 +1212,7 @@ class BybitReadOnlyClient:
 
     async def _read(
         self, path: str, params: list[tuple[str, str]], *, signed: bool,
-        deadline: float | None = None, route: _InstrumentRoute | None = None,
+        deadline: float | None = None, route: _InstrumentRoute | _AccountInfoRoute | None = None,
     ) -> tuple[dict[str, object], int | None]:
         if path not in READ_ONLY_PATHS:
             raise ReadOnlyViolation()
@@ -803,7 +1220,7 @@ class BybitReadOnlyClient:
         if operation is not None:
             bounded = operation.begin_read()
             deadline = bounded if deadline is None else min(deadline, bounded)
-        if isinstance(route, _RiskRoute):
+        if isinstance(route, (_RiskRoute, _AccountInfoRoute)):
             route.deadline = deadline
             route.check()
         if isinstance(route, _RiskRoute):
@@ -814,6 +1231,8 @@ class BybitReadOnlyClient:
         attempt = 0
         while True:
             self._raise_if_deadline(deadline)
+            if isinstance(route, _AccountInfoRoute):
+                route.begin_attempt(attempt)
             request = self._build_request(path, params, signed=signed)
             if route is not None:
                 request.headers["Accept-Encoding"] = "identity"
@@ -861,7 +1280,7 @@ class BybitReadOnlyClient:
                 operation.response(response.status_code, response.headers)
             if response.status_code in _RETRY_STATUSES and attempt < len(self.retry_waits):
                 await response.aclose()
-                if isinstance(route, _RiskRoute):
+                if isinstance(route, (_RiskRoute, _AccountInfoRoute)):
                     route.check()
                 self._raise_if_deadline(deadline)
                 await self._sleeper(self.retry_waits[attempt])
@@ -872,7 +1291,7 @@ class BybitReadOnlyClient:
             # Account info can return retCode 0 with no envelope time.
             # Wallet, positions, and orders still require a positive server time.
             try:
-                if route is None:
+                if route is None or isinstance(route, _AccountInfoRoute):
                     accepted = self._accepted(response, require_time=path != "/v5/account/info")
                 elif isinstance(route, _RiskRoute):
                     accepted = self._accepted_risk(response, route)
@@ -955,19 +1374,29 @@ class BybitReadOnlyClient:
         return cast(dict[str, object], result), stamp
 
     async def _bounded_response(self, request: httpx.Request, *,
-                                route: _InstrumentRoute | None = None) -> httpx.Response:
+                                route: _InstrumentRoute | _AccountInfoRoute | None = None) -> httpx.Response:
         if route is not None:
             route.check()
-            route.sent_origin = (route.request_origin(request) if isinstance(route, _RiskRoute)
+            route.sent_origin = (route.request_origin(request) if isinstance(route, (_RiskRoute, _AccountInfoRoute))
                                  else _check_exact_request(request, route.key))
             # wait_for schedules this coroutine. Charge before the final
             # callbacks/proof; rejection at that boundary is still charged.
             route.budget.before_attempt(route.attempt)
-            if isinstance(route, _RiskRoute):
+            if isinstance(route, (_RiskRoute, _AccountInfoRoute)):
                 route.check(request)
         response = await self._client.send(request, stream=True)
         primary: BaseException | None = None
         try:
+            if isinstance(route, _AccountInfoRoute):
+                route.response, route.response_status = response, response.status_code
+                # Seal before callbacks. Header proof failure is deferred until
+                # the existing quota/ban observation has had first priority.
+                route.response_headers = response.headers
+                try:
+                    _encoding = response.headers.encoding
+                    route.response_header_wire = _account_info_headers(response.headers)
+                except BybitReadError:
+                    route.response_header_wire = None
             if route is not None:
                 # Quota/ban observation must precede any encoding/body/origin rejection.
                 from ..execution.monitoring_budget import MonitoringBudgetError
@@ -1018,7 +1447,7 @@ class BybitReadOnlyClient:
                 if actual_request is None or response.history:
                     raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
                 route.response_origin = (route.request_origin(actual_request)
-                                         if isinstance(route, _RiskRoute)
+                                         if isinstance(route, (_RiskRoute, _AccountInfoRoute))
                                          else _check_exact_request(actual_request, route.key))
                 if route.response_origin != route.sent_origin:
                     raise InstrumentSourceError("INSTRUMENT_SOURCE_ORIGIN_MISMATCH")
@@ -1035,12 +1464,29 @@ class BybitReadOnlyClient:
                     if len(significant) > 5 or int(significant) > 65536:
                         raise InstrumentSourceError("INSTRUMENT_SOURCE_RESOURCE_LIMIT")
             data = bytearray()
-            async for chunk in response.aiter_bytes():
-                if route is not None:
+            if isinstance(route, _AccountInfoRoute):
+                iterator = response.aiter_bytes().__aiter__()
+                while True:
                     route.check()
-                if len(data) + len(chunk) > (_MAX_BYTES if route is None else 65536):
-                    raise BybitReadError("response_too_large")
-                data.extend(chunk)
+                    try:
+                        chunk = await anext(iterator)
+                    except StopAsyncIteration:
+                        route.check()
+                        break
+                    route.check()
+                    if len(data) + len(chunk) > 65536:
+                        raise BybitReadError("response_too_large")
+                    data.extend(chunk)
+                if lengths and int(lengths[0]) != len(data):
+                    _account_info_fail()
+                route.raw_body = bytes(data)
+            else:
+                async for chunk in response.aiter_bytes():
+                    if route is not None:
+                        route.check()
+                    if len(data) + len(chunk) > (_MAX_BYTES if route is None else 65536):
+                        raise BybitReadError("response_too_large")
+                    data.extend(chunk)
             if route is not None:
                 route.received_at = datetime.now(UTC)
                 route.received_mono = time.monotonic()
@@ -1055,7 +1501,22 @@ class BybitReadOnlyClient:
             primary = error
             raise
         finally:
-            if isinstance(route, _RiskRoute):
+            if isinstance(route, _AccountInfoRoute):
+                owner_error: BaseException | None = None
+                try:
+                    route.check()
+                except BaseException as error:  # noqa: BLE001 - defer owner/control failure until mandatory cleanup.
+                    owner_error = error
+                try:
+                    await response.aclose()
+                except Exception:
+                    if primary is None and owner_error is None:
+                        raise
+                if primary is None:
+                    if owner_error is not None:
+                        raise owner_error
+                    route.check()
+            elif isinstance(route, _RiskRoute):
                 try:
                     await response.aclose()
                 except Exception:
