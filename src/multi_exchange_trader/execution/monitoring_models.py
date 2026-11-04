@@ -292,6 +292,7 @@ class WorkerMonitoringStatus:
     retained_stamp: StreamStamp | None = None
     fault: str | None = None
     resources_retained: bool = False
+    unmanaged_usdt_linear_activity: bool | None = None
     trading_enabled: Literal[False] = field(default=False, init=False)
     credit_authorized: Literal[False] = field(default=False, init=False)
     production_supported: Literal[False] = field(default=False, init=False)
