@@ -18,6 +18,7 @@ from threading import RLock
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from . import risk_v2_contracts as c
+from .native_capabilities import describe_native_capability
 from .native_events import (
     NativeEventContext,
     NativeEventDecoder,
@@ -186,6 +187,97 @@ class NativeOrderRequest:
                 tp_trigger_by=attached.trigger_source, sl_trigger_by=attached.trigger_source,
                 tp_order_type="Market", sl_order_type="Market", tpsl_mode="Full")
         return result
+
+
+@dataclass(frozen=True)
+class NativeConditionalProtectionRequestV1:
+    """Validated standalone protection intent; pinned 1.231.0 cannot forward its source.
+
+    This value is an offline admission contract only. ``NativeBybitBridge`` rejects
+    it before any registration or strategy call because the pinned demo adapter's
+    standalone conditional path has no ``triggerBy`` parameter. Bybit V5 standalone
+    conditional orders use ``triggerPrice``, ``triggerDirection`` and ``triggerBy``;
+    attached ``tpTriggerBy``/``slTriggerBy`` fields are a different request shape.
+    The supplied ``owned_position_quantity`` is caller data, not authenticated
+    position evidence, and this type cannot qualify a live request.
+    """
+
+    scope: ProtectionScope
+    owned: OwnedOrder
+    position_side: Literal["BUY", "SELL"]
+    owned_position_quantity: Decimal
+    reference_price: Decimal
+    trigger_direction: Literal[1, 2]
+    position_idx: Literal[0]
+
+    def __post_init__(self) -> None:
+        scope_fields = {"account_id", "environment"}
+        owner_fields = {"client_order_id", "position_id", "instrument_id", "side", "role",
+                        "quantity", "reduce_only", "generation", "policy_revision",
+                        "trigger_price", "trigger_source"}
+        request_fields = {"scope", "owned", "position_side", "owned_position_quantity",
+                          "reference_price", "trigger_direction", "position_idx"}
+        if (type(self.__dict__) is not dict or set(self.__dict__) != request_fields
+                or type(self.scope) is not ProtectionScope
+                or type(self.scope.__dict__) is not dict
+                or set(self.scope.__dict__) != scope_fields
+                or type(self.scope.account_id) is not str
+                or not self.scope.account_id.strip()
+                or len(self.scope.account_id) > 256
+                or self.scope.account_id != self.scope.account_id.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in self.scope.account_id)
+                or type(self.scope.environment) is not str
+                or self.scope.environment != "DEMO"
+                or type(self.owned) is not OwnedOrder
+                or type(self.owned.__dict__) is not dict
+                or set(self.owned.__dict__) != owner_fields):
+            raise ValueError("EXPLICIT_NATIVE_DEMO_OWNERSHIP_REQUIRED")
+        owned = self.owned
+        if (type(owned.client_order_id) is not str
+                or type(owned.position_id) is not str
+                or not 1 <= len(owned.position_id) <= 256
+                or owned.position_id != owned.position_id.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in owned.position_id)
+                or type(owned.policy_revision) is not str
+                or not 1 <= len(owned.policy_revision) <= 256
+                or owned.policy_revision != owned.policy_revision.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in owned.policy_revision)
+                or type(owned.generation) is not int or owned.generation < 0
+                or type(owned.instrument_id) is not str
+                or re.fullmatch(r"[A-Z0-9]{2,48}-LINEAR\.BYBIT", owned.instrument_id) is None
+                or re.fullmatch(r"ec_[0-9a-f]{32}", owned.client_order_id) is None
+                or type(owned.role) is not str
+                or owned.role not in ("STOP", "TAKE_PROFIT")
+                or type(owned.reduce_only) is not bool or owned.reduce_only is not True
+                or type(owned.side) is not str or owned.side not in ("BUY", "SELL")
+                or type(self.position_side) is not str
+                or self.position_side not in ("BUY", "SELL")
+                or type(owned.quantity) is not Decimal
+                or type(self.owned_position_quantity) is not Decimal
+                or type(self.reference_price) is not Decimal
+                or type(owned.trigger_price) is not Decimal
+                or owned.side == self.position_side
+                or type(self.trigger_direction) is not int
+                or self.trigger_direction not in (1, 2)
+                or type(self.position_idx) is not int or self.position_idx != 0
+                or type(owned.trigger_source) is not str
+                or owned.trigger_source not in ("LastPrice", "IndexPrice", "MarkPrice")
+                or owned.trigger_price is None):
+            raise ValueError("UNSUPPORTED_NATIVE_DEMO_CONDITIONAL")
+        quantity = bounded_decimal(owned.quantity)
+        position_quantity = bounded_decimal(self.owned_position_quantity)
+        reference = bounded_decimal(self.reference_price)
+        trigger = bounded_decimal(owned.trigger_price)
+        if quantity > position_quantity:
+            raise ValueError("NATIVE_CONDITIONAL_QUANTITY_EXCEEDS_OWNED_POSITION")
+        rising = (
+            (self.position_side == "BUY" and owned.role == "TAKE_PROFIT")
+            or (self.position_side == "SELL" and owned.role == "STOP")
+        )
+        expected_direction = 1 if rising else 2
+        direction_matches = trigger > reference if rising else trigger < reference
+        if self.trigger_direction != expected_direction or not direction_matches:
+            raise ValueError("NATIVE_CONDITIONAL_DIRECTION_INVALID")
 
 
 @dataclass(frozen=True)
@@ -897,6 +989,32 @@ class NativeBybitBridge:
                 return result
             finally:
                 self._building_v2.remove(key)
+
+    def submit_conditional_protection_v1(
+        self, request: NativeConditionalProtectionRequestV1,
+    ) -> NativeSubmission:
+        """Fail closed until the pinned adapter forwards standalone ``triggerBy``."""
+        with self._lock:
+            self._deny_preparation_reentry_v2()
+            if type(request) is not NativeConditionalProtectionRequestV1:
+                raise ValueError("MATCHING_NATIVE_SCOPE_REQUIRED")
+            request.__post_init__()  # Recheck the exact immutable field set at the boundary.
+            if request.scope != self.scope:
+                raise ValueError("MATCHING_NATIVE_SCOPE_REQUIRED")
+            trigger_source = cast(
+                Literal["MarkPrice", "LastPrice", "IndexPrice"], request.owned.trigger_source,
+            )
+            capability = describe_native_capability(
+                native_version=NATIVE_VERSION,
+                command_kind=("STANDALONE_STOP" if request.owned.role == "STOP"
+                              else "STANDALONE_TAKE_PROFIT"),
+                trigger_source=trigger_source,
+            )
+            # v1.231.0's DEMO HTTP adapter drops standalone trigger sources. Do not
+            # register or dispatch a protection order with an unverified trigger source.
+            if capability.parameter_forwarding != "SUPPORTED":
+                raise ValueError(capability.reason_code)
+            raise ValueError("NATIVE_CONDITIONAL_SUBMISSION_DISABLED")
 
     def submit(self, request: NativeOrderRequest) -> NativeSubmission:
         with self._lock:

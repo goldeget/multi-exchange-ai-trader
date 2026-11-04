@@ -86,6 +86,26 @@ def request(**changes: object) -> Any:
     return replace(result, **changes)
 
 
+def conditional_protection_request(*, role: str = "STOP", source: str = "MarkPrice",
+                                   **changes: object) -> Any:
+    native = api()
+    is_stop = role == "STOP"
+    owned = OwnedOrder(CLIENT_ID, "position-1", INSTRUMENT, "SELL", role,
+        Decimal("0.010"), True, 0, "policy-1",
+        Decimal("49000" if is_stop else "52000"), source)
+    values: dict[str, object] = {
+        "scope": SCOPE,
+        "owned": owned,
+        "position_side": "BUY",
+        "owned_position_quantity": Decimal("0.010"),
+        "reference_price": Decimal(50000),
+        "trigger_direction": 2 if is_stop else 1,
+        "position_idx": 0,
+    }
+    values.update(changes)
+    return native.NativeConditionalProtectionRequestV1(**values)
+
+
 def bridge(strategy: FakeStrategy | None = None) -> Any:
     return api().NativeBybitBridge(scope=SCOPE, native_account_id="BYBIT-UNIFIED",
         factory=FakeFactory(), strategy=strategy or FakeStrategy(), bindings=bindings())
@@ -212,6 +232,72 @@ def test_protection_direction_and_trigger_are_validated(stop: str, tp: str, trig
     with pytest.raises(ValueError):
         attached = api().AttachedProtection(Decimal(stop), Decimal(tp), trigger)
         bridge().submit(request(attached=attached))
+
+
+@pytest.mark.parametrize("role", ["STOP", "TAKE_PROFIT"])
+@pytest.mark.parametrize("source", ["MarkPrice", "LastPrice", "IndexPrice"])
+def test_owned_standalone_protection_is_typed_but_pinned_adapter_fails_closed(
+    role: str, source: str,
+) -> None:
+    strategy = FakeStrategy()
+    instance = bridge(strategy)
+    candidate = conditional_protection_request(role=role, source=source)
+    with pytest.raises(ValueError, match="^EXPLICIT_TRIGGER_SOURCE_NOT_FORWARDED$"):
+        instance.submit_conditional_protection_v1(candidate)
+    assert strategy.commands == []
+    assert instance._requests == {}
+    assert instance._submissions == {}
+
+
+@pytest.mark.parametrize("changes", [
+    {"scope": ProtectionScope("fixture-account", "LIVE")},
+    {"owned": replace(conditional_protection_request().owned,
+                       instrument_id="BTCUSDT-SPOT.BYBIT")},
+    {"owned": replace(conditional_protection_request().owned,
+                       side="BUY")},
+    {"owned": replace(conditional_protection_request().owned,
+                       role="EXIT")},
+    {"owned": replace(conditional_protection_request().owned,
+                       reduce_only=False)},
+    {"owned": replace(conditional_protection_request().owned,
+                       quantity=Decimal("0.011"))},
+    {"owned": replace(conditional_protection_request().owned,
+                       client_order_id="unowned-order")},
+    {"owned_position_quantity": "0.010"},
+    {"owned": replace(conditional_protection_request().owned,
+                       trigger_source="TradePrice")},
+    {"owned_position_quantity": Decimal("0.009")},
+    {"position_side": "HOLD"},
+    {"trigger_direction": 1},
+    {"trigger_direction": True},
+    {"position_idx": 1},
+    {"position_idx": False},
+])
+def test_conditional_request_fails_closed_on_identity_direction_and_scope(
+    changes: dict[str, object],
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        conditional_protection_request(**changes)
+
+
+def test_conditional_request_requires_exact_complete_constructor_fields() -> None:
+    native = api()
+    candidate = conditional_protection_request()
+    values = dict(candidate.__dict__)
+    values.pop("position_idx")
+    with pytest.raises(TypeError):
+        native.NativeConditionalProtectionRequestV1(**values)
+    values = dict(candidate.__dict__)
+    values["unexpected"] = True
+    with pytest.raises(TypeError):
+        native.NativeConditionalProtectionRequestV1(**values)
+
+
+def test_conditional_request_must_match_bridge_account_scope() -> None:
+    wrong_account = conditional_protection_request(
+        scope=ProtectionScope("other-account", "DEMO"))
+    with pytest.raises(ValueError, match="^MATCHING_NATIVE_SCOPE_REQUIRED$"):
+        bridge().submit_conditional_protection_v1(wrong_account)
 
 
 def test_reduce_only_market_exit_has_no_attached_protection() -> None:
