@@ -280,6 +280,14 @@ class NativeSubmission:
     code: Literal["NATIVE_SUBMIT_INVOKED", "NATIVE_SUBMIT_AMBIGUOUS"]
 
 
+def _native_class_member_v2(owner_class: Any, name: str) -> Any:
+    """Retain the unbound defining member, including ordinary inherited methods."""
+    for parent in owner_class.__mro__:
+        if name in parent.__dict__:
+            return parent.__dict__[name]
+    raise ValueError("NATIVE_PREPARED_INSTALLATION_REQUIRED")
+
+
 class _NativePreparedInstallationV2:
     """Private builder provenance only; never source/account/financial approval."""
 
@@ -291,7 +299,8 @@ class _NativePreparedInstallationV2:
         self.owners = (assembly, assembly.bridge, node, kernel, node.trader, node.cache,
             kernel.msgbus, kernel.clock, strategy.clock, strategy, strategy.order_factory,
             assembly.execution_client, assembly.channel, strategy_class, factory_class, client_class,
-            strategy_class.__dict__["submit_order"], factory_class.__dict__["limit"])
+            _native_class_member_v2(strategy_class, "submit_order"),
+            _native_class_member_v2(factory_class, "limit"))
         self.original_owners = self.owners
         self.generation = object()
         self.closed = False
@@ -485,8 +494,8 @@ class NativeBybitBridge:
                 or strategy.msgbus is not bus or self._factory is not factory
                 or self._strategy is not strategy or self.scope is not channel.scope
                 or self.native_account_id != channel.native_account_id
-                or strategy_class.__dict__["submit_order"] is not submit_impl
-                or factory_class.__dict__["limit"] is not limit_impl):
+                or _native_class_member_v2(strategy_class, "submit_order") is not submit_impl
+                or _native_class_member_v2(factory_class, "limit") is not limit_impl):
             raise ValueError("NATIVE_PREPARED_INSTALLATION_REQUIRED")
 
     @contextmanager

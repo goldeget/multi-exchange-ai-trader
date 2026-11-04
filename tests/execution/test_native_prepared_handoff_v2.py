@@ -93,6 +93,51 @@ class Client:
         raise AssertionError("initialized seed is not a monitoring execution")
 
 
+@pytest.mark.parametrize("change", ["none", "strategy-shadow", "strategy-base", "factory-shadow", "factory-base"])
+async def test_inherited_original_class_methods_keep_route_and_reject_later_overrides(
+    monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    base_strategy, base_factory = Strategy, Factory
+
+    class InheritedStrategy(Strategy):
+        def on_stop(self) -> None:
+            pass
+
+        def on_order_event(self, event: object) -> None:
+            pass
+
+    class InheritedFactory(Factory):
+        pass
+
+    monkeypatch.setattr(sys.modules[__name__], "Strategy", InheritedStrategy)
+    monkeypatch.setattr(sys.modules[__name__], "Factory", InheritedFactory)
+    h = await built(monkeypatch)
+    try:
+        owners = h.bridge._prepared_installation_v2.owners
+        assert owners[-2] is base_strategy.__dict__["submit_order"]
+        assert owners[-1] is base_factory.__dict__["limit"]
+        if change != "none":
+            target = {"strategy-shadow": InheritedStrategy, "strategy-base": base_strategy,
+                      "factory-shadow": InheritedFactory, "factory-base": base_factory}[change]
+            method = "submit_order" if change.startswith("strategy") else "limit"
+
+            def override(*args: Any, **kwargs: Any) -> None:
+                raise AssertionError("a changed route must not execute")
+
+            monkeypatch.setattr(target, method, override)
+            with pytest.raises(ValueError, match="NATIVE_PREPARED_INSTALLATION_REQUIRED"), h.bridge._prepare_fixed_limit_handoff_v2(request()):
+                pytest.fail("an override must invalidate the original route")
+            assert h.factory.calls == h.strategy.commands == []
+        else:
+            with h.bridge._prepare_fixed_limit_handoff_v2(request()) as data:
+                h.bridge._seal_prepared_fixed_limit_v2(data)
+                assert h.bridge._handoff_prepared_fixed_limit_v2(data).state == "SUBMITTING"
+                assert h.strategy.commands == [(data.order, None, None, data.params)]
+                assert h.strategy.cache.order(ID) is data.order
+    finally:
+        await close(h)
+
+
 class AdapterFactory:
     @staticmethod
     def create(**kwargs: Any) -> Client:
@@ -508,27 +553,41 @@ def test_owner_ci_gate_rejects_each_malformed_receipt(
         ET.SubElement(suite, "testcase", name=name,
             classname="tests.execution.test_native_prepared_owner_linux")
     if case == "balanced":
-        suite.set("errors", "-1"); suite.set("failures", "1")
+        suite.set("errors", "-1")
+        suite.set("failures", "1")
     elif case in ("negative", "unicode", "signed", "huge", "leading"):
         suite.set("tests", {"negative": "-4", "unicode": "４", "signed": "+4", "huge": "4" * 1000, "leading": "04"}[case])
     elif case.startswith("missing-"):
         del suite.attrib[case.removeprefix("missing-")]
     elif case in ("errors", "failures", "skipped"):
         suite.set(case, "1")
-    elif case == "wrong-module": suite[0].set("classname", "wrong")
-    elif case == "duplicate": suite[1].set("name", names[0])
-    elif case == "unknown": suite[0].set("name", "unknown")
-    elif case == "short": suite.remove(suite[3])
-    elif case == "nested-case": suite[0].append(suite[1]); suite.remove(suite[1])
-    elif case == "nested-suite": ET.SubElement(suite, "testsuite", tests="0", errors="0", failures="0", skipped="0")
-    elif case == "extra-root": ET.SubElement(root, "extra")
-    elif case == "wrong-root": root.tag = "wrong"
-    elif case.startswith("nested-"): ET.SubElement(suite[0], case.removeprefix("nested-"))
+    elif case == "wrong-module":
+        suite[0].set("classname", "wrong")
+    elif case == "duplicate":
+        suite[1].set("name", names[0])
+    elif case == "unknown":
+        suite[0].set("name", "unknown")
+    elif case == "short":
+        suite.remove(suite[3])
+    elif case == "nested-case":
+        suite[0].append(suite[1])
+        suite.remove(suite[1])
+    elif case == "nested-suite":
+        ET.SubElement(suite, "testsuite", tests="0", errors="0", failures="0", skipped="0")
+    elif case == "extra-root":
+        ET.SubElement(root, "extra")
+    elif case == "wrong-root":
+        root.tag = "wrong"
+    elif case.startswith("nested-"):
+        ET.SubElement(suite[0], case.removeprefix("nested-"))
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "native-prepared-owner.xml"
-    if case == "empty": target.write_text("", encoding="utf8")
-    elif case == "malformed": target.write_text("<bad", encoding="utf8")
-    elif case != "absent": ET.ElementTree(root).write(target)
+    if case == "empty":
+        target.write_text("", encoding="utf8")
+    elif case == "malformed":
+        target.write_text("<bad", encoding="utf8")
+    elif case != "absent":
+        ET.ElementTree(root).write(target)
     if case == "valid":
         exec(compile(code, str(workflow), "exec"), {})  # noqa: S102 - trusted local CI validator; synthetic XML only.
     else:
