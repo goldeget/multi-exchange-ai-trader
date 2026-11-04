@@ -106,7 +106,17 @@ async def test_worker_start_and_refresh_keep_one_private_saved_source(
         await refresh()
 
     monkeypatch.setattr(worker_cli, "BybitDemoAccountSession", Session)
-    monkeypatch.setattr(worker_cli, "ExecutionWorker", lambda **k: SimpleNamespace(**k))
+
+    def fake_worker(**kwargs: Any) -> Any:
+        worker = SimpleNamespace(**kwargs)
+
+        async def refresh_binding(**expectations: Any) -> None:
+            worker.binding = await worker.session.authenticate(**expectations)
+
+        worker._refresh_binding_v2 = refresh_binding
+        return worker
+
+    monkeypatch.setattr(worker_cli, "ExecutionWorker", fake_worker)
     monkeypatch.setattr(worker_cli, "RuntimePolicyBook", lambda p: object())
     monkeypatch.setattr(worker_cli, "install_signal_handlers", lambda *a: None)
     monkeypatch.setattr(worker_cli, "serve_monitor", serve)

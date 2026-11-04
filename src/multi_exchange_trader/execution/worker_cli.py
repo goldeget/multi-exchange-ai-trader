@@ -11,14 +11,14 @@ import asyncio
 import json
 import os
 import signal
-import sys
+import sys as _sys
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import NoReturn
 
 from ..account.config import require_demo_credentials
-from ..credential_resolution import CredentialResolver
+from ..credential_resolution import CredentialResolver as _CredentialResolver
 from ..worker_account_selection import resolve_worker_expectations
 from .account_binding import BybitDemoAccountSession
 from .protection import ProtectionScope
@@ -26,6 +26,10 @@ from .risk import EntryDecision, ReservationTotals
 from .runtime import QUALIFICATION_BLOCKERS, RuntimeBlocked
 from .runtime_policy import RuntimePolicyBook
 from .worker import LEGACY_JOURNAL_BLOCKER, ExecutionWorker, TrustedPlanRegistry
+
+# Keep the existing CLI adapter module attributes explicit for typed callers.
+sys = _sys
+CredentialResolver = _CredentialResolver
 
 # Configured validation stays bound to the genuine class, independently of the
 # passive constructor seam used by callers and offline integrations.
@@ -106,7 +110,7 @@ async def _run(args: argparse.Namespace) -> None:
             max_age=timedelta(seconds=30))
 
         async def refresh() -> None:
-            worker.binding = await session.authenticate(expected_uid=expectations._uid,
+            await worker._refresh_binding_v2(expected_uid=expectations._uid,
                 expected_parent_uid=expectations._parent_uid,
                 expected_is_master=expectations._is_master)
 

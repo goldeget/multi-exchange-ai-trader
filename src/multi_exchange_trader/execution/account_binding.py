@@ -48,7 +48,7 @@ from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
 
 if TYPE_CHECKING:
-    from .bybit_linear_model_inputs_v1 import BybitModelSourceRefV1
+    from .bybit_linear_model_inputs_v1 import BybitModelSourceRefV1, BybitUtaModeV1
 
 _PERMISSIONS = {
     "ContractTrade": frozenset({"Order", "Position"}),
@@ -517,6 +517,52 @@ class BybitDemoAccountSession:
             if self._linear_info_requiring is slot:
                 self._linear_info_requiring = None
         raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED") from None
+
+    def _project_linear_account_mode_v1(
+        self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+    ) -> BybitUtaModeV1:
+        """Project data from the original current capture, without issuing authority."""
+        mode: BybitUtaModeV1 | None = None
+        try:
+            from ..account.bybit_readonly import _parse_json
+            from .bybit_linear_model_inputs_v1 import BybitUtaModeV1
+
+            self._require_linear_account_info_v1(source, binding=binding, scope=scope)
+            slot = self._linear_info_current
+            if type(slot) is not _LinearAccountInfoSlot or slot.source is not source:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            capture = slot.capture
+            if type(capture) is not _AccountInfoCaptureV1 or type(capture.raw_body) is not bytes:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            raw = capture.raw_body
+            envelope = _parse_json(raw)
+            if (type(envelope) is not dict or type(envelope.get("retCode")) is not int
+                    or envelope["retCode"] != 0 or type(envelope.get("result")) is not dict):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            result = envelope["result"]
+            status = result.get("unifiedMarginStatus")
+            margin = result.get("marginMode")
+            updated = result.get("updatedTime")
+            if (type(status) is not int or status not in (5, 6)
+                    or type(margin) is not str or margin != "ISOLATED_MARGIN"
+                    or type(updated) is not str or not 1 <= len(updated) <= 15
+                    or not updated.isascii() or not updated.isdigit()):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            updated_ms = int(updated)
+            if not 1 <= updated_ms <= 253402300799999:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            mode = BybitUtaModeV1(source, 5 if status == 5 else 6, "ISOLATED_MARGIN", updated_ms)
+            self._require_linear_account_info_v1(source, binding=binding, scope=scope)
+            # Only original local links/exact bytes after the final binding callbacks.
+            if (self._linear_info_current is not slot or slot.source is not source
+                    or slot.capture is not capture or type(capture.raw_body) is not bytes
+                    or capture.raw_body is not raw):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            return mode
+        except Exception:  # noqa: BLE001 - private wire/guard context must not escape.
+            mode = None
+        raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED") from None
 
     def __repr__(self) -> str:
         return "BybitDemoAccountSession(environment=DEMO, credentials=REDACTED)"
