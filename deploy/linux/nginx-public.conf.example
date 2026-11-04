@@ -25,6 +25,8 @@ server {
         # Preserve the original authority/origin; do not make public requests look local.
         proxy_set_header Host $http_host;
         proxy_set_header Origin $http_origin;
+        # Overwrite any client-supplied value with the authenticated Basic Auth user.
+        proxy_set_header X-Trader-Operator $remote_user;
         # Basic credentials are checked at nginx and are not application credentials.
         proxy_set_header Authorization "";
         proxy_set_header Connection "";

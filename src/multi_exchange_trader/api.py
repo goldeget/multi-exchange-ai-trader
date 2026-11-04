@@ -254,7 +254,7 @@ def create_app(service: MarketDataService | None = None, *,
     install_account(application, public_origin=public_origin)
     install_demo_account_view(application, credential_context=credential_context)
     install_controls(application, credential_context=credential_context)
-    install_automatic_settings(application)
+    install_automatic_settings(application, public_origin=public_origin)
     install_spot(application)
     return application
 

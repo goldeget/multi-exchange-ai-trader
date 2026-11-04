@@ -1,5 +1,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Field,Panel} from '../../ui/components';
+import {BuiltinStrategyPublication} from './BuiltinStrategyPublication';
 import {automaticPolicyEqual,automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,parseStrategyPublication,policyInstrumentName,policyReferenceName,policyRiskCounts,policyRiskDecimals,validateAutomaticPolicy,type AutomaticPolicy,type AutomaticSettingsSnapshot,type LegacyPolicy,type PolicyCaps,type PolicyInstrument,type PolicyProduct,type PolicyReference,type PolicyRisk,type PolicyScope,type StrategyPublicationSnapshot} from './contracts';
 const amounts:Record<string,string>={capital_usdt:'자동매매에 맡길 최대 자금 (USDT)',leverage_min:'최소 레버리지',leverage_max:'최대 레버리지',per_trade_loss:'거래당 최대 손실 (USDT)',max_daily_loss:'일일 최대 손실 (USDT)',max_drawdown:'최대 누적 낙폭 (USDT)',max_total_notional:'전체 포지션 최대 명목 금액 (USDT)',max_total_risk:'전체 포지션 최대 위험액 (USDT)',max_total_margin:'전체 최대 증거금 (USDT)',margin_allocation:'거래당 증거금 배정액 (USDT)',liquidation_buffer_fraction:'청산가 안전 여유 비율 (0 이상 1 미만)',max_quote_age_seconds:'시세 최대 경과 시간 (초)',max_evidence_age_seconds:'계좌 확인 최대 경과 시간 (초)'};
 const counts:Record<string,string>={max_consecutive_losses:'최대 연속 손실 횟수',max_positions:'최대 동시 포지션 수'};
@@ -76,6 +77,7 @@ function AutomaticSettingsEditor(){
  const invalid=rawInvalid||!!policy&&validation?.policy===policy&&!validation.valid;
  const typed=source.data?.schema_version===2;
  const publicationMismatch=source.publication!==null&&(!policy?.strategy?.catalog||!automaticPolicyEqual(policy.strategy.catalog,source.publication.catalog));
+ const builtinPublicationExists=source.publication?.catalog.entries.some(entry=>entry.reference.strategy_id==='builtin-sma-atr'&&entry.reference.revision==='r1')??false;
  function update(next:AutomaticPolicy,nextText:InstrumentText=text){if(revision!==undefined){const value={revision,policy:next,instrumentText:nextText};editRef.current=value;setEdit(value)}}
  function changeInstruments(name:keyof InstrumentText,value:string){
   if(!policy)return;
@@ -136,6 +138,7 @@ function AutomaticSettingsEditor(){
     {select('거래 권한 프로필',scope?.permission_profile_revision,{BYBIT_SPOT_LINEAR_NO_FUNDS_V1:'SPOT·LINEAR 거래 / 자금 이동 권한 없음'},value=>changeScope({permission_profile_revision:(value||null) as PolicyScope['permission_profile_revision']}))}
     <Field label="허용 거래 대상 (거래소/상품/종목)" value={text.allowed_instruments} disabled={disabled} helper="예: BYBIT/LINEAR/BTCUSDT. 쉼표로 구분하며 입력 순서를 보관합니다." onChange={value=>changeInstruments('allowed_instruments',value)}/>
     <Field label="완전 자동 선택 거래 대상 (거래소/상품/종목)" value={text.selected_instruments} disabled={disabled} helper="FULL_AUTO는 선택 목록, ALL_IN_ONE은 허용 목록을 사용합니다. 자동 선택하지 않습니다." onChange={value=>changeInstruments('selected_instruments',value)}/>
+    {typed&&source.data&&source.capable&&!source.error&&!source.loading&&!builtinPublicationExists&&<BuiltinStrategyPublication revision={source.data.revision} generation={source.publication?.generation??0} disabled={disabled||edit!==null||publicationMismatch} onPublished={reload}/>}
     {incompatible&&<><p role="alert">선택한 거래 상품과 기존 거래 대상 또는 위험관리 값이 충돌합니다. 입력값을 그대로 보관했으며 저장할 수 없습니다.</p><p className="helper">아래 초기화는 허용·선택 거래 대상, 허용·선택 전략 참조, 위험관리 전체를 비웁니다. 계좌·운용 모드·허용 상품과 전체 과거 카탈로그는 보관합니다. 초기화 후 별도로 저장해야 합니다.</p><button className="secondary" disabled={disabled} onClick={()=>{if(policy&&scope){update({...policy,scope:{...scope,allowed_instruments:null,selected_instruments:null},strategy:strategy?{...strategy,allowed:null,selected:null}:null,risk_v2:null},{allowed_instruments:'',selected_instruments:''});setNotice('아직 저장하지 않은 초기화입니다. 변경 내용을 검토한 뒤 별도로 저장하세요.')}}}>거래 상품 변경에 맞춰 초안 비우기</button></>}
     <h3>정확한 전략 참조와 대상별 미리보기</h3>
     <p className="helper">전체 카탈로그의 정적 해시 일치만 확인합니다. 실제 전략 파일·승인 출처의 진위, 현재 승인·게시 세대는 확인되지 않았습니다.</p>

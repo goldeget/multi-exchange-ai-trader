@@ -13,14 +13,39 @@ from multi_exchange_trader.execution.runtime_policy import RuntimePolicyBook
 from multi_exchange_trader.execution.settings_api import install
 from multi_exchange_trader.execution.strategy_publication_v1 import StrategyPublicationOwnerV1
 from multi_exchange_trader.paper.api import install as install_boundary
+from multi_exchange_trader.public_dashboard_origin import PublicDashboardOrigin
 
 
-def application(book: RuntimePolicyBook) -> FastAPI:
+def application(book: RuntimePolicyBook, *, public_origin: PublicDashboardOrigin | None = None) -> FastAPI:
     app = FastAPI()
     app.state.runtime_policy = book
-    install_boundary(app)
-    install(app)
+    install_boundary(app, public_origin=public_origin)
+    install(app, public_origin=public_origin)
     return app
+
+
+def operator_headers(origin: str = "https://dashboard.example") -> dict[str, str]:
+    return {"origin": origin, "x-trader-operator": "trader", "sec-fetch-site": "same-origin"}
+
+
+def builtin_publication_body() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "expected_policy_revision": 1,
+        "expected_generation": 0,
+        "symbol": "BTCUSDT",
+        "configuration": {
+            "schema_version": 1,
+            "interval": "5m",
+            "fast": 9,
+            "slow": 21,
+            "atr_bars": 14,
+            "stop_atr_multiple": "2",
+            "target_r": "2",
+            "max_bar_age_seconds": 900,
+            "signal_ttl_seconds": 60,
+        },
+    }
 
 
 async def test_inactive_publication_is_readable_without_creating_approval_or_starting(tmp_path: Path) -> None:
@@ -73,3 +98,108 @@ async def test_incomplete_publication_returns_fixed_failure_without_artifact_byt
         result = await client.get("/api/v1/automatic/strategies")
         assert result.status_code == 503
         assert result.json() == {"reason": "automatic_storage_unavailable"}
+
+
+async def test_operator_preview_and_publication_require_nginx_identity_and_exact_same_origin(tmp_path: Path) -> None:
+    book = fixture_book(tmp_path)
+    origin = PublicDashboardOrigin("https://dashboard.example", "dashboard.example")
+    app = application(book, public_origin=origin)
+    body = builtin_publication_body()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=origin.origin) as client:
+        missing = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                    headers={"origin": origin.origin})
+        wrong_user = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                       headers={**operator_headers(), "x-trader-operator": "attacker"})
+        missing_origin = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                           headers={"x-trader-operator": "trader"})
+        cross_origin = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                         headers=operator_headers("https://evil.example"))
+        forwarded_auth = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                           headers={**operator_headers(), "authorization": "Basic untrusted"})
+    assert all(result.status_code == 403 for result in
+        (missing, wrong_user, missing_origin, cross_origin, forwarded_auth))
+    assert book.read()["revision"] == 1 and book.publication_snapshot_v1() is None
+
+
+async def test_explicit_operator_preview_then_publish_is_cas_bound_and_never_starts_trading(tmp_path: Path) -> None:
+    book = fixture_book(tmp_path)
+    origin = PublicDashboardOrigin("https://dashboard.example", "dashboard.example")
+    app = application(book, public_origin=origin)
+    body = builtin_publication_body()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=origin.origin) as client:
+        preview = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                    headers=operator_headers())
+        assert preview.status_code == 200
+        preview_value = preview.json()
+        assert preview_value["reference"] == {"strategy_id": "builtin-sma-atr", "revision": "r1"}
+        assert preview_value["instrument"] == {"venue": "BYBIT", "product": "LINEAR", "symbol": "BTCUSDT"}
+        assert preview_value["configuration"] == body["configuration"]
+        assert len(preview_value["implementation_sha256"]) == 64
+        assert len(preview_value["configuration_sha256"]) == 64
+        assert preview_value["approval_method"] == "NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER"
+        assert book.read()["revision"] == 1 and book.publication_snapshot_v1() is None
+
+        bad_confirmation = await client.post("/api/v1/automatic/strategies/publish",
+            json={**body, "confirmation_fingerprint": "0" * 64}, headers=operator_headers())
+        assert bad_confirmation.status_code == 409
+        assert book.read()["revision"] == 1 and book.publication_snapshot_v1() is None
+
+        published = await client.post("/api/v1/automatic/strategies/publish",
+            json={**body, "confirmation_fingerprint": preview_value["confirmation_fingerprint"]},
+            headers=operator_headers())
+        assert published.status_code == 200
+        result = published.json()
+        assert (result["generation"], result["policy_revision"]) == (1, 2)
+        assert result["implementation_sha256"] == preview_value["implementation_sha256"]
+        assert result["configuration_sha256"] == preview_value["configuration_sha256"]
+        descriptor = result["catalog"]["entries"][0]
+        assert descriptor["approval_source_reference"] == "nginx-basic-auth-trader"
+        assert descriptor["approval_environments"] == ["DEMO"]
+        assert book.read()["desired_state"] == "STOPPED"
+        assert book.read()["live_order_enabled"] is False
+        assert book.read()["worker_running"] is False
+        assert book.read()["policy"]["scope"] is None
+        assert book.read()["policy"]["risk_v2"] is None
+        assert book.read()["policy"]["strategy"]["allowed"] is None
+        assert book.read()["policy"]["strategy"]["selected"] is None
+
+        replay = await client.post("/api/v1/automatic/strategies/publish",
+            json={**body, "confirmation_fingerprint": preview_value["confirmation_fingerprint"]},
+            headers=operator_headers())
+        assert replay.status_code == 409
+
+
+async def test_operator_publication_rejects_stale_policy_revision_and_generation(tmp_path: Path) -> None:
+    book = fixture_book(tmp_path)
+    origin = PublicDashboardOrigin("https://dashboard.example", "dashboard.example")
+    app = application(book, public_origin=origin)
+    body = builtin_publication_body()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url=origin.origin) as client:
+        wrong_generation = await client.post("/api/v1/automatic/strategies/preview",
+            json={**body, "expected_generation": 1}, headers=operator_headers())
+        assert wrong_generation.status_code == 409
+        preview = await client.post("/api/v1/automatic/strategies/preview", json=body,
+                                    headers=operator_headers())
+        assert preview.status_code == 200
+        policy = book.read()["policy"]
+        policy["legacy_v1"]["capital_usdt"] = "90.00"
+        book.save_v2(1, policy, expected_strategy_generation=None)
+        result = await client.post("/api/v1/automatic/strategies/publish",
+            json={**body, "confirmation_fingerprint": preview.json()["confirmation_fingerprint"]},
+            headers=operator_headers())
+    assert result.status_code == 409
+    assert book.read()["revision"] == 2 and book.publication_snapshot_v1() is None
+
+
+async def test_operator_publication_rejects_requests_that_bypass_loopback_nginx(tmp_path: Path) -> None:
+    book = fixture_book(tmp_path)
+    origin = PublicDashboardOrigin("https://dashboard.example", "dashboard.example")
+    app = application(book, public_origin=origin)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("203.0.113.9", 4312)),
+        base_url=origin.origin,
+    ) as client:
+        result = await client.post("/api/v1/automatic/strategies/preview",
+            json=builtin_publication_body(), headers=operator_headers())
+    assert result.status_code == 403
+    assert book.read()["revision"] == 1 and book.publication_snapshot_v1() is None

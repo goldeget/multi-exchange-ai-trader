@@ -174,4 +174,6 @@ def test_public_nginx_template_inherits_auth_for_both_locations_and_preserves_he
     assert (2, ["proxy_pass", "http://127.0.0.1:8000"]) in directives
     assert (2, ["proxy_set_header", "Host", "$http_host"]) in directives
     assert (2, ["proxy_set_header", "Origin", "$http_origin"]) in directives
+    assert (2, ["proxy_set_header", "X-Trader-Operator", "$remote_user"]) in directives
+    assert (2, ["proxy_set_header", "Authorization", ""]) in directives
     assert (1, ["ssl_protocols", "TLSv1.2", "TLSv1.3"]) in directives
