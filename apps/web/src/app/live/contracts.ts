@@ -11,7 +11,8 @@ export type DemoConnection={registered:boolean;status:string;order_submission_po
 export type Connection={schema_version:1;bybit:{registered:boolean;status:string};bybit_demo?:DemoConnection;ai:{registered:boolean;status:string;mode:'OFFLINE_TEST';external_calls:false;provider?:'ANTHROPIC'|'OPENROUTER';model_id?:string|null;verified_at?:null}};
 export type Settings={revision:number;monthly_limit:string;mode:'OFFLINE_TEST';llm_enabled:false};
 export type Budget={currency:'USD';monthly_limit:string;used:string;reserved:string;uncertain:string;remaining:string;provider_balance:string|null};
-export type Diagnostics={schema_version:1;components:{server:{state:string};automation:{state:string;message?:string;last_progress_at?:string};manual_paper:{state:string;unresolved_confirmations:number|null};account:{status:string};ai:{mode:string;external_calls:boolean};bybit_demo?:{uncertain_count:number|null;close_failed_count:number|null}};errors:Array<{component:string;code:string}>};
+export type NativeMonitorStatus={state:'STARTING'|'OBSERVING'|'PASSIVE'|'STOPPED'|'CLEANUP_UNCONFIRMED'|'CHECK_REQUIRED'|'NOT_STARTED'|'STALE';mode:'OBSERVATION_ONLY';observed_at:string|null;age_ms:number|null;rest_state:'FRESH'|'EXPIRED'|'UNAVAILABLE';rest_remaining_ms:number|null;trading_enabled:false;financial_authority:false;message:string};
+export type Diagnostics={schema_version:1;components:{server:{state:string};automation:{state:string;message?:string;last_progress_at?:string};manual_paper:{state:string;unresolved_confirmations:number|null};account:{status:string};ai:{mode:string;external_calls:boolean};native_monitor?:NativeMonitorStatus;bybit_demo?:{uncertain_count:number|null;close_failed_count:number|null}};errors:Array<{component:string;code:string}>};
 export function record(v:unknown):v is Record<string,unknown>{return !!v&&typeof v==='object'&&!Array.isArray(v)}
 export const decimal=(v:unknown):v is string=>typeof v==='string'&&/^-?\d+(?:\.\d+)?$/.test(v);
 const booleans=(v:unknown,fields:string[])=>record(v)&&fields.every(k=>typeof v[k]==='boolean');
@@ -43,13 +44,25 @@ export const validConnection=(v:unknown):v is Connection=>record(v)&&v.schema_ve
  typeof v.bybit_demo.order_submission_possible==='boolean'&&typeof v.bybit_demo.blocked_by_unresolved_attempt==='boolean'));
 export const validSettings=(v:unknown):v is Settings=>record(v)&&Number.isInteger(v.revision)&&typeof v.revision==='number'&&v.revision>=0&&decimal(v.monthly_limit)&&v.mode==='OFFLINE_TEST'&&v.llm_enabled===false;
 export const validBudget=(v:unknown):v is Budget=>record(v)&&v.currency==='USD'&&['monthly_limit','used','reserved','uncertain','remaining'].every(k=>decimal(v[k]))&&(v.provider_balance===null||decimal(v.provider_balance));
+function validNativeMonitor(v:unknown):v is NativeMonitorStatus{
+ if(!record(v)||!Object.keys(v).every(k=>['state','mode','observed_at','age_ms','rest_state','rest_remaining_ms','trading_enabled','financial_authority','message'].includes(k)))return false;
+ if(typeof v.state!=='string'||!['STARTING','OBSERVING','PASSIVE','STOPPED','CLEANUP_UNCONFIRMED','CHECK_REQUIRED','NOT_STARTED','STALE'].includes(v.state)||v.mode!=='OBSERVATION_ONLY'||v.trading_enabled!==false||v.financial_authority!==false)return false;
+ if(typeof v.message!=='string'||v.message.length>180)return false;
+ if(v.observed_at!==null&&(typeof v.observed_at!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z$/.test(v.observed_at)||!Number.isFinite(Date.parse(v.observed_at))))return false;
+ if(v.age_ms!==null&&(typeof v.age_ms!=='number'||!Number.isSafeInteger(v.age_ms)||v.age_ms<0))return false;
+ if(v.state==='OBSERVING')return v.observed_at!==null&&v.age_ms!==null&&v.age_ms<=30000&&(
+  (v.rest_state==='FRESH'&&typeof v.rest_remaining_ms==='number'&&Number.isSafeInteger(v.rest_remaining_ms)&&v.rest_remaining_ms>0&&v.rest_remaining_ms<=30000)||
+  (v.rest_state==='EXPIRED'&&v.rest_remaining_ms===0));
+ return v.rest_state==='UNAVAILABLE'&&v.rest_remaining_ms===null;
+}
 export const validDiagnostics=(v:unknown):v is Diagnostics=>record(v)&&v.schema_version===1&&record(v.components)&&
  record(v.components.server)&&typeof v.components.server.state==='string'&&record(v.components.automation)&&typeof v.components.automation.state==='string'&&
  (v.components.automation.message===undefined||typeof v.components.automation.message==='string')&&
  record(v.components.manual_paper)&&typeof v.components.manual_paper.state==='string'&&
  (v.components.manual_paper.unresolved_confirmations===null||Number.isInteger(v.components.manual_paper.unresolved_confirmations))&&
  record(v.components.account)&&typeof v.components.account.status==='string'&&record(v.components.ai)&&typeof v.components.ai.mode==='string'&&typeof v.components.ai.external_calls==='boolean'&&
- (v.components.bybit_demo===undefined||counts(v.components.bybit_demo,['uncertain_count','close_failed_count']))&&errors(v.errors);
+ (v.components.bybit_demo===undefined||counts(v.components.bybit_demo,['uncertain_count','close_failed_count']))&&
+ (v.components.native_monitor===undefined||validNativeMonitor(v.components.native_monitor))&&errors(v.errors);
 export function format(v:string){if(!decimal(v))return '확인 불가';const[a,b]=v.split('.');const fraction=(b??'').replace(/0+$/,'').padEnd(2,'0');return a.replace(/\B(?=(\d{3})+(?!\d))/g,',')+'.'+fraction}
 
 // Automatic settings is a closed, static STOPPED draft contract. These types and

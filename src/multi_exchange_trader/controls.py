@@ -1,6 +1,7 @@
 """Additive local overview, capabilities, diagnostics and offline AI settings endpoints."""
 
 import asyncio
+import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,12 +10,14 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from .account_profiles import AccountProfileError, default_account_profile_store
 from .ai.budget import BudgetBook
 from .ai.config import AnthropicConfig, load_anthropic_config
 from .ai.provider_config import AIProviderConfig, load_ai_provider_config
 from .capabilities import capabilities
 from .credential_resolution import CredentialStartup
 from .credentials import CredentialStoreError
+from .monitoring_status import read_monitor_status
 from .read_models import read_overview
 from .recommendations.execution import demo_capability
 from .research.api import public_scheduler
@@ -96,6 +99,10 @@ def install(application: FastAPI, *, credential_context: CredentialStartup | Non
         app.state.ai_provider_config = config
         app.state.anthropic_config = (AnthropicConfig(config.registered, config.status, config.model_id)
                                       if config.provider == "ANTHROPIC" else AnthropicConfig())
+        try:
+            app.state.native_monitor_profiles = default_account_profile_store(dict(os.environ))
+        except AccountProfileError:
+            app.state.native_monitor_profiles = None
         yield
 
     router = APIRouter(prefix="/api/v1", lifespan=lifespan)
@@ -167,10 +174,20 @@ def install(application: FastAPI, *, credential_context: CredentialStartup | Non
         except (ValueError, TypeError, sqlite3.Error):
             pending = None
         practice_records = await asyncio.to_thread(_practice_records, request)
+        try:
+            native_monitor = await asyncio.to_thread(read_monitor_status,
+                request.app.state.paper_store.path.parent,
+                getattr(request.app.state, "native_monitor_profiles", None))
+        except (OSError, TypeError, ValueError, AttributeError):
+            native_monitor = {"state": "CHECK_REQUIRED", "mode": "OBSERVATION_ONLY",
+                "observed_at": None, "age_ms": None, "rest_state": "UNAVAILABLE", "rest_remaining_ms": None,
+                "trading_enabled": False, "financial_authority": False,
+                "message": "엔진의 현재 상태를 확인하지 못했습니다."}
         return {"schema_version": 1, "live_order_enabled": False,
                 "components": {
                     "server": {"state": "RESPONDING", "meaning": "LIVENESS_ONLY"},
                     "automation": scheduler,
+                    "native_monitor": native_monitor,
                     "manual_paper": {"state": "UNAVAILABLE" if any(
                         error["component"] == "manual_paper" for error in value["errors"]
                     ) else "READABLE", "unresolved_confirmations": pending,

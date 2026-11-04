@@ -19,6 +19,7 @@ from typing import NoReturn
 
 from ..account.config import require_demo_credentials
 from ..credential_resolution import CredentialResolver as _CredentialResolver
+from ..monitoring_status import NativeMonitorPublisher
 from ..worker_account_selection import resolve_worker_expectations
 from .account_binding import BybitDemoAccountSession
 from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, SDK1231_OBSERVATION_UNKNOWN_FEES_V1
@@ -52,7 +53,8 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
                         refresh: Callable[[], Awaitable[None]],
                         interval: float = 10.0, connect: bool = False,
                         on_started: Callable[[], None] | None = None,
-                        on_stopped: Callable[[], None] | None = None) -> None:
+                        on_stopped: Callable[[], None] | None = None,
+                        on_status: Callable[[], None] | None = None) -> None:
     """Run passive GET polling or supervise one explicitly admitted native stream."""
     try:
         await worker.start_passive()
@@ -64,6 +66,8 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
         while not stop.is_set():
             if connect and worker.monitoring_status.phase != "MONITORING":
                 raise RuntimeBlocked("NATIVE_MONITORING_RETIRED")
+            if on_status is not None:
+                on_status()
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
@@ -101,10 +105,27 @@ async def _run(args: argparse.Namespace) -> None:
     key, secret = require_demo_credentials(resolver=context)
     session = BybitDemoAccountSession(api_key=key, api_secret=secret)
     serve_attempted, stop_complete = False, False
+    publisher: NativeMonitorPublisher | None = None
+
+    def publish_status(state: str | None = None) -> None:
+        nonlocal publisher
+        try:
+            if publisher is None:
+                publisher = NativeMonitorPublisher(Path(args.directory), expectations, worker,
+                                                   connected=args.connect_monitoring)
+            if state == "STOPPED":
+                publisher.finish("STOPPED")
+            elif state == "CLEANUP_UNCONFIRMED":
+                publisher.finish("CLEANUP_UNCONFIRMED")
+            else:
+                publisher.observe()
+        except Exception:  # noqa: BLE001 - optional UI observations never change worker cleanup.
+            pass
 
     def mark_stopped() -> None:
         nonlocal stop_complete
         stop_complete = True
+        publish_status("STOPPED")
 
     try:
         # Authenticate directly for the typed opaque binding; no caller flags can create it.
@@ -128,11 +149,16 @@ async def _run(args: argparse.Namespace) -> None:
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         install_signal_handlers(loop, stop)
+
+        def started() -> None:
+            install_signal_handlers(loop, stop)
+            publish_status()
+
         try:
             serve_attempted = True
             await serve_monitor(worker, stop=stop, refresh=refresh, connect=args.connect_monitoring,
-                                on_started=lambda: install_signal_handlers(loop, stop),
-                                on_stopped=mark_stopped)
+                                on_started=started, on_stopped=mark_stopped,
+                                on_status=publish_status)
         finally:
             if stop_complete:
                 for sig in (signal.SIGTERM, signal.SIGINT):
@@ -145,7 +171,10 @@ async def _run(args: argparse.Namespace) -> None:
             print(json.dumps({"mode": "MONITOR_ONLY", "orders_enabled": False,
                 "error": "WORKER_STOP_UNCONFIRMED_RETAINS_RESOURCES"}),
                 file=sys.stderr, flush=True)
-            await asyncio.Future[None]()
+            publish_status("CLEANUP_UNCONFIRMED")
+            while True:
+                await asyncio.sleep(10)
+                publish_status("CLEANUP_UNCONFIRMED")
         else:
             await session.aclose()
 
