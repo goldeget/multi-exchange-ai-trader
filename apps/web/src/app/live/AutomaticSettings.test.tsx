@@ -619,10 +619,11 @@ it('built-in publication requires exact preview, visible hashes and a separate c
    catalog:publishedCatalog().catalog,reference:preview.reference,implementation_sha256:preview.implementation_sha256,
    configuration_sha256:preview.configuration_sha256,approval_method:preview.approval_method}));
   if(url==='/api/v1/automatic/strategies')return Promise.resolve(publishedResponse(null));
-  return Promise.resolve(capable(publishableSnapshot));
+  return Promise.resolve(publishedResponse(publishableSnapshot));
  });
  vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
  fireEvent.change(await screen.findByLabelText('Bybit LINEAR 거래 종목'),{target:{value:'BTCUSDT'}});
+ expect(fetcher.mock.calls.some(call=>call[0]==='/api/v1/automatic/strategies')).toBe(true);
  fireEvent.change(screen.getByLabelText('봉 간격'),{target:{value:'5m'}});
  fireEvent.change(screen.getByLabelText('빠른 이동평균 기간'),{target:{value:'9'}});
  fireEvent.change(screen.getByLabelText('느린 이동평균 기간'),{target:{value:'21'}});
