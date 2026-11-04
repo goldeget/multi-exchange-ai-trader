@@ -21,13 +21,20 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 from uuid import uuid4
 
 import httpx
+from httpx._client import ClientState
 
-from ..account.bybit_readonly import BybitReadOnlyClient
+from ..account.bybit_readonly import (
+    BybitReadOnlyClient,
+    _account_info_capture_data_v1,
+    _account_info_capture_preimage,
+    _AccountInfoCaptureV1,
+)
 from ..account.config import allowed_host
+from ..account.instrument_envelope import HttpsOrigin
 from .bybit_native import build_demo_exec_config
 from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
 from .monitoring_budget import MonitoringReadBudget
@@ -39,6 +46,9 @@ from .monitoring_models import (
 )
 from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
+
+if TYPE_CHECKING:
+    from .bybit_linear_model_inputs_v1 import BybitModelSourceRefV1
 
 _PERMISSIONS = {
     "ContractTrade": frozenset({"Order", "Position"}),
@@ -133,6 +143,70 @@ class _MonitoringSlot:
     started_at: datetime
     started_mono: float
     view: MonitoringReceiptView | None = None
+
+
+@dataclass(repr=False)
+class _LinearAccountInfoSlot:
+    issuer: BybitDemoAccountSession
+    binding: AuthenticatedAccountBinding
+    scope: ProtectionScope
+    identity: BybitAccountIdentity | None
+    client: object
+    http_client: object
+    credential_pair: tuple[str, str]
+    owner_guard: Callable[[], None]
+    generation: object
+    loop: asyncio.AbstractEventLoop
+    phase: Literal["PENDING", "ISSUED"] = "PENDING"
+    retired: bool = False
+    source: BybitModelSourceRefV1 | None = None
+    capture: _AccountInfoCaptureV1 | None = None
+    capture_preimage: tuple[object, ...] | None = None
+    source_preimage: tuple[object, ...] | None = None
+    source_sha256: str | None = None
+
+
+def _linear_source_preimage(source: BybitModelSourceRefV1) -> tuple[object, ...]:
+    from .bybit_linear_model_inputs_v1 import BybitModelSourceRefV1
+
+    return _linear_source_data_v1(source, BybitModelSourceRefV1)
+
+
+def _linear_source_data_v1(
+    source: BybitModelSourceRefV1, source_type: type[BybitModelSourceRefV1],
+) -> tuple[object, ...]:
+    """Closed leaves only; the original model class was retained before callbacks."""
+    if type(source) is not source_type:
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+    texts = (source.observation_id, source.source_id, source.source_generation,
+             source.source_environment, source.path, source.raw_body_sha256)
+    if any(type(value) is not str for value in texts):
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+    scope, origin = source.account_scope, source.origin
+    if (type(scope) is not ProtectionScope or type(scope.account_id) is not str
+            or type(scope.environment) is not str or type(origin) is not HttpsOrigin
+            or type(origin.scheme) is not str or type(origin.host) is not str
+            or type(origin.port) is not int or type(source.query) is not tuple
+            or source.query != () or type(source.page_ordinal) is not int
+            or type(source.accepted_attempt) is not int
+            or source.envelope_time_ms is not None and type(source.envelope_time_ms) is not int):
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+    for stamp in (source.request_started_at, source.received_at):
+        if type(stamp) is not datetime or stamp.tzinfo is not UTC:
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+    return (*texts, scope.account_id, scope.environment, origin.scheme, origin.host, origin.port,
+            source.query, source.request_started_at, source.received_at,
+            source.envelope_time_ms, source.page_ordinal, source.accepted_attempt)
+
+
+def _linear_capture_refs_v1(capture: _AccountInfoCaptureV1) -> tuple[object, ...]:
+    if (type(capture) is not _AccountInfoCaptureV1 or type(capture.request) is not httpx.Request
+            or type(capture.response) is not httpx.Response):
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+    return (capture.owner, capture.http_client, capture.generation, capture.request,
+            capture.response, capture.request.url, capture.request.headers, capture.response.headers,
+            capture.wire, capture.response_headers, capture.response_header_wire, capture.budget,
+            capture.group, capture.operation_context, capture.receipt_context, capture.receipt)
 
 
 def _uid(value: object, *, allow_zero: bool = False) -> str:
@@ -234,6 +308,215 @@ class BybitDemoAccountSession:
         self._monitoring_receipts: dict[object, _MonitoringSlot] = {}
         self._monitoring_generation = object()
         self._monitoring_last_clock: tuple[datetime, float] | None = None
+        self._linear_info_self = self
+        self._linear_info_generation = object()
+        self._linear_info_pending: _LinearAccountInfoSlot | None = None
+        self._linear_info_current: _LinearAccountInfoSlot | None = None
+        self._linear_info_requiring: _LinearAccountInfoSlot | None = None
+        self._linear_info_loop: asyncio.AbstractEventLoop | None = None
+
+    def _retire_linear_account_info_v1(self) -> None:
+        self._linear_info_generation = object()
+        self._linear_info_current = None
+        if self._linear_info_pending is not None:
+            self._linear_info_pending.retired = True
+        if self._linear_info_requiring is not None:
+            self._linear_info_requiring.retired = True
+
+    def _linear_account_info_links_v1(self, slot: _LinearAccountInfoSlot) -> None:
+        """Only original links, closed phases and primitive credential values."""
+        if (type(self) is not BybitDemoAccountSession or self._linear_info_self is not self
+                or type(slot) is not _LinearAccountInfoSlot or slot.issuer is not self
+                or self._closed is not False
+                or slot.retired is not False or slot.generation is not self._linear_info_generation
+                or self._binding is not slot.binding or self._identity is not slot.identity
+                or self._client is not slot.client or self._credential_client is not slot.client
+                or type(slot.client) is not BybitReadOnlyClient
+                or slot.client._account_info_self is not slot.client
+                or slot.client._client is not slot.http_client
+                or type(slot.http_client) is not httpx.AsyncClient
+                or type(slot.http_client._state) is not ClientState
+                or slot.http_client._state not in (ClientState.UNOPENED, ClientState.OPENED)
+                or self._credential_pair is not slot.credential_pair
+                or self._linear_info_loop is not slot.loop
+                or type(slot.phase) is not str
+                or slot.phase == "PENDING" and self._linear_info_pending is not slot
+                or slot.phase == "ISSUED" and self._linear_info_current is not slot
+                or slot.phase not in ("PENDING", "ISSUED")):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        if (type(slot.credential_pair) is not tuple or len(slot.credential_pair) != 2
+                or any(type(value) is not str for value in slot.credential_pair)
+                or type(self._api_key) is not str or type(self._api_secret) is not str
+                or (self._api_key, self._api_secret) != slot.credential_pair
+                or type(slot.client._api_key) is not str or type(slot.client._api_secret) is not str
+                or (slot.client._api_key, slot.client._api_secret) != slot.credential_pair):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        if slot.capture is not None and (
+                type(slot.capture) is not _AccountInfoCaptureV1
+                or type(slot.capture.source_id) is not str
+                or type(slot.capture.source_generation) is not str
+                or slot.client._account_info_generation is not slot.capture.generation
+                or type(slot.client._account_info_source_id) is not str
+                or type(slot.client._account_info_generation_text) is not str
+                or slot.client._account_info_source_id != slot.capture.source_id
+                or slot.client._account_info_generation_text != slot.capture.source_generation):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+
+    def _linear_account_info_current_v1(self, slot: _LinearAccountInfoSlot) -> None:
+        self._linear_account_info_links_v1(slot)
+        assert type(slot.client) is BybitReadOnlyClient
+        if asyncio.get_running_loop() is not slot.loop:
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+
+    def _check_linear_account_info_v1(
+        self, slot: _LinearAccountInfoSlot, *, scope: ProtectionScope | None = None,
+    ) -> None:
+        self._linear_account_info_current_v1(slot)
+        slot.owner_guard()
+        self._linear_account_info_current_v1(slot)
+        source_type: type[BybitModelSourceRefV1] | None = None
+        if slot.phase == "ISSUED":
+            from . import bybit_linear_model_inputs_v1 as a
+
+            source_type = a.BybitModelSourceRefV1
+            if (slot.source is None or slot.capture is None
+                    or type(slot.source_preimage) is not tuple or type(slot.capture_preimage) is not tuple
+                    or _linear_source_preimage(slot.source) != slot.source_preimage
+                    or a.bybit_source_ref_sha256_v1(slot.source) != slot.source_sha256
+                    or _account_info_capture_preimage(slot.capture) != slot.capture_preimage):
+                raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+            self._linear_account_info_current_v1(slot)
+        selected_scope = slot.scope if scope is None else scope
+        original_scope, original_source, original_capture, original_phase = (
+            slot.scope, slot.source, slot.capture, slot.phase)
+        source_witness, capture_witness = slot.source_preimage, slot.capture_preimage
+        scope_values: list[tuple[str, str]] = []
+        for checked_scope in (slot.scope, selected_scope):
+            if (type(checked_scope) is not ProtectionScope
+                    or type(checked_scope.account_id) is not str
+                    or type(checked_scope.environment) is not str):
+                raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+            scope_values.append((checked_scope.account_id, checked_scope.environment))
+        capture_refs = (() if original_capture is None else _linear_capture_refs_v1(original_capture))
+        identity = self.require_observation_binding(slot.binding, scope=selected_scope)
+        if identity is not slot.identity:
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        self._linear_account_info_links_v1(slot)
+        # Finite pure suffix: no guard, clock, active budget, serializer, hash,
+        # JSON or import may follow the last genuine binding callback.
+        if (slot.scope is not original_scope or slot.source is not original_source
+                or slot.capture is not original_capture or slot.phase != original_phase
+                or slot.source_preimage is not source_witness
+                or slot.capture_preimage is not capture_witness):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        for checked_scope, expected in zip((slot.scope, selected_scope), scope_values, strict=True):
+            if (type(checked_scope) is not ProtectionScope
+                    or type(checked_scope.account_id) is not str
+                    or type(checked_scope.environment) is not str
+                    or (checked_scope.account_id, checked_scope.environment) != expected):
+                raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        if (type(identity) is not BybitAccountIdentity or type(identity.uid) is not str
+                or identity.uid != scope_values[0][0]):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+        if original_phase == "ISSUED":
+            assert original_source is not None and original_capture is not None and source_type is not None
+            refs = _linear_capture_refs_v1(original_capture)
+            if (any(current is not prior for current, prior in zip(refs, capture_refs, strict=True))
+                    or _linear_source_data_v1(original_source, source_type) != source_witness
+                    or _account_info_capture_data_v1(original_capture) != capture_witness):
+                raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+
+    async def _capture_linear_account_info_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: ProtectionScope,
+        budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> BybitModelSourceRefV1:
+        if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+        if self._linear_info_pending is not None or self._linear_info_requiring is not None:
+            self._retire_linear_account_info_v1()
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_OVERLAP")
+        self._retire_linear_account_info_v1()
+        loop = asyncio.get_running_loop()
+        if self._linear_info_loop is None:
+            self._linear_info_loop = loop
+        client = self._client
+        slot = _LinearAccountInfoSlot(self, binding, scope, self._identity, client,
+            client._client if type(client) is BybitReadOnlyClient else None,
+            self._credential_pair, owner_guard, self._linear_info_generation, loop)
+        self._linear_info_pending = slot
+        complete = False
+        try:
+            from . import bybit_linear_model_inputs_v1 as a
+
+            if type(budget) is not MonitoringReadBudget or not callable(owner_guard):
+                raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+            self._check_linear_account_info_v1(slot)
+            assert type(client) is BybitReadOnlyClient
+
+            def guard() -> None:
+                self._check_linear_account_info_v1(slot)
+
+            with client._monitoring_operation(budget), budget.reuse_or_open_receipt() as group:
+                captured = await client._capture_account_info_v1(
+                    budget=budget, group=group, owner_guard=guard)
+                guard()
+                preimage = _account_info_capture_preimage(captured)
+                source = a.BybitModelSourceRefV1(captured.observation_id, captured.source_id,
+                    captured.source_generation, scope, "DEMO", captured.sent_origin,
+                    "/v5/account/info", (), captured.request_started_at, captured.received_at,
+                    captured.envelope_time_ms, captured.raw_body_sha256, 1,
+                    captured.accepted_attempt)
+                source_hash = a.bybit_source_ref_sha256_v1(source)
+                source_preimage = _linear_source_preimage(source)
+                if _account_info_capture_preimage(captured) != preimage:
+                    raise AccountBindingError("ACCOUNT_INFO_SOURCE_RETIRED")
+                guard()
+            # Receipt closes normally. Issued require checks the retained owner,
+            # not the historical group's now-inactive flag.
+            guard()
+            slot.source, slot.capture = source, captured
+            slot.capture_preimage, slot.source_preimage = preimage, source_preimage
+            slot.source_sha256 = source_hash
+            slot.phase = "ISSUED"
+            self._linear_info_current = slot
+            self._require_linear_account_info_v1(source, binding=binding, scope=scope)
+            complete = True
+            return source
+        except Exception:  # noqa: BLE001 - no private body/guard exception context escapes.
+            complete = False
+        finally:
+            if self._linear_info_pending is slot:
+                if not complete:
+                    self._retire_linear_account_info_v1()
+                self._linear_info_pending = None
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_CAPTURE_FAILED") from None
+
+    def _require_linear_account_info_v1(
+        self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+    ) -> None:
+        if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+        if self._linear_info_requiring is not None:
+            self._retire_linear_account_info_v1()
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_OVERLAP")
+        slot = self._linear_info_current
+        if (slot is None or source is not slot.source or binding is not slot.binding
+                or type(scope) is not ProtectionScope):
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
+        self._linear_info_requiring = slot
+        try:
+            self._check_linear_account_info_v1(slot, scope=scope)
+            return
+        except Exception:  # noqa: BLE001 - currentness errors reveal no private transport data.
+            self._retire_linear_account_info_v1()
+        except BaseException:
+            self._retire_linear_account_info_v1()
+            raise
+        finally:
+            if self._linear_info_requiring is slot:
+                self._linear_info_requiring = None
+        raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED") from None
 
     def __repr__(self) -> str:
         return "BybitDemoAccountSession(environment=DEMO, credentials=REDACTED)"
@@ -252,6 +535,7 @@ class BybitDemoAccountSession:
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
 
     def _revoke_history_receipts(self) -> None:
+        self._retire_linear_account_info_v1()
         self._revoke_monitoring_receipts()
         self._history_receipts.clear()
         self._history_generation = object()
@@ -341,6 +625,7 @@ class BybitDemoAccountSession:
         expectations, or explicitly enrolled uid-anchored-adoption-v1 configuration.
         The latter is provider-observed/operator-adopted, not independent evidence.
         """
+        self._retire_linear_account_info_v1()
         async with self._refresh_lock:
             self._revoke_history_receipts()
             self._attested = None
@@ -519,6 +804,7 @@ class BybitDemoAccountSession:
                 raise AccountBindingError("ACCOUNT_BINDING_STALE")
         except Exception:  # noqa: BLE001 - revoke before reporting a fixed freshness code.
             self._binding_freshness_revoked = True
+            self._retire_linear_account_info_v1()
             self._revoke_monitoring_receipts()
             raise AccountBindingError("ACCOUNT_BINDING_STALE") from None
         return identity
