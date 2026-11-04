@@ -71,6 +71,7 @@ async def test_health_and_route_inventory_have_no_exchange_access():
             ("/api/v1/research/runs/{run}/audit", ("GET",)),
             ("/api/v1/research/runs/{run}/commands", ("POST",)),
             ("/api/v1/account/bybit/view", ("GET",)),
+            ("/api/v1/account/bybit/demo/view", ("GET",)),
             ("/api/v1/account/bybit/orders", ("POST",)),
             ("/api/v1/account/bybit/leverage", ("POST",)),
             ("/api/v1/recommendations/preview", ("POST",)),

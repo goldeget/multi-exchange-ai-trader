@@ -3,12 +3,15 @@
 import asyncio
 import sqlite3
 from typing import Any, cast
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from multi_exchange_trader.execution.settings_api import AUTOMATIC_BODY_LIMIT
+from multi_exchange_trader.public_dashboard_origin import (
+    PublicDashboardOrigin,
+    dashboard_headers_allowed,
+)
 
 from .order_preview import OrderReviews
 from .store import PaperStore
@@ -78,7 +81,7 @@ def reviews(request: Request) -> OrderReviews:
     return value
 
 
-def install(application: FastAPI) -> None:
+def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None = None) -> None:
     router = APIRouter(prefix="/api/v1/paper")
 
     @application.middleware("http")
@@ -89,20 +92,15 @@ def install(application: FastAPI) -> None:
              "/api/v1/diagnostics", "/api/v1/connections", "/api/v1/capabilities",
              "/api/v1/automatic")
         ):
-            try:
-                host = urlsplit("http://" + request.headers.get("host", ""))
-                if (
-                    host.hostname not in ("localhost", "127.0.0.1", "::1")
-                    or host.username
-                    or host.password
-                ):
-                    raise ValueError("nonlocal host")
-                _ = host.port
-            except ValueError:
+            hosts, origins = request.headers.getlist("host"), request.headers.getlist("origin")
+            if not dashboard_headers_allowed(hosts, origins, public_origin=public_origin):
                 return JSONResponse(status_code=403, content={"reason": "paper_local_only"})
+            is_public = public_origin is not None and public_origin.matches_host(hosts[0])
+            origin = origins[0] if origins else None
             if request.method not in ("GET", "HEAD", "OPTIONS"):
-                origin = request.headers.get("origin")
-                if (origin is not None and origin not in ORIGINS) or request.headers.get(
+                allowed_origins = ({public_origin.origin}
+                    if is_public and public_origin is not None else ORIGINS)
+                if (origin is not None and origin not in allowed_origins) or request.headers.get(
                     "sec-fetch-site"
                 ) == "cross-site":
                     return JSONResponse(status_code=403, content={"reason": "paper_local_only"})

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from ..public_dashboard_origin import PublicDashboardOrigin, dashboard_headers_allowed
 from .bybit_readonly import BybitReadOnlyClient
 from .config import live_trading_enabled
 from .freshness import CACHE_TTL_SECONDS, freshness_label
@@ -152,13 +153,16 @@ def refuse_mutation(_request: Request) -> JSONResponse:
     )
 
 
-def install(application: FastAPI) -> None:
+def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None = None) -> None:
     application.state.account_read_gate = AccountReadGate(cache_ttl_seconds())
     router = APIRouter(prefix="/api/v1/account/bybit")
 
     @application.middleware("http")
     async def local_account_boundary(request: Request, call_next: Any) -> Any:
-        if request.url.path.startswith("/api/v1/account") and not is_local_request(request):
+        if request.url.path.startswith("/api/v1/account") and not dashboard_headers_allowed(
+            request.headers.getlist("host"), request.headers.getlist("origin"),
+            public_origin=public_origin,
+        ):
             return JSONResponse(
                 status_code=403,
                 content={

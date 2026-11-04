@@ -21,7 +21,7 @@ describe("shared account screen", () => {
 
   it("uses the same view for live data and never relabels aggregate USD as USDT", async () => {
     const { ACCOUNT_FIXTURE } = await import("./fixture");
-    const current = { ...ACCOUNT_FIXTURE, 수집완료시각: new Date().toISOString(), 수신시각: new Date().toISOString() };
+    const current = { ...ACCOUNT_FIXTURE, 환경: "연습 계좌", 환경코드: "demo", 수집완료시각: new Date().toISOString(), 수신시각: new Date().toISOString() };
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => current });
     vi.stubGlobal("fetch", fetcher);
     render(<Account polished pollIntervalMs={60_000} />);
@@ -38,7 +38,7 @@ describe("shared account screen", () => {
     const { ACCOUNT_FIXTURE } = await import("./fixture");
     let finish: (value: unknown) => void = () => undefined;
     const fetcher = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ACCOUNT_FIXTURE })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...ACCOUNT_FIXTURE, 환경: "연습 계좌", 환경코드: "demo" }) })
       .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     vi.stubGlobal("fetch", fetcher);
     render(<Account polished pollIntervalMs={60_000} />);
@@ -49,7 +49,7 @@ describe("shared account screen", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(buttons[0]).toBeDisabled();
     expect(buttons[1]).toBeDisabled();
-    await act(async () => finish({ ok: true, json: async () => ACCOUNT_FIXTURE }));
+    await act(async () => finish({ ok: true, json: async () => ({ ...ACCOUNT_FIXTURE, 환경: "연습 계좌", 환경코드: "demo" }) }));
     await waitFor(() => expect(buttons[0]).not.toBeDisabled());
   });
 

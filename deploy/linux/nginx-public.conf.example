@@ -1,0 +1,37 @@
+# Opt-in template for nginx's http {} context; no service or certificate is installed here.
+# Replace dashboard.example.invalid and TLS paths with the operator's exact HTTPS origin.
+# Set PUBLIC_DASHBOARD_ORIGIN=https://dashboard.example.invalid in the API's runtime.env.
+# Keep the API bound to 127.0.0.1:8000 with --no-proxy-headers; never expose that port.
+# Create the private password file separately; no passwords belong in this template.
+# Review other enabled nginx configs: this file cannot close their listeners.
+server {
+    listen 443 ssl;
+    server_name dashboard.example.invalid;
+    ssl_certificate /etc/trader/tls/fullchain.pem;
+    ssl_certificate_key /etc/trader/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Both locations inherit authentication; never add an API exception or auth_basic off.
+    auth_basic "Trader dashboard";
+    auth_basic_user_file /etc/trader/dashboard.htpasswd;
+    satisfy all;
+    root /opt/trader/app/apps/web/dist;
+    index index.html;
+    client_max_body_size 16k;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        # Preserve the original authority/origin; do not make public requests look local.
+        proxy_set_header Host $http_host;
+        proxy_set_header Origin $http_origin;
+        # Basic credentials are checked at nginx and are not application credentials.
+        proxy_set_header Authorization "";
+        proxy_set_header Connection "";
+        proxy_read_timeout 60s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
