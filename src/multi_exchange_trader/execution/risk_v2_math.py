@@ -24,6 +24,8 @@ _CODES = frozenset(
         "RESOURCE_LIMIT",
         "SCOPE_MISMATCH",
         "SOURCE_MISMATCH",
+        "SOURCE_READ_FAILED",
+        "SOURCE_READ_BUDGET_EXHAUSTED",
         "REVISION_MISMATCH",
         "STALE_EVIDENCE",
         "FUTURE_EVIDENCE",
