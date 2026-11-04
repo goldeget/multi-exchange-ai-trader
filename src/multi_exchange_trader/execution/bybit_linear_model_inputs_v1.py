@@ -1971,6 +1971,67 @@ def _venue_sources_v1(venue: _BybitVenueDataV1) -> tuple[BybitModelSourceRefV1, 
     return sources
 
 
+def _require_held_order_coverage_v1(
+    inputs: e.LinearRiskInputsV2, venue: _BybitVenueDataV1
+) -> None:
+    """Bind observed open-order quantities without adopting or netting orders.
+
+    J snapshots retain a client order ID and aggregate reservation economics,
+    but not the durable intent or native ownership proof needed to reconcile
+    an active venue order against that reservation. Such overlaps fail closed.
+    Account entry components name the original venue order ID; the assembler
+    still owns page, freshness and raw-byte proofs. No authority is issued.
+    """
+    account_orders = {
+        item.component_id: item
+        for item in inputs.account.components
+        if item.origin == "ACCOUNT_ENTRY_ORDER"
+    }
+    reservation_ids = {item.component_id for item in inputs.reservations.components}
+    expected: set[str] = set()
+    venue_ids: set[str] = set()
+    client_ids: set[str] = set()
+    for order in venue.held_orders:
+        if order.order_id in venue_ids or (
+            order.order_link_id and order.order_link_id in client_ids
+        ):
+            _reject_v1("RISK_V2_EXPOSURE_OVERLAP")
+        venue_ids.add(order.order_id)
+        if order.order_link_id:
+            client_ids.add(order.order_link_id)
+        quantity = _decimal_field_v1(order.quantity)
+        leaves = _decimal_field_v1(order.leaves_quantity)
+        if quantity <= 0 or leaves <= 0 or _compare(leaves, quantity) > 0:
+            _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+        if order.order_id in reservation_ids or order.order_link_id in reservation_ids:
+            # Equal client ID, side and quantity cannot prove the original
+            # intent's type/price/native venue identity. Never borrow its risk.
+            _reject_v1("RISK_V2_EXPOSURE_OVERLAP")
+        component = account_orders.get(order.order_id)
+        side = "BUY" if order.side == "Buy" else "SELL"
+        if order.reduce_only:
+            if component is not None:
+                _reject_v1("RISK_V2_EXPOSURE_OVERLAP")
+            continue
+        if not order.order_link_id and any(
+            item.instrument == order.instrument_pin.key and item.side == side
+            for item in inputs.reservations.components
+        ):
+            # An omitted client ID cannot prove this is disjoint from an own
+            # reservation on the same side. Do not guess or double count it.
+            _reject_v1("RISK_V2_EXPOSURE_OVERLAP")
+        expected.add(order.order_id)
+        if (
+            component is None
+            or component.instrument != order.instrument_pin.key
+            or component.side != side
+            or _compare(decimal_fraction_v2(component.base_quantity), leaves) != 0
+        ):
+            _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+    if set(account_orders) != expected:
+        _reject_v1("RISK_V2_HELD_COVERAGE_REQUIRED")
+
+
 def _venue_links_v1(
     inputs: e.LinearRiskInputsV2,
     domain: d.LinearRiskDomainCoverageV2,
@@ -2196,6 +2257,7 @@ def _venue_links_v1(
         for field in (o.price, o.quantity, o.leaves_quantity, o.trigger_price):
             if field is not None and field.reference.source != o.source:
                 _reject_v1("RISK_V2_SOURCE_MISMATCH")
+    _require_held_order_coverage_v1(inputs, venue)
     for key in required:
         for side, raw_side in (("BUY", "Buy"), ("SELL", "Sell")):
             generic = Fraction(0)
