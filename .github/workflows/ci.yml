@@ -210,6 +210,39 @@ jobs:
               raise SystemExit("Prepared feasibility requires exactly two named unskipped passing cases")
           print("Verified two actual SDK prepared submit feasibility cases without network access")
           PY
+      - name: Require isolated actual prepared native owners
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_native_prepared_owner_linux.py --junitxml=native-prepared-owner.xml
+      - name: Require all four exact prepared owner contracts
+        run: |
+          .venv/bin/python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("native-prepared-owner.xml").getroot()
+          suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
+          expected = {
+              "test_actual_entry_installation_prepares_a_private_order",
+              "test_actual_prepared_handoff_uses_one_original_sdk_route",
+              "test_actual_prepared_scope_rejects_cross_key_callback_reentry",
+              "test_actual_prepared_owner_retirement_and_monitor_denial",
+          }
+          def counter(suite, key):
+              value = suite.attrib.get(key)
+              if value is None or len(value) != 1 or value not in "01234":
+                  raise SystemExit("Prepared owner counters require bounded ASCII integers")
+              return int(value)
+          total = sum(counter(s, "tests") for s in suites)
+          bad = any(counter(s, key) != 0 for s in suites for key in ("skipped", "errors", "failures"))
+          names = [case.attrib.get("name", "") for case in cases]
+          if (root.tag != "testsuites" or len(suites) != 1 or list(root) != suites
+                  or total != 4 or len(cases) != 4 or bad or len(set(names)) != 4
+                  or set(names) != expected or cases != suites[0].findall("testcase")
+                  or any(case.attrib.get("classname", "") != "tests.execution.test_native_prepared_owner_linux"
+                         for case in cases)
+                  or any(list(root.iter(tag)) for tag in ("skipped", "failure", "error"))):
+              raise SystemExit("Prepared owners require exactly four named unskipped passing cases")
+          print("Verified four native-only prepared owner contracts without network access")
+          PY
       - name: Preserve separate native qualification receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -229,6 +262,15 @@ jobs:
         with:
           name: native-prepared-feasibility-${{ github.sha }}
           path: native-prepared-feasibility.xml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve separate prepared native owner receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-prepared-owner-${{ github.event.pull_request.head.sha || github.sha }}
+          path: native-prepared-owner.xml
           if-no-files-found: error
           retention-days: 7
 

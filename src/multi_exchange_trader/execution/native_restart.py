@@ -88,6 +88,7 @@ class NativeRestartCoordinator:
         return tuple(owners), frozenset(missing)
 
     def restore(self, resolve: NativeOwnershipResolver) -> None:
+        self.assembly.bridge._retire_prepared_installation_v2()
         requests = resolve(())
         try:
             generation = self.store.load(self.identity)
