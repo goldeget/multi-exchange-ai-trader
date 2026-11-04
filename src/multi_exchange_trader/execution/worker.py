@@ -11,19 +11,21 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate
 
+from ..account.bybit_readonly import BybitReadOnlyClient
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
 from . import modes
 from .account_binding import (
     AuthenticatedAccountBinding,
+    BybitAccountIdentity,
     BybitDemoAccountSession,
 )
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
@@ -163,6 +165,9 @@ class ExecutionWorker:
         self._channel_closed = False
         self.callback_failures = 0
         self.rejected_channels = 0
+        self._entry_publication_generation_v2 = object()
+        self._entry_publication_frame_v2: list[bool] | None = None
+        self._entry_binding_refresh_v2: object | None = None
 
     @property
     def native_restart_status(self) -> WorkerNativeRestartStatus:
@@ -188,6 +193,183 @@ class ExecutionWorker:
             raise RuntimeBlocked("MONITORING_RESUME_IN_PROGRESS")
         if self._stopping:
             raise RuntimeBlocked("WORKER_STOPPING")
+
+    def _retire_entry_publications_v2(self) -> None:
+        """Withdraw local attempts; cleanup must never refuse because of this hook."""
+        self._entry_publication_generation_v2 = object()
+        frame = self._entry_publication_frame_v2
+        if frame is not None:
+            frame[0] = True
+
+    def _entry_publication_links_v2(self, *,
+            fresh_binding: AuthenticatedAccountBinding | None = None) -> tuple[object, ...]:
+        """Callbackful local lifetime checks, never an after-clock or finance proof."""
+        session, scope = self.session, self.scope
+        if (type(session) is not BybitDemoAccountSession or type(scope) is not ProtectionScope
+                or type(scope.account_id) is not str or type(scope.environment) is not str):
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+        client, credential_client, pair = session._client, session._credential_client, session._credential_pair
+        if (type(client) is not BybitReadOnlyClient or credential_client is not client
+                or type(pair) is not tuple or len(pair) != 2
+                or any(type(value) is not str for value in pair)
+                or type(client.environment) is not str or type(client.base_url) is not str):
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+        http_client = client._client
+        scope_values = scope.account_id, scope.environment
+        client_values = client.environment, client.base_url
+        identity, identity_uid = session._identity, None
+        if fresh_binding is not None:
+            if type(identity) is not BybitAccountIdentity or type(identity.uid) is not str:
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+            identity_uid = identity.uid
+
+        def require_owner_values() -> None:
+            # Local, closed comparisons; no callback or renewed authority.
+            if (self.session is not session or self.scope is not scope
+                    or session._client is not client or session._credential_client is not credential_client
+                    or session._credential_pair is not pair or client._client is not http_client
+                    or session._closed is not False
+                    or type(scope.account_id) is not str or type(scope.environment) is not str
+                    or (scope.account_id, scope.environment) != scope_values
+                    or type(client.environment) is not str or type(client.base_url) is not str
+                    or (client.environment, client.base_url) != client_values
+                    or type(session._api_key) is not str or type(session._api_secret) is not str
+                    or (session._api_key, session._api_secret) != pair
+                    or type(client._api_key) is not str or type(client._api_secret) is not str
+                    or (client._api_key, client._api_secret) != pair):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+            if fresh_binding is not None and (
+                    session._identity is not identity or type(identity) is not BybitAccountIdentity
+                    or type(identity.uid) is not str or identity.uid != identity_uid):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+
+        self._require_admission()
+        runtime, assembly = self.runtime, self._assembly
+        journal, store, history, lock = self._journal, self._store, self._history_store, self._lock
+        binding, monitoring = self.binding, self._monitoring
+        if (type(self) is not ExecutionWorker or type(assembly) is not NativeNodeAssembly
+                or type(runtime) is not NativeExecutionRuntime or type(journal) is not CommandJournal
+                or type(store) is not RuntimeStateStore or type(history) is not HistoryStore
+                or type(lock) is not AccountWorkerLock or type(session) is not BybitDemoAccountSession
+                or type(binding) is not AuthenticatedAccountBinding
+                or self._channel_closed is not False or runtime._closed is not False or lock._fd is None
+                or runtime.journal is not journal or runtime.store is not store
+                or runtime.history_store is not history or runtime.receipt_session is not session
+                or runtime.worker_lock is not lock or runtime.bridge is not assembly.bridge
+                or runtime._lease != lock._acquisition_id
+                or monitoring is not None and (type(monitoring) is not MonitoringResume
+                    or monitoring.state.phase != "MONITORING" or monitoring.state.resources_retained)):
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+
+        def links() -> tuple[object, ...]:
+            return (self, self._loop, self.session, self.binding, self._assembly, self._runtime,
+                self._journal, self._store, self._history_store, self._lock, lock._fd,
+                lock._acquisition_id, assembly.node, assembly.channel, assembly.strategy,
+                assembly.bridge, assembly.execution_client, self._factory, self._decoder,
+                self._monitoring, None if monitoring is None else monitoring.state,
+                self._node_task, self._node_stop_task, self.scope, self.policy_book, self.registry,
+                session._client, session._credential_client, session._credential_pair, client._client,
+                scope.account_id, scope.environment)
+
+        original = links()
+        runtime._guard()
+        session._guard()
+        if monitoring is not None:
+            monitoring.owner_guard()
+        self._require_admission()
+        require_owner_values()
+        if fresh_binding is not None:
+            # Finish callbackful binding validation after the file/owner guards.
+            returned_identity = session.require_binding(fresh_binding, scope=scope)
+            require_owner_values()
+            if (returned_identity is not identity or type(returned_identity) is not BybitAccountIdentity
+                    or type(returned_identity.uid) is not str
+                    or returned_identity.uid != scope_values[0] or scope_values[1] != "DEMO"):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+        if (any(actual is not expected for actual, expected in zip(links(), original, strict=True))
+                or self._stopping is not False or self._stopped is not False
+                or self._channel_closed is not False or runtime._closed is not False
+                or monitoring is not None and monitoring.in_progress is not False):
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+        return original
+
+    @contextmanager
+    def _entry_publication_section_v2(self) -> Iterator[None]:
+        """Synchronous worker-local exclusion only; no entry approval is issued."""
+        if self._entry_publication_frame_v2 is not None:
+            self._retire_entry_publications_v2()
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_REENTRANT")
+        self._require_admission()
+        if self._entry_binding_refresh_v2 is not None:
+            raise RuntimeBlocked("WORKER_BINDING_REFRESH_IN_PROGRESS")
+        if self._operations or self._staging:
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OPERATION_IN_PROGRESS")
+        frame = [False]
+        self._entry_publication_frame_v2 = frame
+        generation = self._entry_publication_generation_v2
+        try:
+            original = self._entry_publication_links_v2()
+            if (frame[0] or self._entry_publication_generation_v2 is not generation
+                    or self._entry_publication_frame_v2 is not frame):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_RETIRED")
+            if self.session._binding is not self.binding:
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_BINDING_CHANGED")
+            yield
+            if (frame[0] or self._entry_publication_generation_v2 is not generation
+                    or self._entry_publication_frame_v2 is not frame):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_RETIRED")
+            current = self._entry_publication_links_v2()
+            if (frame[0] or self._entry_publication_generation_v2 is not generation
+                    or self._entry_publication_frame_v2 is not frame
+                    or self._entry_binding_refresh_v2 is not None or self._operations or self._staging
+                    or self.session._binding is not self.binding
+                    or any(actual is not expected for actual, expected in zip(current, original, strict=True))):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_RETIRED")
+        except BaseException:
+            self._retire_entry_publications_v2()
+            raise
+        finally:
+            if self._entry_publication_frame_v2 is frame:
+                self._entry_publication_frame_v2 = None
+
+    async def _refresh_binding_v2(self, *, expected_uid: str, expected_parent_uid: str,
+                                  expected_is_master: bool) -> None:
+        # Retire BEFORE admission can raise into an inner caller that catches it.
+        self._retire_entry_publications_v2()
+        if self._entry_publication_frame_v2 is not None:
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_REENTRANT")
+        self._require_admission()
+        if self._monitoring is not None:
+            raise RuntimeBlocked("MONITORING_BINDING_REFRESH_REQUIRES_CONTROLLER")
+        if self._entry_binding_refresh_v2 is not None:
+            raise RuntimeBlocked("WORKER_BINDING_REFRESH_IN_PROGRESS")
+        phase = object()
+        self._entry_binding_refresh_v2 = phase
+        generation = self._entry_publication_generation_v2
+        session = self.session
+        # Same lifetime accounting as _admitted; retirement must precede its guard.
+        self._operations += 1
+        try:
+            original = self._entry_publication_links_v2()
+            if (self._entry_publication_generation_v2 is not generation
+                    or self._entry_binding_refresh_v2 is not phase):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_RETIRED")
+            fresh = await session.authenticate(expected_uid=expected_uid,
+                expected_parent_uid=expected_parent_uid, expected_is_master=expected_is_master)
+            if (self._entry_publication_generation_v2 is not generation
+                    or self._entry_binding_refresh_v2 is not phase):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_RETIRED")
+            current = self._entry_publication_links_v2(fresh_binding=fresh)
+            if (self._entry_publication_generation_v2 is not generation
+                    or self._entry_binding_refresh_v2 is not phase
+                    or type(fresh) is not AuthenticatedAccountBinding or session._binding is not fresh
+                    or any(actual is not expected for actual, expected in zip(current, original, strict=True))):
+                raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_OWNER_CHANGED")
+            self.binding = fresh
+        finally:
+            self._operations -= 1
+            if self._entry_binding_refresh_v2 is phase:
+                self._entry_binding_refresh_v2 = None
 
     async def start_passive(self) -> None:
         if self._loop is not None or self._stopped:
@@ -232,6 +414,7 @@ class ExecutionWorker:
             if self._restart is not None:
                 self._native_restart_status = self._restart.status
         except BaseException:
+            self._retire_entry_publications_v2()
             try:
                 if self._assembly is not None and self._factory is None:
                     self._assembly.dispose_local()
@@ -266,6 +449,7 @@ class ExecutionWorker:
                 self._assembly.acknowledge_monitoring(event, evidence=evidence)
                 self._monitoring.event_completed()
         except Exception:  # noqa: BLE001 - keep monitoring alive without leaking provider payload.
+            self._retire_entry_publications_v2()
             self.callback_failures += 1
             self.runtime.pause_entries()
             if self._monitoring is not None:
@@ -355,6 +539,7 @@ class ExecutionWorker:
         return await self._resume_restored_monitoring()
 
     async def _resume_restored_monitoring(self) -> WorkerMonitoringStatus:
+        self._retire_entry_publications_v2()
         if self._operations != 1 or self._staging:
             raise RuntimeBlocked("MONITORING_OPERATION_IN_PROGRESS")
         self.runtime.pause_entries()
@@ -369,6 +554,7 @@ class ExecutionWorker:
         The registered strategy has no start/stop commands or external claims.
         This call is not made by app startup, saved policy, or start_passive.
         """
+        self._retire_entry_publications_v2()
         self.runtime.pause_entries()
         if self.native_restart_status.status == "RESTORED_LOCAL_CACHE":
             await self._resume_restored_monitoring()
@@ -386,6 +572,7 @@ class ExecutionWorker:
                 await assembly.node.run_async()
             finally:
                 if not self._stopped:
+                    self._retire_entry_publications_v2()
                     self.runtime.transport_lost()
 
         self._node_task = self._loop.create_task(run())
@@ -548,12 +735,15 @@ class ExecutionWorker:
                                                            adapter=self._readback()))
 
     async def stop(self) -> None:
+        self._retire_entry_publications_v2()
         if self._stopped and self._loop is asyncio.get_running_loop():
             return
         runtime = self.runtime
         # Sticky admission fence is set before any await, even when this attempt
         # refuses because a previously admitted operation still owns liabilities.
         self._stopping = True
+        if self._entry_publication_frame_v2 is not None:
+            raise RuntimeBlocked("WORKER_ENTRY_PUBLICATION_REENTRANT")
         runtime.pause_entries()
         if self._monitoring is not None:
             self._monitoring.retire("MONITORING_STOPPED")
@@ -618,6 +808,7 @@ class ExecutionWorker:
             assembly.require_quiesced()
 
     async def _finish_stop(self, runtime: NativeExecutionRuntime) -> None:
+        self._retire_entry_publications_v2()
         monitoring, assembly, factory = self._monitoring, self._assembly, self._factory
         try:
             assert assembly is not None
@@ -634,12 +825,14 @@ class ExecutionWorker:
                 raise RuntimeBlocked("MONITORING_CLEANUP_OWNER_CHANGED")
             if monitoring is not None:
                 monitoring.require_cleanup_owner()
+            self._retire_entry_publications_v2()
             assembly.close_event_channel()
             self._channel_closed = True
             # No await from this final exact-owner check through seal/dispose/close.
         except BaseException:
             # Stop tasks remain owned even when a bounded attempt times out.
             # Never close the callback sink or stores without producer proof.
+            self._retire_entry_publications_v2()
             with suppress(RuntimeBlocked):
                 runtime.transport_lost()
             if monitoring is not None:
@@ -647,15 +840,18 @@ class ExecutionWorker:
                     resources_retained=True, stream_stamp=monitoring.client.monitoring_stamp())
             raise
         try:
+            self._retire_entry_publications_v2()
             runtime.transport_lost()
             try:
                 if self._restart is not None:
                     self._restart.seal(runtime.native_owned_requests)
             finally:
                 try:
+                    self._retire_entry_publications_v2()
                     runtime.shutdown()
                 finally:
                     if self._factory is None:
+                        self._retire_entry_publications_v2()
                         self._assembly.dispose_local()
         finally:
             self._stopped = True
@@ -666,6 +862,7 @@ class ExecutionWorker:
                     stream_stamp=self._assembly.monitoring_stamp())
 
     def _close_stores(self) -> None:
+        self._retire_entry_publications_v2()
         try:
             if self._history_store is not None:
                 self._history_store.close()

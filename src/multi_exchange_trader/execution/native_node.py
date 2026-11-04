@@ -19,7 +19,12 @@ from typing import Any
 from uuid import uuid4
 
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
-from .bybit_native import NativeBybitBridge, _require_native_version, load_native_bindings
+from .bybit_native import (
+    NativeBybitBridge,
+    _NativePreparedInstallationV2,
+    _require_native_version,
+    load_native_bindings,
+)
 from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
 from .protection import ProtectionScope
 
@@ -44,6 +49,8 @@ class NativeNodeAssembly:
     _actor_workers: dict[Any, asyncio.Task[Any]] = field(default_factory=dict, repr=False)
     _disconnect_workers: set[asyncio.Task[Any]] = field(default_factory=set, repr=False)
     _engine_queues: Any = field(default=None, repr=False)
+    _prepared_installation_v2: _NativePreparedInstallationV2 | None = field(
+        default=None, init=False, repr=False)
 
     def _owned_sdk_tasks(self) -> tuple[list[tuple[Any, asyncio.Task[Any]]], list[asyncio.Task[Any]]]:
         """Pinned 1.231.0 hides Actor._executor and does not retain disconnect tasks.
@@ -276,6 +283,7 @@ class NativeNodeAssembly:
             self.require_owned_tasks_quiesced()
 
     def close_event_channel(self) -> None:
+        self.bridge._retire_prepared_installation_v2(closed=True)
         if self.order_subscription is not None:
             self.order_subscription.close()
 
@@ -289,6 +297,7 @@ class NativeNodeAssembly:
 
     def dispose_local(self) -> None:
         """Release an already stopped kernel without closing the shared owner loop."""
+        self.bridge._retire_prepared_installation_v2(closed=True)
         self.close_event_channel()
         self.node.kernel.dispose()
         if self.node.kernel.executor:
@@ -338,6 +347,8 @@ def _native_modules() -> dict[str, Any]:
         "config": "nautilus_trader.config",
         "bybit": "nautilus_trader.adapters.bybit.config",
         "factories": "nautilus_trader.adapters.bybit.factories",
+        "order_factories": "nautilus_trader.common.factories",
+        "bybit_execution": "nautilus_trader.adapters.bybit.execution",
         "node": "nautilus_trader.live.node",
         "strategy": "nautilus_trader.trading.strategy",
         "events": "nautilus_trader.model.events.order",
@@ -453,8 +464,16 @@ def build_native_node(*, session: BybitDemoAccountSession,
                     "OrderSubmitted", "OrderAccepted", "OrderDenied", "OrderRejected",
                     "OrderCanceled", "OrderExpired", "OrderFilled")),
                 on_native=captured[0].note_monitoring_native if monitor_only else None)
-            result.append(NativeNodeAssembly(native_node, strategy, captured[0], bridge, channel,
-                                             subscription, native_node.kernel.executor if monitor_only else None))
+            assembly = NativeNodeAssembly(native_node, strategy, captured[0], bridge, channel,
+                subscription, native_node.kernel.executor if monitor_only else None)
+            if not monitor_only:
+                installation = _NativePreparedInstallationV2(assembly, modules["strategy"].Strategy,
+                    modules["order_factories"].OrderFactory,
+                    modules["bybit_execution"].BybitExecutionClient)
+                assembly._prepared_installation_v2 = installation
+                bridge._prepared_installation_v2 = installation
+                bridge._prepared_installation_owner_v2 = installation
+            result.append(assembly)
         except BaseException:
             native_node.kernel.dispose()
             if native_node.kernel.executor:
