@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, SupportsIndex
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from ..account.bybit_readonly import BybitReadOnlyClient
+from ..account.bybit_readonly import BybitReadOnlyClient, _account_info_capture_data_v1
 from ..account.config import allowed_host
 from .bybit_linear_model_inputs_v1 import BybitModelSourceRefV1
-from .history import EPOCH, amount, utc
+from .history import EPOCH, HistoryWindow, _order, _symbol, _timestamp, amount, utc
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import (
     ApplicationMonitoringSummary,
@@ -38,7 +38,10 @@ from .monitoring_readback import BybitMonitoringReader
 from .native_restart import NativeRestartCoordinator, _empty_application
 from .native_restart_codec import capture_native_cache
 from .native_restart_store import NativeRestartIdentity, canonical_bytes
-from .observation_instrument_v1 import require_instrument_metadata_profile_v1
+from .observation_instrument_v1 import (
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    require_instrument_metadata_profile_v1,
+)
 from .protection import ProtectionScope
 from .runtime import RuntimeBlocked
 
@@ -52,6 +55,52 @@ if TYPE_CHECKING:
 _ISSUER = object()
 _WITNESSES: WeakValueDictionary[int, FreshMonitoringWitnessV1] = WeakValueDictionary()
 _TARGETS: WeakValueDictionary[int, FreshMonitoringTargetV1] = WeakValueDictionary()
+
+type _WholeScopeSourcesV1 = tuple[
+    tuple[Literal["POSITIONS", "ORDERS"], tuple[BybitModelSourceRefV1, ...], object], ...]
+
+
+def _whole_scope_activity_v1(
+    endpoint: Literal["POSITIONS", "ORDERS"], rows: list[dict[str, object]], *,
+    selected_symbols: tuple[str, ...], allow_unmanaged_other_symbols: bool,
+    server_time_ms: int, positions_seen: set[tuple[str, int]], orders_seen: set[str],
+) -> bool:
+    """Classify data only. Neither this bool nor raw rows prove ownership or account flatness."""
+    if (endpoint not in ("POSITIONS", "ORDERS") or type(allow_unmanaged_other_symbols) is not bool
+            or type(server_time_ms) is not int or not 0 < server_time_ms < 253402300800000):
+        raise MonitoringError("FRESH_MONITORING_ACCOUNT_SOURCE_REQUIRED")
+    if not allow_unmanaged_other_symbols and (
+        endpoint == "ORDERS" and rows or endpoint == "POSITIONS"
+        and any(amount(row.get("size"), nonnegative=True) != 0 for row in rows)
+    ):
+        raise MonitoringError("FRESH_MONITORING_EXTERNAL_ACTIVITY")
+    unmanaged = False
+    for row in rows:
+        symbol = _symbol(row.get("symbol"))
+        if endpoint == "POSITIONS":
+            size, index = amount(row.get("size"), nonnegative=True), row.get("positionIdx")
+            if (type(index) is not int or index not in (0, 1, 2)
+                    or row.get("side") not in ("", "Buy", "Sell")
+                    or size > 0 and row.get("side") not in ("Buy", "Sell")
+                    or (symbol, index) in positions_seen):
+                raise MonitoringError("FRESH_MONITORING_ACCOUNT_POSITION_INVALID")
+            positions_seen.add((symbol, index))
+            if size != 0:
+                if not allow_unmanaged_other_symbols or symbol in selected_symbols:
+                    raise MonitoringError("FRESH_MONITORING_EXTERNAL_ACTIVITY")
+                unmanaged = True
+        else:
+            if not allow_unmanaged_other_symbols or symbol in selected_symbols:
+                raise MonitoringError("FRESH_MONITORING_EXTERNAL_ACTIVITY")
+            created = _timestamp(row.get("createdTime"))
+            # A current still-active order may predate seven days. The original
+            # parser checks its complete row; the authenticated page bounds now.
+            parsed = _order(row, symbol, HistoryWindow(created, created))
+            if parsed.updated_ms > server_time_ms or parsed.venue_order_id in orders_seen:
+                raise MonitoringError("FRESH_MONITORING_ACCOUNT_ORDER_INVALID")
+            orders_seen.add(parsed.venue_order_id)
+            unmanaged = True
+    return unmanaged
 
 
 def _instrument_metadata_bytes(instrument: Any) -> bytes:
@@ -167,6 +216,7 @@ class _FreshReceiptSlot:
         tuple[Literal["POSITIONS", "ORDERS"], tuple[BybitModelSourceRefV1, ...], object], ...
     ]
     unattributed_history_sha256: str
+    unmanaged_usdt_linear_activity: bool
 
 
 def require_fresh_target_v1(target: object, session: object, phase: str) -> None:
@@ -539,19 +589,31 @@ class FreshMonitoringBootstrapV1:
         _TARGETS[id(target)] = target
         return target
 
-    async def _whole_account_flat(
-        self,
-    ) -> tuple[
-        tuple[Literal["POSITIONS", "ORDERS"], tuple[BybitModelSourceRefV1, ...], object], ...
-    ]:
+    async def _whole_account_flat(self) -> _WholeScopeSourcesV1:
+        sources, _unmanaged = await self._capture_whole_scope_v1(allow_unmanaged_other_symbols=False)
+        return sources
+
+    async def _whole_account_observation_v1(self) -> tuple[_WholeScopeSourcesV1, bool]:
+        if self.metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+            raise MonitoringError("FRESH_MONITORING_OBSERVATION_PROFILE_REQUIRED")
+        return await self._capture_whole_scope_v1(allow_unmanaged_other_symbols=True)
+
+    async def _capture_whole_scope_v1(
+        self, *, allow_unmanaged_other_symbols: bool,
+    ) -> tuple[_WholeScopeSourcesV1, bool]:
         from .bybit_position_order_projections_v1 import _page
 
+        if allow_unmanaged_other_symbols and self.metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+            raise MonitoringError("FRESH_MONITORING_OBSERVATION_PROFILE_REQUIRED")
+        self.fresh_guard()
+        unmanaged = False
         retained: list[
             tuple[Literal["POSITIONS", "ORDERS"], tuple[BybitModelSourceRefV1, ...], object]
         ] = []
         endpoints: tuple[Literal["POSITIONS", "ORDERS"], ...] = ("POSITIONS", "ORDERS")
         for endpoint in endpoints:
             positions_seen: set[tuple[str, int]] = set()
+            orders_seen: set[str] = set()
             sources = await (
                 self.session._capture_linear_positions_v1
                 if endpoint == "POSITIONS"
@@ -567,32 +629,18 @@ class FreshMonitoringBootstrapV1:
                 rows, _cursor = _page(
                     page.source, page.capture.raw_body, orders=endpoint == "ORDERS"
                 )
-                if (
-                    endpoint == "ORDERS"
-                    and rows
-                    or endpoint == "POSITIONS"
-                    and any(amount(row.get("size"), nonnegative=True) != 0 for row in rows)
-                ):
-                    raise MonitoringError("FRESH_MONITORING_EXTERNAL_ACTIVITY")
-                if endpoint == "POSITIONS":
-                    from .history import _symbol
-
-                    for row in rows:
-                        symbol, index = _symbol(row.get("symbol")), row.get("positionIdx")
-                        if (
-                            type(index) is not int
-                            or index not in (0, 1, 2)
-                            or row.get("side") not in ("", "Buy", "Sell")
-                            or (symbol, index) in positions_seen
-                        ):
-                            raise MonitoringError("FRESH_MONITORING_ACCOUNT_POSITION_INVALID")
-                        positions_seen.add((symbol, index))
+                if page.source.envelope_time_ms is None:
+                    raise MonitoringError("FRESH_MONITORING_ACCOUNT_SOURCE_REQUIRED")
+                unmanaged = _whole_scope_activity_v1(endpoint, rows,
+                    selected_symbols=self.symbols, allow_unmanaged_other_symbols=allow_unmanaged_other_symbols,
+                    server_time_ms=page.source.envelope_time_ms, positions_seen=positions_seen,
+                    orders_seen=orders_seen) or unmanaged
             self.session._require_linear_held_v1(
                 endpoint, sources, binding=self.binding, scope=self.scope
             )
             self.fresh_guard()
             retained.append((endpoint, sources, slot))
-        return tuple(retained)
+        return tuple(retained), unmanaged
 
     async def read_receipt(
         self, target: FreshMonitoringTargetV1, phase: Literal["PRE", "POST"]
@@ -603,7 +651,10 @@ class FreshMonitoringBootstrapV1:
             raise MonitoringError("FRESH_MONITORING_RECEIPT_CAPACITY")
         started, mono = utc(self.session._clock()), self.session._mono()
         binding, attestation = self.binding, self.session._attested
-        whole_sources = await self._whole_account_flat()
+        if self.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+            whole_sources, unmanaged = await self._whole_account_observation_v1()
+        else:
+            whole_sources, unmanaged = await self._whole_account_flat(), False
         reader = BybitMonitoringReader(
             self.session,
             binding,
@@ -628,6 +679,7 @@ class FreshMonitoringBootstrapV1:
             MonitoringReceiptView(observation, assessment, target.fingerprint, phase),
             whole_sources,
             unattributed_history_sha256(observation),
+            unmanaged,
         )
         try:
             self.require_receipt(receipt, target, phase)
@@ -682,6 +734,32 @@ class FreshMonitoringBootstrapV1:
         # Pure original links after the final guard/clock/monotonic callbacks.
         from .monitoring_unattributed_history import unattributed_history_sha256
 
+        try:
+            from .account_binding import _linear_source_data_v1
+            from .bybit_position_order_projections_v1 import _page
+
+            unmanaged = False
+            for endpoint, sources, original_slot in slot.whole_sources:
+                current_slot = self.session._linear_private_state_v1(endpoint)[1]
+                if current_slot is None or current_slot is not original_slot:
+                    raise MonitoringError("FRESH_MONITORING_ACCOUNT_OBSERVATION_CHANGED")
+                positions_seen: set[tuple[str, int]] = set()
+                orders_seen: set[str] = set()
+                for source, page in zip(sources, current_slot.pages, strict=True):
+                    if (page.source is not source or source.envelope_time_ms is None
+                            or _linear_source_data_v1(source, BybitModelSourceRefV1) != page.source_preimage
+                            or _account_info_capture_data_v1(page.capture) != page.capture_preimage):
+                        raise MonitoringError("FRESH_MONITORING_ACCOUNT_OBSERVATION_CHANGED")
+                    rows, _cursor = _page(source, page.capture.raw_body, orders=endpoint == "ORDERS")
+                    unmanaged = _whole_scope_activity_v1(endpoint, rows, selected_symbols=self.symbols,
+                        allow_unmanaged_other_symbols=self.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+                        server_time_ms=source.envelope_time_ms, positions_seen=positions_seen,
+                        orders_seen=orders_seen) or unmanaged
+            if type(slot.unmanaged_usdt_linear_activity) is not bool or unmanaged != slot.unmanaged_usdt_linear_activity:
+                raise MonitoringError("FRESH_MONITORING_ACCOUNT_OBSERVATION_CHANGED")
+        except (ValueError, TypeError, AttributeError):
+            self._receipts.pop(receipt, None)
+            raise MonitoringError("FRESH_MONITORING_ACCOUNT_OBSERVATION_CHANGED") from None
         try:
             if unattributed_history_sha256(slot.view.observation) != slot.unattributed_history_sha256:
                 raise MonitoringError("MONITORING_UNATTRIBUTED_HISTORY_CHANGED")
@@ -856,6 +934,7 @@ class FreshMonitoringBootstrapV1:
                                 reconciliation_current=True,
                                 fresh_read_authority=True,
                                 stream_stamp=current.stream_stamp,
+                                unmanaged_usdt_linear_activity=self._receipts[post].unmanaged_usdt_linear_activity,
                             )
                             view = self.require_receipt(post, target, "POST")
                             if view.assessment.status is MonitoringStatus.BLOCKED:

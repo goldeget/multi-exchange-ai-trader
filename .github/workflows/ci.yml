@@ -181,6 +181,37 @@ jobs:
               raise SystemExit("Fresh monitoring requires exactly eight named unskipped passing cases")
           print("Verified eight actual fresh monitoring contracts without network access")
           PY
+      - name: Require isolated selected-scope observation contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_selected_scope_monitoring_linux.py --junitxml=selected-scope-observation.xml
+      - name: Require three exact selected-scope observation contracts
+        run: |
+          .venv/bin/python - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse("selected-scope-observation.xml").getroot()
+          suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
+          expected = {
+              "test_actual_sdk_observer_keeps_other_symbols_unmanaged_without_global_flatness",
+              "test_actual_sdk_default_and_selected_activity_still_refuse_observation",
+              "test_actual_sdk_observer_receipt_retains_whole_sources_and_activity_marker",
+          }
+          def counter(suite, name):
+              value = suite.attrib.get(name)
+              if type(value) is not str or re.fullmatch(r"0|[1-9][0-9]{0,8}", value) is None:
+                  raise SystemExit("Selected scope requires bounded nonnegative XML counters")
+              return int(value)
+          total = sum(counter(s, "tests") for s in suites)
+          bad = sum(counter(s, key) for s in suites for key in ("skipped", "errors", "failures"))
+          names = [case.attrib.get("name", "") for case in cases]
+          if (total != 3 or len(cases) != 3 or bad or len(set(names)) != 3 or set(names) != expected
+                  or any(case.attrib.get("classname", "").split(".")[-1]
+                         != "test_selected_scope_monitoring_linux" for case in cases)
+                  or any(list(case.iter(tag)) for case in cases for tag in ("skipped", "failure", "error"))):
+              raise SystemExit("Selected scope requires three exact named unskipped passing cases")
+          print("Verified three actual selected-scope observation contracts without network access")
+          PY
       - name: Require isolated actual observation metadata contracts
         run: |
           command -v unshare
@@ -323,6 +354,7 @@ jobs:
             native-restart-contracts.xml
             restored-monitoring-contracts.xml
             fresh-monitoring-contracts.xml
+            selected-scope-observation.xml
             observation-instrument-contracts.xml
             fixed-limit-native-contracts.xml
           if-no-files-found: error
