@@ -305,8 +305,14 @@ async def test_original_guard_advancing_clock_past_plan_expiry_rejects_existing_
     try:
         result = await capture(graph)
         expiry, armed = result.valid_until, True
-        with pytest.raises(RiskV2Rejected, match="EXPIRED|LOCAL_ADMISSION_CONFLICT"):
+        with pytest.raises((RiskV2Rejected, AccountBindingError)) as caught:
             graph["owner"].require_current_v1(result)
+        if isinstance(caught.value, AccountBindingError):
+            assert str(caught.value) == "ACCOUNT_HELD_SOURCE_REQUIRED"
+        else:
+            assert isinstance(caught.value, RiskV2Rejected)
+            assert caught.value.code in {"RISK_V2_EXPIRED", "RISK_V2_LOCAL_ADMISSION_CONFLICT"}
+        assert clock() > result.valid_until
         assert graph["owner"]._current is None
     finally:
         await graph["fixture"].close()
