@@ -88,14 +88,16 @@ class SourceFixture(Fixture):
         return httpx.Response(200, stream=Stream(json.dumps(body).encode()), request=request)
 
 
-def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any) -> tuple[Any, Any]:
+def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any, *, scope: Any = SCOPE,
+                    side: str = "LONG", entry_price: Decimal = Decimal(50),
+                    stop_price: Decimal = Decimal(40), lifetime_seconds: int = 20) -> tuple[Any, Any]:
     """Supplied fixture-only coverage/cost/minimum values never qualify an actual ledger."""
-    policy = book.risk_policy_v2(SCOPE)
-    instrument = next(o for o in read.catalog.observations if o.key == SCOPE.instrument)
+    policy = book.risk_policy_v2(scope)
+    instrument = next(o for o in read.catalog.observations if o.key == scope.instrument)
     source = read.venue.wallet.source
     account_ref = c.RiskObservationRefV2(source.observation_id, source.source_id,
         source.source_environment, "explicit-account-fixture-v1", now, now, source.raw_body_sha256)
-    account = c.LinearAccountRiskSnapshotV2(SCOPE.product_scope.account, account_ref,
+    account = c.LinearAccountRiskSnapshotV2(scope.product_scope.account, account_ref,
         "explicit-coverage-fixture-v1", (), "UTC_REALIZED_NET_FEES_FUNDING", now.date(),
         Decimal(1000), Decimal(1000), Decimal(0), Decimal(0), 0, Decimal(0), Decimal(0), 0,
         "ISOLATED", "ONE_WAY", ())
@@ -103,34 +105,34 @@ def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any) -> tuple[Any, 
     member = d.LinearRiskDomainMemberV2(tiers_pin := read.venue.tier_tables[0].instrument_pin,
         read.marks[0], tiers, (), (), Decimal(0), Decimal(0), 0, Decimal(0), Decimal(0), 0,
         account_ref, c.RiskComputationRefV2("fixture-domain-risk", "fixture-risk-v1", "DEMO", now, "a" * 64))
-    assert tiers_pin.key == SCOPE.instrument
+    assert tiers_pin.key == scope.instrument
     domain = d.build_linear_risk_domain_coverage_v2(policy=policy, catalog=read.catalog,
         catalog_revision=read.catalog.revision, coverage_revision="fixture-domain-v1",
         source_generation="OWNER", account=account, reservations=read.full_reservations,
         marks=read.marks, members=(member,),
         source_record_sha256s=tuple(sorted(a.bybit_source_ref_sha256_v1(s)
             for s in read.venue.source_records)), now=now)
-    expiry = min(read.venue.valid_until, now + timedelta(seconds=20))
-    proposal = c.LinearEntryProposalV2(SCOPE, "LONG", Decimal(40),
-        c.FixedLimitPriceV2("BUY", Decimal(50), "fixture-quote", expiry))
+    expiry = min(read.venue.valid_until, now + timedelta(seconds=lifetime_seconds))
+    proposal = c.LinearEntryProposalV2(scope, side, stop_price,
+        c.FixedLimitPriceV2("BUY" if side == "LONG" else "SELL", entry_price, "fixture-quote", expiry))
     fee = read.venue.fee.account_taker_rate.reference.source
     fee_ref = c.RiskObservationRefV2(fee.observation_id, fee.source_id, "DEMO",
         "fixture-fee-v1", fee.received_at, fee.received_at, fee.raw_body_sha256)
     funding = c.RiskObservationRefV2("fixture-funding", "fixture-funding", "FIXTURE",
         "fixture-funding-v1", now, now, "b" * 64)
-    costs = c.LinearCostAllowanceV2(SCOPE,
+    costs = c.LinearCostAllowanceV2(scope,
         c.RiskComputationRefV2("fixture-cost", "fixture-cost-v1", "DEMO", now, "c" * 64),
-        c.risk_policy_sha256_v2(policy), instrument.specification_revision, "fixture-quote", "LONG",
-        Decimal(50), Decimal(40), fee_ref, "USDT", "fixture-fee-v1", funding, Decimal(0),
+        c.risk_policy_sha256_v2(policy), instrument.specification_revision, "fixture-quote", side,
+        entry_price, stop_price, fee_ref, "USDT", "fixture-fee-v1", funding, Decimal(0),
         now + timedelta(hours=1), now + timedelta(hours=2), "fixture-funding-v1", "fixture-gap-v1",
         Decimal(1), Decimal("0.5"), Decimal("0.5"), expiry, "fixture-cost-v1")
     sizing = r.size_linear_entry_v2(policy=policy, proposal=proposal, instrument=instrument,
         catalog_revision=read.catalog.revision, costs=costs, now=now)
-    minimum = e.MinimumAmountAssessmentV2(SCOPE,
+    minimum = e.MinimumAmountAssessmentV2(scope,
         c.RiskComputationRefV2("fixture-minimum", "fixture-minimum-v1", "DEMO", now, "d" * 64),
         c.envelope_sha256_v2(sizing.envelope), instrument.specification_revision,
-        "fixture-minimum-v1", ("instrument",), Decimal(50), Decimal(5),
-        sizing.envelope.base_quantity * Decimal(50), expiry)
+        "fixture-minimum-v1", ("instrument",), entry_price, Decimal(5),
+        sizing.envelope.base_quantity * entry_price, expiry)
     requirements = e.RiskRequirementsV2("fixture-mapping-v1", "fixture-minimum-v1", "fixture-cost-v1",
         "fixture-fee-v1", "fixture-funding-v1", "fixture-gap-v1", "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
         "LOCAL_ZERO_ORIGIN_LATTICE_V1", "fixture-margin-v1", "fixture-lp-v1",

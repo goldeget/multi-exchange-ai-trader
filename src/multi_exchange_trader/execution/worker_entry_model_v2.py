@@ -132,7 +132,7 @@ class WorkerEntryModelOwnerV2:
                       nonvip_fee_basis: a.BybitNonVipFeeBasisV1, nonvip_applicability_revision: str,
                       budget: MonitoringReadBudget) -> BybitLinearVenueReadV1:
         worker = self._worker
-        worker._retire_entry_publications_v2()
+        worker._retire_entry_model_plan_v2()
         if self._busy is not None or worker._entry_publication_frame_v2 is not None:
             raise RuntimeBlocked("WORKER_ENTRY_MODEL_OPERATION_IN_PROGRESS")
         self._guard()
