@@ -20,6 +20,7 @@ from .native_restart_codec import (
 from .native_restart_store import (
     DATABASE_FILES,
     NativeRestartError,
+    NativeRestartGeneration,
     NativeRestartIdentity,
     NativeRestartStore,
     application_digest,
@@ -80,6 +81,7 @@ class NativeRestartCoordinator:
             str(strategy.trader_id), str(strategy.id),
             tuple(sorted(symbol + "-LINEAR.BYBIT" for symbol in symbols)))
         self.status = WorkerNativeRestartStatus("BLOCKED")
+        self._last_sealed_generation_v2: NativeRestartGeneration | None = None
         self.metadata_profile = validate_metadata_profile_v1(metadata_profile)
 
     def _require_metadata_profile(self, payload: dict[str, object]) -> None:
@@ -153,6 +155,7 @@ class NativeRestartCoordinator:
             raise NativeRestartError() from None
 
     def seal(self, resolve: NativeOwnershipResolver) -> None:
+        self._last_sealed_generation_v2 = None
         requests = resolve(())
         owners, missing = self._expectations(requests)
         payload = capture_native_cache(self.assembly.node.cache, identity=self.identity,
@@ -163,4 +166,4 @@ class NativeRestartCoordinator:
         prepare_native_cache(payload, identity=self.identity,
             owners=owners, allowed_missing_ids=missing)
         self._require_metadata_profile(payload)
-        self.store.seal(self.identity, payload)
+        self._last_sealed_generation_v2 = self.store.seal(self.identity, payload)
