@@ -358,6 +358,96 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert cleared is not None and json.loads(cleared.payload)["active"] == {}
 
 
+@pytest.mark.parametrize("capacity", ["active-count", "projection-size"])
+async def test_recovery_capacity_overflow_latch_survives_restart(attached_core: Any,
+        monkeypatch: pytest.MonkeyPatch, capacity: str) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
+    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
+    original_rows = list(core.rows)
+    observed_at = snapshot.observed_at.isoformat()
+    server_observed_at = snapshot.server_observed_at.isoformat()
+
+    def active_item(index: int, policy_revision: str = "p") -> dict[str, object]:
+        return {
+            "entry_client_order_id": "ec_" + f"{index:032x}",
+            "policy_revision": policy_revision,
+            "policy_generation": 0,
+            "target_sha256": "0" * 64,
+            "observed_at": observed_at,
+            "server_observed_at": server_observed_at,
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+
+    active: dict[str, dict[str, object]] = {}
+    if capacity == "active-count":
+        active = {f"capacity-position-{index}": active_item(index) for index in range(256)}
+    else:
+        target_item = {
+            "entry_client_order_id": target.parent_client_order_id,
+            "policy_revision": target.policy_revision,
+            "policy_generation": target.policy_generation,
+            "target_sha256": target.projection_sha256,
+            "observed_at": observed_at,
+            "server_observed_at": server_observed_at,
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+        def projection_size(records: dict[str, dict[str, object]]) -> int:
+            payload = {"schema": "PROTECTION_RECOVERY_ADMISSION_V1", "active": records}
+            return len(json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":")).encode())
+
+        target_projection = dict(active)
+        target_projection[target.position_id] = target_item
+        target_delta = projection_size(target_projection) - projection_size(active)
+        for index in range(1, 256):
+            active = {f"capacity-{item}": active_item(item) for item in range(index)}
+            needed_padding = 65536 - projection_size(active) - target_delta + 1
+            if 0 <= needed_padding <= 255 * len(active):
+                remaining = needed_padding
+                for item in active.values():
+                    extra = min(remaining, 255)
+                    item["policy_revision"] = "p" * (1 + extra)
+                    remaining -= extra
+                    if remaining == 0:
+                        break
+                break
+        target_projection = dict(active)
+        target_projection[target.position_id] = target_item
+        assert (len(active) < 256 and projection_size(active) <= 65536
+                < projection_size(target_projection))
+
+    monkeypatch.setattr(core.runtime, "_protection_recovery_projection_v1",
+        lambda: (0, active))
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION"
+    overflow = core.journal.get_projection("protection-recovery-overflow-v1")
+    assert overflow is not None
+    overflow_payload = json.loads(overflow.payload)
+    expected_reason = ("PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT" if capacity == "active-count"
+                       else "PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+    assert overflow_payload["reason_code"] == expected_reason
+    assert core.journal.get_projection("protection-recovery-admission-v1") is None
+
+    core.runtime.shutdown()
+    core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store,
+        worker_lock=core.lock, lock_directory=core.directory, bridge=core.bridge,
+        entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
+        max_evidence_age=timedelta(seconds=10), receipt_session=core.owner,
+        history_store=core.history)
+    assert core.runtime._recovery_required_v1() is True
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime._require_protection_recovery_clear_v1()
+
+    core.rows[:] = original_rows
+    core.clock[0] += timedelta(seconds=1)
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime._require_protection_recovery_clear_v1()
+
+
 @pytest.mark.parametrize("mutate", ["children", "snapshot"])
 async def test_final_budget_callback_cannot_mutate_a_retained_view(attached_core: Any, monkeypatch: pytest.MonkeyPatch, mutate: str) -> None:
     core = attached_core

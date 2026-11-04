@@ -110,6 +110,10 @@ QUALIFICATION_BLOCKERS = (
 )
 _PROTECTION_RECOVERY_PROJECTION_V1 = "protection-recovery-admission-v1"
 _PROTECTION_RECOVERY_SCHEMA_V1 = "PROTECTION_RECOVERY_ADMISSION_V1"
+_PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1 = "protection-recovery-overflow-v1"
+_PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1 = "PROTECTION_RECOVERY_OVERFLOW_V1"
+_PROTECTION_RECOVERY_ACTIVE_LIMIT_V1 = 256
+_PROTECTION_RECOVERY_PROJECTION_LIMIT_V1 = 65536
 RiskCheck = Callable[[r.EntryDecision, datetime, r.ReservationTotals], r.EntryDecision]
 _OWNERS: WeakValueDictionary[str, NativeExecutionRuntime] = WeakValueDictionary()
 _OWNERS_LOCK = RLock()
@@ -664,7 +668,74 @@ class NativeExecutionRuntime:
             raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID") from None
 
     def _recovery_required_v1(self) -> bool:
-        return bool(self._protection_recovery_projection_v1()[1])
+        return (bool(self._protection_recovery_projection_v1()[1])
+                or self._protection_recovery_overflow_state_v1()[1])
+
+    def _protection_recovery_overflow_state_v1(self) -> tuple[int, bool]:
+        try:
+            record = self.journal.get_projection(_PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1)
+        except Exception:  # noqa: BLE001 - inability to read the global latch fails closed.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
+        if record is None:
+            return 0, False
+        try:
+            payload = json.loads(record.payload)
+            if (type(payload) is not dict
+                    or set(payload) != {"schema", "reason_code", "position_id_sha256",
+                                        "observed_at", "server_observed_at"}
+                    or payload["schema"] != _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1
+                    or payload["reason_code"] not in (
+                        "PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT",
+                        "PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+                    or type(payload["position_id_sha256"]) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", payload["position_id_sha256"]) is None):
+                raise ValueError
+            for field_name in ("observed_at", "server_observed_at"):
+                stamp = datetime.fromisoformat(payload[field_name])
+                if (type(payload[field_name]) is not str or stamp.tzinfo is None
+                        or stamp.utcoffset() != timedelta(0)):
+                    raise ValueError
+            return record.revision, True
+        except Exception:  # noqa: BLE001 - a damaged global latch cannot be ignored.
+            self._active = False
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID") from None
+
+    def _latch_protection_recovery_overflow_v1(self, *, target: AttachedProtectionTargetV1,
+            snapshot: VenueSnapshot, reason_code: str) -> None:
+        revision, latched = self._protection_recovery_overflow_state_v1()
+        if latched:
+            return
+        server_observed = snapshot.server_observed_at
+        if server_observed is None:
+            raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        payload = {
+            "schema": _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1,
+            "reason_code": reason_code,
+            "position_id_sha256": hashlib.sha256(target.position_id.encode()).hexdigest(),
+            "observed_at": snapshot.observed_at.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+        }
+        event = {
+            "schema": _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1,
+            "action": "LATCHED",
+            "reason_code": reason_code,
+            "position_id": target.position_id,
+            "target_sha256": target.projection_sha256,
+            "cycle_id": snapshot.cycle_id,
+            "observed_at": snapshot.observed_at.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+        }
+        event_json = json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        event_id = "protection-recovery-overflow-v1-" + hashlib.sha256(event_json.encode()).hexdigest()
+        try:
+            self.journal.apply_event(event_id, event, _PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1,
+                                     revision, payload)
+        except Exception:  # noqa: BLE001 - capacity overflow must persist or runtime stays inactive.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
 
     def _apply_protection_recovery_event_v1(self, *, event: dict[str, object],
             active: dict[str, dict[str, object]], expected_revision: int) -> None:
@@ -689,6 +760,9 @@ class NativeExecutionRuntime:
         previous = active.get(target.position_id)
         if previous is not None and previous["entry_client_order_id"] != target.parent_client_order_id:
             raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_OWNER_MISMATCH")
+        overflow = self._protection_recovery_overflow_state_v1()[1]
+        if overflow and previous is None:
+            return
         observed = snapshot.observed_at
         server_observed = snapshot.server_observed_at
         if server_observed is None:
@@ -698,7 +772,7 @@ class NativeExecutionRuntime:
             prior_server = datetime.fromisoformat(previous["server_observed_at"])
             if observed <= prior_observed or server_observed <= prior_server:
                 return
-        active[target.position_id] = {
+        item = {
             "entry_client_order_id": target.parent_client_order_id,
             "policy_revision": target.policy_revision,
             "policy_generation": target.policy_generation,
@@ -707,6 +781,20 @@ class NativeExecutionRuntime:
             "server_observed_at": server_observed.isoformat(),
             "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
         }
+        if previous is None and len(active) >= _PROTECTION_RECOVERY_ACTIVE_LIMIT_V1:
+            self._latch_protection_recovery_overflow_v1(target=target, snapshot=snapshot,
+                reason_code="PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT")
+            return
+        candidate_active = dict(active)
+        candidate_active[target.position_id] = item
+        candidate_payload = {"schema": _PROTECTION_RECOVERY_SCHEMA_V1, "active": candidate_active}
+        candidate_size = len(json.dumps(candidate_payload, ensure_ascii=True, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"))
+        if candidate_size > _PROTECTION_RECOVERY_PROJECTION_LIMIT_V1:
+            self._latch_protection_recovery_overflow_v1(target=target, snapshot=snapshot,
+                reason_code="PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+            return
+        active[target.position_id] = item
         event = {
             "schema": _PROTECTION_RECOVERY_SCHEMA_V1,
             "action": "REQUIRED",
