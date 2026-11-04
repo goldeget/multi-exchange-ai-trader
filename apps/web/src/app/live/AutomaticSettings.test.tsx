@@ -245,6 +245,7 @@ it('does not discard submitted typed edits when a headerless success reconciles 
  const account=await screen.findByLabelText('계좌 ID');fireEvent.change(account,{target:{value:'submitted-account'}});
  await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));
  await screen.findByText(/저장 결과를 확인하지 못했습니다/);expect(account).toHaveValue('submitted-account');
+ await waitFor(()=>expect(reads).toBe(2));
  await act(async()=>resolveRead(capable({...original,revision:8})));
  expect(account).toHaveValue('submitted-account');expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
  expect(screen.queryByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.')).not.toBeInTheDocument();

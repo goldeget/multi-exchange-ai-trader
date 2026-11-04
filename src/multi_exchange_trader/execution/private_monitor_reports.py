@@ -7,7 +7,7 @@ import importlib
 import json
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .history import HistoryWindow, amount
 from .monitoring_models import (
@@ -19,6 +19,9 @@ from .monitoring_models import (
 from .monitoring_readback import parse_execution, parse_order
 from .native_events import NativeOrderEvidence
 from .private_monitor_stream import PrivateProvenance
+
+if TYPE_CHECKING:
+    from .fresh_monitoring_v1 import FreshMonitoringTargetV1
 
 
 def _identity(row: dict[str, Any], order: Any, instrument: Any) -> str:
@@ -172,7 +175,7 @@ class OriginalPrivateReceipt:
 class OwnedPrivateReports:
     """Client-private event source, retaining exact originals through both ACKs."""
 
-    def __init__(self, client: Any, target: MonitoringTarget) -> None:
+    def __init__(self, client: Any, target: MonitoringTarget | FreshMonitoringTargetV1) -> None:
         self._client, self._target = client, target
         assert target._witness is not None
         self._witness = target._witness

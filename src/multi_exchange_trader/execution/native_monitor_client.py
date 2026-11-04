@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import Callable
-from typing import Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
 from nautilus_trader.adapters.bybit.execution import BybitExecutionClient
@@ -17,8 +17,12 @@ from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSessio
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
 from .native_monitor_http import MonitoringHttpAdapter
+from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .private_monitor_stream import OwnedPrivateMonitorStream
 from .protection import ProtectionScope
+
+if TYPE_CHECKING:
+    from .fresh_monitoring_v1 import FreshMonitoringTargetV1, FreshMonitoringWitnessV1
 
 
 def passive_node_settings(instruments: list[Any]) -> dict[str, Any]:
@@ -123,6 +127,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         *,
         monitor_session: BybitDemoAccountSession,
         monitor_binding: AuthenticatedAccountBinding,
+        metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1,
         **kwargs: Any,
     ) -> None:
         validate_passive_config(kwargs["config"])
@@ -130,7 +135,8 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         self._monitor_drain_fault: str | None = None
         self._monitor_session = monitor_session
         self._monitor_binding = monitor_binding
-        self._monitor_target: MonitoringTarget | None = None
+        self._metadata_profile = validate_metadata_profile_v1(metadata_profile)
+        self._monitor_target: MonitoringTarget | FreshMonitoringTargetV1 | None = None
         self._monitor_stream: OwnedPrivateMonitorStream | None = None
         self._monitor_reports: Any = None
         self._monitor_emit = False
@@ -218,6 +224,53 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             guard=self._event_guard,
             dispatch=self._monitor_reports.dispatch,
         )
+
+    async def prepare_fresh_metadata_v1(self, witness: FreshMonitoringWitnessV1) -> None:
+        from .fresh_monitoring_v1 import FreshMonitoringWitnessV1
+
+        if type(witness) is not FreshMonitoringWitnessV1:
+            self._deny()
+        witness.require()
+        origin = witness._origin
+        origin.begin_metadata(self)
+        adapter: Any = self._http_client  # Original checked duck-typed SDK adapter.
+        if (type(self.bybit_instrument_provider) is not BybitInstrumentProvider
+                or id(self.bybit_instrument_provider._client) != id(adapter)
+                or type(adapter) is not MonitoringHttpAdapter
+                or adapter._session is not self._monitor_session
+                or adapter._scope != origin.scope
+                or adapter._symbols != origin.symbols
+                or adapter._cancelled
+                or self._cache is not origin.cache
+                or self._monitor_session._client._operation.get() is not origin.budget):
+            self._deny()
+        self._monitor_binding = origin.binding
+        adapter._binding = origin.binding
+        self._monitor_attestation = self._monitor_session._attested
+        await self._instrument_provider.initialize()
+        witness.require()
+        origin.complete_metadata(self)
+
+    def arm_fresh_monitoring_v1(self, target: FreshMonitoringTargetV1) -> None:
+        from .fresh_monitoring_v1 import require_fresh_target_v1
+        from .private_monitor_reports import OwnedPrivateReports
+
+        if self._monitor_target is not None or self.monitoring_fault or self.is_connected:
+            self._deny()
+        require_fresh_target_v1(target, self._monitor_session, "PRE")
+        witness = target._witness
+        if witness._assembly.execution_client is not self:
+            self._deny()
+        binding = witness._worker.binding
+        self._monitor_session.require_observation_binding(binding, scope=target.scope)
+        self._monitor_binding = binding
+        self._http_client._binding = binding
+        self._monitor_attestation = self._monitor_session._attested
+        self._monitor_target = target
+        self._monitor_reports = OwnedPrivateReports(self, target)
+        self._monitor_stream = OwnedPrivateMonitorStream(api_key=self._config.api_key,
+            api_secret=self._config.api_secret, guard=self._event_guard,
+            dispatch=self._monitor_reports.dispatch)
 
     async def _cache_instruments(self) -> None:
         self._event_guard()
@@ -455,9 +508,11 @@ def create_monitor_client(
     binding: AuthenticatedAccountBinding,
     scope: ProtectionScope,
     symbols: tuple[str, ...],
+    metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1,
     **kwargs: Any,
 ) -> MonitoringBybitExecutionClient:
     validate_passive_config(kwargs["config"])
+    metadata_profile = validate_metadata_profile_v1(metadata_profile)
     holder: list[MonitoringBybitExecutionClient] = []
 
     def fault(reason: str) -> None:
@@ -465,7 +520,8 @@ def create_monitor_client(
             holder[0]._fault(reason)
 
     adapter = MonitoringHttpAdapter(
-        session=session, binding=binding, scope=scope, symbols=symbols, fault=fault
+        session=session, binding=binding, scope=scope, symbols=symbols, fault=fault,
+        metadata_profile=metadata_profile,
     )
     InstrumentId = importlib.import_module("nautilus_trader.model.identifiers").InstrumentId
     provider = BybitInstrumentProvider(
@@ -479,6 +535,7 @@ def create_monitor_client(
     result = MonitoringBybitExecutionClient(
         monitor_session=session,
         monitor_binding=binding,
+        metadata_profile=metadata_profile,
         client=adapter,
         instrument_provider=provider,
         **kwargs,

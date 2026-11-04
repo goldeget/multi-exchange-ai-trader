@@ -17,6 +17,12 @@ from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSessio
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError
 from .native_events import bounded_decimal
+from .observation_instrument_v1 import (
+    ACTUAL_ACCOUNT_FEE_V1,
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    convert_observation_instrument_v1,
+    validate_metadata_profile_v1,
+)
 from .protection import ProtectionScope
 
 
@@ -56,13 +62,12 @@ def _money(value: Decimal, currency: Any) -> Any:
     return result
 
 
-def convert_instrument(row: dict[str, Any], fee: dict[str, Any], symbol: str, stamp_ms: int) -> Any:
+def _instrument_parameters_v1(row: dict[str, Any], symbol: str, stamp_ms: int) -> dict[str, Any]:
     # Runtime public signatures include info, unlike the installed .pyi.
     p = importlib.import_module("nautilus_trader.core.nautilus_pyo3")
 
     if (
         row.get("symbol") != symbol
-        or fee.get("symbol") != symbol
         or row.get("contractType") != "LinearPerpetual"
         or row.get("status") != "Trading"
         or row.get("quoteCoin") != row.get("settleCoin")
@@ -97,34 +102,40 @@ def convert_instrument(row: dict[str, Any], fee: dict[str, Any], symbol: str, st
     max_price = _number(prices.get("maxPrice"), positive=True)
     if min_quantity > max_quantity or min_price > max_price:
         raise MonitoringError("MONITORING_INSTRUMENT_LIMITS")
-    return p.CryptoPerpetual(
-        instrument_id=p.InstrumentId.from_str(symbol + "-LINEAR.BYBIT"),
-        raw_symbol=p.Symbol(symbol),
-        base_currency=base,
-        quote_currency=quote,
-        settlement_currency=settlement,
-        is_inverse=False,
-        price_precision=price_precision,
-        size_precision=size_precision,
-        price_increment=price_increment,
-        size_increment=size_increment,
-        ts_event=stamp_ms * 1_000_000,
-        ts_init=stamp_ms * 1_000_000,
-        multiplier=p.Quantity.from_str("1"),
-        lot_size=size_increment,
-        max_quantity=p.Quantity.from_str(str(max_quantity)),
-        min_quantity=p.Quantity.from_str(str(min_quantity)),
-        max_notional=None,
-        min_notional=_money(_number(sizes.get("minNotionalValue"), positive=True), quote),
-        max_price=p.Price.from_str(str(max_price)),
-        min_price=p.Price.from_str(str(min_price)),
-        margin_init=Decimal("0.1"),
-        margin_maint=Decimal("0.1"),
+    return {
+        "instrument_id": p.InstrumentId.from_str(symbol + "-LINEAR.BYBIT"),
+        "raw_symbol": p.Symbol(symbol),
+        "base_currency": base,
+        "quote_currency": quote,
+        "settlement_currency": settlement,
+        "is_inverse": False,
+        "price_precision": price_precision,
+        "size_precision": size_precision,
+        "price_increment": price_increment,
+        "size_increment": size_increment,
+        "ts_event": stamp_ms * 1_000_000,
+        "ts_init": stamp_ms * 1_000_000,
+        "multiplier": p.Quantity.from_str("1"),
+        "lot_size": size_increment,
+        "max_quantity": p.Quantity.from_str(str(max_quantity)),
+        "min_quantity": p.Quantity.from_str(str(min_quantity)),
+        "max_notional": None,
+        "min_notional": _money(_number(sizes.get("minNotionalValue"), positive=True), quote),
+        "max_price": p.Price.from_str(str(max_price)),
+        "min_price": p.Price.from_str(str(min_price)),
+        "margin_init": Decimal("0.1"),
+        "margin_maint": Decimal("0.1"),
+        "tick_scheme": None,
+    }
+
+
+def convert_instrument(row: dict[str, Any], fee: dict[str, Any], symbol: str, stamp_ms: int) -> Any:
+    if fee.get("symbol") != symbol:
+        raise MonitoringError("MONITORING_INSTRUMENT_SCOPE")
+    p = importlib.import_module("nautilus_trader.core.nautilus_pyo3")
+    return p.CryptoPerpetual(**_instrument_parameters_v1(row, symbol, stamp_ms),
         maker_fee=_number(fee.get("makerFeeRate")),
-        taker_fee=_number(fee.get("takerFeeRate")),
-        tick_scheme=None,
-        info=None,
-    )
+        taker_fee=_number(fee.get("takerFeeRate")), info=None)
 
 
 def convert_account(row: dict[str, Any], account_id: Any, stamp_ms: int) -> Any:
@@ -202,12 +213,15 @@ class MonitoringHttpAdapter:
         scope: ProtectionScope,
         symbols: tuple[str, ...],
         fault: Callable[[str], None],
+        metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1,
     ) -> None:
+        metadata_profile = validate_metadata_profile_v1(metadata_profile)
         session.require_observation_binding(binding, scope=scope)
         self._session, self._binding, self._scope = session, binding, scope
         self._symbols, self._fault = symbols, fault
         self._instruments: dict[str, Any] = {}
         self._cancelled = False
+        self._metadata_profile = metadata_profile
 
     def __repr__(self) -> str:
         return "MonitoringHttpAdapter(GET_only=True)"
@@ -296,6 +310,9 @@ class MonitoringHttpAdapter:
             self._deny()
         assert symbol is not None
         params = [("category", "linear"), ("symbol", symbol)]
+        validate_metadata_profile_v1(self._metadata_profile)
+        if self._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+            return await self._request_observation_instruments_v1(symbol, params)
         fees, _ = await self._get("/v5/account/fee-rate", params, signed=True)
         data, stamp = await self._get("/v5/market/instruments-info", params, signed=False)
         rows, fee_rows = data.get("list"), fees.get("list")
@@ -317,6 +334,23 @@ class MonitoringHttpAdapter:
             self._fault("MONITORING_METADATA_INVALID")
             raise
         except Exception:  # noqa: BLE001 - SDK errors may contain original payloads.
+            self._fault("MONITORING_METADATA_INVALID")
+        raise MonitoringError("MONITORING_METADATA_INVALID") from None
+
+    async def _request_observation_instruments_v1(
+        self, symbol: str, params: list[tuple[str, str]],
+    ) -> list[Any]:
+        data, stamp = await self._get("/v5/market/instruments-info", params, signed=False)
+        rows = data.get("list")
+        if (data.get("category") != "linear" or data.get("nextPageCursor") != ""
+                or type(rows) is not list or len(rows) != 1 or type(rows[0]) is not dict):
+            self._deny()
+        try:
+            return [convert_observation_instrument_v1(rows[0], symbol, stamp)]
+        except asyncio.CancelledError:
+            self._fault("MONITORING_METADATA_INVALID")
+            raise
+        except Exception:  # noqa: BLE001 - native errors may contain original payloads.
             self._fault("MONITORING_METADATA_INVALID")
         raise MonitoringError("MONITORING_METADATA_INVALID") from None
 

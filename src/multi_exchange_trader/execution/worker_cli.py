@@ -21,6 +21,7 @@ from ..account.config import require_demo_credentials
 from ..credential_resolution import CredentialResolver as _CredentialResolver
 from ..worker_account_selection import resolve_worker_expectations
 from .account_binding import BybitDemoAccountSession
+from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, SDK1231_OBSERVATION_UNKNOWN_FEES_V1
 from .protection import ProtectionScope
 from .risk import EntryDecision, ReservationTotals
 from .runtime import QUALIFICATION_BLOCKERS, RuntimeBlocked
@@ -107,7 +108,8 @@ async def _run(args: argparse.Namespace) -> None:
             policy_book=shared_policy if shared_policy is not None else RuntimePolicyBook(Path(args.policy_db)),
             registry=TrustedPlanRegistry(()),
             entry_risk=_no_entry_risk, clock=lambda: datetime.now(UTC),
-            max_age=timedelta(seconds=30))
+            max_age=timedelta(seconds=30),
+            metadata_profile=getattr(args, "observation_fee_profile", ACTUAL_ACCOUNT_FEE_V1))
 
         async def refresh() -> None:
             await worker._refresh_binding_v2(expected_uid=expectations._uid,
@@ -137,6 +139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _SafeParser(description="DEMO monitor only; native trading stays blocked")
     parser.add_argument("--run-monitor", action="store_true")
     parser.add_argument("--connect-monitoring", action="store_true")
+    parser.add_argument("--observation-fee-profile", choices=(ACTUAL_ACCOUNT_FEE_V1,
+        SDK1231_OBSERVATION_UNKNOWN_FEES_V1), default=ACTUAL_ACCOUNT_FEE_V1)
     parser.add_argument("--uid")
     parser.add_argument("--parent-uid")
     parser.add_argument("--is-master", choices=("true", "false"))

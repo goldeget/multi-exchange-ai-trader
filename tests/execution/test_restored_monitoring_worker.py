@@ -242,11 +242,12 @@ async def test_unknown_native_event_cannot_enter_application_delivery(prepared):
     with pytest.raises(ValueError, match='MONITORING_ACCEPTED_EVENT_REQUIRED'):
         assembly.require_monitoring_delivery(object())
 
-async def test_real_fresh_worker_cannot_launch_unarmed_monitor_client(prepared):
+async def test_unissued_fresh_status_cannot_launch_unarmed_monitor_client(prepared):
     from multi_exchange_trader.execution.native_restart import WorkerNativeRestartStatus
     worker = prepared[2]
+    # A caller-created status cannot replace the original coordinator's bootstrap proof.
     worker._native_restart_status = WorkerNativeRestartStatus('FRESH_EMPTY_CACHE')
-    with pytest.raises(RuntimeBlocked, match='MONITORING_RESTORED_CACHE_REQUIRED'):
+    with pytest.raises(RuntimeBlocked, match='FRESH_MONITORING_NEW_ORIGINAL_WORKER_REQUIRED'):
         await worker.connect_monitoring()
     assert worker._node_task is None
 
