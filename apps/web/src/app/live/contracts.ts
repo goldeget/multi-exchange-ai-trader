@@ -60,6 +60,7 @@ export type PolicyInstrument={venue:'BYBIT';product:PolicyProduct;symbol:string}
 export type PolicyReference={strategy_id:string;revision:string};
 export type PolicyDescriptor={reference:PolicyReference;implementation_sha256:string;config_sha256:string;config_schema_version:number;engine_contract_version:string;permitted_instruments:PolicyInstrument[];approval_reference:string;approval_source_reference:string;approval_source_sha256:string;approval_environments:PolicyEnvironment[];approval_status:'APPROVED'|'DEPRECATED'|'REVOKED'};
 export type PolicyCatalog={schema_version:1;revision:string;entries:PolicyDescriptor[]};
+export type StrategyPublicationSnapshot={schema_version:1;generation:number;catalog:PolicyCatalog};
 export type LegacyPolicy=Record<string,string|number|string[]|null>;
 export type PolicyScope={section_version:1;account:{account_id:string;environment:PolicyEnvironment|null}|null;mode:'FULL_AUTO'|'ALL_IN_ONE'|null;allowed_products:PolicyProduct[]|null;selected_product:PolicyProduct|null;permission_profile_revision:'BYBIT_SPOT_LINEAR_NO_FUNDS_V1'|null;allowed_instruments:PolicyInstrument[]|null;selected_instruments:PolicyInstrument[]|null};
 export type PolicyStrategy={section_version:1;catalog:PolicyCatalog|null;allowed:PolicyReference[]|null;selected:PolicyReference[]|null};
@@ -190,14 +191,25 @@ function strictPolicyJSON(raw:string):unknown{
  }
  const result=value(0);whitespace();policyAssert(index===raw.length);return result;
 }
-export async function parseAutomaticSettings(raw:string):Promise<AutomaticSettingsSnapshot|null>{
+export async function parseAutomaticSettings(raw:string,publication?:StrategyPublicationSnapshot|null):Promise<AutomaticSettingsSnapshot|null>{
  try{
   const value=strictPolicyJSON(raw);exactPolicyObject(value,['schema_version','revision','policy','missing_fields','desired_state','live_order_enabled','worker_running','blockers']);
   policyAssert(typeof value.revision==='number'&&Number.isSafeInteger(value.revision)&&value.revision>=0&&value.desired_state==='STOPPED'&&value.live_order_enabled===false&&value.worker_running===false);
   policyArray(value.missing_fields,100);policyAssert(value.missing_fields.every(item=>typeof item==='string'));policyArray(value.blockers,100);policyAssert(value.blockers.every(item=>typeof item==='string'));const blockers=value.blockers;policyAssert(['NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED'].every(code=>blockers.includes(code)));
   if(value.schema_version===1){validateLegacyPolicy(value.policy);policyAssert(value.missing_fields.every(item=>legacyPolicyKeys.includes(String(item)))&&value.blockers.includes('POLICY_V1_MIGRATION_REQUIRED'))}
-  else{policyAssert(value.schema_version===2);const policy=await validateAutomaticPolicy(value.policy);policyAssert(policy&&samePolicyValue(value.missing_fields,automaticPolicyMissing(policy))&&value.blockers.includes('POLICY_V2_ADMISSION_REQUIRED'));if(policy.strategy!==null)policyAssert(value.blockers.includes('STRATEGY_CURRENT_PUBLICATION_REQUIRED'));if(policy.scope?.selected_product==='SPOT')policyAssert(value.blockers.includes('POLICY_SPOT_RISK_UNSUPPORTED'))}
+  else{policyAssert(value.schema_version===2);const policy=await validateAutomaticPolicy(value.policy);policyAssert(policy&&samePolicyValue(value.missing_fields,automaticPolicyMissing(policy))&&value.blockers.includes('POLICY_V2_ADMISSION_REQUIRED'));
+   if(policy.strategy!==null){const current=publication?await parseStrategyPublication(JSON.stringify(publication)):null;if(!current||!samePolicyValue(current.catalog,policy.strategy.catalog))policyAssert(value.blockers.includes('STRATEGY_CURRENT_PUBLICATION_REQUIRED'))}
+   if(policy.scope?.selected_product==='SPOT')policyAssert(value.blockers.includes('POLICY_SPOT_RISK_UNSUPPORTED'))}
   return value as AutomaticSettingsSnapshot;
  }catch{return null}
 }
 export const automaticPolicyEqual=samePolicyValue;
+export async function parseStrategyPublication(raw:string):Promise<StrategyPublicationSnapshot|null|undefined>{
+ try{
+  const value=strictPolicyJSON(raw);
+  if(value===null)return null;
+  exactPolicyObject(value,['schema_version','generation','catalog']);policyAssert(value.schema_version===1);
+  policyInteger(value.generation,Number.MAX_SAFE_INTEGER);await validatePolicyCatalog(value.catalog);
+  return value as StrategyPublicationSnapshot;
+ }catch{return undefined}
+}

@@ -10,7 +10,10 @@ from fastapi.responses import JSONResponse
 from .runtime_policy import RuntimePolicyBook, parse_json
 
 AUTOMATIC_BODY_LIMIT = 64 * 1024
-CAPABILITY_HEADER = {"X-Automatic-Policy-Sections-Version": "1"}
+CAPABILITY_HEADER = {
+    "X-Automatic-Policy-Sections-Version": "1",
+    "X-Automatic-Strategy-Publication-Version": "1",
+}
 
 
 def install(application: FastAPI) -> None:
@@ -32,6 +35,15 @@ def install(application: FastAPI) -> None:
     @router.put("/settings")
     async def save(request: Request) -> Any:
         return await write(request, migration=False)
+
+    @router.get("/strategies")
+    async def strategies(request: Request) -> Any:
+        """Read current publication without approving a strategy or starting trading."""
+        try:
+            publication = await asyncio.to_thread(book(request).publication_snapshot_v1)
+            return JSONResponse(content=publication, headers=CAPABILITY_HEADER)
+        except (ValueError, TypeError, OSError, sqlite3.Error):
+            return JSONResponse(status_code=503, content={"reason": "automatic_storage_unavailable"})
 
     @router.post("/settings/migrate")
     async def migrate(request: Request) -> Any:

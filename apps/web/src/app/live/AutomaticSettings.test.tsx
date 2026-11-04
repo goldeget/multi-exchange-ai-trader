@@ -1,7 +1,7 @@
 import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react';
 import {afterEach,expect,it,vi} from 'vitest';
 import {AutomaticSettings} from './AutomaticSettings';
-import {automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,validateAutomaticPolicy} from './contracts';
+import {automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,parseStrategyPublication,validateAutomaticPolicy} from './contracts';
 
 const keys='capital_usdt leverage_min leverage_max per_trade_loss max_daily_loss max_drawdown max_total_notional max_total_risk max_total_margin margin_allocation liquidation_buffer_fraction max_quote_age_seconds max_evidence_age_seconds max_consecutive_losses max_positions mode environment sizing_rule margin_mode position_mode allowed_symbols allowed_strategies selected_symbols selected_strategies'.split(' ');
 const legacy=Object.fromEntries(keys.map(key=>[key,null]));
@@ -512,4 +512,95 @@ it('blocks readding an unchecked selected ref while its checked allowed parent i
  fireEvent.change(screen.getByLabelText('계좌 환경'),{target:{value:'LIVE'}});await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled());
  const allowed=screen.getByLabelText('허용 전략 alpha / r1'),selected=screen.getByLabelText('선택 전략 alpha / r1');expect(allowed).toBeChecked();expect(allowed).toBeEnabled();expect(selected).toBeChecked();expect(selected).toBeEnabled();
  fireEvent.click(selected);expect(selected).not.toBeChecked();expect(selected).toBeDisabled();expect(allowed).toBeChecked();expect(screen.getByLabelText('허용 전략 beta / r1')).toBeChecked();expect(screen.getByLabelText('선택 전략 beta / r1')).toBeChecked();expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+const publishedResponse=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'X-Automatic-Policy-Sections-Version':'1','X-Automatic-Strategy-Publication-Version':'1'}});
+const publishedCatalog=()=>({schema_version:1,generation:9,catalog:typedPolicy().strategy.catalog});
+
+it('publication: sends the current generation with the exact selected catalog and no start action',async()=>{
+ const original={...typedSnapshot(),blockers:typedSnapshot().blockers.filter(code=>code!=='STRATEGY_CURRENT_PUBLICATION_REQUIRED')};
+ const fetcher=vi.fn((url:string,options?:RequestInit)=>{
+  if(url==='/api/v1/automatic/strategies')return Promise.resolve(publishedResponse(publishedCatalog()));
+  return Promise.resolve(publishedResponse(options?.method==='PUT'?{...original,revision:8,policy:JSON.parse(String(options.body)).policy}:original));
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ expect(await screen.findByText('서버에서 현재 운용 전략 목록을 확인했습니다.')).toBeVisible();
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());
+ fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+ const writes=fetcher.mock.calls.filter(call=>call[1]?.method==='PUT');expect(writes).toHaveLength(1);
+ const sent=JSON.parse(String(writes[0][1]?.body));expect(sent.expected_strategy_generation).toBe(9);expect(sent.policy).toEqual(original.policy);
+ expect(fetcher.mock.calls.every(call=>['/api/v1/automatic/settings','/api/v1/automatic/strategies'].includes(call[0]))).toBe(true);
+});
+
+it.each(['bad-generation','bad-catalog','missing-capability','unavailable'])('publication: blocks saving when current publication is %s',async failure=>{
+ const fetcher=vi.fn((url:string)=>{
+  if(url!=='/api/v1/automatic/strategies')return Promise.resolve(publishedResponse(typedSnapshot()));
+  const value=publishedCatalog();
+  if(failure==='missing-capability')return Promise.resolve(capable(value));
+  if(failure==='unavailable')return Promise.resolve(publishedResponse(value,503));
+  return Promise.resolve(publishedResponse(failure==='bad-generation'?{...value,generation:true}:{...value,catalog:{...value.catalog,revision:'sha256:'+'0'.repeat(64)}}));
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ expect(await screen.findByRole('alert')).toHaveTextContent('저장을 막았습니다');
+ expect(screen.queryByRole('button',{name:'운용 한도 저장'})).not.toBeInTheDocument();expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('publication: inactive publication keeps an explicit draft save at null generation',async()=>{
+ const fetcher=vi.fn((url:string,options?:RequestInit)=>{
+  if(url==='/api/v1/automatic/strategies')return Promise.resolve(publishedResponse(null));
+  return Promise.resolve(publishedResponse(options?.method==='PUT'?{...fixture,revision:1,policy:JSON.parse(String(options.body)).policy}:fixture));
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ await screen.findByLabelText('자동매매에 맡길 최대 자금 (USDT)');fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));
+ await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+ const write=fetcher.mock.calls.find(call=>call[1]?.method==='PUT');expect(write).toBeDefined();expect(JSON.parse(String(write?.[1]?.body)).expected_strategy_generation).toBeNull();
+});
+
+it('publication: catalog adoption is explicit, clears only strategy selections and preserves edited funds',async()=>{
+ const fetcher=vi.fn((url:string,options?:RequestInit)=>{
+  if(url==='/api/v1/automatic/strategies')return Promise.resolve(publishedResponse(publishedCatalog()));
+  if(options?.method!=='PUT')return Promise.resolve(publishedResponse(fixture));
+  const policy=JSON.parse(String(options.body)).policy;
+  return Promise.resolve(publishedResponse({...fixture,revision:1,policy,missing_fields:automaticPolicyMissing(policy),blockers:[...fixture.blockers,'STRATEGY_CURRENT_PUBLICATION_REQUIRED']}));
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const capital=await screen.findByLabelText('자동매매에 맡길 최대 자금 (USDT)');fireEvent.change(capital,{target:{value:'250'}});
+ expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();expect(fetcher.mock.calls.some(call=>call[1]?.method)).toBe(false);
+ fireEvent.click(screen.getByRole('button',{name:'현재 전략 목록 적용하고 전략 선택 초기화'}));
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());expect(capital).toHaveValue('250');
+ expect(screen.getByLabelText('허용 전략 alpha / r1')).not.toBeChecked();expect(screen.getByLabelText('선택 전략 alpha / r1')).not.toBeChecked();
+ fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
+ const write=fetcher.mock.calls.find(call=>call[1]?.method==='PUT');const sent=JSON.parse(String(write?.[1]?.body));
+ expect(sent.policy.legacy_v1.capital_usdt).toBe('250');expect(sent.policy.scope).toBeNull();expect(sent.policy.risk_v2).toBeNull();expect(sent.policy.strategy).toEqual({section_version:1,catalog:publishedCatalog().catalog,allowed:null,selected:null});
+});
+
+it('publication: stale generation conflict preserves edited funds and does not retry a write',async()=>{
+ const fetcher=vi.fn((url:string,options?:RequestInit)=>Promise.resolve(url==='/api/v1/automatic/strategies'?publishedResponse(publishedCatalog()):publishedResponse(typedSnapshot(),options?.method==='PUT'?409:200)));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ const capital=await screen.findByLabelText('자동매매에 맡길 최대 자금 (USDT)');fireEvent.change(capital,{target:{value:'250'}});
+ await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));
+ await screen.findByText(/다른 곳에서 설정이 변경/);expect(capital).toHaveValue('250');expect(fetcher.mock.calls.filter(call=>call[1]?.method==='PUT')).toHaveLength(1);
+});
+
+it('publication: rejects duplicate fields, authority flags and invalid generations',async()=>{
+ const good=publishedCatalog();expect(await parseStrategyPublication(JSON.stringify(good))).toEqual(good);expect(await parseStrategyPublication('null')).toBeNull();
+ for(const raw of [JSON.stringify({...good,generation:0}),JSON.stringify({...good,generation:1.5}),JSON.stringify({...good,generation:Number.MAX_SAFE_INTEGER+1}),JSON.stringify({...good,approved:true}),JSON.stringify(good).replace('"generation":9','"generation":9,"generation":10')])expect(await parseStrategyPublication(raw)).toBeUndefined();
+});
+
+it('publication: accepts an active settings response only with a matching validated current catalog',async()=>{
+ const current=publishedCatalog(),active={...typedSnapshot(),blockers:typedSnapshot().blockers.filter(code=>code!=='STRATEGY_CURRENT_PUBLICATION_REQUIRED')};
+ expect(await parseAutomaticSettings(JSON.stringify(active))).toBeNull();
+ expect(await parseAutomaticSettings(JSON.stringify(active),null)).toBeNull();
+ expect(await parseAutomaticSettings(JSON.stringify(active),current as Parameters<typeof parseAutomaticSettings>[1])).toEqual(active);
+ const other={...current,catalog:{...current.catalog,revision:'sha256:'+'0'.repeat(64)}};
+ expect(await parseAutomaticSettings(JSON.stringify(active),other as Parameters<typeof parseAutomaticSettings>[1])).toBeNull();
+});
+
+it('publication: does not query strategies after its settings read has been cancelled',async()=>{
+ let finish!:(response:Response)=>void;
+ const fetcher=vi.fn(()=>new Promise<Response>(resolve=>{finish=resolve}));
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ expect(fetcher).toHaveBeenCalledTimes(1);cleanup();
+ await act(async()=>{finish(publishedResponse(typedSnapshot()));await Promise.resolve()});
+ expect(fetcher).toHaveBeenCalledTimes(1);
 });
