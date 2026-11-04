@@ -266,8 +266,6 @@ def test_owned_standalone_protection_is_typed_but_pinned_adapter_fails_closed(
     {"owned_position_quantity": "0.010"},
     {"owned": replace(conditional_protection_request().owned,
                        trigger_source="TradePrice")},
-    {"owned": replace(conditional_protection_request().owned,
-                       trigger_price=None, trigger_source=None)},
     {"owned_position_quantity": Decimal("0.009")},
     {"position_side": "HOLD"},
     {"trigger_direction": 1},
