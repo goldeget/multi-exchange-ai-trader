@@ -10,7 +10,7 @@ User=trader
 Group=trader
 WorkingDirectory=/opt/trader/app
 EnvironmentFile=/etc/trader/runtime.env
-EnvironmentFile=/etc/trader/credentials.env
+EnvironmentFile=-/etc/trader/credentials.env
 # Optional shared policy contract: fixed /etc/trader/policy-target.json (root-owned).
 # If present, explicit RUNTIME_POLICY_DB_PATH must agree; invalid never falls back.
 # This inactive template does not create that file or enable policy admission/orders.

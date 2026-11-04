@@ -15,6 +15,7 @@ from .account.api import install as install_account
 from .account.bybit_demo_order import BybitDemoOrderClient
 from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
+from .account.demo_view_v1 import install as install_demo_account_view
 from .ai.budget import BudgetBook
 from .controls import install as install_controls
 from .credential_resolution import CredentialResolver, CredentialStartup
@@ -34,6 +35,7 @@ from .paper.spot_api import install as install_spot
 from .paper.spot_contract import QUALIFIED as SPOT_QUALIFIED
 from .paper.spot_store import SpotPaperStore
 from .paper.store import PaperStore
+from .public_dashboard_origin import parse_public_dashboard_origin
 from .recommendations.api import install as install_recommendations
 from .recommendations.book import RecommendationBook
 from .recommendations.practice import BybitPracticeGate, PracticeUnavailable
@@ -53,6 +55,7 @@ Service = Annotated[MarketDataService, Depends(get_market_data_service)]
 
 def create_app(service: MarketDataService | None = None, *,
                credential_resolver: CredentialResolver | None = None) -> FastAPI:
+    public_origin = parse_public_dashboard_origin(os.environ.get("PUBLIC_DASHBOARD_ORIGIN"))
     credential_context = CredentialStartup(credential_resolver)
 
     @asynccontextmanager
@@ -230,10 +233,11 @@ def create_app(service: MarketDataService | None = None, *,
     ) -> list[Candle]:
         return await service.get_candles(exchange, symbol, market_type, interval, limit)
 
-    install_paper(application)
+    install_paper(application, public_origin=public_origin)
     install_research(application)
     install_recommendations(application)
-    install_account(application)
+    install_account(application, public_origin=public_origin)
+    install_demo_account_view(application, credential_context=credential_context)
     install_controls(application, credential_context=credential_context)
     install_automatic_settings(application)
     install_spot(application)

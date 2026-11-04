@@ -213,13 +213,25 @@ function formatKst(value: string | null): string {
 }
 
 type AccountProps = { pollIntervalMs?: number; deadlineMs?: number; demo?: boolean; polished?: boolean; fixture?: AccountView };
+type AccountSource = "demo" | "mainnet";
 
 export default function Account(props: AccountProps) {
   const fixture = props.fixture ?? (props.demo ? ACCOUNT_FIXTURE : undefined);
-  return <AccountController key={fixture ? "fixture" : "live"} {...props} fixture={fixture} />;
+  const [source, setSource] = useState<AccountSource>("demo");
+  if (fixture) return <AccountController key="fixture" {...props} fixture={fixture} />;
+  return <>
+    <section className="account-heading" aria-label="조회 계좌 선택">
+      <div>
+        <button className="secondary" aria-pressed={source === "demo"} onClick={() => setSource("demo")}>DEMO</button>
+        <button className="secondary" aria-pressed={source === "mainnet"} onClick={() => setSource("mainnet")}>실계좌 (조회)</button>
+        <p>{source === "demo" ? "DEMO 연습 계좌를 조회합니다. 실계좌가 아닙니다." : "실계좌 잔고를 읽기만 합니다."} 주문은 보내지 않습니다.</p>
+      </div>
+    </section>
+    <AccountController key={source} {...props} source={source} />
+  </>;
 }
 
-function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture }: AccountProps) {
+function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture, source = "demo" }: AccountProps & { source?: AccountSource }) {
   const [storedView, setView] = useState<AccountView | null>(null);
   const view = fixture ?? storedView;
   const [problem, setProblem] = useState("");
@@ -256,10 +268,12 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
       setRefreshing(true);
       const deadline = window.setTimeout(() => controller.abort(), deadlineMs);
       try {
-        const response = await fetch("/api/v1/account/bybit/view", { signal: controller.signal });
+        const path = source === "demo" ? "/api/v1/account/bybit/demo/view" : "/api/v1/account/bybit/view";
+        const response = await fetch(path, { signal: controller.signal });
         const body: unknown = response.ok ? await response.json() : null;
         if (disposed || myGeneration !== generation) return;
-        if (!response.ok || !isAccountView(body)) {
+        if (!response.ok || !isAccountView(body) || body.환경코드 !== source ||
+            (source === "demo" && body.실거래켜짐 !== false)) {
           setProblem(
             response.ok
               ? "서버 응답 형식이 맞지 않아 잔고를 표시하지 않습니다. 없는 잔고로 바꾸지 않습니다."
@@ -307,7 +321,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
       refresh.current = () => undefined;
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [deadlineMs, pollIntervalMs, fixture]);
+  }, [deadlineMs, pollIntervalMs, fixture, source]);
 
   const age = view ? dataAgeSeconds(view.수집완료시각, nowMs) : null;
   const shownFreshness = view

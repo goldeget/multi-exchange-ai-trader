@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import Account, { dataAgeSeconds, freshnessLabel, isAccountView, type AccountView } from "./Account";
@@ -47,8 +47,8 @@ const meta: Pick<
 const blocked: AccountView = {
   연결상태: "차단됨",
   상태코드: "BLOCKED",
-  환경: "메인넷",
-  환경코드: "mainnet",
+  환경: "연습 계좌",
+  환경코드: "demo",
   구분: [
     "이 조회: 메인넷 (실계좌 읽기). 데모가 아닙니다.",
     "페이퍼: 아니오. PAPER 탭의 잔고는 가상 돈이며 이 화면과 다릅니다.",
@@ -102,6 +102,9 @@ const ready: AccountView = {
 
 const fetchMock = vi.fn();
 
+const demoReady: AccountView = { ...ready, 환경: "연습 계좌", 환경코드: "demo" };
+const mainnetReady: AccountView = { ...ready, 환경: "실계좌", 환경코드: "mainnet" };
+
 beforeEach(() => {
   fetchMock.mockReset();
 });
@@ -109,6 +112,54 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe("explicit account read source", () => {
+  it("defaults to the authenticated DEMO route without enabling financial flags", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => demoReady });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Account polished pollIntervalMs={60000} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/account/bybit/demo/view");
+    expect(screen.getByRole("button", { name: "DEMO" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "실계좌 (조회)" })).toHaveAttribute("aria-pressed", "false");
+    expect((await screen.findAllByText(/실계좌가 아닙니다/)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "주문" })).not.toBeInTheDocument();
+    expect(isAccountView({ ...demoReady, 주문보냄: true })).toBe(false);
+    expect(isAccountView({ ...demoReady, 주문판단에사용: true })).toBe(false);
+  });
+
+  it("aborts switched sources and ignores an older DEMO success", async () => {
+    let finishDemo: (value: unknown) => void = () => undefined;
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finishDemo = resolve; }))
+      .mockResolvedValueOnce({ ok: true, json: async () => mainnetReady });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Account pollIntervalMs={60000} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const demoSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    fireEvent.click(screen.getByRole("button", { name: "실계좌 (조회)" }));
+    expect(demoSignal.aborted).toBe(true);
+    expect(screen.queryByText("12.50")).not.toBeInTheDocument();
+    expect((await screen.findAllByText("12.50")).length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/account/bybit/view");
+    await act(async () => finishDemo({ ok: true, json: async () => ({ ...demoReady,
+      잔고: { ...demoReady.잔고!, 총자산평가: "999999" } }) }));
+    expect(screen.queryByText(/999999/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "실계좌 (조회)" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("rejects an environment mismatch and DEMO financial enablement", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => mainnetReady })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ...demoReady, 실거래켜짐: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const first = render(<Account pollIntervalMs={60000} />);
+    expect(await screen.findByText(/형식이 맞지 않아/)).toBeVisible();
+    expect(screen.queryByText("12.50")).not.toBeInTheDocument();
+    first.unmount();
+    render(<Account pollIntervalMs={60000} />);
+    expect(await screen.findByText(/형식이 맞지 않아/)).toBeVisible();
+    expect(screen.queryByText("12.50")).not.toBeInTheDocument();
+  });
 });
 
 describe("Bybit 계좌 조회", () => {
@@ -125,9 +176,10 @@ describe("Bybit 계좌 조회", () => {
   });
 
   it("shows a mainnet read and marks positions external", async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ready });
+    fetchMock.mockResolvedValue({ ok: true, json: async () => mainnetReady });
     vi.stubGlobal("fetch", fetchMock);
     render(<Account />);
+    fireEvent.click(screen.getByRole("button", { name: "실계좌 (조회)" }));
     expect((await screen.findAllByText("12.50")).length).toBeGreaterThan(0);
     expect(screen.getByText("외부에서 연 포지션")).toBeVisible();
     expect(screen.getByText("실계좌입니다. 연습 계좌가 아닙니다.")).toBeVisible();
@@ -173,7 +225,8 @@ describe("Bybit 계좌 조회", () => {
       "page",
     );
     expect(screen.getByText("연결이 막혔습니다. 잔고 숫자를 만들지 않았습니다.")).toBeVisible();
-    expect(document.body.textContent ?? "").not.toMatch(/\b(BLOCKED|PAPER|DEMO|API)\b/);
+    expect(document.body.textContent ?? "").not.toMatch(/\b(BLOCKED|PAPER|API)\b/);
+    expect(screen.getByRole("button", { name: "DEMO" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("does not start a second read until the first one finishes", async () => {
