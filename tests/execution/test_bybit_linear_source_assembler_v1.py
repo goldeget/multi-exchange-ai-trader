@@ -11,10 +11,10 @@ from typing import Any
 
 import httpx
 import pytest
+from fixtures.bybit_instrument_v1 import row
 from test_bybit_entry_market_projections_v1 import FLAT
 from test_bybit_linear_model_inputs_v1 import fee_document
 from test_bybit_position_order_projections_v1 import ORDER, POSITION
-from test_instrument_producer import row
 from test_private_account_sources_bundle_v1 import COIN, KEY, SECRET
 
 from multi_exchange_trader.account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1

@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fixtures.strategy_publication_v1 import api, artifact
 from test_state_snapshot import TOOL
 from test_state_snapshot import state as state_fixture
-from test_strategy_publication_v1 import api, artifact
 
 from multi_exchange_trader.execution.runtime_policy import RuntimePolicyBook
 
