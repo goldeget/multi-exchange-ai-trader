@@ -166,6 +166,7 @@ class _FreshReceiptSlot:
     whole_sources: tuple[
         tuple[Literal["POSITIONS", "ORDERS"], tuple[BybitModelSourceRefV1, ...], object], ...
     ]
+    unattributed_history_sha256: str
 
 
 def require_fresh_target_v1(target: object, session: object, phase: str) -> None:
@@ -199,6 +200,8 @@ def require_fresh_target_v1(target: object, session: object, phase: str) -> None
 def compare_fresh_observation_v1(
     target: FreshMonitoringTargetV1, observation: MonitoringObservation
 ) -> MonitoringAssessment:
+    from .monitoring_unattributed_history import unattributed_history_valid
+
     if (
         type(target) is not FreshMonitoringTargetV1
         or type(observation) is not MonitoringObservation
@@ -206,6 +209,7 @@ def compare_fresh_observation_v1(
         or observation.symbols != target.symbols
         or observation.orders
         or observation.executions
+        or not unattributed_history_valid(target, observation)
         or len(observation.positions) != len(target.symbols)
         or {p.symbol for p in observation.positions} != set(target.symbols)
         or any(p.signed_quantity != 0 for p in observation.positions)
@@ -611,6 +615,8 @@ class FreshMonitoringBootstrapV1:
         require_fresh_target_v1(target, self.session, phase)
         self.fresh_guard()
         assessment = compare_fresh_observation_v1(target, observation)
+        from .monitoring_unattributed_history import unattributed_history_sha256
+
         receipt = object.__new__(FreshMonitoringReceiptV1)
         self._receipts[receipt] = _FreshReceiptSlot(
             target,
@@ -621,6 +627,7 @@ class FreshMonitoringBootstrapV1:
             mono,
             MonitoringReceiptView(observation, assessment, target.fingerprint, phase),
             whole_sources,
+            unattributed_history_sha256(observation),
         )
         try:
             self.require_receipt(receipt, target, phase)
@@ -673,6 +680,14 @@ class FreshMonitoringBootstrapV1:
             self._receipts.pop(receipt, None)
             raise MonitoringError("FRESH_MONITORING_RECEIPT_EXPIRED")
         # Pure original links after the final guard/clock/monotonic callbacks.
+        from .monitoring_unattributed_history import unattributed_history_sha256
+
+        try:
+            if unattributed_history_sha256(slot.view.observation) != slot.unattributed_history_sha256:
+                raise MonitoringError("MONITORING_UNATTRIBUTED_HISTORY_CHANGED")
+        except (ValueError, TypeError, AttributeError):
+            self._receipts.pop(receipt, None)
+            raise MonitoringError("MONITORING_UNATTRIBUTED_HISTORY_CHANGED") from None
         try:
             self._require_session_origin()
         except MonitoringError:

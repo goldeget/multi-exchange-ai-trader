@@ -21,7 +21,8 @@ EnvironmentFile=/etc/trader/monitor-worker.env
 # No shell interpolation, server port, strategy plugin, or automatic order activation.
 # Co-locate execution.sqlite3/runtime-state.sqlite3 with policy and app ledgers for offline recovery.
 # Explicit monitor selects the DEMO credential namespace, never order qualification.
-ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=true BYBIT_TESTNET=false BYBIT_ENV_FILE=off AI_ENV_FILE=off ANTHROPIC_ENV_FILE=off /opt/trader/app/.venv/bin/python -m multi_exchange_trader.execution.worker_cli --run-monitor --connect-monitoring --symbol ${TRADER_MONITOR_SYMBOL} --directory /var/lib/trader/data --policy-db /var/lib/trader/data/runtime-policy.sqlite3 --lock-directory /var/lib/trader/locks
+# Missing DEMO fee lookup remains UNKNOWN and cannot authorize financial use.
+ExecStart=/usr/bin/env LIVE_TRADING_ENABLED=false BYBIT_DEMO=true BYBIT_TESTNET=false BYBIT_ENV_FILE=off AI_ENV_FILE=off ANTHROPIC_ENV_FILE=off /opt/trader/app/.venv/bin/python -m multi_exchange_trader.execution.worker_cli --run-monitor --connect-monitoring --observation-fee-profile SDK1231_OBSERVATION_UNKNOWN_FEES_V1 --symbol ${TRADER_MONITOR_SYMBOL} --directory /var/lib/trader/data --policy-db /var/lib/trader/data/runtime-policy.sqlite3 --lock-directory /var/lib/trader/locks
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

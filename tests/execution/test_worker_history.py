@@ -378,7 +378,8 @@ async def test_startup_failure_closes_history_and_releases_lease_even_if_close_f
     with pytest.raises(RuntimeError, match="HISTORY_CLOSE_FAILED"):
         await h.worker.start_passive()
     assert closed == ["HistoryStore", "RuntimeStateStore", "CommandJournal"]
-    assert h.worker._stopped and not h.worker._lock.acquired
+    # A raised close cannot acknowledge completed startup cleanup.
+    assert not h.worker._stopped and not h.worker._lock.acquired
     for store in (h.worker._store, h.worker._journal):
         with pytest.raises(sqlite3.ProgrammingError, match="closed"):
             store._db.execute("SELECT 1")

@@ -1,5 +1,6 @@
 """Run deployment boundaries without installing services or contacting providers."""
 
+import argparse
 import configparser
 import json
 import os
@@ -13,6 +14,7 @@ import time
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -56,7 +58,14 @@ def test_api_and_monitor_share_explicit_persistent_registration_paths() -> None:
     }.intersection(worker)
 
 
-def test_monitor_command_uses_saved_identity_and_retains_monitoring_boundaries() -> None:
+def test_monitor_command_uses_saved_identity_and_retains_monitoring_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.execution import worker_cli
+    from multi_exchange_trader.execution.observation_instrument_v1 import (
+        SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    )
+
     unit = configparser.ConfigParser(interpolation=None, strict=False)
     unit.read(ROOT / "deploy/linux/trader-worker.service", encoding="utf-8")
     command = shlex.split(unit["Service"]["ExecStart"])
@@ -69,7 +78,9 @@ def test_monitor_command_uses_saved_identity_and_retains_monitoring_boundaries()
     }
     assert command[interpreter + 1:] == [
         "-m", "multi_exchange_trader.execution.worker_cli",
-        "--run-monitor", "--connect-monitoring", "--symbol", "${TRADER_MONITOR_SYMBOL}",
+        "--run-monitor", "--connect-monitoring",
+        "--observation-fee-profile", SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+        "--symbol", "${TRADER_MONITOR_SYMBOL}",
         "--directory", "/var/lib/trader/data",
         "--policy-db", "/var/lib/trader/data/runtime-policy.sqlite3",
         "--lock-directory", "/var/lib/trader/locks",
@@ -79,6 +90,21 @@ def test_monitor_command_uses_saved_identity_and_retains_monitoring_boundaries()
     assert unit["Service"]["KillMode"] == "control-group"
     assert unit["Service"]["UMask"] == "0077"
     assert unit["Service"]["ReadWritePaths"] == "/var/lib/trader"
+    captured: list[argparse.Namespace] = []
+
+    async def capture(args: argparse.Namespace) -> None:
+        captured.append(args)
+
+    monkeypatch.setattr(worker_cli, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
+    monkeypatch.setattr(worker_cli, "_run", capture)
+    symbol = _template_environment("monitor-worker.env.example")["TRADER_MONITOR_SYMBOL"]
+    argv = [word.replace("${TRADER_MONITOR_SYMBOL}", symbol)
+            for word in command[interpreter + 3:]]
+    assert worker_cli.main(argv) == 0
+    assert len(captured) == 1
+    assert captured[0].observation_fee_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+    assert captured[0].uid is captured[0].parent_uid is captured[0].is_master is None
+    assert captured[0].account_profile is captured[0].profile_store is None
 
 
 def test_api_legacy_environment_is_optional_after_persistent_registration() -> None:
