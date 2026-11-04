@@ -1394,6 +1394,12 @@ def calculate_bound_bybit_model_v1(
     model_hash = a.bybit_model_inputs_sha256_v1(rebound)
     if model_hash != a.bybit_model_inputs_sha256_v1(inputs):
         _reject("RISK_V2_SOURCE_MISMATCH")
+    return _calculate_bound_point_v1(rebound, model_hash=model_hash, now=now)
+
+
+def _calculate_bound_point_v1(
+    rebound: a._BybitModelDataV1, *, model_hash: str, now: datetime
+) -> BybitBoundModelCalculationV1 | BybitModelRejectedV1:
     search = select_smallest_bybit_leverage_v1(rebound.point, now=now)
     if type(search) is BybitModelRejectedV1:
         return search

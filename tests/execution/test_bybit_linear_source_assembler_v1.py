@@ -1,6 +1,8 @@
 """Coherent original HTTPX owners with an actual NEW temporary journal only."""
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -206,5 +208,199 @@ async def test_critical_missing_or_retired_original_inputs_are_not_a_model_read(
             expected_error = AccountBindingError if failure == "retired-private" else BybitReadError
             with pytest.raises(expected_error):
                 fixture.assembler.require_current_v1(read)
+    finally:
+        await fixture.close()
+
+
+async def test_shared_current_wallet_composes_genuine_derived_observer_without_refreshing_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from test_derived_daily_cash_v1 import CashFixture
+
+    from multi_exchange_trader.execution.derived_daily_cash_v1 import DerivedDailyCashObserverV1
+
+    fixture = CashFixture(monkeypatch, tmp_path)
+    try:
+        binding = await fixture.auth()
+        observer = DerivedDailyCashObserverV1(assembler=fixture.assembler)
+        daily = await observer.capture_v1(binding, scope=SCOPE.product_scope.account,
+            symbol="BTCUSDT", budget=MonitoringReadBudget())
+        original = fixture.session._linear_wallet_current
+        assert original is not None and original.capture is not None
+        capture, receipt, owner_guard = original.capture, original.capture.receipt, original.owner_guard
+        first, current = daily.wallet_sources
+        assert first is not current
+        assert fixture.wallet_reads == 2
+        read = await fixture.capture(binding, current_wallet_source=current)
+        assert read.venue.wallet.source is current
+        assert fixture.session._linear_wallet_current is original
+        assert original.capture is capture and capture.receipt is receipt
+        assert original.owner_guard is owner_guard
+        assert current.request_started_at == capture.request_started_at
+        assert read.venue.valid_until <= current.request_started_at + timedelta(seconds=30)
+        assert fixture.wallet_reads == 2
+        assert observer.require_current_v1(daily) is daily
+        assert fixture.assembler.require_current_v1(read) is read
+        assert not daily.direct_midnight_observation and not daily.financial_authority
+    finally:
+        await fixture.close()
+
+
+@pytest.mark.parametrize("failure", ["copy", "other-session", "retired", "reauth", "historical-a", "stale", "scope"])
+async def test_shared_current_wallet_rejects_copies_foreign_retired_and_expired_sources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str,
+) -> None:
+    from test_derived_daily_cash_v1 import CashFixture
+
+    from multi_exchange_trader.execution.derived_daily_cash_v1 import DerivedDailyCashObserverV1
+
+    fixture = CashFixture(monkeypatch, tmp_path)
+    foreign: BybitDemoAccountSession | None = None
+    try:
+        binding = await fixture.auth()
+        observer = DerivedDailyCashObserverV1(assembler=fixture.assembler)
+        daily = await observer.capture_v1(binding, scope=SCOPE.product_scope.account,
+            symbol="BTCUSDT", budget=MonitoringReadBudget())
+        source = daily.wallet_sources[1]
+        capture_scope = SCOPE
+        if failure == "copy":
+            source = copy.copy(source)
+        elif failure == "other-session":
+            foreign = BybitDemoAccountSession(api_key=KEY, api_secret=SECRET, clock=fixture.clock)
+            foreign_binding = await foreign.authenticate(expected_uid="12345",
+                expected_parent_uid="56789", expected_is_master=False)
+            source = await foreign._capture_linear_wallet_v1(foreign_binding,
+                scope=SCOPE.product_scope.account, budget=MonitoringReadBudget(), owner_guard=fixture.guard)
+        elif failure == "retired":
+            await fixture.session._capture_linear_wallet_v1(binding, scope=SCOPE.product_scope.account,
+                budget=MonitoringReadBudget(), owner_guard=fixture.guard)
+        elif failure == "reauth":
+            binding = await fixture.auth()
+        elif failure == "historical-a":
+            source = daily.wallet_sources[0]
+        elif failure == "scope":
+            capture_scope = replace(SCOPE, product_scope=replace(SCOPE.product_scope,
+                account=ProtectionScope("54321", "DEMO")))
+        else:
+            await asyncio.sleep(0.02)
+        with pytest.raises((AccountBindingError, RiskV2Rejected)):
+            await fixture.assembler.capture_v1(binding, scope=capture_scope, owner_generation="OWNER",
+                nonvip_fee_basis=fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+                budget=MonitoringReadBudget(), max_age=timedelta(milliseconds=5) if failure == "stale"
+                    else timedelta(seconds=30), max_quote_age=timedelta(milliseconds=1),
+                current_wallet_source=source)
+        assert fixture.assembler._current is None
+    finally:
+        if foreign is not None:
+            await foreign.aclose()
+        await fixture.close()
+
+
+async def test_shared_current_wallet_caught_reentry_cannot_publish_a_new_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    armed = [False]
+    try:
+        binding = await fixture.auth()
+        previous = await fixture.capture(binding)
+
+        def forwarding_owner_guard() -> None:
+            fixture.guard()
+            if armed[0]:
+                with pytest.raises(RiskV2Rejected):
+                    fixture.assembler.require_current_v1(previous)
+
+        source = await fixture.session._capture_linear_wallet_v1(binding,
+            scope=SCOPE.product_scope.account, budget=MonitoringReadBudget(),
+            owner_guard=forwarding_owner_guard)
+        armed[0] = True
+        with pytest.raises(RiskV2Rejected):
+            await fixture.capture(binding, current_wallet_source=source)
+        assert fixture.assembler._current is None
+    finally:
+        await fixture.close()
+
+
+def demo_uta1_wire(monkeypatch: pytest.MonkeyPatch, *, lpa: bool = True) -> None:
+    """Forward every original fixture request, changing only observed mode fields."""
+    original = httpx.AsyncClient.send
+
+    async def send(client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        response = await original(client, request, **kwargs)
+        if request.url.path in ("/v5/account/info", "/v5/account/user-setting-config"):
+            body = json.loads(await response.aread())
+            if request.url.path == "/v5/account/info":
+                body["result"].update(unifiedMarginStatus=3, marginMode="ISOLATED_MARGIN")
+            else:
+                body["result"]["lpaPerp"] = lpa
+            return httpx.Response(200, stream=Stream(json.dumps(body).encode()), request=request)
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+
+
+@pytest.mark.parametrize("reuse_wallet", [False, True])
+async def test_demo_uta1_explicit_original_cycle_and_shared_wallet_keep_actual_three(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reuse_wallet: bool,
+) -> None:
+    from test_derived_daily_cash_v1 import CashFixture
+
+    from multi_exchange_trader.execution import bybit_demo_uta1_profile_v1 as p
+    from multi_exchange_trader.execution.derived_daily_cash_v1 import DerivedDailyCashObserverV1
+
+    fixture = CashFixture(monkeypatch, tmp_path) if reuse_wallet else Fixture(monkeypatch, tmp_path)
+    demo_uta1_wire(monkeypatch)
+    try:
+        binding = await fixture.auth()
+        capture = getattr(fixture.assembler, "capture_demo_uta1_v1", None)
+        assert callable(capture), "Explicit original-source UTA1 capture is absent"
+        current = None
+        if reuse_wallet:
+            observer = DerivedDailyCashObserverV1(assembler=fixture.assembler)
+            daily = await observer.capture_v1(binding, scope=SCOPE.product_scope.account,
+                symbol="BTCUSDT", budget=MonitoringReadBudget())
+            current = daily.wallet_sources[1]
+        read = await capture(binding, scope=SCOPE, owner_generation="OWNER",
+            nonvip_fee_basis=fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+            budget=MonitoringReadBudget(), max_age=timedelta(seconds=30),
+            max_quote_age=timedelta(seconds=5), current_wallet_source=current)
+        assert type(read.venue) is p.BybitDemoUta1VenueStateV1
+        assert read.venue.account_mode.unified_margin_status == 3
+        info = fixture.session._linear_info_current
+        assert info is not None and info.capture is not None
+        assert read.venue.account_mode.source is info.source
+        assert json.loads(info.capture.raw_body)["result"]["unifiedMarginStatus"] == 3
+        assert fixture.assembler._witness(read, ())[0] == p.bybit_demo_uta1_venue_sha256_v1(read.venue)
+        assert fixture.assembler.require_current_v1(read) is read
+        if reuse_wallet:
+            assert read.venue.wallet.source is current
+            assert sum(r.url.path == "/v5/account/wallet-balance" for r in fixture.requests) == 2
+            assert observer.require_current_v1(daily) is daily
+        await fixture.session._capture_linear_account_info_v1(binding,
+            scope=SCOPE.product_scope.account, budget=MonitoringReadBudget(), owner_guard=fixture.guard)
+        with pytest.raises((AccountBindingError, RiskV2Rejected)):
+            fixture.assembler.require_current_v1(read)
+        with pytest.raises(AccountBindingError):
+            await fixture.capture(binding)  # Existing capture_v1 still requires status 5/6.
+    finally:
+        await fixture.close()
+
+
+async def test_demo_uta1_original_wire_price_correction_false_remains_blocked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    demo_uta1_wire(monkeypatch, lpa=False)
+    try:
+        binding = await fixture.auth()
+        capture = getattr(fixture.assembler, "capture_demo_uta1_v1", None)
+        assert callable(capture), "Explicit original-source UTA1 capture is absent"
+        with pytest.raises(RiskV2Rejected, match="RISK_V2_UNSUPPORTED_MODE"):
+            await capture(binding, scope=SCOPE, owner_generation="OWNER",
+                nonvip_fee_basis=fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+                budget=MonitoringReadBudget(), max_age=timedelta(seconds=30),
+                max_quote_age=timedelta(seconds=5))
+        assert fixture.assembler._current is None
     finally:
         await fixture.close()

@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
 from ..account.bybit_readonly import _PrivateAccountEndpointV1
@@ -18,6 +19,7 @@ from ..market_data.instrument_catalog import InstrumentCatalog
 from ..market_data.instrument_definition import LinearInstrumentSpec
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from ..trading_product import InstrumentKey
+from . import bybit_demo_uta1_profile_v1 as demo
 from . import bybit_linear_model_inputs_v1 as a
 from . import risk_v2_contracts as c
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
@@ -31,7 +33,7 @@ from .risk_v2_math import RiskV2Rejected
 class BybitLinearVenueReadV1:
     """Model data plus an original owner's retained current-read identity."""
 
-    venue: a.BybitVenueStateV1
+    venue: a.BybitVenueStateV1 | demo.BybitDemoUta1VenueStateV1
     marks: tuple[c.LinearMarkQuoteV2, ...]
     selected_mark: a.BybitDecimalFieldV1
     catalog: InstrumentCatalog
@@ -58,6 +60,7 @@ class _Read:
     own_pending_view: _OwnPendingViewV2 | None
     command_key: str | None
     command_identity: str | None
+    profile: Literal["UTA2_V1", "DEMO_UTA1_V1"]
 
 
 class BybitLinearSourceAssemblerV1:
@@ -125,6 +128,40 @@ class BybitLinearSourceAssemblerV1:
         owner_generation: str, nonvip_fee_basis: a.BybitNonVipFeeBasisV1,
         nonvip_applicability_revision: str, budget: MonitoringReadBudget,
         max_age: timedelta, max_quote_age: timedelta,
+        current_wallet_source: a.BybitModelSourceRefV1 | None = None,
+        own_pending_view: _OwnPendingViewV2 | None = None,
+        own_pending_command_key: str | None = None, own_pending_identity_sha256: str | None = None,
+    ) -> BybitLinearVenueReadV1:
+        return await self._capture_profile_v1(binding, scope=scope, owner_generation=owner_generation,
+            nonvip_fee_basis=nonvip_fee_basis, nonvip_applicability_revision=nonvip_applicability_revision,
+            budget=budget, max_age=max_age, max_quote_age=max_quote_age,
+            current_wallet_source=current_wallet_source, own_pending_view=own_pending_view,
+            own_pending_command_key=own_pending_command_key, own_pending_identity_sha256=own_pending_identity_sha256,
+            profile="UTA2_V1")
+
+    async def capture_demo_uta1_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: c.RiskScopeV2,
+        owner_generation: str, nonvip_fee_basis: a.BybitNonVipFeeBasisV1,
+        nonvip_applicability_revision: str, budget: MonitoringReadBudget,
+        max_age: timedelta, max_quote_age: timedelta,
+        current_wallet_source: a.BybitModelSourceRefV1 | None = None,
+        own_pending_view: _OwnPendingViewV2 | None = None,
+        own_pending_command_key: str | None = None, own_pending_identity_sha256: str | None = None,
+    ) -> BybitLinearVenueReadV1:
+        return await self._capture_profile_v1(binding, scope=scope, owner_generation=owner_generation,
+            nonvip_fee_basis=nonvip_fee_basis, nonvip_applicability_revision=nonvip_applicability_revision,
+            budget=budget, max_age=max_age, max_quote_age=max_quote_age,
+            current_wallet_source=current_wallet_source, own_pending_view=own_pending_view,
+            own_pending_command_key=own_pending_command_key, own_pending_identity_sha256=own_pending_identity_sha256,
+            profile="DEMO_UTA1_V1")
+
+    async def _capture_profile_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: c.RiskScopeV2,
+        owner_generation: str, nonvip_fee_basis: a.BybitNonVipFeeBasisV1,
+        nonvip_applicability_revision: str, budget: MonitoringReadBudget,
+        max_age: timedelta, max_quote_age: timedelta,
+        profile: Literal["UTA2_V1", "DEMO_UTA1_V1"],
+        current_wallet_source: a.BybitModelSourceRefV1 | None = None,
         own_pending_view: _OwnPendingViewV2 | None = None,
         own_pending_command_key: str | None = None, own_pending_identity_sha256: str | None = None,
     ) -> BybitLinearVenueReadV1:
@@ -138,6 +175,7 @@ class BybitLinearSourceAssemblerV1:
         token = object()
         self._busy = token
         try:
+            c._literal_v2(profile, ("UTA2_V1", "DEMO_UTA1_V1"))
             c._scope_payload_v2(scope)
             a.bybit_nonvip_fee_sha256_v1(nonvip_fee_basis)
             c._identifier_v2(nonvip_applicability_revision)
@@ -163,7 +201,18 @@ class BybitLinearSourceAssemblerV1:
             full, evaluation = self._reservations(scope, owner_generation, self.clock(),
                 own_pending_view, own_pending_command_key, own_pending_identity_sha256)
             info = await self.session._capture_linear_account_info_v1(binding, scope=account, budget=budget, owner_guard=guard)
-            wallet = await self.session._capture_linear_wallet_v1(binding, scope=account, budget=budget, owner_guard=guard)
+            if current_wallet_source is None:
+                wallet = await self.session._capture_linear_wallet_v1(binding, scope=account, budget=budget, owner_guard=guard)
+            else:
+                self.session._require_linear_wallet_v1(current_wallet_source, binding=binding, scope=account)
+                now = c._utc_v2(self.clock())
+                for stamp in (current_wallet_source.request_started_at, current_wallet_source.received_at,
+                        datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=current_wallet_source.envelope_time_ms)
+                            if current_wallet_source.envelope_time_ms is not None else current_wallet_source.received_at):
+                    if not timedelta(0) <= now - stamp <= max_age:
+                        raise RiskV2Rejected("RISK_V2_EXPIRED")
+                guard()
+                wallet = current_wallet_source
             fees = await self.session._capture_linear_fee_rate_v1(binding, symbol=symbol, scope=account, budget=budget, owner_guard=guard)
             settings = await self.session._capture_linear_settings_v1(binding, scope=account, budget=budget, owner_guard=guard)
             flat = await self.session._capture_linear_flat_leverage_v1(binding, symbol=symbol, scope=account, budget=budget, owner_guard=guard)
@@ -192,7 +241,11 @@ class BybitLinearSourceAssemblerV1:
                 observation, catalog_receipt=receipt, expected_catalog_revision=catalog.revision,
                 budget=budget, max_age=max_age, max_pages=64, owner_guard=guard)
                 for observation in catalog.observations])
-            account_mode = self.session._project_linear_account_mode_v1(info, binding=binding, scope=account)
+            account_mode: a.BybitUtaModeV1 | demo.BybitDemoUta1IsolatedModeV1
+            if profile == "DEMO_UTA1_V1":
+                account_mode = self.session._project_linear_demo_uta1_isolated_mode_v1(info, binding=binding, scope=account)
+            else:
+                account_mode = self.session._project_linear_account_mode_v1(info, binding=binding, scope=account)
             wallet_data = self.session._project_linear_wallet_v1(wallet, binding=binding, scope=account)
             taker, maker = self.session._project_linear_fee_rates_v1(fees, symbol=symbol, binding=binding, scope=account)
             behaviour = self.session._project_linear_trade_behaviour_v1(settings, binding=binding, scope=account)
@@ -204,7 +257,7 @@ class BybitLinearSourceAssemblerV1:
                     or behaviour.futures_mnt_fee_deduction is not False or behaviour.delta_enable is not False):
                 raise RiskV2Rejected("RISK_V2_UNSUPPORTED_MODE")
             profile_sources = tuple(sorted((flat, *positions, *orders), key=lambda s: s.observation_id))
-            profile = a.BybitSelectedEntryProfileV1("BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
+            selected_profile = a.BybitSelectedEntryProfileV1("BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_NEW_ENTRY_V1",
                 symbol, 0, size, (), (), local, auto, Decimal(0), "NEW_SELECTED_FLAT_NO_ADD_V1", profile_sources)
             fee = a.BybitLinearFeeInputsV1(taker, maker, nonvip_fee_basis, "USDT", behaviour, nonvip_applicability_revision)
             # Quotes are deliberately last, after all slower private/catalog/tier work.
@@ -235,17 +288,24 @@ class BybitLinearSourceAssemblerV1:
             records = tuple(sorted(by_id.values(), key=lambda s: s.observation_id))
             now = c._utc_v2(self.clock())
             expiry = min(catalog.expires_at, *(s.request_started_at + (max_quote_age if s in mark_sources else max_age) for s in records))
-            venue = a.BybitVenueStateV1(account_mode, flat_data, fee, wallet_data,
+            venue_fields = (flat_data, fee, wallet_data,
                 tuple(sorted(held_positions, key=lambda p: (*c._key_order_v2(p.instrument_pin.key), p.position_idx))),
                 tuple(sorted(held_orders, key=lambda o: (*c._key_order_v2(o.instrument_pin.key), o.order_id))),
-                tuple(capture.table for capture in captures), profile, records, expiry)
+                tuple(capture.table for capture in captures), selected_profile, records, expiry)
+            venue: a.BybitVenueStateV1 | demo.BybitDemoUta1VenueStateV1
+            if profile == "DEMO_UTA1_V1":
+                assert type(account_mode) is demo.BybitDemoUta1IsolatedModeV1
+                venue = demo.BybitDemoUta1VenueStateV1(account_mode, *venue_fields)
+            else:
+                assert type(account_mode) is a.BybitUtaModeV1
+                venue = a.BybitVenueStateV1(account_mode, *venue_fields)
             result = BybitLinearVenueReadV1(venue, marks, selected_mark, catalog, full, evaluation)
             guard()
             self._current = _Read(result, binding, scope, owner_generation, sources,
                 tuple(self.session._linear_private_state_v1(kind)[1] for kind, _group in sources),
                 mark_sources, tuple(self.public_marks._slots[key.symbol] for key in universe), receipt,
                 current, captures, self._witness(result, captures), max_age, max_quote_age,
-                own_pending_view, own_pending_command_key, own_pending_identity_sha256)
+                own_pending_view, own_pending_command_key, own_pending_identity_sha256, profile)
             self._busy = None
             self.require_current_v1(result)
             if now >= expiry:
@@ -269,7 +329,13 @@ class BybitLinearSourceAssemblerV1:
 
     @staticmethod
     def _witness(result: BybitLinearVenueReadV1, captures: tuple[a.BybitRiskLimitCaptureV1, ...]) -> tuple[str, str, tuple[str, ...]]:
-        return (a.bybit_venue_state_sha256_v1(result.venue), c.mark_set_sha256_v2(result.marks),
+        if type(result.venue) is demo.BybitDemoUta1VenueStateV1:
+            venue_hash = demo.bybit_demo_uta1_venue_sha256_v1(result.venue)
+        elif type(result.venue) is a.BybitVenueStateV1:
+            venue_hash = a.bybit_venue_state_sha256_v1(result.venue)
+        else:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        return (venue_hash, c.mark_set_sha256_v2(result.marks),
             tuple(a.bybit_risk_limit_capture_sha256_v1(capture) for capture in captures))
 
     def require_current_v1(self, read: BybitLinearVenueReadV1) -> BybitLinearVenueReadV1:
@@ -278,9 +344,14 @@ class BybitLinearSourceAssemblerV1:
             if self._busy is not None:
                 self._busy, self._current = None, None
             raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        profile = slot.profile
         token = object()
         self._busy = token
         try:
+            c._literal_v2(profile, ("UTA2_V1", "DEMO_UTA1_V1"))
+            if (profile == "UTA2_V1" and type(read.venue) is not a.BybitVenueStateV1
+                    or profile == "DEMO_UTA1_V1" and type(read.venue) is not demo.BybitDemoUta1VenueStateV1):
+                raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
             now = c._utc_v2(self.clock())
             if now >= read.venue.valid_until or self._witness(read, slot.captures) != slot.witness:
                 raise RiskV2Rejected("RISK_V2_EXPIRED")
@@ -314,7 +385,8 @@ class BybitLinearSourceAssemblerV1:
                 raise RiskV2Rejected("RISK_V2_EXPIRED")
             self._guard(token, slot.binding, slot.scope)
             # Finite original-owner links after the last genuine binding callback.
-            if (self._current is not slot or self.catalog_producer._current is not slot.catalog_current
+            if (self._current is not slot or slot.profile != profile
+                    or self.catalog_producer._current is not slot.catalog_current
                     or any(self.session._linear_private_state_v1(kind)[1] is not original
                         for (kind, _sources), original in zip(slot.sources, slot.private_slots, strict=True))
                     or any(self.public_marks._slots.get(mark.instrument.symbol) is not original

@@ -474,7 +474,7 @@ def _account_info_wire(request: httpx.Request) -> _RiskWire:
     return url, headers, method, reference, headers._encoding, tuple(packed)
 
 
-_PrivateAccountEndpointV1 = Literal["INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT"]
+_PrivateAccountEndpointV1 = Literal["INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT", "PROFILE"]
 
 
 def _private_account_spec_v1(
@@ -509,6 +509,8 @@ def _private_account_spec_v1(
         return "/v5/account/wallet-balance", (("accountType", "UNIFIED"),)
     if endpoint == "SETTINGS":
         return "/v5/account/user-setting-config", ()
+    if endpoint == "PROFILE":
+        return "/v5/user/query-api", ()
     _account_info_fail()
 
 
@@ -549,6 +551,8 @@ def _private_account_endpoint_v1(
             and type(query[1][0]) is str and query[1][0] == "symbol" else "POSITIONS")
     elif path == "/v5/order/realtime":
         endpoint = "ORDERS"
+    elif path == "/v5/user/query-api":
+        endpoint = "PROFILE"
     else:
         _account_info_fail()
     _private_account_query_v1(endpoint, query)
@@ -929,6 +933,8 @@ class BybitReadOnlyClient:
         self._account_fee_source_id = uuid4().hex
         self._account_settings_generation, self._account_settings_generation_text = object(), uuid4().hex
         self._account_settings_source_id = uuid4().hex
+        self._account_profile_generation, self._account_profile_generation_text = object(), uuid4().hex
+        self._account_profile_source_id = uuid4().hex
 
     def _private_account_state_v1(self, endpoint: _PrivateAccountEndpointV1) -> tuple[object, str, str]:
         if type(endpoint) is not str:
@@ -947,6 +953,8 @@ class BybitReadOnlyClient:
             return self._account_orders_generation, self._account_orders_generation_text, self._account_orders_source_id
         if endpoint == "FLAT":
             return self._account_flat_generation, self._account_flat_generation_text, self._account_flat_source_id
+        if endpoint == "PROFILE":
+            return self._account_profile_generation, self._account_profile_generation_text, self._account_profile_source_id
         _account_info_fail()
 
     def _retire_private_account_v1(self, endpoint: _PrivateAccountEndpointV1) -> None:
@@ -964,13 +972,15 @@ class BybitReadOnlyClient:
             self._account_orders_generation, self._account_orders_generation_text = object(), uuid4().hex
         elif endpoint == "FLAT":
             self._account_flat_generation, self._account_flat_generation_text = object(), uuid4().hex
+        elif endpoint == "PROFILE":
+            self._account_profile_generation, self._account_profile_generation_text = object(), uuid4().hex
         else:
             _account_info_fail()
         if self._account_info_pending is not None and self._account_info_pending.endpoint == endpoint:
             self._account_info_pending.retired = True
 
     def _retire_private_accounts_v1(self) -> None:
-        for endpoint in ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT"):
+        for endpoint in ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT", "PROFILE"):
             self._retire_private_account_v1(endpoint)
 
     def _retire_account_info_v1(self) -> None:
@@ -1006,6 +1016,12 @@ class BybitReadOnlyClient:
     ) -> _AccountInfoCaptureV1:
         return await self._capture_private_account_v1("FLAT", symbol=symbol,
             budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_account_api_profile_v1(
+        self, *, budget: "MonitoringReadBudget", group: "ReadGroupToken", owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("PROFILE", budget=budget,
+            group=group, owner_guard=owner_guard)
 
     async def _capture_account_positions_v1(
         self, *, budget: "MonitoringReadBudget", owner_guard: Callable[[], None],

@@ -53,6 +53,8 @@ from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
 
 if TYPE_CHECKING:
+    from .bybit_api_profile_v1 import BybitApiProfileV1
+    from .bybit_demo_uta1_profile_v1 import BybitDemoUta1IsolatedModeV1
     from .bybit_linear_model_inputs_v1 import (
         BybitDecimalFieldV1,
         BybitFlatLeverageV1,
@@ -360,6 +362,9 @@ class BybitDemoAccountSession:
         self._linear_flat_generation = object()
         self._linear_flat_current: _LinearAccountInfoSlot | None = None
 
+        self._linear_profile_generation = object()
+        self._linear_profile_current: _LinearAccountInfoSlot | None = None
+
     def _retire_linear_account_info_v1(self) -> None:
         self._retire_linear_private_source_v1("INFO")
 
@@ -382,6 +387,8 @@ class BybitDemoAccountSession:
             return self._linear_orders_generation, self._linear_orders_current
         if endpoint == "FLAT":
             return self._linear_flat_generation, self._linear_flat_current
+        if endpoint == "PROFILE":
+            return self._linear_profile_generation, self._linear_profile_current
         raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
 
     def _set_linear_private_current_v1(
@@ -401,6 +408,8 @@ class BybitDemoAccountSession:
             self._linear_orders_current = slot
         elif endpoint == "FLAT":
             self._linear_flat_current = slot
+        elif endpoint == "PROFILE":
+            self._linear_profile_current = slot
         else:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
 
@@ -419,6 +428,8 @@ class BybitDemoAccountSession:
             self._linear_orders_generation = object()
         elif endpoint == "FLAT":
             self._linear_flat_generation = object()
+        elif endpoint == "PROFILE":
+            self._linear_profile_generation = object()
         else:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
         self._set_linear_private_current_v1(endpoint, None)
@@ -428,7 +439,7 @@ class BybitDemoAccountSession:
             self._linear_info_requiring.retired = True
 
     def _retire_linear_private_sources_v1(self) -> None:
-        endpoints: tuple[_PrivateAccountEndpointV1, ...] = ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT")
+        endpoints: tuple[_PrivateAccountEndpointV1, ...] = ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT", "PROFILE")
         for endpoint in endpoints:
             self._retire_linear_private_source_v1(endpoint)
 
@@ -576,6 +587,63 @@ class BybitDemoAccountSession:
     ) -> BybitModelSourceRefV1:
         return await self._capture_linear_private_source_v1("SETTINGS", binding, scope=scope,
             budget=budget, owner_guard=owner_guard)
+
+    async def _capture_linear_api_profile_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: ProtectionScope,
+        budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> BybitModelSourceRefV1:
+        return await self._capture_linear_private_source_v1("PROFILE", binding, scope=scope,
+            budget=budget, owner_guard=owner_guard)
+
+    def _require_linear_api_profile_v1(
+        self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+    ) -> None:
+        self._require_linear_private_source_v1("PROFILE", source, binding=binding, scope=scope)
+
+    def _project_linear_api_profile_v1(
+        self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+    ) -> BybitApiProfileV1:
+        result: BybitApiProfileV1 | None = None
+        try:
+            from .bybit_api_profile_v1 import project_bybit_api_profile_v1
+
+            self._require_linear_api_profile_v1(source, binding=binding, scope=scope)
+            slot = self._linear_profile_current
+            if type(slot) is not _LinearAccountInfoSlot or slot.source is not source:
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            capture = slot.capture
+            if type(capture) is not _AccountInfoCaptureV1 or type(capture.raw_body) is not bytes:
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            raw = capture.raw_body
+            identity = self.require_observation_binding(binding, scope=scope)
+            envelope = _parse_json(raw)
+            if type(envelope) is not dict or type(envelope.get("result")) is not dict:
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            checked = _parse_account_metadata(envelope["result"], api_key=self._api_key,
+                api_secret=self._api_secret, expected_uid=identity.uid,
+                observed_at=source.received_at, server_observed_at=_server_time(source.envelope_time_ms),
+                transport_injected=self._transport_injected)
+            if (checked.uid, checked.parent_uid, checked.is_master) != (
+                    identity.uid, identity.parent_uid, identity.is_master):
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            result = project_bybit_api_profile_v1(source, raw)
+            values = (result.uid, result.parent_uid, result.vip_level, result.mkt_maker_level,
+                      result.kyc_level, result.kyc_region)
+            if any(secret in value for secret in self._credential_pair
+                   for value in values if value is not None):
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            self._require_linear_api_profile_v1(source, binding=binding, scope=scope)
+            # Only original links/bytes follow the final genuine binding callbacks.
+            if (self._linear_profile_current is not slot or slot.source is not source
+                    or slot.capture is not capture or capture.raw_body is not raw
+                    or self._identity is not identity or self._binding is not binding):
+                raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED")
+            return result
+        except Exception:  # noqa: BLE001 - provider bodies/credentials never cross this boundary.
+            result = None
+        raise AccountBindingError("ACCOUNT_API_PROFILE_PROJECTION_REQUIRED") from None
 
     async def _capture_linear_private_source_v1(
         self, endpoint: _PrivateAccountEndpointV1, binding: AuthenticatedAccountBinding, *,
@@ -971,6 +1039,52 @@ class BybitDemoAccountSession:
             if not 1 <= updated_ms <= 253402300799999:
                 raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
             mode = BybitUtaModeV1(source, 5 if status == 5 else 6, "ISOLATED_MARGIN", updated_ms)
+            self._require_linear_account_info_v1(source, binding=binding, scope=scope)
+            # Only original local links/exact bytes after the final binding callbacks.
+            if (self._linear_info_current is not slot or slot.source is not source
+                    or slot.capture is not capture or type(capture.raw_body) is not bytes
+                    or capture.raw_body is not raw):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            return mode
+        except Exception:  # noqa: BLE001 - private wire/guard context must not escape.
+            mode = None
+        raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED") from None
+
+    def _project_linear_demo_uta1_isolated_mode_v1(
+        self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+    ) -> BybitDemoUta1IsolatedModeV1:
+        """Project original DEMO UTA1 isolated data, retaining status 3 without authority."""
+        mode: BybitDemoUta1IsolatedModeV1 | None = None
+        try:
+            from ..account.bybit_readonly import _parse_json
+            from .bybit_demo_uta1_profile_v1 import BybitDemoUta1IsolatedModeV1
+
+            self._require_linear_account_info_v1(source, binding=binding, scope=scope)
+            slot = self._linear_info_current
+            if type(slot) is not _LinearAccountInfoSlot or slot.source is not source:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            capture = slot.capture
+            if type(capture) is not _AccountInfoCaptureV1 or type(capture.raw_body) is not bytes:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            raw = capture.raw_body
+            envelope = _parse_json(raw)
+            if (type(envelope) is not dict or type(envelope.get("retCode")) is not int
+                    or envelope["retCode"] != 0 or type(envelope.get("result")) is not dict):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            result = envelope["result"]
+            status = result.get("unifiedMarginStatus")
+            margin = result.get("marginMode")
+            updated = result.get("updatedTime")
+            if (type(status) is not int or status != 3 or scope.environment != "DEMO"
+                    or type(margin) is not str or margin != "ISOLATED_MARGIN"
+                    or type(updated) is not str or not 1 <= len(updated) <= 15
+                    or not updated.isascii() or not updated.isdigit()):
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            updated_ms = int(updated)
+            if not 1 <= updated_ms <= 253402300799999:
+                raise AccountBindingError("ACCOUNT_MODE_PROJECTION_REQUIRED")
+            mode = BybitDemoUta1IsolatedModeV1(source, 3, "ISOLATED_MARGIN", updated_ms)
             self._require_linear_account_info_v1(source, binding=binding, scope=scope)
             # Only original local links/exact bytes after the final binding callbacks.
             if (self._linear_info_current is not slot or slot.source is not source

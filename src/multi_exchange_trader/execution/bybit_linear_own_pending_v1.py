@@ -1,9 +1,10 @@
 """Pure true-journal PENDING projections; no execution or source authority."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from fractions import Fraction
-from typing import Literal, cast
+from typing import Any, ClassVar, Literal, Protocol, cast
 
 from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as a
 from multi_exchange_trader.execution import bybit_linear_model_v1 as m
@@ -29,6 +30,55 @@ from multi_exchange_trader.market_data.instrument_catalog import InstrumentCatal
 _CONFLICT = "RISK_V2_LOCAL_ADMISSION_CONFLICT"
 
 
+class _OwnPendingModelDataV1(Protocol):
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+    @property
+    def profile_revision(self) -> str: ...
+
+    @property
+    def projection_revision(self) -> str: ...
+
+    @property
+    def command_key(self) -> str: ...
+
+    @property
+    def client_order_id(self) -> str: ...
+
+    @property
+    def position_id(self) -> str: ...
+
+    @property
+    def command_identity_sha256(self) -> str: ...
+
+    @property
+    def archived_intent_sha256(self) -> str: ...
+
+    @property
+    def original_reservation(self) -> v.ReservationV2: ...
+
+    @property
+    def full_risk_inputs(self) -> e.LinearRiskInputsV2: ...
+
+    @property
+    def full_domain(self) -> d.LinearRiskDomainCoverageV2: ...
+
+    @property
+    def full_venue(self) -> a._BybitVenueDataV1: ...
+
+    @property
+    def evaluation(self) -> a._BybitModelDataV1: ...
+
+    @property
+    def point(self) -> a.BybitLinearPointInputV1: ...
+
+    @property
+    def valid_until(self) -> datetime: ...
+
+    @property
+    def model_rule_revision(self) -> str: ...
+
+
 @dataclass(frozen=True)
 class BybitOwnPendingModelInputsV1:
     profile_revision: Literal["BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_SELECTED_FLAT_OWN_PENDING_V1"]
@@ -52,7 +102,7 @@ class BybitOwnPendingModelInputsV1:
 
 
 def _capped_point_v1(
-    evaluation: a.BybitLinearModelInputsV1, reservation: v.ReservationV2
+    evaluation: a._BybitModelDataV1, reservation: v.ReservationV2
 ) -> a.BybitLinearPointInputV1:
     available = decimal_fraction_v2(evaluation.preparation.capacity_quote)
     held = decimal_fraction_v2(reservation.margin_amount)
@@ -135,8 +185,15 @@ def _build_domain_v1(
 
 def _own_pending_payload_v1(value: BybitOwnPendingModelInputsV1) -> dict[str, object]:
     c._fields_v2(value, BybitOwnPendingModelInputsV1)
+    return _own_pending_payload_kernel_v1(value,
+        profile_revision="BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_SELECTED_FLAT_OWN_PENDING_V1",
+        model_rule_revision="BYBIT_LINEAR_OWN_PENDING_MODEL_V1",
+        venue_hash=a.bybit_venue_state_sha256_v1, model_hash=a.bybit_model_inputs_sha256_v1)
+
+
+def _own_pending_payload_kernel_v1(value: _OwnPendingModelDataV1, *, profile_revision: str, model_rule_revision: str, venue_hash: Callable[..., str], model_hash: Callable[..., str]) -> dict[str, object]:
     profile = c._literal_v2(
-        value.profile_revision, ("BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_SELECTED_FLAT_OWN_PENDING_V1",)
+        value.profile_revision, (profile_revision,)
     )
     projection = c._literal_v2(
         value.projection_revision, ("EXACT_JOURNAL_OWN_PENDING_SUBTRACTION_V1",)
@@ -150,11 +207,11 @@ def _own_pending_payload_v1(value: BybitOwnPendingModelInputsV1) -> dict[str, ob
     reservation = v._reservation_payload(value.original_reservation)
     full_inputs = e._inputs_payload_v2(value.full_risk_inputs)
     full_domain = d.risk_domain_sha256_v2(value.full_domain)
-    full_venue = a.bybit_venue_state_sha256_v1(value.full_venue)
-    evaluation = a.bybit_model_inputs_sha256_v1(value.evaluation)
+    full_venue = venue_hash(value.full_venue)
+    evaluation = model_hash(value.evaluation)
     point = a.bybit_point_input_sha256_v1(value.point)
     expiry = c._utc_v2(value.valid_until)
-    rule = c._literal_v2(value.model_rule_revision, ("BYBIT_LINEAR_OWN_PENDING_MODEL_V1",))
+    rule = c._literal_v2(value.model_rule_revision, (model_rule_revision,))
     if (
         value.full_risk_inputs.reservations.excluded_command_key is not None
         or value.evaluation.risk_inputs.reservations.excluded_command_key != value.command_key
@@ -176,8 +233,8 @@ def _own_pending_payload_v1(value: BybitOwnPendingModelInputsV1) -> dict[str, ob
     )
     if (
         e._inputs_payload_v2(projected) != e._inputs_payload_v2(value.evaluation.risk_inputs)
-        or a.bybit_venue_state_sha256_v1(venue)
-        != a.bybit_venue_state_sha256_v1(value.evaluation.venue)
+        or venue_hash(venue)
+        != venue_hash(value.evaluation.venue)
         or a._point_payload_v1(_capped_point_v1(value.evaluation, value.original_reservation))
         != a._point_payload_v1(value.point)
     ):
@@ -216,9 +273,46 @@ def bind_bybit_own_pending_inputs_v1(
     expected_command_identity_sha256: str,
     now: datetime,
 ) -> BybitOwnPendingModelInputsV1:
+    a._venue_payload_v1(full_venue)
+    data, evaluation, point = _bind_bybit_own_pending_kernel_v1(full_inputs, full_domain=full_domain,
+        full_venue=full_venue, catalog=catalog, selected_mark=selected_mark, journal=journal, view=view,
+        command_key=command_key, expected_command_identity_sha256=expected_command_identity_sha256,
+        now=now, bind_model=a.bind_bybit_model_inputs_v1)
+    return BybitOwnPendingModelInputsV1(
+        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_SELECTED_FLAT_OWN_PENDING_V1",
+        "EXACT_JOURNAL_OWN_PENDING_SUBTRACTION_V1",
+        command_key,
+        data.record.client_order_id,
+        data.intent.position_id,
+        data.command_identity_sha256,
+        data.record.payload_hash,
+        data.reservation,
+        full_inputs,
+        full_domain,
+        full_venue,
+        cast(a.BybitLinearModelInputsV1, evaluation),
+        point,
+        min(evaluation.valid_until, data.intent.envelope.valid_until),
+        "BYBIT_LINEAR_OWN_PENDING_MODEL_V1",
+    )
+
+
+def _bind_bybit_own_pending_kernel_v1(
+    full_inputs: e.LinearRiskInputsV2,
+    *,
+    full_domain: d.LinearRiskDomainCoverageV2,
+    full_venue: a._BybitVenueDataV1,
+    catalog: InstrumentCatalog,
+    selected_mark: a.BybitDecimalFieldV1,
+    journal: CommandJournal,
+    view: _OwnPendingViewV2,
+    command_key: str,
+    expected_command_identity_sha256: str,
+    now: datetime,
+    bind_model: Callable[..., a._BybitModelDataV1],
+) -> tuple[_OwnPendingDataV2, a._BybitModelDataV1, a.BybitLinearPointInputV1]:
     e._inputs_payload_v2(full_inputs)
     full_domain_hash = d.risk_domain_sha256_v2(full_domain)
-    a._venue_payload_v1(full_venue)
     a._catalog_input_sha256_v1(catalog)
     a._decimal_field_v1(selected_mark)
     c._identifier_v2(command_key)
@@ -273,7 +367,7 @@ def bind_bybit_own_pending_inputs_v1(
         selected_profile=replace(full_venue.selected_profile, local_unresolved_entry_ids=()),
     )
     preparation = r.prepare_linear_entry_v2(evaluation_inputs, now=now)
-    evaluation = a.bind_bybit_model_inputs_v1(
+    evaluation = bind_model(
         evaluation_inputs,
         preparation=preparation,
         domain=evaluation_domain,
@@ -314,23 +408,7 @@ def bind_bybit_own_pending_inputs_v1(
         expected_command_identity_sha256=expected_command_identity_sha256,
         now=now,
     )
-    return BybitOwnPendingModelInputsV1(
-        "BYBIT_USDT_LINEAR_ISOLATED_ONE_WAY_SELECTED_FLAT_OWN_PENDING_V1",
-        "EXACT_JOURNAL_OWN_PENDING_SUBTRACTION_V1",
-        command_key,
-        data.record.client_order_id,
-        data.intent.position_id,
-        data.command_identity_sha256,
-        data.record.payload_hash,
-        data.reservation,
-        full_inputs,
-        full_domain,
-        full_venue,
-        evaluation,
-        point,
-        min(evaluation.valid_until, data.intent.envelope.valid_until),
-        "BYBIT_LINEAR_OWN_PENDING_MODEL_V1",
-    )
+    return data, evaluation, point
 
 
 @dataclass(frozen=True)
@@ -394,18 +472,25 @@ def calculate_bybit_own_pending_v1(
         rebound.point
     ) != a._point_payload_v1(inputs.point):
         c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    return _finish_own_pending_calculation_v1(rebound, journal=journal, view=view, now=now,
+        model_hash=bybit_own_pending_model_inputs_sha256_v1(rebound))
+
+
+def _finish_own_pending_calculation_v1(
+    rebound: _OwnPendingModelDataV1, *, journal: CommandJournal, view: _OwnPendingViewV2,
+    now: datetime, model_hash: str,
+) -> BybitOwnPendingCalculationV1 | m.BybitModelRejectedV1:
     search = m.select_smallest_bybit_leverage_v1(rebound.point, now=now)
     journal._require_own_pending_view_v2(
         view,
-        scope=inputs.full_risk_inputs.policy.scope,
-        command_key=inputs.command_key,
-        expected_command_identity_sha256=inputs.command_identity_sha256,
+        scope=rebound.full_risk_inputs.policy.scope,
+        command_key=rebound.command_key,
+        expected_command_identity_sha256=rebound.command_identity_sha256,
         now=now,
     )
     if type(search) is m.BybitModelRejectedV1:
         return search
     search = cast(m.BybitLeverageSearchV1, search)
-    model_hash = bybit_own_pending_model_inputs_sha256_v1(rebound)
     point_hash = a.bybit_point_input_sha256_v1(rebound.point)
     exact = c._canonical_sha256_v2(
         "BybitOwnPendingCalculationV1",
