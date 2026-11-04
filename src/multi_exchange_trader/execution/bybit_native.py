@@ -18,6 +18,7 @@ from threading import RLock
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from . import risk_v2_contracts as c
+from .native_capabilities import describe_native_capability
 from .native_events import (
     NativeEventContext,
     NativeEventDecoder,
@@ -26,7 +27,6 @@ from .native_events import (
     bounded_decimal,
     load_native_event_decoder,
 )
-from .native_capabilities import describe_native_capability
 from .product_scope import ProductScope, _validate_account, _validate_scope
 from .protection import OwnedOrder, ProtectionScope
 

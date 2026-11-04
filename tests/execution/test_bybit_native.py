@@ -98,7 +98,7 @@ def conditional_protection_request(*, role: str = "STOP", source: str = "MarkPri
         "owned": owned,
         "position_side": "BUY",
         "owned_position_quantity": Decimal("0.010"),
-        "reference_price": Decimal("50000"),
+        "reference_price": Decimal(50000),
         "trigger_direction": 2 if is_stop else 1,
         "position_idx": 0,
     }
