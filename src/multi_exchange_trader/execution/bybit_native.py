@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import importlib
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, is_dataclass
 from decimal import Decimal
 from importlib.metadata import version
 from threading import RLock
@@ -279,6 +280,72 @@ class NativeSubmission:
     code: Literal["NATIVE_SUBMIT_INVOKED", "NATIVE_SUBMIT_AMBIGUOUS"]
 
 
+class _NativePreparedInstallationV2:
+    """Private builder provenance only; never source/account/financial approval."""
+
+    def __init__(self, assembly: Any, strategy_class: Any, factory_class: Any,
+                 client_class: Any) -> None:
+        node, strategy = assembly.node, assembly.strategy
+        kernel = node.kernel
+        self.original = self
+        self.owners = (assembly, assembly.bridge, node, kernel, node.trader, node.cache,
+            kernel.msgbus, kernel.clock, strategy.clock, strategy, strategy.order_factory,
+            assembly.execution_client, assembly.channel, strategy_class, factory_class, client_class,
+            strategy_class.__dict__["submit_order"], factory_class.__dict__["limit"])
+        self.original_owners = self.owners
+        self.generation = object()
+        self.closed = False
+
+
+@dataclass(repr=False)
+class _NativePreparationFrameV2:
+    tainted: bool = False
+    closed: bool = False
+    data: _PreparedFixedLimitDataV2 | None = None
+    layout: tuple[Any, ...] = ()
+
+
+@dataclass(repr=False)
+class _PreparedFixedLimitDataV2:
+    frame: _NativePreparationFrameV2
+    request: LinearFixedLimitNativeOrderRequestV2
+    order: Any
+    seed: Any
+    params: dict[str, object]
+    args: tuple[Any, ...]
+    sealed: bool = False
+    consumed: bool = False
+    closed: bool = False
+
+
+def _prepared_graph_v2(*roots: object) -> tuple[Any, ...]:
+    """Finite local witness of the already fully validated known request records."""
+    pending, seen, result = list(roots), set(), []
+    modules = {__name__, c.__name__, ProductScope.__module__, ProtectionScope.__module__,
+               "multi_exchange_trader.execution.native_node"}
+    while pending:
+        value = pending.pop()
+        if type(value) is tuple:
+            pending.extend(value)
+        elif is_dataclass(value) and not isinstance(value, type) and type(value).__module__ in modules:
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            state = value.__dict__
+            leaves = tuple(state.items())
+            if type(state) is not dict or any(type(key) is not str for key, _ in leaves):
+                raise ValueError("NATIVE_PREPARED_CHANGED")
+            result.append((value, type(value), state, leaves))
+            pending.extend(child for _, child in leaves)
+    return tuple(result)
+
+
+def _prepared_graph_matches_v2(graph: tuple[Any, ...]) -> bool:
+    return all(type(owner) is cls and owner.__dict__ is state and len(state) == len(leaves)
+        and all(state.get(key) is value for key, value in leaves)
+        for owner, cls, state, leaves in graph)
+
+
 def _verify_built_order(order: object, request: NativeOrderRequest) -> None:
     """Native precision/conversions must not silently change immutable intent."""
     owned = request.owned
@@ -374,10 +441,274 @@ class NativeBybitBridge:
         self._building_v2: set[str] = set()
         self._context_v2: _FixedLimitContextV2 | None = None
         self._lock = RLock()
+        self._prepared_installation_v2: _NativePreparedInstallationV2 | None = None
+        self._prepared_installation_owner_v2: _NativePreparedInstallationV2 | None = None
+        self._active_preparation_v2: _NativePreparationFrameV2 | None = None
+
+    def _deny_preparation_reentry_v2(self) -> None:
+        frame = self._active_preparation_v2
+        if frame is not None:
+            frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_REENTRANT")
+
+    def _retire_prepared_installation_v2(self, *, closed: bool = False) -> None:
+        with self._lock:
+            installation = self._prepared_installation_v2
+            if installation is not None:
+                installation.generation = object()
+                installation.closed = installation.closed or closed
+            self._deny_preparation_reentry_v2()
+
+    def _require_prepared_installation_v2(self, installation: _NativePreparedInstallationV2) -> None:
+        if (type(self) is not NativeBybitBridge
+                or type(installation) is not _NativePreparedInstallationV2
+                or installation.original is not installation
+                or self._prepared_installation_v2 is not installation
+                or self._prepared_installation_owner_v2 is not installation
+                or installation.owners is not installation.original_owners or installation.closed):
+            raise ValueError("NATIVE_PREPARED_INSTALLATION_REQUIRED")
+        (assembly, bridge, node, kernel, trader, cache, bus, kernel_clock, strategy_clock,
+         strategy, factory, client, channel, strategy_class, factory_class, client_class,
+         submit_impl, limit_impl) = installation.owners
+        strategies = trader.strategies()
+        if (bridge is not self or assembly._prepared_installation_v2 is not installation
+                or assembly.bridge is not self or assembly.node is not node
+                or assembly.strategy is not strategy or assembly.execution_client is not client
+                or assembly.channel is not channel or node.kernel is not kernel
+                or node.trader is not trader or node.cache is not cache
+                or kernel.cache is not cache or kernel.msgbus is not bus
+                or kernel.clock is not kernel_clock or strategy.clock is not strategy_clock
+                or type(strategy) is not strategy_class or type(factory) is not factory_class
+                or type(client) is not client_class or type(strategies) is not list
+                or len(strategies) != 1 or strategies[0] is not strategy
+                or strategy.order_factory is not factory or strategy.cache is not cache
+                or strategy.msgbus is not bus or self._factory is not factory
+                or self._strategy is not strategy or self.scope is not channel.scope
+                or self.native_account_id != channel.native_account_id
+                or strategy_class.__dict__["submit_order"] is not submit_impl
+                or factory_class.__dict__["limit"] is not limit_impl):
+            raise ValueError("NATIVE_PREPARED_INSTALLATION_REQUIRED")
+
+    @contextmanager
+    def _prepare_fixed_limit_handoff_v2(self, request: LinearFixedLimitNativeOrderRequestV2
+                                       ) -> Iterator[_PreparedFixedLimitDataV2]:
+        with self._lock:
+            self._deny_preparation_reentry_v2()
+            installation = self._prepared_installation_v2
+            if installation is None:
+                raise ValueError("NATIVE_PREPARED_INSTALLATION_REQUIRED")
+            frame = _NativePreparationFrameV2()
+            self._active_preparation_v2 = frame
+            generation, owners = installation.generation, installation.owners
+            data = None
+            try:
+                self._require_prepared_installation_v2(installation)
+                self._register_fixed_limit_locked_v2(request)
+                key = request.owned.client_order_id
+                context = self._checked_context_v2()
+                associations = self._association_fence_v2(context, key, request)
+                graph = _prepared_graph_v2(request, context, self.scope, owners[12])
+                requests, identities, submissions = self._requests, self._identities_v2, self._submissions
+                identity, registered = identities[key], requests[key]
+                (_, _, _, _, _, cache, _, _, _, strategy, factory, _, _, _, _, _,
+                 _, limit_impl) = owners
+                if key in submissions:
+                    raise ValueError("NATIVE_PREPARED_OBSERVATION_REQUIRED")
+                binding = context.verifier_binding()
+                instrument, client_id, quantity, price, side = context.converters
+                cid = client_id(key)
+                if cache.order(cid) is not None:
+                    raise ValueError("NATIVE_PREPARED_OBSERVATION_REQUIRED")
+                expected_strategy_id = strategy.id
+                order = limit_impl(factory, instrument_id=instrument(request.owned.instrument_id),
+                    order_side=side(request.owned.side), quantity=quantity(format(request.owned.quantity, "f")),
+                    client_order_id=cid, reduce_only=False, price=price(format(request.limit_price, "f")),
+                    time_in_force=binding.time_in_force_ioc)
+                for value in (request.attached.stop_loss, request.attached.take_profit):
+                    if bounded_decimal(str(price(format(value, "f")))) != value:
+                        raise ValueError("NATIVE_PROTECTION_PRECISION_CHANGED")
+                _verify_fixed_limit_order_v2(order, request, binding, expected_strategy_id, building=True)
+                seed, params = order.events[0], _fixed_limit_params_v2(request)
+                if cache.order(cid) is not None:
+                    raise ValueError("NATIVE_PREPARED_OBSERVATION_REQUIRED")
+                strategy_id = strategy.id
+                if type(strategy_id) is not type(expected_strategy_id) or strategy_id != expected_strategy_id:
+                    raise ValueError("NATIVE_ORDER_CHANGED")
+                associations()
+                submitting = NativeSubmission(key, "SUBMITTING", "NATIVE_SUBMIT_INVOKED")
+                unknown = NativeSubmission(key, "UNKNOWN", "NATIVE_SUBMIT_AMBIGUOUS")
+                graph += _prepared_graph_v2(submitting, unknown)
+                args = (strategy, order, None, None, params)
+                data = _PreparedFixedLimitDataV2(frame, request, order, seed, params, args)
+                frame.data = data
+                frame.layout = (self, installation, generation, owners, context, requests, identities,
+                    submissions, key, registered, identity, request, order, seed, params, args,
+                    tuple(params.items()), graph, submitting, unknown, self.scope, self._bindings,
+                    self.native_account_id)
+                if (frame.tainted or self._active_preparation_v2 is not frame
+                        or installation.generation is not generation or installation.owners is not owners
+                        or not _prepared_graph_matches_v2(graph)):
+                    raise ValueError("NATIVE_PREPARED_RETIRED")
+                yield data
+                if frame.tainted is not False and data.consumed is not True:
+                    raise ValueError("NATIVE_PREPARED_RETIRED")
+            except BaseException:
+                frame.tainted = True
+                if data is not None and data.consumed is True:
+                    installation.closed = True
+                    submissions[key] = unknown
+                raise
+            finally:
+                frame.closed = True
+                if data is not None:
+                    data.closed = True
+                    data.order, data.seed, data.args, data.params = None, None, (), {}
+                if self._active_preparation_v2 is frame:
+                    self._active_preparation_v2 = None
+                frame.data, frame.layout = None, ()
+
+    def _seal_prepared_fixed_limit_v2(self, data: _PreparedFixedLimitDataV2) -> None:
+        frame = self._active_preparation_v2
+        try:
+            if (type(data) is not _PreparedFixedLimitDataV2 or frame is None
+                    or frame.data is not data or data.frame is not frame or frame.closed
+                    or frame.tainted or data.closed or data.consumed):
+                raise ValueError("NATIVE_PREPARED_RETIRED")
+            data.sealed = False
+            installation: _NativePreparedInstallationV2
+            (_, installation, generation, owners, context, requests, identities, submissions, key,
+             registered, identity, request, order, seed, params, args, param_items, graph,
+             _, _, scope, bindings, native_account_id) = frame.layout
+            if (_fixed_limit_identity_v2(request) != identity
+                    or _fixed_limit_params_v2(request) != params
+                    or not _prepared_graph_matches_v2(graph)
+                    or self._prepared_installation_v2 is not installation
+                    or self._prepared_installation_owner_v2 is not installation
+                    or installation.generation is not generation or installation.closed
+                    or installation.owners is not owners or self._context_v2 is not context
+                    or installation.original is not installation
+                    or installation.owners is not installation.original_owners
+                    or self._requests is not requests or self._identities_v2 is not identities
+                    or self._submissions is not submissions or requests.get(key) is not registered
+                    or identities.get(key) is not identity or key in submissions
+                    or self.scope is not scope or self._bindings is not bindings
+                    or self.native_account_id is not native_account_id
+                    or self._factory is not owners[10] or self._strategy is not owners[9]
+                    or owners[0]._prepared_installation_v2 is not installation
+                    or owners[0].node is not owners[2] or owners[0].strategy is not owners[9]
+                    or owners[0].bridge is not self or owners[0].execution_client is not owners[11]
+                    or owners[0].channel is not owners[12]
+                    or data.request is not request or data.order is not order or data.seed is not seed
+                    or data.params is not params or data.args is not args
+                    or type(params) is not dict or len(params) != len(param_items)
+                    or any(params.get(k) is not v for k, v in param_items)):
+                raise ValueError("NATIVE_PREPARED_CHANGED")
+            data.sealed = True
+        except BaseException:
+            if frame is not None:
+                frame.tainted = True
+            raise
+
+    def _handoff_prepared_fixed_limit_v2(self, data: _PreparedFixedLimitDataV2) -> NativeSubmission:
+        # No lock acquisition, helper/native lookup/hash/SQL/clock/callback precedes SDK entry.
+        frame = self._active_preparation_v2
+        if (type(data) is not _PreparedFixedLimitDataV2 or type(frame) is not _NativePreparationFrameV2
+                or frame.data is not data or data.frame is not frame
+                or frame.closed is not False or frame.tainted is not False
+                or data.closed is not False or data.consumed is not False or data.sealed is not True):
+            if frame is not None:
+                frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_RETIRED")
+        installation: _NativePreparedInstallationV2
+        submitting: NativeSubmission
+        unknown: NativeSubmission
+        (bridge, installation, generation, owners, context, requests, identities, submissions, key,
+         registered, identity, request, order, seed, params, args, param_items, graph,
+         submitting, unknown, scope, bindings, native_account_id) = frame.layout
+        changed = (bridge is not self or self._prepared_installation_v2 is not installation
+            or self._prepared_installation_owner_v2 is not installation
+            or installation.original is not installation or installation.closed is not False
+            or installation.generation is not generation or installation.owners is not owners
+            or installation.owners is not installation.original_owners
+            or self._context_v2 is not context or self._requests is not requests
+            or self._identities_v2 is not identities or self._submissions is not submissions
+            or type(requests) is not dict or type(identities) is not dict or type(submissions) is not dict
+            or type(key) is not str
+            or self.scope is not scope or self._bindings is not bindings
+            or self.native_account_id is not native_account_id
+            or self._factory is not owners[10] or self._strategy is not owners[9]
+            or owners[0]._prepared_installation_v2 is not installation
+            or owners[0].node is not owners[2] or owners[0].strategy is not owners[9]
+            or owners[0].bridge is not self or owners[0].execution_client is not owners[11]
+            or owners[0].channel is not owners[12]
+            or data.request is not request or data.order is not order or data.seed is not seed
+            or data.params is not params or data.args is not args
+            or type(params) is not dict or len(params) != len(param_items))
+        if changed:
+            frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_CHANGED")
+        # A plain lookup key can still dispatch a stored str subclass's equality.
+        # Close every actual key set before any lookup in this primitive suffix.
+        for mapping in (requests, identities, submissions, params):
+            for stored_key in mapping:
+                if type(stored_key) is not str:
+                    changed = True
+        for owner, cls, state, leaves in graph:
+            if type(owner) is not cls or owner.__dict__ is not state or type(state) is not dict:
+                changed = True
+                continue
+            if len(state) != len(leaves):
+                changed = True
+            for stored_key in state:
+                if type(stored_key) is not str:
+                    changed = True
+        if changed:
+            frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_CHANGED")
+        changed = (requests.get(key) is not registered or identities.get(key) is not identity
+            or key in submissions)
+        for k, v in param_items:
+            if params.get(k) is not v:
+                changed = True
+        for owner, cls, state, leaves in graph:
+            for k, v in leaves:
+                if state.get(k) is not v:
+                    changed = True
+        if (changed or self._active_preparation_v2 is not frame or frame.data is not data
+                or frame.tainted is not False or frame.closed is not False
+                or data.frame is not frame or data.closed is not False
+                or data.consumed is not False or data.sealed is not True
+                or self._prepared_installation_v2 is not installation
+                or self._prepared_installation_owner_v2 is not installation
+                or installation.generation is not generation or installation.closed is not False
+                or self._requests is not requests or self._identities_v2 is not identities
+                or self._submissions is not submissions):
+            frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_CHANGED")
+        data.consumed = True
+        try:
+            submissions[key] = submitting
+        except BaseException:
+            installation.closed = True
+            raise
+        try:
+            owners[16](*args)
+        except BaseException as error:
+            submissions[key] = unknown
+            installation.closed = True
+            if not isinstance(error, Exception):
+                raise
+            return unknown
+        if frame.tainted is not False:
+            submissions[key] = unknown
+            installation.closed = True
+            return unknown
+        return submitting
 
     def register_owned(self, request: NativeOrderRequest) -> None:
         """Restore an exact externally persisted mapping without submitting."""
         with self._lock:
+            self._deny_preparation_reentry_v2()
             if type(request) is not NativeOrderRequest or request.scope != self.scope:
                 raise ValueError("MATCHING_NATIVE_SCOPE_REQUIRED")
             key = request.owned.client_order_id
@@ -480,6 +811,10 @@ class NativeBybitBridge:
     def register_fixed_limit_v2(self, request: LinearFixedLimitNativeOrderRequestV2) -> None:
         """Mapping only; the durable caller still owns admission and claim."""
         with self._lock:
+            self._deny_preparation_reentry_v2()
+            self._register_fixed_limit_locked_v2(request)
+
+    def _register_fixed_limit_locked_v2(self, request: LinearFixedLimitNativeOrderRequestV2) -> None:
             identity = _fixed_limit_identity_v2(request)
             current_context = self._current_context_v2()
             if request.scope != self.scope:
@@ -503,6 +838,7 @@ class NativeBybitBridge:
 
     def submit_fixed_limit_v2(self, request: LinearFixedLimitNativeOrderRequestV2) -> NativeSubmission:
         with self._lock:
+            self._deny_preparation_reentry_v2()
             self.register_fixed_limit_v2(request)
             key = request.owned.client_order_id
             if key in self._submissions:
@@ -555,6 +891,7 @@ class NativeBybitBridge:
 
     def submit(self, request: NativeOrderRequest) -> NativeSubmission:
         with self._lock:
+            self._deny_preparation_reentry_v2()
             self.register_owned(request)
             key = request.owned.client_order_id
             if key in self._submissions:
@@ -660,6 +997,7 @@ class NativeBybitBridge:
     def cancel_owned(self, client_order_id: str) -> NativeSubmission:
         """Caller must durably claim CANCEL first. Invocation is never no-fill proof."""
         with self._lock:
+            self._deny_preparation_reentry_v2()
             request = self._requests.get(client_order_id)
             if type(request) is LinearFixedLimitNativeOrderRequestV2:
                 self._registered_identity_v2(client_order_id)
