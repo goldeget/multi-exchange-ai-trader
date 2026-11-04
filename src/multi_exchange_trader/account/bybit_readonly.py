@@ -474,19 +474,33 @@ def _account_info_wire(request: httpx.Request) -> _RiskWire:
     return url, headers, method, reference, headers._encoding, tuple(packed)
 
 
-_PrivateAccountEndpointV1 = Literal["INFO", "WALLET", "FEE", "SETTINGS"]
+_PrivateAccountEndpointV1 = Literal["INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT"]
 
 
 def _private_account_spec_v1(
-    endpoint: _PrivateAccountEndpointV1, symbol: str | None = None,
+    endpoint: _PrivateAccountEndpointV1, symbol: str | None = None, *, cursor: str | None = None,
 ) -> tuple[str, tuple[tuple[str, str], ...]]:
     if type(endpoint) is not str:
         _account_info_fail()
-    if endpoint == "FEE":
+    if endpoint in ("POSITIONS", "ORDERS"):
+        if symbol is not None or cursor is not None and (
+                type(cursor) is not str or not 1 <= len(cursor) <= 1024
+                or any(ord(c) < 32 or ord(c) == 127 for c in cursor)):
+            _account_info_fail()
+        query = (("category", "linear"), ("settleCoin", "USDT"))
+        if endpoint == "ORDERS":
+            query += (("openOnly", "0"),)
+        if cursor is not None:
+            query += (("cursor", cursor),)
+        return ("/v5/position/list" if endpoint == "POSITIONS" else "/v5/order/realtime"), query
+    if cursor is not None:
+        _account_info_fail()
+    if endpoint in ("FEE", "FLAT"):
         if (type(symbol) is not str or not 2 <= len(symbol) <= 48
                 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" for c in symbol)):
             _account_info_fail()
-        return "/v5/account/fee-rate", (("category", "linear"), ("symbol", symbol))
+        return ("/v5/account/fee-rate" if endpoint == "FEE" else "/v5/position/list"), (
+            ("category", "linear"), ("symbol", symbol))
     if symbol is not None:
         _account_info_fail()
     if endpoint == "INFO":
@@ -501,14 +515,15 @@ def _private_account_spec_v1(
 def _private_account_query_v1(
     endpoint: _PrivateAccountEndpointV1, query: tuple[tuple[str, str], ...],
 ) -> str:
-    if type(query) is not tuple or len(query) > 2:
+    if type(query) is not tuple or len(query) > 4:
         _account_info_fail()
     for pair in query:
         if (type(pair) is not tuple or len(pair) != 2
                 or any(type(leaf) is not str for leaf in pair)):
             _account_info_fail()
-    symbol = query[1][1] if endpoint == "FEE" and len(query) == 2 else None
-    path, expected = _private_account_spec_v1(endpoint, symbol)
+    symbol = query[1][1] if endpoint in ("FEE", "FLAT") and len(query) == 2 else None
+    cursor = query[-1][1] if endpoint in ("POSITIONS", "ORDERS") and query and query[-1][0] == "cursor" else None
+    path, expected = _private_account_spec_v1(endpoint, symbol, cursor=cursor)
     if query != expected:
         _account_info_fail()
     return path
@@ -528,10 +543,27 @@ def _private_account_endpoint_v1(
         endpoint = "FEE"
     elif path == "/v5/account/user-setting-config":
         endpoint = "SETTINGS"
+    elif path == "/v5/position/list":
+        endpoint = ("FLAT" if type(query) is tuple and len(query) == 2
+            and type(query[1]) is tuple and len(query[1]) == 2
+            and type(query[1][0]) is str and query[1][0] == "symbol" else "POSITIONS")
+    elif path == "/v5/order/realtime":
+        endpoint = "ORDERS"
     else:
         _account_info_fail()
     _private_account_query_v1(endpoint, query)
     return endpoint
+
+
+def _private_held_cursor_v1(result: dict[str, object]) -> str:
+    rows, cursor = result.get("list"), result.get("nextPageCursor")
+    if (type(result.get("category")) is not str or result["category"] != "linear"
+            or type(rows) is not list or len(rows) > 20
+            or any(type(row) is not dict for row in rows)
+            or type(cursor) is not str or len(cursor) > 1024
+            or any(ord(c) < 32 or ord(c) == 127 for c in cursor)):
+        _account_info_fail()
+    return cursor
 
 
 @dataclass(frozen=True, repr=False)
@@ -883,7 +915,14 @@ class BybitReadOnlyClient:
         self._account_info_generation = object()
         self._account_info_generation_text = uuid4().hex
         self._account_info_source_id = uuid4().hex
+        self._account_positions_generation, self._account_positions_generation_text = object(), uuid4().hex
+        self._account_positions_source_id = uuid4().hex
+        self._account_orders_generation, self._account_orders_generation_text = object(), uuid4().hex
+        self._account_orders_source_id = uuid4().hex
+        self._account_flat_generation, self._account_flat_generation_text = object(), uuid4().hex
+        self._account_flat_source_id = uuid4().hex
         self._account_info_pending = None
+        self._private_account_collection_pending_v1: object | None = None
         self._account_wallet_generation, self._account_wallet_generation_text = object(), uuid4().hex
         self._account_wallet_source_id = uuid4().hex
         self._account_fee_generation, self._account_fee_generation_text = object(), uuid4().hex
@@ -902,6 +941,12 @@ class BybitReadOnlyClient:
             return self._account_fee_generation, self._account_fee_generation_text, self._account_fee_source_id
         if endpoint == "SETTINGS":
             return self._account_settings_generation, self._account_settings_generation_text, self._account_settings_source_id
+        if endpoint == "POSITIONS":
+            return self._account_positions_generation, self._account_positions_generation_text, self._account_positions_source_id
+        if endpoint == "ORDERS":
+            return self._account_orders_generation, self._account_orders_generation_text, self._account_orders_source_id
+        if endpoint == "FLAT":
+            return self._account_flat_generation, self._account_flat_generation_text, self._account_flat_source_id
         _account_info_fail()
 
     def _retire_private_account_v1(self, endpoint: _PrivateAccountEndpointV1) -> None:
@@ -913,13 +958,19 @@ class BybitReadOnlyClient:
             self._account_fee_generation, self._account_fee_generation_text = object(), uuid4().hex
         elif endpoint == "SETTINGS":
             self._account_settings_generation, self._account_settings_generation_text = object(), uuid4().hex
+        elif endpoint == "POSITIONS":
+            self._account_positions_generation, self._account_positions_generation_text = object(), uuid4().hex
+        elif endpoint == "ORDERS":
+            self._account_orders_generation, self._account_orders_generation_text = object(), uuid4().hex
+        elif endpoint == "FLAT":
+            self._account_flat_generation, self._account_flat_generation_text = object(), uuid4().hex
         else:
             _account_info_fail()
         if self._account_info_pending is not None and self._account_info_pending.endpoint == endpoint:
             self._account_info_pending.retired = True
 
     def _retire_private_accounts_v1(self) -> None:
-        for endpoint in ("INFO", "WALLET", "FEE", "SETTINGS"):
+        for endpoint in ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT"):
             self._retire_private_account_v1(endpoint)
 
     def _retire_account_info_v1(self) -> None:
@@ -949,72 +1000,134 @@ class BybitReadOnlyClient:
     ) -> _AccountInfoCaptureV1:
         return await self._capture_private_account_v1("SETTINGS", budget=budget, group=group, owner_guard=owner_guard)
 
-    async def _capture_private_account_v1(
-        self, endpoint: _PrivateAccountEndpointV1, *, symbol: str | None = None, budget: "MonitoringReadBudget", group: "ReadGroupToken",
+    async def _capture_account_flat_leverage_v1(
+        self, *, symbol: str, budget: "MonitoringReadBudget", group: "ReadGroupToken",
         owner_guard: Callable[[], None],
     ) -> _AccountInfoCaptureV1:
+        return await self._capture_private_account_v1("FLAT", symbol=symbol,
+            budget=budget, group=group, owner_guard=owner_guard)
+
+    async def _capture_account_positions_v1(
+        self, *, budget: "MonitoringReadBudget", owner_guard: Callable[[], None],
+    ) -> tuple[_AccountInfoCaptureV1, ...]:
+        return await self._capture_private_account_pages_v1("POSITIONS", budget=budget, owner_guard=owner_guard)
+
+    async def _capture_account_orders_v1(
+        self, *, budget: "MonitoringReadBudget", owner_guard: Callable[[], None],
+    ) -> tuple[_AccountInfoCaptureV1, ...]:
+        return await self._capture_private_account_pages_v1("ORDERS", budget=budget, owner_guard=owner_guard)
+
+    async def _capture_private_account_v1(
+        self, endpoint: _PrivateAccountEndpointV1, *, symbol: str | None = None,
+        budget: "MonitoringReadBudget", group: "ReadGroupToken", owner_guard: Callable[[], None],
+    ) -> _AccountInfoCaptureV1:
+        if endpoint in ("POSITIONS", "ORDERS"):
+            _account_info_fail()
+        pages = await self._capture_private_account_pages_v1(endpoint, symbol=symbol,
+            budget=budget, group=group, owner_guard=owner_guard)
+        return pages[0]
+
+    async def _capture_private_account_pages_v1(
+        self, endpoint: _PrivateAccountEndpointV1, *, symbol: str | None = None,
+        budget: "MonitoringReadBudget", owner_guard: Callable[[], None], group: "ReadGroupToken | None" = None,
+    ) -> tuple[_AccountInfoCaptureV1, ...]:
+        """Retain one bounded original page chain; no financial qualification."""
         from ..execution.monitoring_budget import MonitoringReadBudget, ReadGroupToken
 
-        path, query = _private_account_spec_v1(endpoint, symbol)
+        path, _query_fixed = _private_account_spec_v1(endpoint, symbol)
         if type(self) is not BybitReadOnlyClient or self._account_info_self is not self:
             _account_info_fail()
-        if self._account_info_pending is not None:
+        if self._account_info_pending is not None or self._private_account_collection_pending_v1 is not None:
             self._retire_private_accounts_v1()
             _account_info_fail()
         self._retire_private_account_v1(endpoint)
         generation, generation_text, source_id = self._private_account_state_v1(endpoint)
-        if (type(budget) is not MonitoringReadBudget or type(group) is not ReadGroupToken
+        if (type(budget) is not MonitoringReadBudget or group is not None and type(group) is not ReadGroupToken
                 or not callable(owner_guard) or self.environment != "demo"
                 or self._injected_transport is not False):
             _account_info_fail()
-        route = _AccountInfoRoute(self, self._client, budget, group,
-            generation, owner_guard, datetime.now(UTC), time.monotonic(),
-            budget.physical_attempts, source_id, generation_text, uuid4().hex,
-            endpoint=endpoint, path=path, query=query)
-        self._account_info_pending = route
+        paged = endpoint in ("POSITIONS", "ORDERS")
         complete = False
+        route: _AccountInfoRoute | None = None
+        captures: list[_AccountInfoCaptureV1] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        pending = object()
+        self._private_account_collection_pending_v1 = pending
         try:
             with self._monitoring_operation(budget):
-                route.operation_context = self._operation
-                route.receipt_context = budget._receipt
-                route.receipt = budget._receipt.get()
-                if route.receipt is None:
-                    _account_info_fail()
-                route.operation_deadline = budget.deadline
-                route.receipt_deadline = route.receipt.deadline
-                route.check()
-                _result, stamp = await self._read(path, list(query), signed=True, route=route)
-                route.check()
-                if (route.request is None or route.response is None or route.wire is None
-                        or route.sent_origin is None or route.response_origin is None
-                        or route.received_at is None or route.received_mono is None
-                        or route.raw_body is None or route.response_status is None):
-                    _account_info_fail()
-                if route.response_headers is None or route.response_header_wire is None:
-                    _account_info_fail()
-                capture = _AccountInfoCaptureV1(self, route.client, route.generation,
-                    route.request, route.response, route.response_headers,
-                    route.response_header_wire, route.wire, route.sent_origin,
-                    route.response_origin, route.response_status, route.started_at, route.received_at,
-                    route.started_mono, route.received_mono, route.raw_body,
-                    hashlib.sha256(route.raw_body).hexdigest(), stamp, route.attempt + 1,
-                    route.source_id, route.source_generation,
-                    route.observation_id, route.logical_ordinal, route.physical_start,
-                    budget.physical_attempts, budget, group, route.operation_context,
-                    route.receipt_context, route.receipt, route.operation_deadline,
-                    route.receipt_deadline, endpoint=endpoint, path=path, query=query)
-                _account_info_capture_preimage(capture)
-                route.check()
-                complete = True
-                return capture
-        except Exception:  # noqa: BLE001 - neither private response nor guard text may escape.
+                for _ordinal in range(64 if paged else 1):
+                    path, query = _private_account_spec_v1(endpoint, symbol, cursor=cursor)
+                    with budget.reuse_or_open_receipt() as current_group:
+                        if group is not None and group is not current_group:
+                            _account_info_fail()
+                        if route is not None:
+                            _account_info_capture_preimage(captures[-1])
+                        route = _AccountInfoRoute(self, self._client, budget, current_group,
+                            generation, owner_guard, datetime.now(UTC), time.monotonic(),
+                            budget.physical_attempts, source_id, generation_text, uuid4().hex,
+                            endpoint=endpoint, path=path, query=query)
+                        self._account_info_pending = route
+                        captured, result = await self._capture_private_account_page_v1(route)
+                        captures.append(captured)
+                        cursor = _private_held_cursor_v1(result) if paged else ""
+                        if not cursor:
+                            for retained in captures:
+                                _account_info_capture_preimage(retained)
+                            route.check()
+                            complete = True
+                            return tuple(captures)
+                    if cursor in seen:
+                        _account_info_fail()
+                    seen.add(cursor)
+                _account_info_fail()
+        except Exception:  # noqa: BLE001 - private wire/guard context cannot escape.
             complete = False
         finally:
-            if self._account_info_pending is route:
+            if self._private_account_collection_pending_v1 is pending:
+                self._private_account_collection_pending_v1 = None
+            if route is not None and self._account_info_pending is route:
                 if not complete:
                     self._retire_private_account_v1(endpoint)
                 self._account_info_pending = None
         raise BybitReadError("account_info_capture_failed") from None
+
+    async def _capture_private_account_page_v1(
+        self, route: _AccountInfoRoute,
+    ) -> tuple[_AccountInfoCaptureV1, dict[str, object]]:
+        budget, group = route.budget, route.group
+        endpoint, path, query = route.endpoint, route.path, route.query
+        route.operation_context = self._operation
+        route.receipt_context = budget._receipt
+        route.receipt = budget._receipt.get()
+        if route.receipt is None:
+            _account_info_fail()
+        route.operation_deadline = budget.deadline
+        route.receipt_deadline = route.receipt.deadline
+        route.check()
+        _result, stamp = await self._read(path, list(query), signed=True, route=route)
+        route.check()
+        if (route.request is None or route.response is None or route.wire is None
+                or route.sent_origin is None or route.response_origin is None
+                or route.received_at is None or route.received_mono is None
+                or route.raw_body is None or route.response_status is None):
+            _account_info_fail()
+        if route.response_headers is None or route.response_header_wire is None:
+            _account_info_fail()
+        capture = _AccountInfoCaptureV1(self, route.client, route.generation,
+            route.request, route.response, route.response_headers,
+            route.response_header_wire, route.wire, route.sent_origin,
+            route.response_origin, route.response_status, route.started_at, route.received_at,
+            route.started_mono, route.received_mono, route.raw_body,
+            hashlib.sha256(route.raw_body).hexdigest(), stamp, route.attempt + 1,
+            route.source_id, route.source_generation,
+            route.observation_id, route.logical_ordinal, route.physical_start,
+            budget.physical_attempts, budget, group, route.operation_context,
+            route.receipt_context, route.receipt, route.operation_deadline,
+            route.receipt_deadline, endpoint=endpoint, path=path, query=query)
+        _account_info_capture_preimage(capture)
+        route.check()
+        return capture, _result
 
     def _initialize_http(self, *, transport: httpx.AsyncBaseTransport | None,
                          public: bool) -> None:

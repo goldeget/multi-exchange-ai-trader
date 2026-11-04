@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, cast
 from uuid import uuid4
 
 import httpx
@@ -32,8 +32,10 @@ from ..account.bybit_readonly import (
     _account_info_capture_data_v1,
     _account_info_capture_preimage,
     _AccountInfoCaptureV1,
+    _parse_json,
     _private_account_endpoint_v1,
     _private_account_spec_v1,
+    _private_held_cursor_v1,
     _PrivateAccountEndpointV1,
 )
 from ..account.config import allowed_host
@@ -53,11 +55,16 @@ from .protection import ProtectionScope
 if TYPE_CHECKING:
     from .bybit_linear_model_inputs_v1 import (
         BybitDecimalFieldV1,
+        BybitFlatLeverageV1,
+        BybitHeldOrderV1,
+        BybitHeldPositionV1,
+        BybitModelFieldRefV1,
         BybitModelSourceRefV1,
         BybitTradeBehaviourV1,
         BybitUsdtWalletV1,
         BybitUtaModeV1,
     )
+    from .risk_v2_contracts import InstrumentPinV2
 
 _PERMISSIONS = {
     "ContractTrade": frozenset({"Order", "Position"}),
@@ -175,6 +182,17 @@ class _LinearAccountInfoSlot:
     source_sha256: str | None = None
     endpoint: _PrivateAccountEndpointV1 = "INFO"
     query: tuple[tuple[str, str], ...] = ()
+
+    pages: tuple[_LinearHeldPageV1, ...] = ()
+
+
+@dataclass(frozen=True, repr=False)
+class _LinearHeldPageV1:
+    source: BybitModelSourceRefV1
+    capture: _AccountInfoCaptureV1
+    source_preimage: tuple[object, ...]
+    capture_preimage: tuple[object, ...]
+    source_sha256: str
 
 
 def _linear_source_preimage(source: BybitModelSourceRefV1) -> tuple[object, ...]:
@@ -333,6 +351,15 @@ class BybitDemoAccountSession:
         self._linear_settings_generation = object()
         self._linear_settings_current: _LinearAccountInfoSlot | None = None
 
+        self._linear_positions_generation = object()
+        self._linear_positions_current: _LinearAccountInfoSlot | None = None
+
+        self._linear_orders_generation = object()
+        self._linear_orders_current: _LinearAccountInfoSlot | None = None
+
+        self._linear_flat_generation = object()
+        self._linear_flat_current: _LinearAccountInfoSlot | None = None
+
     def _retire_linear_account_info_v1(self) -> None:
         self._retire_linear_private_source_v1("INFO")
 
@@ -349,6 +376,12 @@ class BybitDemoAccountSession:
             return self._linear_fee_generation, self._linear_fee_current
         if endpoint == "SETTINGS":
             return self._linear_settings_generation, self._linear_settings_current
+        if endpoint == "POSITIONS":
+            return self._linear_positions_generation, self._linear_positions_current
+        if endpoint == "ORDERS":
+            return self._linear_orders_generation, self._linear_orders_current
+        if endpoint == "FLAT":
+            return self._linear_flat_generation, self._linear_flat_current
         raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
 
     def _set_linear_private_current_v1(
@@ -362,6 +395,12 @@ class BybitDemoAccountSession:
             self._linear_fee_current = slot
         elif endpoint == "SETTINGS":
             self._linear_settings_current = slot
+        elif endpoint == "POSITIONS":
+            self._linear_positions_current = slot
+        elif endpoint == "ORDERS":
+            self._linear_orders_current = slot
+        elif endpoint == "FLAT":
+            self._linear_flat_current = slot
         else:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
 
@@ -374,6 +413,12 @@ class BybitDemoAccountSession:
             self._linear_fee_generation = object()
         elif endpoint == "SETTINGS":
             self._linear_settings_generation = object()
+        elif endpoint == "POSITIONS":
+            self._linear_positions_generation = object()
+        elif endpoint == "ORDERS":
+            self._linear_orders_generation = object()
+        elif endpoint == "FLAT":
+            self._linear_flat_generation = object()
         else:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
         self._set_linear_private_current_v1(endpoint, None)
@@ -383,7 +428,7 @@ class BybitDemoAccountSession:
             self._linear_info_requiring.retired = True
 
     def _retire_linear_private_sources_v1(self) -> None:
-        endpoints: tuple[_PrivateAccountEndpointV1, ...] = ("INFO", "WALLET", "FEE", "SETTINGS")
+        endpoints: tuple[_PrivateAccountEndpointV1, ...] = ("INFO", "WALLET", "FEE", "SETTINGS", "POSITIONS", "ORDERS", "FLAT")
         for endpoint in endpoints:
             self._retire_linear_private_source_v1(endpoint)
 
@@ -537,6 +582,8 @@ class BybitDemoAccountSession:
         symbol: str | None = None, scope: ProtectionScope,
         budget: MonitoringReadBudget, owner_guard: Callable[[], None],
     ) -> BybitModelSourceRefV1:
+        if endpoint in ("POSITIONS", "ORDERS"):
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
         if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
         if self._linear_info_pending is not None or self._linear_info_requiring is not None:
@@ -600,6 +647,242 @@ class BybitDemoAccountSession:
                 self._linear_info_pending = None
         raise AccountBindingError("ACCOUNT_INFO_SOURCE_CAPTURE_FAILED") from None
 
+    async def _capture_linear_flat_leverage_v1(
+        self, binding: AuthenticatedAccountBinding, *, symbol: str, scope: ProtectionScope,
+        budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> BybitModelSourceRefV1:
+        return await self._capture_linear_private_source_v1("FLAT", binding,
+            symbol=symbol, scope=scope, budget=budget, owner_guard=owner_guard)
+
+    def _require_linear_flat_leverage_v1(
+        self, source: BybitModelSourceRefV1, *, symbol: str,
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> None:
+        self._require_linear_private_source_v1("FLAT", source,
+            symbol=symbol, binding=binding, scope=scope)
+
+    async def _capture_linear_positions_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: ProtectionScope,
+        budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> tuple[BybitModelSourceRefV1, ...]:
+        return await self._capture_linear_held_v1("POSITIONS", binding, scope=scope,
+            budget=budget, owner_guard=owner_guard)
+
+    async def _capture_linear_orders_v1(
+        self, binding: AuthenticatedAccountBinding, *, scope: ProtectionScope,
+        budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> tuple[BybitModelSourceRefV1, ...]:
+        return await self._capture_linear_held_v1("ORDERS", binding, scope=scope,
+            budget=budget, owner_guard=owner_guard)
+
+    async def _capture_linear_held_v1(
+        self, endpoint: _PrivateAccountEndpointV1, binding: AuthenticatedAccountBinding, *,
+        scope: ProtectionScope, budget: MonitoringReadBudget, owner_guard: Callable[[], None],
+    ) -> tuple[BybitModelSourceRefV1, ...]:
+        if endpoint not in ("POSITIONS", "ORDERS"):
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+        if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+        if self._linear_info_pending is not None or self._linear_info_requiring is not None:
+            self._retire_linear_private_sources_v1()
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_OVERLAP")
+        self._retire_linear_private_source_v1(endpoint)
+        generation, _current = self._linear_private_state_v1(endpoint)
+        loop = asyncio.get_running_loop()
+        if self._linear_info_loop is None:
+            self._linear_info_loop = loop
+        client = self._client
+        _path, query = _private_account_spec_v1(endpoint)
+        slot = _LinearAccountInfoSlot(self, binding, scope, self._identity, client,
+            client._client if type(client) is BybitReadOnlyClient else None,
+            self._credential_pair, owner_guard, generation, loop, endpoint=endpoint, query=query)
+        self._linear_info_pending = slot
+        complete = False
+        try:
+            from . import bybit_linear_model_inputs_v1 as a
+
+            if type(budget) is not MonitoringReadBudget or not callable(owner_guard):
+                raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+
+            def guard() -> None:
+                self._check_linear_account_info_v1(slot)
+
+            guard()
+            captures = await client._capture_private_account_pages_v1(endpoint,
+                budget=budget, owner_guard=guard)
+            pages: list[_LinearHeldPageV1] = []
+            for ordinal, captured in enumerate(captures, 1):
+                preimage = _account_info_capture_preimage(captured)
+                source = a.BybitModelSourceRefV1(captured.observation_id, captured.source_id,
+                    captured.source_generation, scope, "DEMO", captured.sent_origin,
+                    captured.path, captured.query, captured.request_started_at, captured.received_at,
+                    captured.envelope_time_ms, captured.raw_body_sha256, ordinal, captured.accepted_attempt)
+                pages.append(_LinearHeldPageV1(source, captured, _linear_source_preimage(source),
+                    preimage, a.bybit_source_ref_sha256_v1(source)))
+            guard()
+            slot.pages = tuple(pages)
+            first = slot.pages[0]
+            slot.source, slot.capture = first.source, first.capture
+            slot.source_preimage, slot.capture_preimage = first.source_preimage, first.capture_preimage
+            slot.source_sha256 = first.source_sha256
+            sources = tuple(page.source for page in slot.pages)
+            slot.phase = "ISSUED"
+            self._set_linear_private_current_v1(endpoint, slot)
+            self._require_linear_held_v1(endpoint, sources, binding=binding, scope=scope)
+            complete = True
+            return sources
+        except Exception:  # noqa: BLE001 - no private partial page/guard context escapes.
+            complete = False
+        finally:
+            if self._linear_info_pending is slot:
+                if not complete:
+                    self._retire_linear_private_source_v1(endpoint)
+                self._linear_info_pending = None
+        raise AccountBindingError("ACCOUNT_HELD_SOURCE_CAPTURE_FAILED") from None
+
+    def _require_linear_positions_v1(
+        self, sources: tuple[BybitModelSourceRefV1, ...], *,
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> None:
+        self._require_linear_held_v1("POSITIONS", sources, binding=binding, scope=scope)
+
+    def _require_linear_orders_v1(
+        self, sources: tuple[BybitModelSourceRefV1, ...], *,
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> None:
+        self._require_linear_held_v1("ORDERS", sources, binding=binding, scope=scope)
+
+    def _require_linear_held_v1(
+        self, endpoint: _PrivateAccountEndpointV1, sources: tuple[BybitModelSourceRefV1, ...], *,
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> None:
+        if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+        if self._linear_info_requiring is not None:
+            self._retire_linear_private_sources_v1()
+            raise AccountBindingError("ACCOUNT_INFO_SOURCE_OVERLAP")
+        _generation, slot = self._linear_private_state_v1(endpoint)
+        if (endpoint not in ("POSITIONS", "ORDERS") or type(slot) is not _LinearAccountInfoSlot
+                or binding is not slot.binding or type(sources) is not tuple
+                or type(slot.pages) is not tuple or not 1 <= len(slot.pages) <= 64
+                or len(sources) != len(slot.pages)
+                or any(source is not page.source for source, page in zip(sources, slot.pages, strict=True))):
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+        self._linear_info_requiring = slot
+        try:
+            from . import bybit_linear_model_inputs_v1 as a
+
+            pages = slot.pages
+            cursor: str | None = None
+            seen: set[str] = set()
+            refs: list[tuple[object, ...]] = []
+            for ordinal, page in enumerate(pages, 1):
+                capture, source = page.capture, page.source
+                path, query = _private_account_spec_v1(endpoint, cursor=cursor)
+                if (type(page) is not _LinearHeldPageV1 or source.page_ordinal != ordinal
+                        or source.path != path or source.query != query or capture.query != query
+                        or capture.endpoint != endpoint or capture.generation is not pages[0].capture.generation
+                        or _linear_source_preimage(source) != page.source_preimage
+                        or a.bybit_source_ref_sha256_v1(source) != page.source_sha256
+                        or _account_info_capture_preimage(capture) != page.capture_preimage):
+                    raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+                envelope = _parse_json(capture.raw_body)
+                if type(envelope) is not dict:
+                    raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+                result = envelope.get("result")
+                if type(result) is not dict:
+                    raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+                cursor = _private_held_cursor_v1(result)
+                if bool(cursor) != (ordinal < len(pages)) or cursor and cursor in seen:
+                    raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+                if cursor:
+                    seen.add(cursor)
+                refs.append(_linear_capture_refs_v1(capture))
+            self._check_linear_account_info_v1(slot, scope=scope)
+            # All long validation precedes the last genuine binding callback.
+            # The remaining collection witnesses are closed, callback-free leaves.
+            if slot.pages is not pages:
+                raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+            for page, original_refs in zip(pages, refs, strict=True):
+                if (_linear_source_data_v1(page.source, a.BybitModelSourceRefV1) != page.source_preimage
+                        or _account_info_capture_data_v1(page.capture) != page.capture_preimage
+                        or any(current is not old for current, old in zip(
+                            _linear_capture_refs_v1(page.capture), original_refs, strict=True))):
+                    raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
+            return
+        except Exception:  # noqa: BLE001 - never retain private page/guard errors.
+            self._retire_linear_private_source_v1(endpoint)
+        except BaseException:
+            self._retire_linear_private_source_v1(endpoint)
+            raise
+        finally:
+            if self._linear_info_requiring is slot:
+                self._linear_info_requiring = None
+        raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED") from None
+
+    def _project_linear_positions_v1(
+        self, sources: tuple[BybitModelSourceRefV1, ...], *, instruments: tuple[InstrumentPinV2, ...],
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> tuple[BybitHeldPositionV1, ...]:
+        return cast("tuple[BybitHeldPositionV1, ...]", self._project_linear_held_v1(
+            "POSITIONS", sources, instruments=instruments, binding=binding, scope=scope))
+
+    def _project_linear_orders_v1(
+        self, sources: tuple[BybitModelSourceRefV1, ...], *, instruments: tuple[InstrumentPinV2, ...],
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> tuple[BybitHeldOrderV1, ...]:
+        return cast("tuple[BybitHeldOrderV1, ...]", self._project_linear_held_v1(
+            "ORDERS", sources, instruments=instruments, binding=binding, scope=scope))
+
+    def _project_linear_held_v1(
+        self, endpoint: _PrivateAccountEndpointV1, sources: tuple[BybitModelSourceRefV1, ...], *,
+        instruments: tuple[InstrumentPinV2, ...], binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> tuple[BybitHeldPositionV1, ...] | tuple[BybitHeldOrderV1, ...]:
+        try:
+            from .bybit_position_order_projections_v1 import (
+                project_bybit_linear_held_orders_page_v1,
+                project_bybit_linear_held_positions_page_v1,
+            )
+
+            self._require_linear_held_v1(endpoint, sources, binding=binding, scope=scope)
+            _generation, slot = self._linear_private_state_v1(endpoint)
+            assert slot is not None
+            pages = slot.pages
+            raw = tuple(page.capture.raw_body for page in pages)
+            positions: list[BybitHeldPositionV1] = []
+            orders: list[BybitHeldOrderV1] = []
+            position_keys: set[tuple[str, int]] = set()
+            order_ids: set[str] = set()
+            for page in pages:
+                if endpoint == "POSITIONS":
+                    position_rows, _cursor = project_bybit_linear_held_positions_page_v1(
+                        page.source, page.capture.raw_body, instruments=instruments)
+                    for position in position_rows:
+                        key = position.instrument_pin.key.symbol, position.position_idx
+                        if key in position_keys:
+                            raise AccountBindingError("ACCOUNT_HELD_PROJECTION_REQUIRED")
+                        position_keys.add(key)
+                        positions.append(position)
+                elif endpoint == "ORDERS":
+                    order_rows, _cursor = project_bybit_linear_held_orders_page_v1(
+                        page.source, page.capture.raw_body, instruments=instruments)
+                    for order in order_rows:
+                        if order.order_id in order_ids:
+                            raise AccountBindingError("ACCOUNT_HELD_PROJECTION_REQUIRED")
+                        order_ids.add(order.order_id)
+                        orders.append(order)
+                else:
+                    raise AccountBindingError("ACCOUNT_HELD_PROJECTION_REQUIRED")
+            self._require_linear_held_v1(endpoint, sources, binding=binding, scope=scope)
+            if (self._linear_private_state_v1(endpoint)[1] is not slot or slot.pages is not pages
+                    or any(page.capture.raw_body is not original for page, original in zip(pages, raw, strict=True))):
+                raise AccountBindingError("ACCOUNT_HELD_PROJECTION_REQUIRED")
+            return tuple(positions) if endpoint == "POSITIONS" else tuple(orders)
+        except Exception:  # noqa: BLE001 - private row/guard context cannot escape.
+            positions = []
+            orders = []
+        raise AccountBindingError("ACCOUNT_HELD_PROJECTION_REQUIRED") from None
+
     def _require_linear_account_info_v1(
         self, source: BybitModelSourceRefV1, *, binding: AuthenticatedAccountBinding,
         scope: ProtectionScope,
@@ -627,6 +910,8 @@ class BybitDemoAccountSession:
         symbol: str | None = None, binding: AuthenticatedAccountBinding,
         scope: ProtectionScope,
     ) -> None:
+        if endpoint in ("POSITIONS", "ORDERS"):
+            raise AccountBindingError("ACCOUNT_HELD_SOURCE_REQUIRED")
         if type(self) is not BybitDemoAccountSession or self._linear_info_self is not self:
             raise AccountBindingError("ACCOUNT_INFO_SOURCE_REQUIRED")
         if self._linear_info_requiring is not None:
@@ -715,7 +1000,17 @@ class BybitDemoAccountSession:
         binding: AuthenticatedAccountBinding, scope: ProtectionScope,
     ) -> tuple[BybitDecimalFieldV1, BybitDecimalFieldV1]:
         result = self._project_linear_private_data_v1("FEE", source, symbol=symbol, binding=binding, scope=scope)
-        if type(result) is not tuple:
+        if type(result) is not tuple or len(result) != 2:
+            raise AccountBindingError("ACCOUNT_DATA_PROJECTION_REQUIRED")
+        return result
+
+    def _project_linear_flat_leverage_v1(
+        self, source: BybitModelSourceRefV1, *, symbol: str,
+        binding: AuthenticatedAccountBinding, scope: ProtectionScope,
+    ) -> tuple[BybitFlatLeverageV1, BybitDecimalFieldV1, BybitModelFieldRefV1]:
+        result = self._project_linear_private_data_v1("FLAT", source,
+            symbol=symbol, binding=binding, scope=scope)
+        if type(result) is not tuple or len(result) != 3:
             raise AccountBindingError("ACCOUNT_DATA_PROJECTION_REQUIRED")
         return result
 
@@ -732,8 +1027,8 @@ class BybitDemoAccountSession:
     def _project_linear_private_data_v1(
         self, endpoint: _PrivateAccountEndpointV1, source: BybitModelSourceRefV1, *,
         binding: AuthenticatedAccountBinding, scope: ProtectionScope, symbol: str | None = None,
-    ) -> BybitUsdtWalletV1 | BybitTradeBehaviourV1 | tuple[BybitDecimalFieldV1, BybitDecimalFieldV1]:
-        result: BybitUsdtWalletV1 | BybitTradeBehaviourV1 | tuple[BybitDecimalFieldV1, BybitDecimalFieldV1] | None = None
+    ) -> BybitUsdtWalletV1 | BybitTradeBehaviourV1 | tuple[BybitDecimalFieldV1, BybitDecimalFieldV1] | tuple[BybitFlatLeverageV1, BybitDecimalFieldV1, BybitModelFieldRefV1]:
+        result: BybitUsdtWalletV1 | BybitTradeBehaviourV1 | tuple[BybitDecimalFieldV1, BybitDecimalFieldV1] | tuple[BybitFlatLeverageV1, BybitDecimalFieldV1, BybitModelFieldRefV1] | None = None
         try:
             from . import bybit_account_projections_v1 as projection
 
@@ -751,6 +1046,10 @@ class BybitDemoAccountSession:
                 result = projection.project_bybit_linear_fee_rates_v1(source, raw, symbol=symbol)
             elif endpoint == "SETTINGS":
                 result = projection.project_bybit_trade_behaviour_v1(source, raw)
+            elif endpoint == "FLAT" and type(symbol) is str:
+                from .bybit_entry_market_projections_v1 import project_bybit_flat_leverage_v1
+
+                result = project_bybit_flat_leverage_v1(source, raw, symbol=symbol)
             else:
                 raise AccountBindingError("ACCOUNT_DATA_PROJECTION_REQUIRED")
             self._require_linear_private_source_v1(endpoint, source, symbol=symbol, binding=binding, scope=scope)
