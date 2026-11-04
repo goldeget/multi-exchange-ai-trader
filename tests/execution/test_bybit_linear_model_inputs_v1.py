@@ -2657,7 +2657,7 @@ def test_d_exact_eight_bound_minimum_and_strict_expiry(bound: str) -> None:
         replace(result, valid_until=now + timedelta(microseconds=1))
 
 
-def test_d_all_raw_orders_remain_committed_without_invented_ack_or_registry_mapping() -> None:
+def test_unlinked_same_side_held_order_is_not_matched_to_reservation_by_guess() -> None:
     graph = full_d_graph()
     bound = bind_d_graph(graph)
     held = bound.venue.held_positions[0]
@@ -2680,20 +2680,16 @@ def test_d_all_raw_orders_remain_committed_without_invented_ack_or_registry_mapp
         held.updated_time_ms,
     )
     venue = replace(bound.venue, held_orders=(order,))
-    amended = a1.bind_bybit_model_inputs_v1(
-        bound.risk_inputs,
-        preparation=bound.preparation,
-        domain=bound.domain,
-        venue=venue,
-        catalog=bound.catalog,
-        selected_mark=bound.point.selected_mark,
-        now=graph["now"],
-    )
-    assert amended.venue.held_orders == (order,)
-    assert a1.bybit_model_inputs_sha256_v1(amended) != a1.bybit_model_inputs_sha256_v1(bound)
-    assert amended.domain.source_record_sha256s == bound.domain.source_record_sha256s
-    assert amended.domain.members[1].reservation_component_ids == ("RY",)
-    assert not hasattr(amended, "disjointness_proven")
+    with pytest.raises(RiskV2Rejected, match="EXPOSURE_OVERLAP"):
+        a1.bind_bybit_model_inputs_v1(
+            bound.risk_inputs,
+            preparation=bound.preparation,
+            domain=bound.domain,
+            venue=venue,
+            catalog=bound.catalog,
+            selected_mark=bound.point.selected_mark,
+            now=graph["now"],
+        )
     with pytest.raises(RiskV2Rejected, match="UNSUPPORTED_MODE"):
         a1.bind_bybit_model_inputs_v1(
             bound.risk_inputs,
