@@ -613,7 +613,7 @@ it('built-in publication requires exact preview, visible hashes and a separate c
   implementation_sha256:'a'.repeat(64),configuration_sha256:'b'.repeat(64),
   approval_method:'NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER',confirmation_fingerprint:'c'.repeat(64)};
  const publishableSnapshot={...fixture,revision:7};
- const fetcher=vi.fn((url:string,options?:RequestInit)=>{
+ const fetcher=vi.fn((url:string)=>{
   if(url==='/api/v1/automatic/strategies/preview')return Promise.resolve(publishedResponse(preview));
   if(url==='/api/v1/automatic/strategies/publish')return Promise.resolve(publishedResponse({schema_version:1,generation:1,policy_revision:8,
    catalog:publishedCatalog().catalog,reference:preview.reference,implementation_sha256:preview.implementation_sha256,
