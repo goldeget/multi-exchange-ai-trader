@@ -17,6 +17,7 @@ from .account.bybit_readonly import BybitReadOnlyClient
 from .account.config import MissingBybitCredentials
 from .account.demo_view_v1 import install as install_demo_account_view
 from .ai.budget import BudgetBook
+from .ai.private_factory import create_openrouter_clients
 from .controls import install as install_controls
 from .credential_resolution import CredentialResolver, CredentialStartup
 from .credentials import CredentialStoreError
@@ -69,6 +70,7 @@ def create_app(service: MarketDataService | None = None, *,
         sidecar_root = application.state.paper_store.path.parent
         application.state.order_reviews = None
         application.state.ai_budget = None
+        application.state.ai_clients = None
         application.state.runtime_policy = None
         try:
             if getattr(application.state, "_runtime_policy_cleanup_owner_v2", None) is not None:
@@ -139,6 +141,16 @@ def create_app(service: MarketDataService | None = None, *,
             practice_orders = None
             application.state.bybit_practice = None
         try:
+            if application.state.ai_budget is not None:
+                try:
+                    # The dashboard budget and private generation dispatcher share
+                    # one durable pair. Startup neither quotes nor dispatches AI.
+                    application.state.ai_clients = create_openrouter_clients(
+                        resolver=credential_context.get(), budget=application.state.ai_budget,
+                        dispatch_path=application.state.ai_budget.path.with_name(
+                            "ai-dispatch.sqlite3"))
+                except (CredentialStoreError, ValueError, sqlite3.Error, OSError):
+                    pass  # AI registration/storage cannot stop read-only operation.
             if service is not None:
                 yield
                 return
@@ -154,6 +166,9 @@ def create_app(service: MarketDataService | None = None, *,
                 )
                 yield
         finally:
+            # These clients create/close HTTP connections within each explicit
+            # request; startup holds no connection requiring a close method.
+            application.state.ai_clients = None
             if account is not None:
                 await account.aclose()
             if practice is not None:

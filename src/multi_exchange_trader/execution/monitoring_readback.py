@@ -99,6 +99,16 @@ def _validate_positive_order(native: MonitoringOrder, row: MonitoringOrder) -> N
         raise MonitoringError("MONITORING_POSITIVE_ORDER_SHAPE_MISMATCH")
 
 
+def _inactive_position_protection(row: dict[str, object]) -> bool:
+    """Only explicit inactive protection fields allow repeated flat placeholders."""
+    try:
+        return all(type(value := row.get(key)) is str
+                   and (value == "" or amount(value, nonnegative=True) == 0)
+                   for key in ("takeProfit", "stopLoss", "trailingStop"))
+    except ValueError:
+        return False
+
+
 def parse_execution(
     row: dict[str, object], symbol: str, window: HistoryWindow
 ) -> MonitoringExecution:
@@ -267,11 +277,11 @@ class BybitMonitoringReader:
             windows: list[tuple[str, int, int]] = []
             for symbol in self.target.symbols:
                 position_start = len(positions)
+                first_inactive_flat: list[bool] = []
 
                 def consume_position(position: dict[str, object], symbol: str = symbol,
-                                     position_start: int = position_start) -> None:
-                    if len(positions) != position_start:
-                        raise MonitoringError("MONITORING_EXPLICIT_POSITION_REQUIRED")
+                                     position_start: int = position_start,
+                                     first_inactive_flat: list[bool] = first_inactive_flat) -> None:
                     size = amount(position.get("size"), nonnegative=True)
                     side = position.get("side")
                     if (
@@ -283,10 +293,20 @@ class BybitMonitoringReader:
                         and side not in ("", "Buy", "Sell")
                     ):
                         raise MonitoringError("MONITORING_ONE_WAY_POSITION_REQUIRED")
-                    positions.append(MonitoringPosition(symbol, size * (-1 if side == "Sell" else 1)))
+                    inactive_flat = size == 0 and side == "" and _inactive_position_protection(position)
+                    if first_inactive_flat:
+                        if not first_inactive_flat[0] or not inactive_flat:
+                            raise MonitoringError("MONITORING_EXPLICIT_POSITION_REQUIRED")
+                    else:
+                        # A complete symbol chain can repeat empty One-Way slots
+                        # with differing history/mark metadata. Project quantity
+                        # once, retaining no financial meaning from those fields.
+                        positions.append(MonitoringPosition(symbol, size * (-1 if side == "Sell" else 1)))
+                        first_inactive_flat.append(inactive_flat)
 
-                def complete_position(rows: list[dict[str, object]]) -> None:
-                    if len(rows) != 1:
+                def complete_position(rows: list[dict[str, object]],
+                                      position_start: int = position_start) -> None:
+                    if not rows or len(positions) != position_start + 1:
                         raise MonitoringError("MONITORING_EXPLICIT_POSITION_REQUIRED")
 
                 await self.pages("/v5/position/list", symbol, [],
