@@ -11,6 +11,24 @@ function spot(){return {...linear(),거래상품:'SPOT',최대레버리지:null,
 function response(body:unknown){return {ok:true,json:async()=>body};}
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 
+it('keeps product selection unavailable when the account cannot be read',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,json:async()=>null})));
+ render(<Account polished pollIntervalMs={60000}/>);
+ expect(await screen.findByRole('alert')).toHaveTextContent('서버에 연결하지 못했습니다');
+ expect(screen.queryByRole('button',{name:/^현물$/})).not.toBeInTheDocument();
+});
+
+it('restores product selection after an account read recovers',async()=>{
+ let calls=0;
+ vi.stubGlobal('fetch',vi.fn(async()=>++calls===1?{ok:false,json:async()=>null}:response(linear())));
+ render(<Account polished pollIntervalMs={60000}/>);
+ await screen.findByRole('alert');
+ const refresh=screen.getAllByRole('button',{name:'새로고침'})[0];
+ await waitFor(()=>expect(refresh).toBeEnabled());
+ fireEvent.click(refresh);
+ expect(await screen.findByRole('button',{name:/^현물$/})).toBeInTheDocument();
+});
+
 it('sends explicit SPOT selection to the DEMO read route and shows no derivative position or USDT price assumption',async()=>{
  const fetch=vi.fn(async(url:unknown)=>response(String(url).includes('product=SPOT')?spot():linear()));
  vi.stubGlobal('fetch',fetch);render(<Account polished pollIntervalMs={60000}/>);
@@ -35,10 +53,17 @@ it('refuses a legacy LINEAR response after SPOT was selected',async()=>{
 
 it('does not publish a late derivative response into the new SPOT selection',async()=>{
  let resolveLinear:(value:ReturnType<typeof response>)=>void=()=>undefined;
+ let linearCount=0;
  const old=new Promise<ReturnType<typeof response>>(resolve=>{resolveLinear=resolve;});
- const fetch=vi.fn((url:unknown)=>String(url).includes('product=SPOT')?Promise.resolve(response(spot())):old);
+ const fetch=vi.fn((url:unknown)=>{
+  if(String(url).includes('product=SPOT')) return Promise.resolve(response(spot()));
+  linearCount+=1;
+  return linearCount===1?Promise.resolve(response(linear())):old;
+ });
  vi.stubGlobal('fetch',fetch);render(<Account polished pollIntervalMs={60000}/>);
- await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(1));
+ await screen.findAllByText('BTC / USDT');
+ fireEvent.click(screen.getAllByRole('button',{name:'새로고침'})[0]);
+ await waitFor(()=>expect(fetch).toHaveBeenCalledTimes(2));
  fireEvent.click(screen.getByRole('button',{name:/^현물$/}));await screen.findByText('ETHUSDC');
  await act(async()=>{resolveLinear(response(linear()));await old;});
  expect(screen.getByText('ETHUSDC')).toBeInTheDocument();expect(screen.queryByText('BTC / USDT')).not.toBeInTheDocument();

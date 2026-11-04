@@ -227,6 +227,7 @@ export default function Account(props: AccountProps) {
   const fixture = props.fixture ?? (props.demo ? ACCOUNT_FIXTURE : undefined);
   const [source, setSource] = useState<AccountSource>("demo");
   const [product, setProduct] = useState<AccountProduct>("LINEAR");
+  const [productAvailable, setProductAvailable] = useState(false);
   if (fixture) return <AccountController key="fixture" {...props} fixture={fixture} />;
   return <>
     <section className="account-heading" aria-label="조회 계좌 선택">
@@ -236,17 +237,18 @@ export default function Account(props: AccountProps) {
         <p>{source === "demo" ? "DEMO 연습 계좌를 조회합니다. 실계좌가 아닙니다." : "실계좌 잔고를 읽기만 합니다."} 주문은 보내지 않습니다.</p>
       </div>
     </section>
-    <section className="account-heading" aria-label="조회 상품 선택">
+    {productAvailable && <section className="account-heading" aria-label="조회 상품 선택">
       <div>
         <button className="secondary" aria-pressed={product === "LINEAR"} onClick={() => setProduct("LINEAR")}>선물</button>
         <button className="secondary" aria-pressed={product === "SPOT"} onClick={() => setProduct("SPOT")}>현물</button>
       </div>
-    </section>
-    <AccountController key={`${source}:${product}`} {...props} source={source} product={product} />
+    </section>}
+    <AccountController key={`${source}:${product}`} {...props} source={source} product={product}
+      onValidView={setProductAvailable} />
   </>;
 }
 
-function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture, source = "demo", product = "LINEAR" }: AccountProps & { source?: AccountSource; product?: AccountProduct }) {
+function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polished = false, fixture, source = "demo", product = "LINEAR", onValidView }: AccountProps & { source?: AccountSource; product?: AccountProduct; onValidView?: (available: boolean) => void }) {
   const [storedView, setView] = useState<AccountView | null>(null);
   const view = fixture ?? storedView;
   const [problem, setProblem] = useState("");
@@ -299,6 +301,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
           setLatestFailed(true);
         } else {
           setView(body);
+          onValidView?.(true);
           setProblem("");
           setLatestFailed(false);
         }
@@ -338,7 +341,7 @@ function AccountController({ pollIntervalMs = 15000, deadlineMs = 20000, polishe
       refresh.current = () => undefined;
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [deadlineMs, pollIntervalMs, fixture, product, source]);
+  }, [deadlineMs, pollIntervalMs, fixture, onValidView, product, source]);
 
   const age = view ? dataAgeSeconds(view.수집완료시각, nowMs) : null;
   const shownFreshness = view
