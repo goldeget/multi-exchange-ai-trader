@@ -17,19 +17,28 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, Concatenate
+from typing import Any, Concatenate, Literal
 
+from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
 from ..account.bybit_readonly import BybitReadOnlyClient
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
+from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from . import account_reconciliation_v1 as account_reconciliation
+from . import bybit_linear_model_inputs_v1 as model_inputs_v1
+from . import bybit_linear_model_v1 as model_v1
+from . import linear_risk_evidence_v2 as evidence_v2
 from . import modes
+from . import risk_domain_v2 as domain_v2
+from . import risk_v2_contracts as contracts_v2
 from .account_binding import (
     AuthenticatedAccountBinding,
     BybitAccountIdentity,
     BybitDemoAccountSession,
 )
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
+from .bybit_linear_entry_producer_v1 import BybitLinearPreparedEntryV1
+from .bybit_linear_source_assembler_v1 import BybitLinearVenueReadV1
 from .execution_credit import ExecutionCreditResult, candidate_identity
 from .fresh_monitoring_v1 import FreshMonitoringBootstrapV1, empty_sealed_observation_candidate_v1
 from .history import BybitHistoryReader, HistorySnapshot, HistoryWindow
@@ -38,6 +47,7 @@ from .history_receipts import AuthenticatedHistoryReceipt
 from .history_recovery import HistoryRecoveryResult
 from .history_store import HistoryStore
 from .journal import CommandJournal, CommandRecord, ExecutionScope
+from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import WorkerMonitoringStatus
 from .monitoring_resume import MonitoringResume
 from .native_controls import NativeLeverageControl
@@ -52,6 +62,7 @@ from .runtime import NativeExecutionRuntime, RiskCheck, RuntimeBlocked
 from .runtime_policy import RuntimePolicyBook
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback
+from .worker_entry_model_v2 import WorkerEntryModelOwnerV2, WorkerModelPlanV2
 
 LEGACY_JOURNAL_BLOCKER = "LEGACY_WORKER_JOURNAL_REQUIRES_OPERATOR_RESTORE"
 
@@ -175,6 +186,7 @@ class ExecutionWorker:
         self._entry_publication_generation_v2 = object()
         self._entry_publication_frame_v2: list[bool] | None = None
         self._entry_binding_refresh_v2: object | None = None
+        self._entry_model_owner_v2: WorkerEntryModelOwnerV2 | None = None
 
     @property
     def native_restart_status(self) -> WorkerNativeRestartStatus:
@@ -207,6 +219,9 @@ class ExecutionWorker:
         frame = self._entry_publication_frame_v2
         if frame is not None:
             frame[0] = True
+        owner = self._entry_model_owner_v2
+        if type(owner) is WorkerEntryModelOwnerV2:
+            WorkerEntryModelOwnerV2.retire(owner)
 
     def _entry_publication_links_v2(self, *,
             fresh_binding: AuthenticatedAccountBinding | None = None) -> tuple[object, ...]:
@@ -276,7 +291,7 @@ class ExecutionWorker:
                 self._monitoring, None if monitoring is None else monitoring.state,
                 self._node_task, self._node_stop_task, self.scope, self.policy_book, self.registry,
                 session._client, session._credential_client, session._credential_pair, client._client,
-                scope.account_id, scope.environment)
+                scope.account_id, scope.environment, self._entry_model_owner_v2)
 
         original = links()
         runtime._guard()
@@ -338,6 +353,57 @@ class ExecutionWorker:
         finally:
             if self._entry_publication_frame_v2 is frame:
                 self._entry_publication_frame_v2 = None
+
+    def install_entry_model_v2(self, *, public_marks: BybitPublicMarkSessionV1,
+                               catalog_producer: BybitInstrumentCatalogProducer) -> None:
+        """Explicit original model/source installation; no network, entry or paid call."""
+        self._retire_entry_publications_v2()
+        self._require_admission()
+        if self._entry_model_owner_v2 is not None:
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_ALREADY_INSTALLED")
+        with self._entry_publication_section_v2():
+            owner = WorkerEntryModelOwnerV2(self, public_marks=public_marks, catalog_producer=catalog_producer)
+        self._entry_model_owner_v2 = owner
+
+    async def capture_entry_sources_v2(self, *, scope: contracts_v2.RiskScopeV2,
+            profile: Literal["UTA2_V1", "DEMO_UTA1_V1"],
+            nonvip_fee_basis: model_inputs_v1.BybitNonVipFeeBasisV1,
+            nonvip_applicability_revision: str, budget: MonitoringReadBudget) -> BybitLinearVenueReadV1:
+        """Explicit real source read; fees and all original profile gates still apply."""
+        self._require_admission()
+        owner = self._entry_model_owner_v2
+        if (type(owner) is not WorkerEntryModelOwnerV2 or self._operations or self._staging
+                or self._entry_publication_frame_v2 is not None):
+            self._retire_entry_publications_v2()
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_OPERATION_IN_PROGRESS")
+        self._operations += 1
+        try:
+            return await owner.capture(scope=scope, profile=profile, nonvip_fee_basis=nonvip_fee_basis,
+                nonvip_applicability_revision=nonvip_applicability_revision, budget=budget)
+        finally:
+            self._operations -= 1
+
+    def prepare_entry_plan_v2(self, *, inputs: evidence_v2.LinearRiskInputsV2,
+            domain: domain_v2.LinearRiskDomainCoverageV2, policy_revision: int,
+            publication_generation: int) -> WorkerModelPlanV2 | model_v1.BybitModelRejectedV1:
+        """Consume the worker's own retained read; supplied economic data is not authority."""
+        self._require_admission()
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2 or self._operations or self._staging:
+            self._retire_entry_publications_v2()
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_OPERATION_IN_PROGRESS")
+        return owner.prepare(inputs=inputs, domain=domain, policy_revision=policy_revision,
+            publication_generation=publication_generation)
+
+    @contextmanager
+    def entry_model_publication_v2(self, handle: WorkerModelPlanV2) -> Iterator[BybitLinearPreparedEntryV1]:
+        """Original model-data consumer; this is not a complete U3 or SUBMIT seal."""
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_PUBLICATION_REQUIRED")
+        with self._entry_publication_section_v2():
+            yield owner.require(handle)
+            owner.require(handle)
 
     async def _refresh_binding_v2(self, *, expected_uid: str, expected_parent_uid: str,
                                   expected_is_master: bool) -> None:
@@ -445,6 +511,8 @@ class ExecutionWorker:
         if (self._stopped or self._assembly is None or channel is not self._assembly.channel):
             self.rejected_channels += 1
             return
+        # Any admitted native update invalidates a previously captured model graph.
+        self._retire_entry_publications_v2()
         try:
             if self._monitoring is not None and self._monitoring.armed:
                 self._monitoring.require_cleanup_owner()
