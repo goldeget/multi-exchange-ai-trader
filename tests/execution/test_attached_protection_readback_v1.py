@@ -318,7 +318,7 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert core.runtime.projection("position-1").orders == owned_orders
     projection = core.journal.get_projection("protection-recovery-admission-v1")
     assert projection is not None
-    state = json.loads(projection.payload)
+    state = json.loads(projection.payload_json)
     assert set(state["active"]) == {"position-1"}
     assert state["active"]["position-1"]["reason_code"] == (
         "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE")
@@ -341,7 +341,7 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
         attached_target=old_target, _attached_operation=old_operation)
     retained = core.journal.get_projection("protection-recovery-admission-v1")
-    assert retained is not None and "position-1" in json.loads(retained.payload)["active"]
+    assert retained is not None and "position-1" in json.loads(retained.payload_json)["active"]
 
     core.runtime.shutdown()
     core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store, worker_lock=core.lock,
@@ -355,7 +355,7 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     complete = await core.runtime.poll_readback(core.adapter, "position-1")
     assert complete.status == "OPEN_PROTECTED"
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
-    assert cleared is not None and json.loads(cleared.payload)["active"] == {}
+    assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
 
 
 @pytest.mark.parametrize("capacity", ["active-count", "projection-size"])
@@ -425,7 +425,7 @@ async def test_recovery_capacity_overflow_latch_survives_restart(attached_core: 
     assert incomplete.status == "ATTENTION"
     overflow = core.journal.get_projection("protection-recovery-overflow-v1")
     assert overflow is not None
-    overflow_payload = json.loads(overflow.payload)
+    overflow_payload = json.loads(overflow.payload_json)
     expected_reason = ("PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT" if capacity == "active-count"
                        else "PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
     assert overflow_payload["reason_code"] == expected_reason

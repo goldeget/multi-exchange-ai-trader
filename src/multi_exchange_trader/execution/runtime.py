@@ -632,7 +632,7 @@ class NativeExecutionRuntime:
         if record is None:
             return 0, {}
         try:
-            payload = json.loads(record.payload)
+            payload = json.loads(record.payload_json)
             if (type(payload) is not dict or set(payload) != {"schema", "active"}
                     or payload["schema"] != _PROTECTION_RECOVERY_SCHEMA_V1
                     or type(payload["active"]) is not dict or len(payload["active"]) > 256):
@@ -681,7 +681,7 @@ class NativeExecutionRuntime:
         if record is None:
             return 0, False
         try:
-            payload = json.loads(record.payload)
+            payload = json.loads(record.payload_json)
             if (type(payload) is not dict
                     or set(payload) != {"schema", "reason_code", "position_id_sha256",
                                         "observed_at", "server_observed_at"}
