@@ -161,6 +161,7 @@ class _MonitoringSlot:
     started_at: datetime
     started_mono: float
     view: MonitoringReceiptView | None = None
+    unattributed_history_sha256: str | None = None
 
 
 @dataclass(repr=False)
@@ -1389,10 +1390,13 @@ class BybitDemoAccountSession:
             if assessment.status is MonitoringStatus.BLOCKED:
                 raise AccountBindingError("MONITORING_STATE_MISMATCH")
             view = MonitoringReceiptView(observation, assessment, slot.fingerprint, phase)
+            from .monitoring_unattributed_history import unattributed_history_sha256
+
+            metadata_digest = unattributed_history_sha256(observation)
             receipt = object.__new__(AuthenticatedMonitoringReceipt)
             self._monitoring_receipts.pop(pending)
             self._monitoring_receipts[receipt] = _MonitoringSlot(binding, target, slot.fingerprint,
-                phase, slot.generation, now, mono, view)
+                phase, slot.generation, now, mono, view, metadata_digest)
             self.require_monitoring_receipt(receipt, binding=binding, target=target, phase=phase)
             return receipt
         except _MonitoringTargetInvalidated:
@@ -1422,6 +1426,14 @@ class BybitDemoAccountSession:
                 or slot.target is not target or slot.fingerprint != target.fingerprint
                 or slot.phase != phase or slot.generation is not self._monitoring_generation):
             raise AccountBindingError("AUTHENTICATED_MONITORING_RECEIPT_REQUIRED")
+        from .monitoring_unattributed_history import unattributed_history_sha256
+
+        try:
+            if unattributed_history_sha256(slot.view.observation) != slot.unattributed_history_sha256:
+                raise AccountBindingError("MONITORING_UNATTRIBUTED_HISTORY_CHANGED")
+        except (ValueError, TypeError, AttributeError):
+            self._monitoring_receipts.pop(receipt, None)
+            raise AccountBindingError("MONITORING_UNATTRIBUTED_HISTORY_CHANGED") from None
         return slot.view
 
     def consume_monitoring_receipt(self, receipt: AuthenticatedMonitoringReceipt, *,

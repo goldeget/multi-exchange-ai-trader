@@ -19,6 +19,15 @@ from .monitoring_models import (
     MonitoringPosition,
     MonitoringTarget,
 )
+from .monitoring_unattributed_history import (
+    UnattributedHistoryExecution,
+    UnattributedTerminalHistoryOrder,
+    known_monitoring_execution_ids,
+    known_monitoring_venue_ids,
+    parse_unattributed_history_execution,
+    parse_unattributed_terminal_history_order,
+    unresolved_monitoring_commands,
+)
 
 if TYPE_CHECKING:
     from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
@@ -272,6 +281,8 @@ class BybitMonitoringReader:
             end = self.times[0]
             retention = HistoryWindow(max(1, end - MAX_WINDOW_MS), end)
             orders: dict[str, MonitoringOrder] = {}
+            unattributed: dict[str, UnattributedTerminalHistoryOrder] = {}
+            unattributed_executions: dict[tuple[str, str], UnattributedHistoryExecution] = {}
             executions: dict[tuple[str, str], MonitoringExecution] = {}
             positions: list[MonitoringPosition] = []
             windows: list[tuple[str, int, int]] = []
@@ -321,7 +332,21 @@ class BybitMonitoringReader:
                 ):
                     def consume_order(raw: dict[str, object], symbol: str = symbol,
                                       source: str = source) -> None:
+                        if source == "history" and raw.get("orderLinkId") == "":
+                            terminal = parse_unattributed_terminal_history_order(raw, symbol, retention)
+                            identifier = terminal.record.venue_order_id
+                            if (identifier in known_monitoring_venue_ids(self.target)
+                                    or unresolved_monitoring_commands(self.target)
+                                    or any(row.venue_order_id == identifier for row in orders.values())):
+                                raise MonitoringError("MONITORING_UNATTRIBUTED_OWNERSHIP_AMBIGUOUS")
+                            prior_terminal = unattributed.get(identifier)
+                            if prior_terminal is not None and prior_terminal != terminal:
+                                raise MonitoringError("MONITORING_UNATTRIBUTED_HISTORY_CONFLICT")
+                            unattributed[identifier] = terminal
+                            return
                         row = parse_order(raw, symbol, retention, source)
+                        if row.venue_order_id in unattributed:
+                            raise MonitoringError("MONITORING_UNATTRIBUTED_OWNERSHIP_AMBIGUOUS")
                         for native in self.target.native.orders:
                             if (native.client_order_id == row.client_order_id
                                     or native.venue_order_id == row.venue_order_id):
@@ -347,7 +372,23 @@ class BybitMonitoringReader:
                 def consume_execution(raw: dict[str, object], symbol: str = symbol,
                                       window: HistoryWindow = window,
                                       own: tuple[MonitoringOrder, ...] = own) -> None:
+                    if raw.get("orderLinkId") == "":
+                        unlinked = parse_unattributed_history_execution(raw, symbol, window)
+                        key = symbol, unlinked.record.execution_id
+                        if (unlinked.record.venue_order_id in known_monitoring_venue_ids(self.target)
+                                or key in known_monitoring_execution_ids(self.target)
+                                or any(row.venue_order_id == unlinked.record.venue_order_id
+                                    for row in orders.values())
+                                or unresolved_monitoring_commands(self.target)):
+                            raise MonitoringError("MONITORING_UNATTRIBUTED_OWNERSHIP_AMBIGUOUS")
+                        prior_unlinked = unattributed_executions.get(key)
+                        if prior_unlinked is not None and prior_unlinked != unlinked:
+                            raise MonitoringError("MONITORING_UNATTRIBUTED_HISTORY_CONFLICT")
+                        unattributed_executions[key] = unlinked
+                        return
                     execution = parse_execution(raw, symbol, window)
+                    if (symbol, execution.execution_id) in unattributed_executions:
+                        raise MonitoringError("MONITORING_UNATTRIBUTED_OWNERSHIP_AMBIGUOUS")
                     if not any(
                         row.client_order_id == execution.client_order_id
                         and row.venue_order_id == execution.venue_order_id
@@ -384,4 +425,6 @@ class BybitMonitoringReader:
                 tuple(self.times),
                 tuple(windows),
                 tuple(self.local_times),
+                tuple(unattributed.values()),
+                tuple(unattributed_executions.values()),
             )

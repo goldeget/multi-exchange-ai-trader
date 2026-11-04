@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from .execution_provenance import NativeExecutionCandidate
     from .history_recovery import HistoryExecutionCredit
     from .journal import CommandRecord
+    from .monitoring_unattributed_history import (
+        UnattributedHistoryExecution,
+        UnattributedTerminalHistoryOrder,
+    )
     from .native_node import NativeChannel, NativeNodeAssembly
     from .ownership import AccountWorkerLock
     from .protection import ProtectionProjection
@@ -259,6 +263,8 @@ class MonitoringObservation:
     response_times_ms: tuple[int, ...]
     windows: tuple[tuple[str, int, int], ...]
     local_response_times_ms: tuple[int, ...] = ()
+    unattributed_history_orders: tuple[UnattributedTerminalHistoryOrder, ...] = ()
+    unattributed_history_executions: tuple[UnattributedHistoryExecution, ...] = ()
 
 
 @dataclass(frozen=True, repr=False)

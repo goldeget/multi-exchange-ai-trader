@@ -66,6 +66,10 @@ def compare_restored_state(
     codes: set[str] = set()
     if type(target) is not MonitoringTarget or type(observation) is not MonitoringObservation:
         return MonitoringAssessment(MonitoringStatus.BLOCKED, ("MONITORING_DATA_REQUIRED",))
+    from .monitoring_unattributed_history import unattributed_history_valid
+
+    if not unattributed_history_valid(target, observation):
+        return MonitoringAssessment(MonitoringStatus.BLOCKED, ("MONITORING_UNATTRIBUTED_HISTORY_INVALID",))
     if observation.scope != target.scope or observation.symbols != target.symbols:
         codes.add("MONITORING_SCOPE_MISMATCH")
     native, app = target.native, target.application
