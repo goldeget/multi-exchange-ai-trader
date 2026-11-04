@@ -427,8 +427,8 @@ class ExecutionWorker:
                 if self._assembly is not None and self._factory is None:
                     self._assembly.dispose_local()
             finally:
-                self._stopped = True
                 self._close_stores()
+            self._stopped = True
             raise
 
     def post_native(self, channel: NativeChannel, event: object) -> None:

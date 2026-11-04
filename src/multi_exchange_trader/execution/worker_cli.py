@@ -51,10 +51,11 @@ def install_signal_handlers(loop: asyncio.AbstractEventLoop, stop: asyncio.Event
 async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
                         refresh: Callable[[], Awaitable[None]],
                         interval: float = 10.0, connect: bool = False,
-                        on_started: Callable[[], None] | None = None) -> None:
+                        on_started: Callable[[], None] | None = None,
+                        on_stopped: Callable[[], None] | None = None) -> None:
     """Run passive GET polling or supervise one explicitly admitted native stream."""
-    await worker.start_passive()
     try:
+        await worker.start_passive()
         # TradingNode construction replaces asyncio's signal handlers.
         if on_started is not None:
             on_started()
@@ -81,6 +82,8 @@ async def serve_monitor(worker: ExecutionWorker, *, stop: asyncio.Event,
                 raise RuntimeBlocked("NATIVE_MONITORING_ENDED")
     finally:
         await worker.stop()
+        if on_stopped is not None:
+            on_stopped()
 
 
 async def _run(args: argparse.Namespace) -> None:
@@ -97,6 +100,12 @@ async def _run(args: argparse.Namespace) -> None:
     context = CredentialResolver.from_environment(environ=os.environ)
     key, secret = require_demo_credentials(resolver=context)
     session = BybitDemoAccountSession(api_key=key, api_secret=secret)
+    serve_attempted, stop_complete = False, False
+
+    def mark_stopped() -> None:
+        nonlocal stop_complete
+        stop_complete = True
+
     try:
         # Authenticate directly for the typed opaque binding; no caller flags can create it.
         binding = await session.authenticate(expected_uid=expectations._uid,
@@ -120,13 +129,25 @@ async def _run(args: argparse.Namespace) -> None:
         loop = asyncio.get_running_loop()
         install_signal_handlers(loop, stop)
         try:
+            serve_attempted = True
             await serve_monitor(worker, stop=stop, refresh=refresh, connect=args.connect_monitoring,
-                                on_started=lambda: install_signal_handlers(loop, stop))
+                                on_started=lambda: install_signal_handlers(loop, stop),
+                                on_stopped=mark_stopped)
         finally:
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.remove_signal_handler(sig)
+            if stop_complete:
+                for sig in (signal.SIGTERM, signal.SIGINT):
+                    loop.remove_signal_handler(sig)
     finally:
-        await session.aclose()
+        if serve_attempted and not stop_complete:
+            # The genuine stop may retain its sink/stores/lease and native tasks.
+            # Keep their Session and owner loop alive; no automatic stop retry or
+            # restart seal is inferred from a failed or interrupted await.
+            print(json.dumps({"mode": "MONITOR_ONLY", "orders_enabled": False,
+                "error": "WORKER_STOP_UNCONFIRMED_RETAINS_RESOURCES"}),
+                file=sys.stderr, flush=True)
+            await asyncio.Future[None]()
+        else:
+            await session.aclose()
 
 
 class _SafeParser(argparse.ArgumentParser):

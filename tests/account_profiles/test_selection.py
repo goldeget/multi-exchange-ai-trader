@@ -86,6 +86,7 @@ async def test_worker_start_and_refresh_keep_one_private_saved_source(
     monkeypatch.setattr(worker_cli.CredentialResolver, "from_environment", lambda **k: object())
     monkeypatch.setattr(worker_cli, "require_demo_credentials", lambda **k: ("fake-key", "fake-secret"))
     calls: list[dict[str, Any]] = []
+    stops: list[object] = []
 
     class Session:
         def __init__(self, **kwargs: Any) -> None:
@@ -99,11 +100,15 @@ async def test_worker_start_and_refresh_keep_one_private_saved_source(
             pass
 
     async def serve(worker: Any, *, refresh: Any, **kwargs: Any) -> None:
-        assert worker.scope.account_id == UID
-        changed = payload(complete=True)
-        changed["profiles"][0]["relationship"]["parent_uid"] = "777"
-        write(path, changed)
-        await refresh()
+        try:
+            assert worker.scope.account_id == UID
+            changed = payload(complete=True)
+            changed["profiles"][0]["relationship"]["parent_uid"] = "777"
+            write(path, changed)
+            await refresh()
+        finally:
+            await worker.stop()
+            kwargs["on_stopped"]()
 
     monkeypatch.setattr(worker_cli, "BybitDemoAccountSession", Session)
 
@@ -113,7 +118,11 @@ async def test_worker_start_and_refresh_keep_one_private_saved_source(
         async def refresh_binding(**expectations: Any) -> None:
             worker.binding = await worker.session.authenticate(**expectations)
 
+        async def stop() -> None:
+            stops.append(worker)
+
         worker._refresh_binding_v2 = refresh_binding
+        worker.stop = stop
         return worker
 
     monkeypatch.setattr(worker_cli, "ExecutionWorker", fake_worker)
@@ -125,12 +134,14 @@ async def test_worker_start_and_refresh_keep_one_private_saved_source(
     args = argparse.Namespace(uid=None, parent_uid=None, is_master=None, account_profile=PROFILE,
         profile_store=str(path), directory=str(tmp_path), lock_directory=None,
         policy_db=str(tmp_path / "policy.sqlite3"), symbol=["BTCUSDT"], connect_monitoring=False)
-    await worker_cli._run(args)
+    await asyncio.wait_for(worker_cli._run(args), timeout=2)
     assert calls == [{"expected_uid": UID, "expected_parent_uid": PARENT,
                       "expected_is_master": False}] * 2
-    await worker_cli._run(args)
+    assert len(stops) == 1
+    await asyncio.wait_for(worker_cli._run(args), timeout=2)
     assert calls[-2:] == [{"expected_uid": UID, "expected_parent_uid": "777",
                           "expected_is_master": False}] * 2
+    assert len(stops) == 2
 
 
 def test_unsupported_platform_and_default_never_read_profile(
