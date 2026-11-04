@@ -55,7 +55,7 @@ def _text(value: datetime) -> str:
 def _parse(value: object) -> datetime:
     if type(value) is not str or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value):
         raise ValueError("MONITOR_STATUS_TIME_INVALID")
-    return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    return _utc(datetime.fromisoformat(value))
 
 
 def _identity(expected: AccountExpectations) -> str:

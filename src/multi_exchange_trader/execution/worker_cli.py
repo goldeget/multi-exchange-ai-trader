@@ -120,7 +120,7 @@ async def _run(args: argparse.Namespace) -> None:
             else:
                 publisher.observe()
         except Exception:  # noqa: BLE001 - optional UI observations never change worker cleanup.
-            pass
+            return
 
     def mark_stopped() -> None:
         nonlocal stop_complete
