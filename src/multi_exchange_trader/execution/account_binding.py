@@ -53,6 +53,12 @@ from .monitoring_receipts import AuthenticatedMonitoringReceipt
 from .protection import ProtectionScope
 
 if TYPE_CHECKING:
+    from .attached_protection_readback_v1 import (
+        AttachedProtectionReadbackV1,
+        AttachedProtectionTargetV1,
+        AttachedProtectionViewV1,
+        AuthenticatedAttachedProtectionReceiptV1,
+    )
     from .bybit_api_profile_v1 import BybitApiProfileV1
     from .bybit_demo_uta1_profile_v1 import BybitDemoUta1IsolatedModeV1
     from .bybit_linear_model_inputs_v1 import (
@@ -344,6 +350,7 @@ class BybitDemoAccountSession:
         self._linear_info_self = self
         self._linear_info_generation = object()
         self._linear_info_pending: _LinearAccountInfoSlot | None = None
+        self._attached_protection_current_v1: AttachedProtectionReadbackV1 | None = None
         self._linear_info_current: _LinearAccountInfoSlot | None = None
         self._linear_info_requiring: _LinearAccountInfoSlot | None = None
         self._linear_info_loop: asyncio.AbstractEventLoop | None = None
@@ -1192,6 +1199,7 @@ class BybitDemoAccountSession:
             raise AccountBindingError("ACCOUNT_SESSION_MISMATCH_OR_CLOSED")
 
     def _revoke_history_receipts(self) -> None:
+        self._attached_protection_current_v1 = None
         self._retire_linear_private_sources_v1()
         self._revoke_monitoring_receipts()
         self._history_receipts.clear()
@@ -1567,6 +1575,40 @@ class BybitDemoAccountSession:
         """Give readback the exact authenticated client; revalidate every polling cycle."""
         self.require_binding(binding, scope=scope)
         return self._client
+
+    async def read_attached_protection_v1(self, binding: AuthenticatedAccountBinding, *,
+            target: AttachedProtectionTargetV1, budget: MonitoringReadBudget,
+            owner_guard: Callable[[], None], max_evidence_age: timedelta) -> AuthenticatedAttachedProtectionReceiptV1:
+        """Issue an observation from this Session's original complete private pages."""
+        from .attached_protection_readback_v1 import AttachedProtectionReadbackV1
+
+        issuer = AttachedProtectionReadbackV1(self, binding, target, budget, owner_guard, max_evidence_age)
+        self._attached_protection_current_v1 = issuer
+        try:
+            return await issuer.read()
+        except BaseException:
+            if self._attached_protection_current_v1 is issuer:
+                self._attached_protection_current_v1 = None
+            raise
+
+    def require_attached_protection_v1(self, receipt: AuthenticatedAttachedProtectionReceiptV1, *,
+            target: AttachedProtectionTargetV1) -> AttachedProtectionViewV1:
+        from .attached_protection_readback_v1 import AttachedProtectionReadbackV1
+
+        issuer = self._attached_protection_current_v1
+        if type(issuer) is not AttachedProtectionReadbackV1:
+            raise AccountBindingError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        return issuer.require(receipt, target)
+
+    def _require_attached_protection_closed_v1(self, receipt: AuthenticatedAttachedProtectionReceiptV1, *,
+            target: AttachedProtectionTargetV1, now: datetime) -> AttachedProtectionViewV1:
+        """Only closed source/view checks; the consumer supplies its final sampled clock."""
+        from .attached_protection_readback_v1 import AttachedProtectionReadbackV1
+
+        issuer = self._attached_protection_current_v1
+        if type(issuer) is not AttachedProtectionReadbackV1:
+            raise AccountBindingError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        return issuer.require_closed(receipt, target, now=now)
 
     def configure_native_execution(self, binding: AuthenticatedAccountBinding, *,
                                    scope: ProtectionScope,

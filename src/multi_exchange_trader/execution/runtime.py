@@ -18,6 +18,7 @@ from decimal import ROUND_CEILING, Decimal, localcontext
 from pathlib import Path
 from threading import RLock
 from typing import Literal
+from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from . import codec, modes
@@ -25,6 +26,11 @@ from . import protection as p
 from . import reservations_v2 as reservations
 from . import risk as r
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
+from .attached_protection_readback_v1 import (
+    AttachedProtectionTargetV1,
+    AttachedProtectionViewV1,
+    AuthenticatedAttachedProtectionReceiptV1,
+)
 from .bybit_native import (
     AttachedProtection,
     LinearFixedLimitNativeOrderRequestV2,
@@ -76,6 +82,7 @@ from .journal import (
     Reservation,
     ReservationLimits,
 )
+from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import ApplicationMonitoringSummary
 from .native_controls import (
     LeverageObservation,
@@ -233,6 +240,8 @@ class NativeExecutionRuntime:
             account_id=journal.scope.account_id, environment=journal.scope.environment).path.resolve()
         self._mutex = RLock()
         self._readbacks: dict[str, VenueSnapshot] = {}
+        self._attached_readbacks_v1: dict[str, tuple[AuthenticatedAttachedProtectionReceiptV1, AttachedProtectionTargetV1]] = {}
+        self._attached_read_operations_v1: dict[str, object] = {}
         self._leverage_readbacks: dict[str, LeverageObservation] = {}
         self._control_busy = False
         self._projections: dict[str, tuple[int, p.ProtectionProjection,
@@ -2093,6 +2102,74 @@ class NativeExecutionRuntime:
                        and not item.terminal_confirmed for item in self.journal.list_commands())):
             raise RuntimeBlocked("EXIT_EXCEEDS_EXCLUSIVE_OWNERSHIP")
 
+    def _attached_target_v1(self, position_id: str) -> AttachedProtectionTargetV1:
+        """Derive the target from durable attached ENTRY and credited actual ownership."""
+        self._guard()
+        state = self.projection(position_id)
+        entries = tuple(order for order in state.orders if order.role == "ENTRY")
+        if (len(entries) != 1 or state.conflicts or state.owned_quantity <= 0
+                or state.latest_fill_at is None):
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        parent = entries[0]
+        records = tuple(record for record in self.journal.list_commands()
+            if record.kind is CommandKind.ENTRY and record.client_order_id == parent.client_order_id)
+        if len(records) != 1:
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        record = records[0]
+        if (record.state not in (CommandState.SENDING, CommandState.UNKNOWN, CommandState.ACKNOWLEDGED)
+                or record.terminal_confirmed
+                or hashlib.sha256(record.payload_json.encode()).hexdigest() != record.payload_hash):
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        request, policy = self._request(record), self._policy(record)
+        original = self.bridge._requests.get(record.client_order_id)
+        if (type(request) not in (NativeOrderRequest, LinearFixedLimitNativeOrderRequestV2)
+                or type(original) is not type(request) or original != request
+                or request.owned != parent or type(request.attached) is not AttachedProtection
+                or request.attached.stop_loss != policy.stop_price
+                or request.attached.take_profit != policy.take_profit_price
+                or request.attached.trigger_source != policy.trigger_source
+                or parent.policy_revision != policy.revision or parent.generation != policy.generation):
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        venues, _seen = self._history_venues(request, (), self.persisted_candidates())
+        if len(venues) != 1:
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        return AttachedProtectionTargetV1(state.scope, position_id, state.instrument_id,
+            parent.client_order_id, next(iter(venues)), parent.quantity, state.owned_quantity,
+            state.entry_side, policy.revision, policy.generation, policy.stop_price,
+            policy.take_profit_price, policy.trigger_source, state.latest_fill_at,
+            record.payload_hash, _record_digest((parent, *state.executions)))
+
+    def _current_attached_view_v1(self, receipt: AuthenticatedAttachedProtectionReceiptV1,
+            target: AttachedProtectionTargetV1, snapshot: VenueSnapshot, operation: object) -> AttachedProtectionViewV1:
+        session = self._receipt_session
+        if session is None:
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        view = session.require_attached_protection_v1(receipt, target=target)
+        # The Session and runtime clocks are separate configured callables.
+        now = self._now()
+        closed = session._require_attached_protection_closed_v1(receipt, target=target, now=now)
+        cached = self._projections.get(target.position_id)
+        state = None if cached is None else cached[1]
+        entries = () if state is None else tuple(order for order in state.orders if order.role == "ENTRY")
+        if (self._closed or self._receipt_session is not session or not self.worker_lock.acquired
+                or self.worker_lock.acquisition_id != self._lease
+                or self._attached_read_operations_v1.get(target.position_id) is not operation
+                or view is not closed or view.snapshot is not snapshot
+                or state is None or len(entries) != 1 or state.conflicts
+                or state.scope != target.scope or state.instrument_id != target.instrument_id
+                or state.entry_side != target.entry_side or state.owned_quantity != target.owned_quantity
+                or state.latest_fill_at != target.latest_fill_at
+                or entries[0].client_order_id != target.parent_client_order_id
+                or entries[0].quantity != target.parent_quantity
+                or entries[0].policy_revision != target.policy_revision
+                or entries[0].generation != target.policy_generation
+                or _record_digest((entries[0], *state.executions)) != target.projection_sha256
+                or not timedelta(0) <= now - snapshot.observed_at <= self._max_age
+                or snapshot.server_observed_at is None
+                or not timedelta(0) <= now - snapshot.server_observed_at <= self._max_age):
+            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        return view
+
     def _exclusive_readback(self, state: p.ProtectionProjection) -> None:
         snapshot = self._readbacks.get(state.position_id)
         if (snapshot is None or not snapshot.complete or len(snapshot.positions) != 1
@@ -2106,9 +2183,26 @@ class NativeExecutionRuntime:
             raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
         row = snapshot.positions[0]
         owned_ids = {order.client_order_id for order in state.orders}
+        attached_ids: dict[str, str] = {}
+        issued = self._attached_readbacks_v1.get(state.position_id)
+        if issued is not None:
+            try:
+                receipt, target = issued
+                session = self._receipt_session
+                if session is None or self._attached_target_v1(state.position_id) != target:
+                    raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
+                operation = self._attached_read_operations_v1.get(state.position_id)
+                if operation is None:
+                    raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
+                view = self._current_attached_view_v1(receipt, target, snapshot, operation)
+                attached_ids = {child.venue_order_id: child.client_order_id for child in view.children}
+            except Exception:  # noqa: BLE001 - retained authority must fail closed without provider text.
+                self._attached_readbacks_v1.pop(state.position_id, None)
+                raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED") from None
         if (row.position_idx != 0 or row.side != state.entry_side
                 or row.quantity != state.owned_quantity
-                or any(item.client_order_id not in owned_ids or not item.reduce_only
+                or any(not item.reduce_only or (item.client_order_id not in owned_ids
+                    and attached_ids.get(item.venue_order_id) != item.client_order_id)
                        for item in snapshot.orders)):
             raise RuntimeBlocked("CURRENT_EXCLUSIVE_POSITION_READBACK_REQUIRED")
 
@@ -2143,10 +2237,48 @@ class NativeExecutionRuntime:
             if type(adapter) is not BybitVenueReadback or adapter.scope != state.scope:
                 raise RuntimeBlocked("MATCHING_READBACK_SCOPE_REQUIRED")
             symbol = state.instrument_id.removesuffix("-LINEAR.BYBIT")
-        snapshot = await adapter.snapshot(symbol)
-        return self.consume_readback(position_id, snapshot)
+            session = self._receipt_session
+            self._attached_readbacks_v1.pop(position_id, None)
+            self._readbacks.pop(position_id, None)
+        if session is None:
+            snapshot = await adapter.snapshot(symbol)
+            return self.consume_readback(position_id, snapshot)
+        try:
+            with self._mutex:
+                target = self._attached_target_v1(position_id)
+                operation = object()
+                self._attached_read_operations_v1[position_id] = operation
+                binding = session._binding
+                if binding is None or adapter._client is not session.read_client(binding, scope=target.scope):
+                    raise RuntimeBlocked("MATCHING_READBACK_SCOPE_REQUIRED")
 
-    def consume_readback(self, position_id: str, snapshot: VenueSnapshot) -> p.ProtectionAssessment:
+            def guard() -> None:
+                with self._mutex:
+                    self._guard()
+                    if (self._attached_read_operations_v1.get(position_id) is not operation
+                            or self._attached_target_v1(position_id) != target):
+                        raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+                    issued = session._attached_protection_current_v1
+                    if issued is not None and issued.view is not None:
+                        observed = issued.view.snapshot
+                        if (not self._fresh(observed.observed_at) or observed.server_observed_at is None
+                                or not self._fresh(observed.server_observed_at)):
+                            raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+
+            receipt = await session.read_attached_protection_v1(binding, target=target,
+                budget=MonitoringReadBudget(guard=guard), owner_guard=guard, max_evidence_age=self._max_age)
+            view = session.require_attached_protection_v1(receipt, target=target)
+            return self.consume_readback(position_id, view.snapshot,
+                attached_receipt=receipt, attached_target=target, _attached_operation=operation)
+        except Exception:  # noqa: BLE001 - missing, conflicting and retired proofs are observations, not authority.
+            snapshot = VenueSnapshot(self.bridge.scope, symbol, uuid4().hex, self._now(),
+                None, False, (), (), ("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",))
+            return self.consume_readback(position_id, snapshot)
+
+    def consume_readback(self, position_id: str, snapshot: VenueSnapshot, *,
+            attached_receipt: AuthenticatedAttachedProtectionReceiptV1 | None = None,
+            attached_target: AttachedProtectionTargetV1 | None = None,
+            _attached_operation: object | None = None) -> p.ProtectionAssessment:
         with self._mutex:
             self._guard()
             state = self.projection(position_id)
@@ -2187,11 +2319,34 @@ class NativeExecutionRuntime:
                             observed, snapshot.cycle_id))
             assessment = p.assess_protection(state, policy, tuple(reports), position,
                                              now=self._now(), max_age=self._max_age)
-            # No current code authenticates UID or attached-child ownership. Even a
-            # mathematically matched readback cannot qualify production protection.
-            assessment = replace(assessment, entries_blocked=True,
-                status="ATTENTION" if assessment.status == "OPEN_PROTECTED" else assessment.status,
-                reasons=assessment.reasons + ("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",))
+            self._attached_readbacks_v1.pop(position_id, None)
+            authenticated = False
+            if attached_receipt is not None and attached_target is not None and self._receipt_session is not None:
+                try:
+                    if (not valid or _attached_operation is None
+                            or self._attached_read_operations_v1.get(position_id) is not _attached_operation
+                            or self._attached_target_v1(position_id) != attached_target):
+                        raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+                    view = self._current_attached_view_v1(attached_receipt, attached_target, snapshot, _attached_operation)
+                    # Actual child venue IDs remain separate from local registered orders.
+                    # The same original receipt proves ownership even if protection is incomplete.
+                    # Its coverage label is observational; no entry/financial permission is granted.
+                    complete = view.protection_coverage == "COMPLETE"
+                    assessment = p.ProtectionAssessment(
+                        "OPEN_PROTECTED" if complete else "ATTENTION", state.owned_quantity,
+                        Decimal(0) if complete else state.owned_quantity, True,
+                        ("FINANCIAL_ENTRY_AUTHORITY_NOT_GRANTED",) if complete else (
+                            "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+                            "FINANCIAL_ENTRY_AUTHORITY_NOT_GRANTED"))
+                    self._attached_readbacks_v1[position_id] = attached_receipt, attached_target
+                    authenticated = True
+                except Exception:  # noqa: BLE001 - no copied, stale or foreign receipt is authority.
+                    valid = False
+            if not authenticated:
+                self._attached_read_operations_v1.pop(position_id, None)
+                assessment = replace(assessment, entries_blocked=True,
+                    status="ATTENTION" if assessment.status == "OPEN_PROTECTED" else assessment.status,
+                    reasons=assessment.reasons + ("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",))
             self._persist(("READBACK", snapshot.cycle_id, assessment), state)
             self._readbacks.pop(position_id, None)
             if valid:
