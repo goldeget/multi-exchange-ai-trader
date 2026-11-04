@@ -605,3 +605,47 @@ it('publication: does not query strategies after its settings read has been canc
  await act(async()=>{finish(publishedResponse(typedSnapshot()));await Promise.resolve()});
  expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it('built-in publication requires exact preview, visible hashes and a separate confirmation click',async()=>{
+ const config={schema_version:1,interval:'5m',fast:9,slow:21,atr_bars:14,stop_atr_multiple:'2',target_r:'2',max_bar_age_seconds:900,signal_ttl_seconds:60};
+ const preview={schema_version:1,expected_policy_revision:7,expected_generation:0,
+  reference:{strategy_id:'builtin-sma-atr',revision:'r1'},instrument:{venue:'BYBIT',product:'LINEAR',symbol:'BTCUSDT'},configuration:config,
+  implementation_sha256:'a'.repeat(64),configuration_sha256:'b'.repeat(64),
+  approval_method:'NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER',confirmation_fingerprint:'c'.repeat(64)};
+ const publishableSnapshot={...fixture,revision:7};
+ const fetcher=vi.fn((url:string,options?:RequestInit)=>{
+  if(url==='/api/v1/automatic/strategies/preview'&&options?.method==='POST')return Promise.resolve(publishedResponse(preview));
+  if(url==='/api/v1/automatic/strategies/publish'&&options?.method==='POST')return Promise.resolve(publishedResponse({schema_version:1,generation:1,policy_revision:8,
+   catalog:publishedCatalog().catalog,reference:preview.reference,implementation_sha256:preview.implementation_sha256,
+   configuration_sha256:preview.configuration_sha256,approval_method:preview.approval_method}));
+  if(url==='/api/v1/automatic/strategies'&&(!options?.method||options.method==='GET'))return Promise.resolve(publishedResponse(null));
+  if(url==='/api/v1/automatic/settings'&&(!options?.method||options.method==='GET'))return Promise.resolve(publishedResponse(publishableSnapshot));
+  throw new Error('Unexpected publication test request');
+ });
+ vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
+ fireEvent.change(await screen.findByLabelText(/^Bybit LINEAR 거래 종목/),{target:{value:'BTCUSDT'}});
+ expect(fetcher.mock.calls.some(call=>call[0]==='/api/v1/automatic/strategies')).toBe(true);
+ fireEvent.change(screen.getByLabelText('봉 간격'),{target:{value:'5m'}});
+ fireEvent.change(screen.getByLabelText('빠른 이동평균 기간'),{target:{value:'9'}});
+ fireEvent.change(screen.getByLabelText('느린 이동평균 기간'),{target:{value:'21'}});
+ fireEvent.change(screen.getByLabelText('ATR 계산 봉 수'),{target:{value:'14'}});
+ fireEvent.change(screen.getByLabelText('손절 거리 배수 (ATR)'),{target:{value:'2'}});
+ fireEvent.change(screen.getByLabelText('익절 거리 배수 (R)'),{target:{value:'2'}});
+ fireEvent.change(screen.getByLabelText('최대 봉 경과 시간 (초)'),{target:{value:'900'}});
+ fireEvent.change(screen.getByLabelText('신호 만료 시간 (초)'),{target:{value:'60'}});
+ const previewButton=screen.getByRole('button',{name:'정확한 전략과 해시 미리보기'});
+ fireEvent.click(previewButton);
+ expect(await screen.findByText('a'.repeat(64))).toBeVisible();expect(screen.getByText('b'.repeat(64))).toBeVisible();
+ expect(screen.getByText(JSON.stringify(config))).toBeVisible();
+ expect(fetcher.mock.calls.some(call=>call[0]==='/api/v1/automatic/strategies/publish')).toBe(false);
+ const confirm=screen.getByRole('checkbox',{name:/^위의 정확한 구현·설정을 확인했고, Bybit LINEAR DEMO용으로 게시합니다/});expect(confirm).not.toBeChecked();
+ const publishButton=screen.getByRole('button',{name:'확인한 전략 게시'});expect(publishButton).toBeDisabled();
+ fireEvent.click(confirm);expect(publishButton).toBeEnabled();fireEvent.click(publishButton);
+ expect(await screen.findByText(/DEMO용 전략 게시를 완료했습니다/)).toBeVisible();
+ const previewCall=fetcher.mock.calls.find(call=>call[0]==='/api/v1/automatic/strategies/preview')!;
+ const publishCall=fetcher.mock.calls.find(call=>call[0]==='/api/v1/automatic/strategies/publish')!;
+ expect(JSON.parse(String(previewCall[1]?.body))).toEqual({schema_version:1,expected_policy_revision:7,expected_generation:0,symbol:'BTCUSDT',configuration:config});
+ expect(JSON.parse(String(publishCall[1]?.body))).toEqual({schema_version:1,expected_policy_revision:7,expected_generation:0,symbol:'BTCUSDT',configuration:config,confirmation_fingerprint:'c'.repeat(64)});
+ expect(fetcher.mock.calls.filter(call=>call[1]?.method&&call[1]?.method!=='GET').map(call=>call[0])).toEqual([
+  '/api/v1/automatic/strategies/preview','/api/v1/automatic/strategies/publish']);
+});
