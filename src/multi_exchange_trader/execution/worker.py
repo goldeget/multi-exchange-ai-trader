@@ -31,6 +31,7 @@ from .account_binding import (
 )
 from .account_ledger import DailyCashBaseline, DailyRealizedLoss, daily_realized_loss
 from .execution_credit import ExecutionCreditResult, candidate_identity
+from .fresh_monitoring_v1 import FreshMonitoringBootstrapV1, empty_sealed_observation_candidate_v1
 from .history import BybitHistoryReader, HistorySnapshot, HistoryWindow
 from .history_coverage import IngestionReceipt
 from .history_receipts import AuthenticatedHistoryReceipt
@@ -43,6 +44,7 @@ from .native_controls import NativeLeverageControl
 from .native_events import NativeEventContext, NativeEventDecoder, NativeOrderEvidence
 from .native_node import NativeChannel, NativeNodeAssembly, build_native_node
 from .native_restart import NativeRestartCoordinator, WorkerNativeRestartStatus
+from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .ownership import AccountWorkerLock
 from .protection import ProtectionAssessment, ProtectionPolicy, ProtectionScope
 from .risk import EntryDecision
@@ -138,7 +140,8 @@ class ExecutionWorker:
                  clock: Callable[[], datetime], max_age: timedelta,
                  assembly_factory: AssemblyFactory | None = None,
                  decoder: NativeEventDecoder | None = None,
-                 lock_directory: Path | None = None) -> None:
+                 lock_directory: Path | None = None,
+                 metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1) -> None:
         self.directory, self.scope = directory, scope
         self.lock_directory = directory if lock_directory is None else lock_directory
         self.session, self.binding = session, binding
@@ -146,6 +149,9 @@ class ExecutionWorker:
         self.policy_book, self.registry = policy_book, registry
         self.entry_risk, self.clock, self.max_age = entry_risk, clock, max_age
         self._factory, self._decoder = assembly_factory, decoder
+        self.metadata_profile = validate_metadata_profile_v1(metadata_profile)
+        if self.metadata_profile != ACTUAL_ACCOUNT_FEE_V1 and assembly_factory is not None:
+            raise RuntimeBlocked("OBSERVATION_PROFILE_REQUIRES_ORIGINAL_MONITOR")
         self._loop: asyncio.AbstractEventLoop | None = None
         self._assembly: NativeNodeAssembly | None = None
         self._runtime: NativeExecutionRuntime | None = None
@@ -155,7 +161,7 @@ class ExecutionWorker:
         self._lock: AccountWorkerLock | None = None
         self._node_task: asyncio.Task[None] | None = None
         self._node_stop_task: asyncio.Task[None] | None = None
-        self._monitoring: MonitoringResume | None = None
+        self._monitoring: MonitoringResume | FreshMonitoringBootstrapV1 | None = None
         self._restart: NativeRestartCoordinator | None = None
         self._native_restart_status = WorkerNativeRestartStatus("BLOCKED")
         self._stopped = False
@@ -390,7 +396,8 @@ class ExecutionWorker:
             if self._factory is None:
                 self._assembly = build_native_node(session=self.session, binding=self.binding,
                     scope=self.scope, symbols=self.symbols, trader_id=self.trader_id,
-                    on_event=self.post_native, restart_safe=True, monitor_only=True)
+                    on_event=self.post_native, restart_safe=True, monitor_only=True,
+                    metadata_profile=self.metadata_profile)
             else:
                 self._assembly = self._factory(self.post_native)
             channel = self._assembly.channel
@@ -403,7 +410,7 @@ class ExecutionWorker:
             self._history_store = HistoryStore(self.directory / "history.sqlite3", self.scope)
             if self._factory is None:
                 self._restart = NativeRestartCoordinator(self.directory, self._assembly,
-                    self.scope, self.symbols, self.trader_id)
+                    self.scope, self.symbols, self.trader_id, metadata_profile=self.metadata_profile)
             else:
                 self._native_restart_status = WorkerNativeRestartStatus("TEST_ASSEMBLY")
             self._runtime = NativeExecutionRuntime(journal=self._journal, store=self._store,
@@ -558,7 +565,21 @@ class ExecutionWorker:
         self._retire_entry_publications_v2()
         self.runtime.pause_entries()
         if self.native_restart_status.status == "RESTORED_LOCAL_CACHE":
+            if empty_sealed_observation_candidate_v1(self):
+                if self._operations != 1 or self._staging:
+                    raise RuntimeBlocked("MONITORING_OPERATION_IN_PROGRESS")
+                controller = FreshMonitoringBootstrapV1(self)
+                self._monitoring = controller
+                await controller.run()
+                return
             await self._resume_restored_monitoring()
+            return
+        if self.native_restart_status.status == "FRESH_EMPTY_CACHE" and self._factory is None:
+            if self._operations != 1 or self._staging:
+                raise RuntimeBlocked("MONITORING_OPERATION_IN_PROGRESS")
+            controller = FreshMonitoringBootstrapV1(self)
+            self._monitoring = controller
+            await controller.run()
             return
         if self._factory is None:
             raise RuntimeBlocked("MONITORING_RESTORED_CACHE_REQUIRED")

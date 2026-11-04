@@ -11,6 +11,8 @@ from .journal import CommandState
 from .native_node import NativeNodeAssembly
 from .native_recovery import OwnedCacheExpectation
 from .native_restart_codec import (
+    _decode,
+    _sdk,
     capture_native_cache,
     install_native_cache,
     prepare_native_cache,
@@ -21,6 +23,12 @@ from .native_restart_store import (
     NativeRestartIdentity,
     NativeRestartStore,
     application_digest,
+)
+from .observation_instrument_v1 import (
+    ACTUAL_ACCOUNT_FEE_V1,
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    require_instrument_metadata_profile_v1,
+    validate_metadata_profile_v1,
 )
 from .protection import ProtectionScope
 from .runtime import NativeOwnedRequest, NativeOwnershipResolver
@@ -61,7 +69,8 @@ class NativeRestartCoordinator:
     """Called only under the worker's scoped lease and admission fence."""
 
     def __init__(self, directory: Path, assembly: NativeNodeAssembly,
-                 scope: ProtectionScope, symbols: tuple[str, ...], trader_id: str) -> None:
+                 scope: ProtectionScope, symbols: tuple[str, ...], trader_id: str, *,
+                 metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1) -> None:
         self.assembly = assembly
         self.store = NativeRestartStore(directory)
         strategy = assembly.strategy
@@ -71,6 +80,25 @@ class NativeRestartCoordinator:
             str(strategy.trader_id), str(strategy.id),
             tuple(sorted(symbol + "-LINEAR.BYBIT" for symbol in symbols)))
         self.status = WorkerNativeRestartStatus("BLOCKED")
+        self.metadata_profile = validate_metadata_profile_v1(metadata_profile)
+
+    def _require_metadata_profile(self, payload: dict[str, object]) -> None:
+        # The complete original detached codec validation runs before this check.
+        # Empty sealed state carries no old profile claim. Only the separate
+        # empty-sealed origin may initialize it after proving the full app empty.
+        rows = payload.get("instruments")
+        if type(rows) is not list:
+            raise NativeRestartError()
+        if not rows:
+            return
+        sdk, keys = _sdk(), set()
+        for raw in rows:
+            instrument = _decode(raw, ("CryptoPerpetual",), sdk)
+            require_instrument_metadata_profile_v1(instrument, self.metadata_profile)
+            keys.add(str(instrument.id))
+        if (self.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+                and keys != set(self.identity.instrument_ids)):
+            raise NativeRestartError()
 
     def _expectations(self, requests: tuple[NativeOwnedRequest, ...]
                       ) -> tuple[tuple[OwnedCacheExpectation, ...], frozenset[str]]:
@@ -108,6 +136,7 @@ class NativeRestartCoordinator:
             owners, missing = self._expectations(resolve(prepared.venue_order_ids))
             prepared = prepare_native_cache(payload, identity=self.identity,
                 owners=owners, allowed_missing_ids=missing)
+            self._require_metadata_profile(payload)
             cache = self.assembly.node.cache
             if (cache.orders() or cache.positions() or cache.instruments() or cache.accounts()
                     or cache.client_order_ids() or cache.position_ids()
@@ -133,4 +162,5 @@ class NativeRestartCoordinator:
         owners, missing = self._expectations(resolve(prepared.venue_order_ids))
         prepare_native_cache(payload, identity=self.identity,
             owners=owners, allowed_missing_ids=missing)
+        self._require_metadata_profile(payload)
         self.store.seal(self.identity, payload)

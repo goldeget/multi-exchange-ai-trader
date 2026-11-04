@@ -22,6 +22,7 @@ from .monitoring_models import (
 
 if TYPE_CHECKING:
     from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
+    from .fresh_monitoring_v1 import FreshMonitoringTargetV1
 
 
 def _ordinary(row: dict[str, object]) -> None:
@@ -142,7 +143,7 @@ class BybitMonitoringReader:
         session: BybitDemoAccountSession,
         binding: AuthenticatedAccountBinding,
         *,
-        target: MonitoringTarget,
+        target: MonitoringTarget | FreshMonitoringTargetV1,
         guard: Callable[[], None],
         owner_guard: Callable[[], None] = lambda: None,
     ) -> None:

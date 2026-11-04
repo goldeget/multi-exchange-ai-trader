@@ -145,6 +145,76 @@ jobs:
               raise SystemExit("Restored monitoring requires exactly 12 named unskipped passing cases")
           print("Verified 12 actual restored monitoring contracts without network access")
           PY
+      - name: Require isolated actual fresh monitoring bootstrap contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_fresh_monitoring_linux.py --junitxml=fresh-monitoring-contracts.xml
+      - name: Require all eight exact fresh monitoring bootstrap contracts
+        run: |
+          .venv/bin/python - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse("fresh-monitoring-contracts.xml").getroot()
+          suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
+          expected = {
+              "test_actual_fresh_bootstrap_installs_provider_metadata_and_streams_once",
+              "test_actual_fresh_origin_rejects_copied_foreign_and_restored_sources",
+              "test_actual_fresh_bootstrap_rejects_nonempty_application_or_native_cache",
+              "test_actual_fresh_bootstrap_preserves_pre_post_and_whole_account_flatness",
+              "test_actual_fresh_bootstrap_rejects_metadata_drift_and_stale_sources",
+              "test_actual_fresh_bootstrap_stop_reauthentication_and_owner_fences",
+              "test_actual_fresh_bootstrap_drain_failure_retains_original_resources",
+              "test_actual_fresh_bootstrap_keeps_all_financial_writers_blocked",
+          }
+          def counter(suite, name):
+              value = suite.attrib.get(name)
+              if type(value) is not str or re.fullmatch(r"0|[1-9][0-9]{0,8}", value) is None:
+                  raise SystemExit("Fresh monitoring requires bounded nonnegative XML counters")
+              return int(value)
+          total = sum(counter(s, "tests") for s in suites)
+          bad = sum(counter(s, key) for s in suites for key in ("skipped", "errors", "failures"))
+          names = [case.attrib.get("name", "") for case in cases]
+          if (total != 8 or len(cases) != 8 or bad or len(set(names)) != 8 or set(names) != expected
+                  or any(case.attrib.get("classname", "").split(".")[-1]
+                         != "test_fresh_monitoring_linux" for case in cases)
+                  or any(list(case.iter(tag)) for case in cases for tag in ("skipped", "failure", "error"))):
+              raise SystemExit("Fresh monitoring requires exactly eight named unskipped passing cases")
+          print("Verified eight actual fresh monitoring contracts without network access")
+          PY
+      - name: Require isolated actual observation metadata contracts
+        run: |
+          command -v unshare
+          sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_observation_instrument_linux.py --junitxml=observation-instrument-contracts.xml
+      - name: Require all six exact observation metadata contracts
+        run: |
+          .venv/bin/python - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+          root = ET.parse("observation-instrument-contracts.xml").getroot()
+          suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
+          expected = {
+              "test_actual_sdk_observation_marker_survives_native_cache_codec_roundtrip",
+              "test_original_session_observation_profile_never_requests_private_fees",
+              "test_default_actual_fee_path_still_refuses_private_10001",
+              "test_observation_public_get_failure_keeps_terminal_budget_failure",
+              "test_observation_exhausted_physical_budget_sends_nothing",
+              "test_actual_native_types_reject_missing_mixed_and_corrupt_metadata_markers",
+          }
+          def counter(suite, name):
+              value = suite.attrib.get(name)
+              if type(value) is not str or re.fullmatch(r"0|[1-9][0-9]{0,8}", value) is None:
+                  raise SystemExit("Observation metadata requires bounded nonnegative XML counters")
+              return int(value)
+          total = sum(counter(s, "tests") for s in suites)
+          bad = sum(counter(s, key) for s in suites for key in ("skipped", "errors", "failures"))
+          names = [case.attrib.get("name", "") for case in cases]
+          if (total != 6 or len(cases) != 6 or bad or len(set(names)) != 6 or set(names) != expected
+                  or any(case.attrib.get("classname", "").split(".")[-1]
+                         != "test_observation_instrument_linux" for case in cases)
+                  or any(list(case.iter(tag)) for case in cases for tag in ("skipped", "failure", "error"))):
+              raise SystemExit("Observation metadata requires exactly six named unskipped passing cases")
+          print("Verified six actual observation metadata contracts without network access")
+          PY
       - name: Require isolated actual fixed limit native contracts
         run: |
           command -v unshare
@@ -252,6 +322,8 @@ jobs:
             native-contracts.xml
             native-restart-contracts.xml
             restored-monitoring-contracts.xml
+            fresh-monitoring-contracts.xml
+            observation-instrument-contracts.xml
             fixed-limit-native-contracts.xml
           if-no-files-found: error
           retention-days: 7

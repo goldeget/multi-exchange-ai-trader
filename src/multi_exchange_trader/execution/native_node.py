@@ -15,7 +15,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import CodeType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
@@ -26,7 +26,11 @@ from .bybit_native import (
     load_native_bindings,
 )
 from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
+from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .protection import ProtectionScope
+
+if TYPE_CHECKING:
+    from .fresh_monitoring_v1 import FreshMonitoringTargetV1
 
 
 @dataclass(frozen=True)
@@ -222,6 +226,9 @@ class NativeNodeAssembly:
     def arm_monitoring(self, target: MonitoringTarget) -> None:
         self._monitor_client().arm_monitoring(target)
 
+    def arm_fresh_monitoring_v1(self, target: FreshMonitoringTargetV1) -> None:
+        self._monitor_client().arm_fresh_monitoring_v1(target)
+
     def require_monitoring_ready(self) -> None:
         client, kernel = self._monitor_client(), self.node.kernel
         client._event_guard()
@@ -360,12 +367,15 @@ def _native_modules() -> dict[str, Any]:
 
 def build_node_config(exec_config: object, *, symbols: tuple[str, ...],
                       trader_id: str, restart_safe: bool = False,
-                      monitor_only: bool = False) -> object:
+                      monitor_only: bool = False, metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1) -> object:
     """Build the actual pinned config without importing native modules on Windows."""
     if (type(symbols) is not tuple or not symbols or len(set(symbols)) != len(symbols)
             or any(type(s) is not str or re.fullmatch(r"[A-Z0-9]{2,48}", s) is None
                    for s in symbols)):
         raise ValueError("EXPLICIT_NATIVE_INSTRUMENTS_REQUIRED")
+    metadata_profile = validate_metadata_profile_v1(metadata_profile)
+    if metadata_profile != ACTUAL_ACCOUNT_FEE_V1 and not monitor_only:
+        raise ValueError("OBSERVATION_PROFILE_REQUIRES_MONITOR_ONLY")
     modules = _native_modules()
     cfg, ids = modules["config"], modules["identifiers"]
     if type(exec_config) is not modules["bybit"].BybitExecClientConfig:
@@ -410,19 +420,24 @@ def build_native_node(*, session: BybitDemoAccountSession,
                       symbols: tuple[str, ...], trader_id: str,
                       on_event: Callable[[NativeChannel, object], None],
                       restart_safe: bool = False,
-                      monitor_only: bool = False) -> NativeNodeAssembly:
+                      monitor_only: bool = False,
+                      metadata_profile: str = ACTUAL_ACCOUNT_FEE_V1) -> NativeNodeAssembly:
     """Register real Strategy/factory/client on the current worker loop, without run.
 
     Only session.configure_native_execution delivers credentials into the builder.
     No settings, environment keys, external claims, or default instruments are read.
     """
     loop = asyncio.get_running_loop()
+    metadata_profile = validate_metadata_profile_v1(metadata_profile)
+    if metadata_profile != ACTUAL_ACCOUNT_FEE_V1 and not monitor_only:
+        raise ValueError("OBSERVATION_PROFILE_REQUIRES_MONITOR_ONLY")
     modules = _native_modules()
     result: list[NativeNodeAssembly] = []
 
     def install(config: object) -> None:
         node_config = build_node_config(config, symbols=symbols, trader_id=trader_id,
-                                        restart_safe=restart_safe, monitor_only=monitor_only)
+                                        restart_safe=restart_safe, monitor_only=monitor_only,
+                                        metadata_profile=metadata_profile)
         from .native_loop_ownership import preserve_default_executor
 
         ownership = preserve_default_executor(loop) if monitor_only else nullcontext()
@@ -437,7 +452,7 @@ def build_native_node(*, session: BybitDemoAccountSession,
                     from .native_monitor_client import create_monitor_client
 
                     client = create_monitor_client(session=session, binding=binding, scope=scope,
-                                                   symbols=symbols, **kwargs)
+                                                   symbols=symbols, metadata_profile=metadata_profile, **kwargs)
                 else:
                     client = modules["factories"].BybitLiveExecClientFactory.create(**kwargs)
                 captured.append(client)
