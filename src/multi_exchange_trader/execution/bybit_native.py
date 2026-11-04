@@ -619,6 +619,7 @@ class NativeBybitBridge:
             if frame is not None:
                 frame.tainted = True
             raise ValueError("NATIVE_PREPARED_RETIRED")
+        installation: _NativePreparedInstallationV2
         submitting: NativeSubmission
         unknown: NativeSubmission
         (bridge, installation, generation, owners, context, requests, identities, submissions, key,
@@ -632,8 +633,7 @@ class NativeBybitBridge:
             or self._context_v2 is not context or self._requests is not requests
             or self._identities_v2 is not identities or self._submissions is not submissions
             or type(requests) is not dict or type(identities) is not dict or type(submissions) is not dict
-            or type(key) is not str or requests.get(key) is not registered
-            or identities.get(key) is not identity or key in submissions
+            or type(key) is not str
             or self.scope is not scope or self._bindings is not bindings
             or self.native_account_id is not native_account_id
             or self._factory is not owners[10] or self._strategy is not owners[9]
@@ -647,16 +647,42 @@ class NativeBybitBridge:
         if changed:
             frame.tainted = True
             raise ValueError("NATIVE_PREPARED_CHANGED")
+        # A plain lookup key can still dispatch a stored str subclass's equality.
+        # Close every actual key set before any lookup in this primitive suffix.
+        for mapping in (requests, identities, submissions, params):
+            for stored_key in mapping:
+                if type(stored_key) is not str:
+                    changed = True
+        for owner, cls, state, leaves in graph:
+            if type(owner) is not cls or owner.__dict__ is not state or type(state) is not dict:
+                changed = True
+                continue
+            if len(state) != len(leaves):
+                changed = True
+            for stored_key in state:
+                if type(stored_key) is not str:
+                    changed = True
+        if changed:
+            frame.tainted = True
+            raise ValueError("NATIVE_PREPARED_CHANGED")
+        changed = (requests.get(key) is not registered or identities.get(key) is not identity
+            or key in submissions)
         for k, v in param_items:
             if params.get(k) is not v:
                 changed = True
         for owner, cls, state, leaves in graph:
-            if type(owner) is not cls or owner.__dict__ is not state or len(state) != len(leaves):
-                changed = True
             for k, v in leaves:
                 if state.get(k) is not v:
                     changed = True
-        if changed:
+        if (changed or self._active_preparation_v2 is not frame or frame.data is not data
+                or frame.tainted is not False or frame.closed is not False
+                or data.frame is not frame or data.closed is not False
+                or data.consumed is not False or data.sealed is not True
+                or self._prepared_installation_v2 is not installation
+                or self._prepared_installation_owner_v2 is not installation
+                or installation.generation is not generation or installation.closed is not False
+                or self._requests is not requests or self._identities_v2 is not identities
+                or self._submissions is not submissions):
             frame.tainted = True
             raise ValueError("NATIVE_PREPARED_CHANGED")
         data.consumed = True

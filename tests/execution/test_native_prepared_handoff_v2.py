@@ -438,6 +438,53 @@ async def test_tail_rejects_nonprimitive_phase_without_running_a_boolean_callbac
         await close(h)
 
 
+@pytest.mark.parametrize("mapping", ["params", "requests", "identities", "submissions", "known-state"])
+async def test_stored_key_subclasses_are_refused_before_equality_or_sdk_entry(
+    monkeypatch: pytest.MonkeyPatch, mapping: str,
+) -> None:
+    h = await built(monkeypatch)
+    calls: list[str] = []
+    other = replace(request(), owned=replace(request().owned, client_order_id="ec_" + "f" * 32))
+    legacy_other = legacy(other)
+
+    class CallbackKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, value: object) -> bool:
+            calls.append("stored-key-equality")
+            with pytest.raises(ValueError, match="NATIVE_PREPARED_REENTRANT"):
+                h.bridge.register_owned(legacy_other)
+            return str.__eq__(self, value)
+
+    try:
+        with pytest.raises(ValueError, match="NATIVE_PREPARED"), h.bridge._prepare_fixed_limit_handoff_v2(request()) as data:
+            h.bridge._seal_prepared_fixed_limit_v2(data)
+            if mapping == "params":
+                target, key = data.params, "position_idx"
+            elif mapping == "requests":
+                target, key = h.bridge._requests, ID
+            elif mapping == "identities":
+                target, key = h.bridge._identities_v2, ID
+            elif mapping == "submissions":
+                target, key = h.bridge._submissions, ID
+                target[key] = n.NativeSubmission(ID, "UNKNOWN", "NATIVE_SUBMIT_AMBIGUOUS")
+            else:
+                target, key = data.request.__dict__, "owned"
+            original_value = target.pop(key)
+            target[CallbackKey(key)] = original_value
+            h.bridge._handoff_prepared_fixed_limit_v2(data)
+        assert calls == [] and h.strategy.commands == []
+        assert other.owned.client_order_id not in h.bridge._requests
+        if mapping == "submissions":
+            # Observe the retained value without another deliberately unsafe lookup.
+            assert list(h.bridge._submissions.values()) == [original_value]
+            assert original_value.state == "UNKNOWN"
+        else:
+            assert h.bridge._submissions == {}
+    finally:
+        await close(h)
+
+
 @pytest.mark.parametrize("case", ["valid", "balanced", "negative", "unicode", "signed", "huge",
     "leading", "missing-tests", "missing-errors", "missing-failures", "missing-skipped",
     "errors", "failures", "skipped", "wrong-module", "duplicate", "unknown", "short",
