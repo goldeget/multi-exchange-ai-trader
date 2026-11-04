@@ -3,7 +3,7 @@ import {Field} from '../../ui/components';
 
 type Configuration={schema_version:1;interval:string;fast:number;slow:number;atr_bars:number;stop_atr_multiple:string;target_r:string;max_bar_age_seconds:number;signal_ttl_seconds:number};
 type Preview={schema_version:1;expected_policy_revision:number;expected_generation:number;reference:{strategy_id:string;revision:string};instrument:{venue:'BYBIT';product:'LINEAR';symbol:string};configuration:Configuration;implementation_sha256:string;configuration_sha256:string;approval_method:'NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER';confirmation_fingerprint:string};
-type Props={revision:number;generation:number;disabled:boolean;onPublished:()=>void};
+type Props={revision:number;generation:number;disabled:boolean;onPublished:(message:string)=>void};
 type TextConfiguration={interval:string;fast:string;slow:string;atr_bars:string;stop_atr_multiple:string;target_r:string;max_bar_age_seconds:string;signal_ttl_seconds:string};
 const initial:TextConfiguration={interval:'',fast:'',slow:'',atr_bars:'',stop_atr_multiple:'',target_r:'',max_bar_age_seconds:'',signal_ttl_seconds:''};
 const ratio=/^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,8})?$/;
@@ -66,7 +66,7 @@ export function BuiltinStrategyPublication({revision,generation,disabled,onPubli
    if(!value||value.generation!==generation+1||value.policy_revision!==revision+1||value.approval_method!=='NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER'){
     setPreview(null);setConfirmed(false);setNotice('게시 응답을 확인할 수 없습니다. 현재 상태를 다시 불러오세요.');return;
    }
-   setPreview(null);setConfirmed(false);setNotice('DEMO용 전략 게시를 완료했습니다. 설정은 정지 상태이며 주문이나 worker는 시작하지 않았습니다.');onPublished();
+   setPreview(null);setConfirmed(false);onPublished('DEMO용 전략 게시를 완료했습니다. 설정은 정지 상태이며 주문이나 worker는 시작하지 않았습니다.');
   }catch{setPreview(null);setConfirmed(false);setNotice('게시 결과가 불확실합니다. 현재 상태를 다시 확인하세요.')}
  }
  return <section aria-labelledby="builtin-strategy-publication-heading" style={{borderTop:'1px solid currentColor',marginTop:24,paddingTop:16}}>
