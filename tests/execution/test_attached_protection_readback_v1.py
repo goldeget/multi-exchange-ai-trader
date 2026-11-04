@@ -31,7 +31,7 @@ from multi_exchange_trader.execution.history_receipts import (
     HistoryReceiptView,
 )
 from multi_exchange_trader.execution.history_store import HistoryStore
-from multi_exchange_trader.execution.journal import CommandJournal, ExecutionScope
+from multi_exchange_trader.execution.journal import CommandJournal, CommandKind, ExecutionScope
 from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
@@ -281,6 +281,81 @@ async def test_restart_restores_ownership_but_not_authenticated_child_receipt(at
     with pytest.raises(ValueError):
         core.runtime.queue_exit("cleanup", "position-1", Decimal(1), Decimal(100))
     assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+
+
+async def test_authenticated_incomplete_protection_persists_entry_admission_gate(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    plan_data = qualified_inputs()
+    risk_scope = RiskScope("12345", "DEMO", "BTCUSDT", "strategy-1")
+    for key in ("policy", "market", "instrument", "account", "tiers", "reservations",
+                "liquidation", "leverage_readback"):
+        plan_data[key] = replace(plan_data[key], scope=risk_scope)
+    plan = assess_entry(**plan_data)
+    selection_request = selection()
+    selection_request = replace(selection_request,
+        scope=replace(selection_request.scope, account_id="12345"),
+        policy=replace(selection_request.policy, account_id="12345"),
+        candidates=tuple(replace(candidate, account_id="12345")
+            for candidate in selection_request.candidates))
+    protection_policy = ProtectionPolicy("policy-1", 0, Decimal(90), Decimal(120), "MarkPrice")
+
+    def assert_entry_blocked(command_key: str, position_id: str) -> None:
+        with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+            core.runtime.queue_entry(command_key, position_id, plan_id="plan-1", plan=plan,
+                protection_policy=protection_policy, mode=AutomaticMode.FULL_AUTO,
+                selection_request=selection_request)
+
+    old_receipt, old_target = core.runtime._attached_readbacks_v1["position-1"]
+    old_snapshot = core.owner.require_attached_protection_v1(old_receipt, target=old_target).snapshot
+    old_operation = core.runtime._attached_read_operations_v1["position-1"]
+    owned_orders = core.runtime.projection("position-1").orders
+    original_rows = list(core.rows)
+    core.rows.pop()
+
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    assert core.runtime.projection("position-1").orders == owned_orders
+    projection = core.journal.get_projection("protection-recovery-admission-v1")
+    assert projection is not None
+    state = json.loads(projection.payload)
+    assert set(state["active"]) == {"position-1"}
+    assert state["active"]["position-1"]["reason_code"] == (
+        "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE")
+    revision = projection.revision
+
+    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
+    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
+    operation = core.runtime._attached_read_operations_v1["position-1"]
+    core.runtime.consume_readback("position-1", snapshot, attached_receipt=receipt,
+        attached_target=target, _attached_operation=operation)
+    replayed = core.journal.get_projection("protection-recovery-admission-v1")
+    assert replayed is not None and replayed.revision == revision
+
+    assert_entry_blocked("blocked-entry", "position-2")
+    pending = core.journal.register("pending-entry", CommandKind.ENTRY, {"version": 1})
+    assert pending.state.value == "PENDING"
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime.dispatch("pending-entry")
+
+    core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
+        attached_target=old_target, _attached_operation=old_operation)
+    retained = core.journal.get_projection("protection-recovery-admission-v1")
+    assert retained is not None and "position-1" in json.loads(retained.payload)["active"]
+
+    core.runtime.shutdown()
+    core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store, worker_lock=core.lock,
+        lock_directory=core.directory, bridge=core.bridge,
+        entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
+        max_evidence_age=timedelta(seconds=10), receipt_session=core.owner, history_store=core.history)
+    assert_entry_blocked("blocked-after-restart", "position-3")
+
+    core.rows[:] = original_rows
+    core.clock[0] += timedelta(seconds=1)
+    complete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert complete.status == "OPEN_PROTECTED"
+    cleared = core.journal.get_projection("protection-recovery-admission-v1")
+    assert cleared is not None and json.loads(cleared.payload)["active"] == {}
 
 
 @pytest.mark.parametrize("mutate", ["children", "snapshot"])
