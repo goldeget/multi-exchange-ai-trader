@@ -637,7 +637,7 @@ it('built-in publication requires exact preview, visible hashes and a separate c
  expect(await screen.findByText('a'.repeat(64))).toBeVisible();expect(screen.getByText('b'.repeat(64))).toBeVisible();
  expect(screen.getByText(JSON.stringify(config))).toBeVisible();
  expect(fetcher.mock.calls.some(call=>call[0]==='/api/v1/automatic/strategies/publish')).toBe(false);
- const confirm=screen.getByRole('checkbox');expect(confirm).not.toBeChecked();
+ const confirm=screen.getByRole('checkbox',{name:/^위의 정확한 구현·설정을 확인했고, Bybit LINEAR DEMO용으로 게시합니다/});expect(confirm).not.toBeChecked();
  const publishButton=screen.getByRole('button',{name:'확인한 전략 게시'});expect(publishButton).toBeDisabled();
  fireEvent.click(confirm);expect(publishButton).toBeEnabled();fireEvent.click(publishButton);
  expect(await screen.findByText(/DEMO용 전략 게시를 완료했습니다/)).toBeVisible();
