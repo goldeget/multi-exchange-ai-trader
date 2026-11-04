@@ -258,6 +258,36 @@ class StrategyPublicationOwnerV1:
                 return entry
         _publication_fail_v1()
 
+
+    def _require_artifact_in_operation_v1(self, db: sqlite3.Connection, reference: StrategyReference, *,
+            generation: int, policy_revision: int) -> StrategyArtifactBytesV1:
+        """Read validated original bytes in the caller's existing policy transaction."""
+        if (type(reference) is not StrategyReference or type(generation) is not int
+                or type(policy_revision) is not int):
+            _publication_fail_v1()
+        snapshot = self._book._read(db)
+        publication = _publication_read_v1(db, snapshot["policy"], snapshot["revision"])
+        current = self._snapshot(publication, snapshot["revision"])
+        if current is None or (current.generation, current.policy_revision) != (generation, policy_revision):
+            _publication_fail_v1()
+        descriptor = next((entry for entry in current.catalog.entries
+            if entry.reference == reference and entry.approval_status == "APPROVED"), None)
+        if descriptor is None:
+            _publication_fail_v1()
+        for implementation, configuration, approval in db.execute(
+                "SELECT implementation,configuration,approval FROM strategy_publication_artifacts_v1"):
+            if hashlib.sha256(approval).hexdigest() == descriptor.approval_source_sha256:
+                return StrategyArtifactBytesV1(implementation, configuration, approval)
+        _publication_fail_v1()
+
+    def require_artifact_v1(self, reference: StrategyReference, *, generation: int,
+                            policy_revision: int) -> StrategyArtifactBytesV1:
+        """Ordinary exact retained bytes, never execution or financial authorization."""
+        with self._book._operation_v2() as db:
+            db.execute("BEGIN")
+            return self._require_artifact_in_operation_v1(db, reference,
+                generation=generation, policy_revision=policy_revision)
+
     def publish(self, artifacts: tuple[StrategyArtifactBytesV1, ...], *, expected_policy_revision: int,
                 expected_generation: int) -> StrategyPublicationV1:
         if type(artifacts) is not tuple or not 1 <= len(artifacts) <= 100:

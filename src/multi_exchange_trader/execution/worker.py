@@ -24,6 +24,7 @@ from ..account.bybit_readonly import BybitReadOnlyClient
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
+from ..market_data.service import MarketDataService
 from . import account_reconciliation_v1 as account_reconciliation
 from . import bybit_linear_model_inputs_v1 as model_inputs_v1
 from . import bybit_linear_model_v1 as model_v1
@@ -63,6 +64,11 @@ from .runtime_policy import RuntimePolicyBook
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback
 from .worker_entry_model_v2 import WorkerEntryModelOwnerV2, WorkerModelPlanV2
+from .worker_strategy_signal_v1 import (
+    WorkerStrategySignalDataV1,
+    WorkerStrategySignalOwnerV1,
+    WorkerStrategySignalV1,
+)
 
 LEGACY_JOURNAL_BLOCKER = "LEGACY_WORKER_JOURNAL_REQUIRES_OPERATOR_RESTORE"
 
@@ -187,6 +193,9 @@ class ExecutionWorker:
         self._entry_publication_frame_v2: list[bool] | None = None
         self._entry_binding_refresh_v2: object | None = None
         self._entry_model_owner_v2: WorkerEntryModelOwnerV2 | None = None
+        self._strategy_signal_owner_v1: WorkerStrategySignalOwnerV1 | None = None
+        self._model_phase_transition_v2: object | None = None
+        self._model_observation_phase_v2: object | None = None
 
     @property
     def native_restart_status(self) -> WorkerNativeRestartStatus:
@@ -206,6 +215,16 @@ class ExecutionWorker:
             return self._monitoring.snapshot()
         return WorkerMonitoringStatus("PASSIVE", self.scope, self.symbols)
 
+    def _require_model_observation_not_stopped_v2(self) -> None:
+        """Negative observation cancellation only; never financial admission."""
+        phase = self._model_observation_phase_v2
+        if phase is not None:
+            from .model_observation_phase_v2 import ModelObservationPhaseV2
+
+            if type(phase) is not ModelObservationPhaseV2:
+                raise RuntimeBlocked("MODEL_OBSERVATION_STOP_REQUESTED")
+            phase.require_not_stopped(self)
+
     def _require_admission(self) -> None:
         _ = self.runtime
         if self._monitoring is not None and self._monitoring.in_progress:
@@ -222,6 +241,9 @@ class ExecutionWorker:
         owner = self._entry_model_owner_v2
         if type(owner) is WorkerEntryModelOwnerV2:
             WorkerEntryModelOwnerV2.retire(owner)
+        signal_owner = self._strategy_signal_owner_v1
+        if type(signal_owner) is WorkerStrategySignalOwnerV1:
+            WorkerStrategySignalOwnerV1.retire(signal_owner)
 
     def _entry_publication_links_v2(self, *,
             fresh_binding: AuthenticatedAccountBinding | None = None) -> tuple[object, ...]:
@@ -354,6 +376,32 @@ class ExecutionWorker:
             if self._entry_publication_frame_v2 is frame:
                 self._entry_publication_frame_v2 = None
 
+    async def capture_builtin_signal_v1(self, *, scope: contracts_v2.RiskScopeV2,
+                                        market: MarketDataService) -> WorkerStrategySignalV1:
+        """Explicit approved closed-bar signal; never stages or dispatches an order."""
+        self._require_admission()
+        self._retire_entry_publications_v2()
+        if (self._operations or self._staging or self._entry_publication_frame_v2 is not None
+                or self._entry_binding_refresh_v2 is not None):
+            raise RuntimeBlocked("WORKER_STRATEGY_SIGNAL_OPERATION_IN_PROGRESS")
+        owner = WorkerStrategySignalOwnerV1(self, market)
+        self._strategy_signal_owner_v1 = owner
+        self._operations += 1
+        try:
+            return await owner.capture(scope)
+        finally:
+            self._operations -= 1
+
+    def consume_builtin_signal_v1(self, handle: WorkerStrategySignalV1) -> WorkerStrategySignalDataV1:
+        """Consume the same current original signal data, never financial admission."""
+        self._require_admission()
+        owner = self._strategy_signal_owner_v1
+        if (type(owner) is not WorkerStrategySignalOwnerV1 or self._operations or self._staging
+                or self._entry_publication_frame_v2 is not None):
+            self._retire_entry_publications_v2()
+            raise RuntimeBlocked("WORKER_STRATEGY_SIGNAL_OPERATION_IN_PROGRESS")
+        return owner.require(handle)
+
     def install_entry_model_v2(self, *, public_marks: BybitPublicMarkSessionV1,
                                catalog_producer: BybitInstrumentCatalogProducer) -> None:
         """Explicit original model/source installation; no network, entry or paid call."""
@@ -452,6 +500,12 @@ class ExecutionWorker:
             self._lock = AccountWorkerLock(self.lock_directory, account_id=self.scope.account_id,
                                            environment=self.scope.environment)
             self._lock.acquire()
+            if self._model_phase_transition_v2 is not None:
+                from .model_observation_phase_v2 import ModelObservationPhaseV2
+
+                if type(self._model_phase_transition_v2) is not ModelObservationPhaseV2:
+                    raise RuntimeBlocked("MODEL_OBSERVATION_SEALED_OWNER_REQUIRED")
+                self._model_phase_transition_v2.require_new_lease(self)
             # Never start a fresh canonical journal beside an older generation.
             # Operators must preserve/reconcile the legacy pair explicitly.
             for name in ("journal.sqlite3", "journal.sqlite3-wal", "journal.sqlite3-shm",

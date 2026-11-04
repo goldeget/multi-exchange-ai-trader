@@ -59,6 +59,7 @@ class MonitoringResume:
         self.owner_guard()
 
     def owner_guard(self) -> None:
+        self.worker._require_model_observation_not_stopped_v2()
         w = self.worker
         if (asyncio.get_running_loop() is not self.loop or w._loop is not self.loop
                 or w._runtime is not self.runtime or w._assembly is not self.assembly
@@ -87,6 +88,7 @@ class MonitoringResume:
                 self.session._attested is not self.attestation
                 or self.session._binding is not self.binding):
             raise MonitoringError("MONITORING_SESSION_REPLACED")
+        self.worker._require_model_observation_not_stopped_v2()
 
     def require_cleanup_owner(self) -> None:
         # Revocation/STOPPING cannot block stopping the original producer. But a

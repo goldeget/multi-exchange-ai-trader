@@ -447,6 +447,7 @@ class FreshMonitoringBootstrapV1:
             raise MonitoringError("FRESH_MONITORING_OWNER_CHANGED")
 
     def owner_guard(self) -> None:
+        self.worker._require_model_observation_not_stopped_v2()
         self._original_links()
         if (
             self.state.phase == "ATTENTION"
@@ -487,6 +488,7 @@ class FreshMonitoringBootstrapV1:
             if len(accounts) != 1 or accounts[0] is not account or account.last_event is not event:
                 raise MonitoringError("FRESH_MONITORING_ORIGINAL_ACCOUNT_ACK_REQUIRED")
         self._original_links()
+        self.worker._require_model_observation_not_stopped_v2()
 
     def require_cleanup_owner(self) -> None:
         self._original_links(cleanup=True)
