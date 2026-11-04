@@ -22,6 +22,9 @@ for (const route of demoRoutes) {
       await expect(page.locator("main")).not.toContainText("저장된 실행 없음");
       await expect(page.locator("main")).not.toContainText("저장된 자동실행이 없습니다.");
     } else if (route.screenId === "03-account") {
+      await expect(page.getByRole("button", { name: "DEMO", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByRole("button", { name: "실계좌 (조회)", exact: true })).toHaveAttribute("aria-pressed", "false");
+      await expect(page.getByText("DEMO 연습 계좌를 조회합니다. 실계좌가 아닙니다.", { exact: false })).toBeVisible();
       await expect(page.locator(".account-summary-values")).toContainText("확인 불가");
       await expect(page.locator(".account-summary-values")).not.toContainText("0.00");
     } else if (route.screenId === "05-paper") {
