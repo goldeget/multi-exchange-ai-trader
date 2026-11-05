@@ -195,7 +195,6 @@ class IO:
         from multi_exchange_trader.execution import private_monitor_stream
 
         self.ledger, self.sends, self.wires = VenueLedger(), [], []
-        self.auth_stage = "NOT_STARTED"
         self.on_http, self.on_send = None, None
         self.instrument, self.fee, self.wallet = instrument_row(), fee_row(), wallet_row()
         self.gates = []
@@ -224,10 +223,6 @@ class IO:
         assert request.method == "GET" and request.url.host == "api-demo.bybit.com"
         assert kwargs.get("stream") is True
         path, params = request.url.path, dict(request.url.params)
-        if path == "/v5/market/time":
-            self.auth_stage = "MARKET_TIME_REQUEST"
-        elif path == "/v5/user/query-api":
-            self.auth_stage = "ACCOUNT_PROFILE_REQUEST"
         allowed = {
             "/v5/market/time": set(), "/v5/user/query-api": set(),
             "/v5/market/instruments-info": {"category", "symbol", "limit", "cursor"},
@@ -275,10 +270,6 @@ class IO:
                 status, headers = override
         response.setdefault("time", milliseconds())
         result = httpx.Response(status, json=response, headers=headers, request=request)
-        if path == "/v5/market/time":
-            self.auth_stage = "MARKET_TIME_RESPONSE"
-        elif path == "/v5/user/query-api":
-            self.auth_stage = "ACCOUNT_PROFILE_RESPONSE"
         return result
 
 

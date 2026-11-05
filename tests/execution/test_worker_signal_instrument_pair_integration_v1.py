@@ -10,7 +10,9 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import httpx
 import pytest
 import test_bybit_linear_entry_producer_v1 as source_support
 import test_worker_strategy_signal_v1 as signal_support
@@ -18,7 +20,6 @@ from restored_monitoring_io_support import admit, restored_case
 
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.execution import risk_domain_v2 as domain_v2
-from multi_exchange_trader.execution.account_binding import AccountBindingError
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
 from multi_exchange_trader.execution.native_instrument_receipts import (
     NativeInstrumentReceiptViewV1,
@@ -34,6 +35,7 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    original_httpx_send = httpx.AsyncClient.send
     async with restored_case(tmp_path, monkeypatch, pending_command=False) as h:
         # Install the test policy book before MonitoringResume captures owner
         # identity. Replacing this pointer after admission would invalidate the
@@ -45,6 +47,26 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
         h.book = book
 
         fixture = source_support.SourceFixture(monkeypatch, model_root)
+
+        async def dispatch(
+            client: httpx.AsyncClient,
+            request: httpx.Request,
+            **kwargs: Any,
+        ) -> httpx.Response:
+            host = request.url.host
+            if host == "api-demo.bybit.com":
+                return await h.io.send(request, **kwargs)
+            if host != "api.bybit.com":
+                raise AssertionError("unexpected synthetic HTTP host")
+            if type(client._transport) is httpx.AsyncHTTPTransport:
+                return await fixture.send(client, request, **kwargs)
+            if type(client._transport) is httpx.MockTransport:
+                return await original_httpx_send(client, request, **kwargs)
+            raise AssertionError("unexpected synthetic HTTP transport")
+
+        # Fixture.__init__ installs its own legacy interceptor. Replace it with
+        # this single explicit host/transport router before any fixture request.
+        monkeypatch.setattr(httpx.AsyncClient, "send", dispatch)
         state = SimpleNamespace(
             worker=h.worker,
             fixture=fixture,
@@ -68,29 +90,7 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
 
         # This runs the real restored worker/assembly path and issues its current
         # actual-fee T4 receipt using only restored_monitoring_io_support.IO.
-        h.io.auth_stage = "NOT_STARTED"
-        try:
-            await admit(h)
-        except AccountBindingError as error:
-            if not error.args or error.args[0] != "ACCOUNT_AUTHENTICATION_FAILED":
-                raise
-            cause = error.__context__
-            cause_name = type(cause).__name__ if cause is not None else "NO_CONTEXT"
-            if (type(cause) is AccountBindingError and len(cause.args) == 1
-                    and type(cause.args[0]) is str
-                    and cause.args[0].replace("_", "").isalnum()
-                    and cause.args[0] == cause.args[0].upper()):
-                cause_name = cause.args[0]
-            frames: list[str] = []
-            traceback = None if cause is None else cause.__traceback__
-            while traceback is not None:
-                code = traceback.tb_frame.f_code
-                frames.append(f"{Path(code.co_filename).name}:{traceback.tb_lineno}:{code.co_name}")
-                traceback = traceback.tb_next
-            cause_location = "|".join(frames[-3:]) if frames else "NO_FRAME"
-            raise AssertionError(
-                f"TEST_FIXTURE_AUTH_FAILURE:{h.io.auth_stage}:{cause_name}:{cause_location}"
-            ) from None
+        await admit(h)
         client = h.assembly.execution_client
         assert type(client) is MonitoringBybitExecutionClient
         assert client._metadata_profile == ACTUAL_ACCOUNT_FEE_V1
