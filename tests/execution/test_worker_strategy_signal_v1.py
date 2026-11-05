@@ -362,13 +362,18 @@ async def test_legacy_source_less_adapter_cannot_issue_a_worker_signal(model_wor
 
 
 async def test_same_watermark_uses_latest_source_window_and_retires_previous_handle(model_worker: Any) -> None:
+    import asyncio
+
     state = model_worker
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
 
     # Keep every immutable candle body and the watermark fixed while observing a fresh source window.
     unchanged_rows = tuple(source.rows)
-    source._now += timedelta(seconds=1)
+    previous_source_time = source._now
+    await asyncio.sleep(1.1)
+    source._now = state.fixture.clock()
+    assert source._now > previous_source_time
     repeated = await state.worker.capture_builtin_signal_v1(
         scope=scope, market=state.worker._entry_model_market_v1)
     second = state.worker.consume_builtin_signal_v1(repeated)
