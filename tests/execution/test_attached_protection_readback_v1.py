@@ -39,8 +39,8 @@ from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import RiskScope, assess_entry
-from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, RuntimeBlocked
 from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
+from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, RuntimeBlocked
 from multi_exchange_trader.execution.state_store import RuntimeStateStore
 from multi_exchange_trader.execution.venue_readback import BybitVenueReadback
 
