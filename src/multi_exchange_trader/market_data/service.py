@@ -8,7 +8,12 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ..account.instrument_envelope import CurrentCatalogReceipt
-from .adapters.base import INTERVAL_SECONDS, MarketAdapter, MarketDataUnavailable, validate_candle_selection
+from .adapters.base import (
+    INTERVAL_SECONDS,
+    MarketAdapter,
+    MarketDataUnavailable,
+    validate_candle_selection,
+)
 from .adapters.bybit import BybitAdapter
 from .closed_bars import (
     ClosedBarRejected,

@@ -9,7 +9,10 @@ import pytest
 from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
 from multi_exchange_trader.market_data.adapters.bybit import BybitAdapter
 from multi_exchange_trader.market_data.bybit_public_contracts import TICKER_URL
-from multi_exchange_trader.market_data.instrument_catalog import InstrumentCatalog, build_instrument_catalog
+from multi_exchange_trader.market_data.instrument_catalog import (
+    InstrumentCatalog,
+    build_instrument_catalog,
+)
 from multi_exchange_trader.market_data.instrument_definition import (
     INSTRUMENT_ENDPOINT,
     CatalogSource,
@@ -25,7 +28,6 @@ from multi_exchange_trader.market_data.public_observations_v1 import (
 )
 from multi_exchange_trader.market_data.service import MarketDataService
 from multi_exchange_trader.trading_product import InstrumentKey
-
 
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 

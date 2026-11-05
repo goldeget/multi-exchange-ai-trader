@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import httpx
 
-from ..bybit_public_contracts import CATEGORIES, CANDLE_URL, INTERVALS, TICKER_URL
+from ..bybit_public_contracts import CANDLE_URL, CATEGORIES, INTERVALS, TICKER_URL
 from ..models import Candle, MarketType, Ticker
 from ..public_observations_v1 import (
     BybitCandleReadV1,
