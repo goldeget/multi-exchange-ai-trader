@@ -366,12 +366,13 @@ async def test_same_watermark_uses_latest_source_window_and_retires_previous_han
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
 
-    # Keep the closed-bar watermark fixed while the latest raw source window changes.
-    source.rows[-1] = Candle.model_validate({**source.rows[-1].model_dump(),
-        "volume": source.rows[-1].volume + Decimal(1)})
+    # Keep every immutable candle body and the watermark fixed while observing a fresh source window.
+    unchanged_rows = tuple(source.rows)
+    source._now += timedelta(seconds=1)
     repeated = await state.worker.capture_builtin_signal_v1(
         scope=scope, market=state.worker._entry_model_market_v1)
     second = state.worker.consume_builtin_signal_v1(repeated)
+    assert tuple(source.rows) == unchanged_rows
     assert second.direction == first.direction and second.bar_watermark == first.bar_watermark
     assert second.snapshot_id != first.snapshot_id and second.observed_at >= first.observed_at
     with pytest.raises(ValueError):

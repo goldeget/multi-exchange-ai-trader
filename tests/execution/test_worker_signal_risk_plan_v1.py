@@ -19,7 +19,7 @@ from multi_exchange_trader.execution.worker_entry_model_v2 import WorkerModelPla
 from multi_exchange_trader.execution.worker_signal_risk_plan_v1 import WorkerSignalRiskPlanV1
 
 
-async def prepare_entry_read(state: Any) -> tuple[Any, Any, Any]:
+async def prepare_entry_read(state: Any, *, include_held_eth: bool = False) -> tuple[Any, Any, Any]:
     market, _bars = signal_support.install(state)
     snapshot = state.book.read()
     draft = snapshot["policy"]
@@ -30,6 +30,7 @@ async def prepare_entry_read(state: Any) -> tuple[Any, Any, Any]:
     scope = signal_support.approved_fixture(
         state, raw_config=signal_support.config_bytes(signal_ttl_seconds=300))
     state.fixture.mode = 3
+    state.fixture.include_held_eth = include_held_eth
     read = await state.worker.capture_entry_sources_v2(scope=scope, profile="DEMO_UTA1_V1",
         nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
         budget=model_support.MonitoringReadBudget())
@@ -42,7 +43,7 @@ async def prepare_signal_plan(
     entry_price: Decimal = Decimal(104),
     stop_price: Decimal = Decimal(100),
 ) -> tuple[Any, Any, Any]:
-    market, scope, read = await prepare_entry_read(state)
+    market, scope, read = await prepare_entry_read(state, include_held_eth=True)
     signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     signal = state.worker.consume_builtin_signal_v1(signal_handle)
     entry_owner = state.worker._entry_model_owner_v2
@@ -55,6 +56,11 @@ async def prepare_signal_plan(
     assert state.fixture.catalog._current is entry_slot.catalog_current
     assert entry_slot.catalog_current.view.source_environment == "PUBLIC_MAINNET"
     assert {key.symbol for key in read.catalog.declared_universe} >= {"BTCUSDT", "ETHUSDT"}
+    assert {row.instrument_pin.key.symbol for row in read.venue.held_positions} == {"ETHUSDT"}
+    assert {row.instrument_pin.key.symbol for row in read.venue.held_orders} == {"ETHUSDT"}
+    assert read.venue.wallet.total_position_im.value == Decimal(10)
+    assert read.venue.wallet.total_order_im.value == Decimal(2)
+    assert any(observation.key.symbol == "ETHUSDT" for observation in read.catalog.observations)
     inputs, domain = economic_inputs(read, state.book, state.fixture.clock(), scope=scope,
         side=signal.direction.side, entry_price=entry_price, stop_price=stop_price,
         lifetime_seconds=120)
