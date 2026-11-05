@@ -9,6 +9,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, SupportsIndex, cast
 
+from ..market_data.adapters.base import MarketDataUnavailable
 from ..market_data.closed_bars import ClosedBarScope, ClosedBarSnapshot, ClosedBarSnapshotStore
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from ..market_data.public_observations_v1 import (
@@ -153,6 +154,12 @@ class WorkerStrategySignalOwnerV1:
         entry_owner = worker._entry_model_owner_v2
         if type(entry_owner) is not WorkerEntryModelOwnerV2:
             _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        if market is not worker._entry_model_market_v1:
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        try:
+            market._require_bybit_public_owner_v1()
+        except (AttributeError, MarketDataUnavailable):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
         catalog_producer = entry_owner._assembler.catalog_producer
         if type(catalog_producer) is not BybitInstrumentCatalogProducer:
             _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
@@ -197,7 +204,8 @@ class WorkerStrategySignalOwnerV1:
             worker._lock, worker.clock, worker.directory, session._binding, identity,
             None if identity is None else identity.uid, None if identity is None else identity.observed_at,
             None if identity is None else identity.server_observed_at, session._clock, type(session)._mono,
-            session.__dict__.get("_mono"), self._market, self._book, self._publication, self._path,
+            session.__dict__.get("_mono"), self._market, worker._entry_model_market_v1,
+            self._book, self._publication, self._path,
             self._entry_owner, self._catalog_producer, self._publication._book, self._book.path)
 
     def retire(self) -> None:
@@ -343,6 +351,8 @@ class WorkerStrategySignalOwnerV1:
             self._closed_guard(token, epoch, roots)
             if _data_key(value) != value_key:
                 _reject()
+            self._catalog_producer.require_current(
+                catalog_receipt, expected_revision=catalog_revision)
             self._current = issued
             return handle
         except BaseException:
@@ -417,6 +427,8 @@ class WorkerStrategySignalOwnerV1:
             self._closed_guard(token, epoch, issued.roots)
             if self._current is not issued or _data_key(issued.value) != issued.value_key:
                 _reject()
+            self._catalog_producer.require_current(
+                issued.catalog_receipt, expected_revision=issued.catalog_revision)
             return issued.value
         except BaseException:
             self.retire()

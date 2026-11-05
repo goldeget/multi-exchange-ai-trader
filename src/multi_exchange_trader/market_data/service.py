@@ -5,8 +5,10 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MappingProxyType
 
 from .adapters.base import INTERVAL_SECONDS, MarketAdapter, MarketDataUnavailable, validate_candle_selection
+from .adapters.bybit import BybitAdapter
 from .closed_bars import (
     ClosedBarRejected,
     ClosedBarScope,
@@ -25,8 +27,24 @@ from .public_observations_v1 import (
 
 
 class MarketDataService:
+    __slots__ = ("_adapters", "_bybit_public_owner_v1", "_sealed")
+
     def __init__(self, adapters: Mapping[str, MarketAdapter]):
-        self._adapters = dict(adapters)
+        self._adapters = MappingProxyType(dict(adapters))
+        candidate = self._adapters.get("bybit")
+        self._bybit_public_owner_v1 = candidate if type(candidate) is BybitAdapter else None
+        self._sealed = True
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("MarketDataService installation is immutable")
+        object.__setattr__(self, name, value)
+
+    def _require_bybit_public_owner_v1(self) -> BybitAdapter:
+        owner = self._bybit_public_owner_v1
+        if (type(owner) is not BybitAdapter or self._adapters.get("bybit") is not owner):
+            raise MarketDataUnavailable("public_source_required", "A pinned Bybit public adapter is required")
+        return owner
 
     async def get_ticker(self, exchange: str, symbol: str, market_type: MarketType) -> Ticker:
         return await self._adapters[exchange].get_ticker(symbol, market_type)
@@ -76,16 +94,13 @@ class MarketDataService:
         if (type(source_ttl) is not timedelta or not timedelta(0) < source_ttl <= timedelta(minutes=5)
                 or type(max_bar_age) is not timedelta or not timedelta(0) < max_bar_age <= timedelta(days=7)):
             raise MarketDataUnavailable("closed_bar_ttl_invalid", "Closed candle lifetime is invalid")
-        adapter = self._adapters.get("bybit")
-        reader = getattr(adapter, "get_candle_read_v1", None)
-        if not callable(reader):
-            raise MarketDataUnavailable("closed_bar_source_required", "A source-bound Bybit candle reader is required")
+        adapter = self._require_bybit_public_owner_v1()
         current = clock or (lambda: datetime.now(UTC))
         try:
-            read = await reader(symbol, interval, limit)
+            read = await adapter.get_candle_read_v1(symbol, interval, limit)
             now = current()
             catalog_revision, instrument_revision, source_expiry = validate_candle_source_binding_v1(
-                read, catalog_producer, catalog_receipt, expected_catalog_revision,
+                read, catalog_producer, catalog_receipt, expected_catalog_revision, adapter=adapter,
                 now=now, max_age=source_ttl)
             source = read.source
             if (source.received_at - source.request_started_at > timedelta(seconds=10)
@@ -141,16 +156,13 @@ class MarketDataService:
         """Capture a fresh, catalog-bound public best bid/ask without account access."""
         if symbol not in ("BTCUSDT", "ETHUSDT"):
             raise MarketDataUnavailable("unsupported", "Unsupported public quote symbol")
-        adapter = self._adapters.get("bybit")
-        reader = getattr(adapter, "get_quote_read_v1", None)
-        if not callable(reader):
-            raise MarketDataUnavailable("public_quote_source_required", "A source-bound Bybit quote reader is required")
+        adapter = self._require_bybit_public_owner_v1()
         current = clock or (lambda: datetime.now(UTC))
         try:
-            read = await reader(symbol)
+            read = await adapter.get_quote_read_v1(symbol)
             result = bind_bybit_quote_snapshot_v1(
                 read, catalog_producer, catalog_receipt, expected_catalog_revision,
-                now=current(), max_age=max_age)
+                adapter=adapter, now=current(), max_age=max_age)
             completed_at = current()
             if (type(completed_at) is not datetime or completed_at.tzinfo is None
                     or completed_at.utcoffset() is None

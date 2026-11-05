@@ -23,6 +23,7 @@ from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
 from ..account.bybit_readonly import BybitReadOnlyClient
 from ..ai.dispatch import AIDispatcher
 from ..ai.generation import GenerationPriceQuote
+from ..market_data.adapters.base import MarketDataUnavailable
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from ..market_data.service import MarketDataService
 from . import account_reconciliation_v1 as account_reconciliation
@@ -197,6 +198,7 @@ class ExecutionWorker:
         self._entry_publication_frame_v2: list[bool] | None = None
         self._entry_binding_refresh_v2: object | None = None
         self._entry_model_owner_v2: WorkerEntryModelOwnerV2 | None = None
+        self._entry_model_market_v1: MarketDataService | None = None
         self._strategy_signal_owner_v1: WorkerStrategySignalOwnerV1 | None = None
         self._model_phase_transition_v2: object | None = None
         self._model_observation_phase_v2: object | None = None
@@ -321,7 +323,8 @@ class ExecutionWorker:
                 self._monitoring, None if monitoring is None else monitoring.state,
                 self._node_task, self._node_stop_task, self.scope, self.policy_book, self.registry,
                 session._client, session._credential_client, session._credential_pair, client._client,
-                scope.account_id, scope.environment, self._entry_model_owner_v2)
+                scope.account_id, scope.environment, self._entry_model_owner_v2,
+                self._entry_model_market_v1)
 
         original = links()
         runtime._guard()
@@ -388,6 +391,8 @@ class ExecutionWorker:
                                         market: MarketDataService) -> WorkerStrategySignalV1:
         """Explicit approved closed-bar signal; never stages or dispatches an order."""
         self._require_admission()
+        if type(market) is not MarketDataService or market is not self._entry_model_market_v1:
+            raise MarketDataUnavailable("public_source_required", "The installed public market owner is required")
         self._retire_entry_publications_v2()
         self._require_model_observation_not_stopped_v2()
         if (self._operations or self._staging or self._entry_publication_frame_v2 is not None
@@ -417,14 +422,22 @@ class ExecutionWorker:
         return owner.require(handle)
 
     def install_entry_model_v2(self, *, public_marks: BybitPublicMarkSessionV1,
-                               catalog_producer: BybitInstrumentCatalogProducer) -> None:
+                               catalog_producer: BybitInstrumentCatalogProducer,
+                               market: MarketDataService) -> None:
         """Explicit original model/source installation; no network, entry or paid call."""
         self._retire_entry_publications_v2()
         self._require_admission()
         if self._entry_model_owner_v2 is not None:
             raise RuntimeBlocked("WORKER_ENTRY_MODEL_ALREADY_INSTALLED")
+        if type(market) is not MarketDataService:
+            raise RuntimeBlocked("WORKER_PUBLIC_MARKET_OWNER_REQUIRED")
+        try:
+            market._require_bybit_public_owner_v1()
+        except (AttributeError, MarketDataUnavailable):
+            raise RuntimeBlocked("WORKER_PUBLIC_MARKET_OWNER_REQUIRED") from None
         with self._entry_publication_section_v2():
             owner = WorkerEntryModelOwnerV2(self, public_marks=public_marks, catalog_producer=catalog_producer)
+        self._entry_model_market_v1 = market
         self._entry_model_owner_v2 = owner
 
     async def capture_entry_sources_v2(self, *, scope: contracts_v2.RiskScopeV2,

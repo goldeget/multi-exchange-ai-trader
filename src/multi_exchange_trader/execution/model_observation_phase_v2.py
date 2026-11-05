@@ -10,7 +10,10 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
+from ..market_data.adapters.bybit import BybitAdapter
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
+from ..market_data.public_client import PublicMarketClient
+from ..market_data.service import MarketDataService
 from .fresh_monitoring_v1 import FreshMonitoringBootstrapV1
 from .monitoring_resume import MonitoringResume
 from .native_restart import NativeRestartCoordinator
@@ -44,6 +47,8 @@ class ModelObservationPhaseV2:
         self._original_stop_event_v2: asyncio.Event | None = None
         self._marks: BybitPublicMarkSessionV1 | None = None
         self._catalog: BybitInstrumentCatalogProducer | None = None
+        self._market_client: PublicMarketClient | None = None
+        self._market: MarketDataService | None = None
 
     def require_not_stopped(self, worker: ExecutionWorker) -> None:
         if (worker is not self.worker or worker._model_observation_phase_v2 is not self
@@ -113,7 +118,10 @@ class ModelObservationPhaseV2:
         worker = self.worker
         self._marks = BybitPublicMarkSessionV1(source_environment="PUBLIC_MAINNET", symbols=worker.symbols)
         self._catalog = BybitInstrumentCatalogProducer(source_environment="PUBLIC_MAINNET")
-        worker.install_entry_model_v2(public_marks=self._marks, catalog_producer=self._catalog)
+        self._market_client = PublicMarketClient()
+        self._market = MarketDataService({"bybit": BybitAdapter(self._market_client)})
+        worker.install_entry_model_v2(public_marks=self._marks, catalog_producer=self._catalog,
+            market=self._market)
 
     def _require_model_observing(self) -> None:
         worker = self.worker
@@ -222,13 +230,17 @@ class ModelObservationPhaseV2:
         yield "MODEL_OBSERVING"
 
     async def close_sources(self) -> None:
-        if self._catalog is None and self._marks is None:
+        if self._catalog is None and self._marks is None and self._market_client is None:
             return
         if not self._stop_complete:
             raise RuntimeBlocked("MODEL_OBSERVATION_CLEANUP_UNCONFIRMED")
         try:
-            if self._catalog is not None:
-                await self._catalog.aclose()
+            try:
+                if self._catalog is not None:
+                    await self._catalog.aclose()
+            finally:
+                if self._market_client is not None:
+                    await self._market_client.aclose()
         finally:
             if self._marks is not None:
                 await self._marks.aclose()

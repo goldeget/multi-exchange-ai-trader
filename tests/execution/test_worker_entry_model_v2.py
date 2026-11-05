@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 import test_risk
 import test_runtime
@@ -33,6 +34,8 @@ from multi_exchange_trader.execution.risk import RiskScope, assess_entry
 from multi_exchange_trader.execution.runtime import RuntimeBlocked
 from multi_exchange_trader.execution.worker import ExecutionWorker, TrustedPlanRegistry
 from multi_exchange_trader.execution.worker_entry_model_v2 import WorkerModelPlanV2
+from multi_exchange_trader.market_data.adapters.bybit import BybitAdapter
+from multi_exchange_trader.market_data.service import MarketDataService
 
 
 def new_worker(fixture: Any, book: Any, path: Path, binding: Any) -> tuple[ExecutionWorker, Any]:
@@ -59,17 +62,25 @@ async def model_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     binding = await fixture.auth()
     worker, strategy = new_worker(fixture, book, tmp_path, binding)
     await worker.start_passive()
+    market_client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: pytest.fail("entry model fixture must not read public market data")))
     state = SimpleNamespace(worker=worker, fixture=fixture, book=book, publication=publication,
-        strategy=strategy, path=tmp_path, binding=binding)
+        strategy=strategy, path=tmp_path, binding=binding,
+        market=MarketDataService({"bybit": BybitAdapter(market_client)}), market_client=market_client,
+        signal_market_clients=[])
     try:
         yield state
     finally:
         await state.worker.stop()
+        for client in state.signal_market_clients:
+            await client.aclose()
+        await state.market_client.aclose()
         await fixture.close()
 
 
 def install(state: Any) -> None:
-    state.worker.install_entry_model_v2(public_marks=state.fixture.marks, catalog_producer=state.fixture.catalog)
+    state.worker.install_entry_model_v2(public_marks=state.fixture.marks,
+        catalog_producer=state.fixture.catalog, market=state.market)
 
 
 async def prepare(state: Any) -> tuple[Any, Any, Any, Any]:

@@ -28,6 +28,7 @@ from ..bybit_public_contracts import CATEGORIES, CANDLE_URL, INTERVALS, TICKER_U
 from ..public_observations_v1 import (
     BybitCandleReadV1,
     BybitTickerQuoteReadV1,
+    _issue_bybit_public_read_receipt_v1,
     make_source_ref_v1,
 )
 
@@ -51,6 +52,7 @@ class BybitAdapter(MarketAdapter):
         self.client = client
         self._clock = clock or (lambda: datetime.now(UTC))
         self._source_generation = uuid4().hex
+        self._public_read_issuer_v1 = object()
 
     async def get_candle_read_v1(self, symbol: str, interval: str, limit: int) -> BybitCandleReadV1:
         """Capture linear candles with the exact public response custody fields."""
@@ -96,7 +98,10 @@ class BybitAdapter(MarketAdapter):
                 server_observed_at=observed_at,
                 raw_body_sha256=read.raw_body_sha256,
             )
-            return BybitCandleReadV1(symbol, interval, limit, candles, source)
+            result_read = BybitCandleReadV1(symbol, interval, limit, candles, source)
+            _issue_bybit_public_read_receipt_v1(self, result_read, kind="candle",
+                issuer=self._public_read_issuer_v1)
+            return result_read
 
     async def get_quote_read_v1(self, symbol: str) -> BybitTickerQuoteReadV1:
         """Capture a linear best bid/ask with source timestamps and response hash."""
@@ -121,10 +126,13 @@ class BybitAdapter(MarketAdapter):
                 server_observed_at=observed_at,
                 raw_body_sha256=read.raw_body_sha256,
             )
-            return BybitTickerQuoteReadV1(
+            result_read = BybitTickerQuoteReadV1(
                 symbol, Decimal(row["bid1Price"]), Decimal(row["bid1Size"]),
                 Decimal(row["ask1Price"]), Decimal(row["ask1Size"]), source,
             )
+            _issue_bybit_public_read_receipt_v1(self, result_read, kind="quote",
+                issuer=self._public_read_issuer_v1)
+            return result_read
 
     async def get_ticker(self, symbol: str, market_type: MarketType) -> Ticker:
         validate_selection(symbol, market_type)

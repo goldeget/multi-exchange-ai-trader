@@ -1,88 +1,101 @@
 """Original worker/publication/bar owners; temporary approval fixtures never enable orders."""
 from __future__ import annotations
 
-import hashlib
 import importlib
-import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 import test_worker_entry_model_v2 as original_worker_fixture
 from test_bybit_linear_source_assembler_v1 import SCOPE
 
+from multi_exchange_trader.market_data.adapters.bybit import BybitAdapter
 from multi_exchange_trader.market_data.bybit_public_contracts import CANDLE_URL, TICKER_URL
 from multi_exchange_trader.market_data.models import Candle, Ticker
-from multi_exchange_trader.market_data.public_observations_v1 import (
-    BybitCandleReadV1,
-    BybitTickerQuoteReadV1,
-    make_source_ref_v1,
-)
 from multi_exchange_trader.market_data.service import MarketDataService
 
 model_worker = original_worker_fixture.model_worker
 
 
 class Bars:
-    def __init__(self, now: Any) -> None:
-        from decimal import Decimal
-
-        self._sequence = 0
-        anchor = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+    def __init__(self, now: Any, *, on_candle: Any = None,
+                 bar_age: timedelta = timedelta(0), async_gate: tuple[Any, Any] | None = None) -> None:
+        self._now = now
+        self._on_candle = on_candle
+        anchor = (now - bar_age).replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
         self.rows = [Candle(timestamp=anchor - timedelta(minutes=15 * (5 - index)),
             open=Decimal(100 + index), high=Decimal(101 + index), low=Decimal(99 + index),
             close=Decimal(100 + index), volume=Decimal(1), is_closed=True) for index in range(5)]
         self.calls = 0
+        transport: httpx.AsyncBaseTransport = (httpx.MockTransport(self._respond)
+            if async_gate is None else _BlockingSyntheticTransport(self, async_gate))
+        self.client = httpx.AsyncClient(transport=transport)
+        self.adapter = BybitAdapter(self.client, clock=lambda: self._now)
 
-    async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
-        self.calls += 1
-        return list(self.rows)
-
-    @staticmethod
-    def _source(endpoint: str, query: tuple[tuple[str, str], ...], body: object) -> Any:
-        received = datetime.now(UTC)
-        raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-        return make_source_ref_v1(source_generation="signal-fixture-v1", endpoint=endpoint, query=query,
-            request_started_at=received - timedelta(milliseconds=1), received_at=received,
-            server_observed_at=received, raw_body_sha256=hashlib.sha256(raw).hexdigest())
-
-    async def get_candle_read_v1(self, symbol: str, interval: str, limit: int) -> BybitCandleReadV1:
-        from multi_exchange_trader.market_data.bybit_public_contracts import INTERVALS
-
-        self._sequence += 1
-        values = tuple(await self.get_candles(symbol, "perpetual", interval, limit))
-        query = tuple(sorted((("category", "linear"), ("interval", INTERVALS[interval]),
-            ("limit", str(limit)), ("symbol", symbol))))
-        body = {"sequence": self._sequence, "bars": [[bar.timestamp.isoformat(), *(str(getattr(bar, field)) for field in
-            ("open", "high", "low", "close", "volume"))] for bar in values]}
-        source = self._source(CANDLE_URL, query, body)
-        return BybitCandleReadV1(symbol, interval, limit, values, source)
-
-    async def get_quote_read_v1(self, symbol: str) -> BybitTickerQuoteReadV1:
-        query = tuple(sorted((("category", "linear"), ("symbol", symbol))))
-        body = {"symbol": symbol, "bid1Price": "100", "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}
-        source = self._source(TICKER_URL, query, body)
-        return BybitTickerQuoteReadV1(symbol, Decimal("100"), Decimal("2"),
-            Decimal("101"), Decimal("3"), source)
+    def _respond(self, request: httpx.Request) -> httpx.Response:
+        route = str(request.url).split("?")[0]
+        if request.method != "GET" or route not in (CANDLE_URL, TICKER_URL):
+            raise AssertionError("unexpected synthetic Bybit route")
+        now_ms = int(self._now.timestamp() * 1000)
+        if route == CANDLE_URL:
+            if dict(request.url.params) != {"symbol": "BTCUSDT", "category": "linear",
+                    "interval": "15", "limit": "5"}:
+                raise AssertionError("unexpected synthetic linear-kline query")
+            self.calls += 1
+            if self._on_candle is not None:
+                self._on_candle()
+            rows = [[str(int(bar.timestamp.timestamp() * 1000)), str(bar.open), str(bar.high),
+                str(bar.low), str(bar.close), str(bar.volume), "0"] for bar in reversed(self.rows)]
+            body = {"retCode": 0, "time": now_ms,
+                "result": {"category": "linear", "symbol": "BTCUSDT", "list": rows}}
+        else:
+            if dict(request.url.params) != {"symbol": "BTCUSDT", "category": "linear"}:
+                raise AssertionError("unexpected synthetic linear-ticker query")
+            body = {"retCode": 0, "time": now_ms,
+                "result": {"category": "linear", "list": [{"symbol": "BTCUSDT",
+                    "bid1Price": "100", "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}]}}
+        return httpx.Response(200, json=body, request=request)
 
     async def get_ticker(self, *_args: object, **_kwargs: object) -> Ticker:
         raise AssertionError("No ticker is required for a closed-bar signal")
 
 
-def install(state: Any) -> None:
+class _BlockingSyntheticTransport(httpx.AsyncBaseTransport):
+    def __init__(self, source: Bars, gate: tuple[Any, Any]) -> None:
+        self._source, self._entered, self._release = source, gate[0], gate[1]
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if str(request.url).split("?")[0] == CANDLE_URL:
+            self._entered.set()
+            await self._release.wait()
+        return self._source._respond(request)
+
+
+def install(state: Any, source: Bars | None = None) -> tuple[MarketDataService, Bars]:
     if state.worker._entry_model_owner_v2 is None:
+        source = source or Bars(state.fixture.clock())
+        state.signal_market_clients.append(source.client)
+        market = MarketDataService({"bybit": source.adapter})
         state.worker.install_entry_model_v2(public_marks=state.fixture.marks,
-            catalog_producer=state.fixture.catalog)
+            catalog_producer=state.fixture.catalog, market=market)
+        state._signal_test_market_v1 = market
+        state._signal_test_source_v1 = source
+    else:
+        if source is not None and source is not state._signal_test_source_v1:
+            raise AssertionError("test source owner is already pinned")
+        market = state._signal_test_market_v1
+        source = state._signal_test_source_v1
+    return market, source
 
 
 async def test_no_approved_builtin_artifact_cannot_create_signal_or_entry(model_worker: Any) -> None:
     state = model_worker
-    install(state)
-    source = Bars(state.fixture.clock())
+    market, source = install(state)
     before = state.worker.runtime.journal.list_commands()
     with pytest.raises(ValueError, match="BUILTIN_STRATEGY_APPROVAL_REQUIRED"):
-        await state.worker.capture_builtin_signal_v1(scope=SCOPE, market=MarketDataService({"bybit": source}))
+        await state.worker.capture_builtin_signal_v1(scope=SCOPE, market=market)
     assert source.calls == 0
     assert state.worker.runtime.journal.list_commands() == before
     assert not state.strategy.commands
@@ -137,10 +150,9 @@ def approved_fixture(state: Any, *, raw_config: bytes | None = None, implementat
 
 
 async def captured(state: Any, *, raw_config: bytes | None = None) -> tuple[Any, Any, Bars]:
-    install(state)
     scope = approved_fixture(state, raw_config=raw_config)
-    source = Bars(state.fixture.clock())
-    handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+    market, source = install(state)
+    handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     return scope, handle, source
 
 
@@ -170,11 +182,10 @@ def test_builtin_configuration_cannot_supply_financial_values_or_unbounded_windo
 
 async def test_published_arbitrary_code_is_not_imported_or_executed(model_worker: Any) -> None:
     state = model_worker
-    install(state)
+    market, source = install(state)
     scope = approved_fixture(state, implementation=b"raise AssertionError('this must never execute')")
-    source = Bars(state.fixture.clock())
     with pytest.raises(ValueError, match="BUILTIN_STRATEGY_APPROVAL_REQUIRED"):
-        await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+        await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     assert source.calls == 0 and state.worker.runtime.journal.list_commands() == ()
     assert not state.strategy.commands
 
@@ -242,20 +253,71 @@ def test_fixed_builtin_direction_and_true_range_prices(trend: int, side: str, st
 
 async def test_current_policy_revocation_during_real_bar_await_refuses_publication(model_worker: Any) -> None:
     state = model_worker
-    install(state)
     scope = approved_fixture(state)
 
-    class RevokingBars(Bars):
-        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
-            current = state.book.read()
-            state.publication.revoke(scope.strategy, expected_policy_revision=current["revision"],
-                expected_generation=2)
-            return await super().get_candles(*_args, **_kwargs)
+    def revoke() -> None:
+        current = state.book.read()
+        state.publication.revoke(scope.strategy, expected_policy_revision=current["revision"],
+            expected_generation=2)
 
-    source = RevokingBars(state.fixture.clock())
+    source = Bars(state.fixture.clock(), on_candle=revoke)
+    market, _source = install(state, source)
     with pytest.raises(ValueError):
-        await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+        await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     assert state.worker._strategy_signal_owner_v1._current is None
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_final_capture_callback_cannot_revoke_catalog_receipt_before_signal_issue(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.execution.worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1
+
+    state = model_worker
+    scope = approved_fixture(state)
+    market, source = install(state)
+    original = WorkerStrategySignalOwnerV1._closed_guard
+    calls = 0
+
+    def revoke_after_last_guard(owner: Any, token: object, epoch: object,
+                                roots: tuple[object, ...]) -> None:
+        nonlocal calls
+        original(owner, token, epoch, roots)
+        calls += 1
+        if calls == 2:
+            owner._catalog_producer._revoke()
+
+    monkeypatch.setattr(WorkerStrategySignalOwnerV1, "_closed_guard", revoke_after_last_guard)
+    with pytest.raises(ValueError):
+        await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    assert calls == 2 and source.calls == 1
+    assert state.worker._strategy_signal_owner_v1._current is None
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_final_consume_callback_cannot_revoke_catalog_receipt_before_signal_return(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.execution.worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1
+
+    state = model_worker
+    _scope, handle, source = await captured(state)
+    owner = state.worker._strategy_signal_owner_v1
+    original = WorkerStrategySignalOwnerV1._closed_guard
+    calls = 0
+
+    def revoke_after_last_guard(current: Any, token: object, epoch: object,
+                                roots: tuple[object, ...]) -> None:
+        nonlocal calls
+        original(current, token, epoch, roots)
+        calls += 1
+        if calls == 2:
+            current._catalog_producer._revoke()
+
+    monkeypatch.setattr(WorkerStrategySignalOwnerV1, "_closed_guard", revoke_after_last_guard)
+    with pytest.raises(ValueError):
+        state.worker.consume_builtin_signal_v1(handle)
+    assert calls == 2 and source.calls == 1 and owner._current is None
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
@@ -263,11 +325,11 @@ async def test_old_closed_bars_do_not_gain_freshness_from_a_new_fetch(model_work
     from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
 
     state = model_worker
-    install(state)
     scope = approved_fixture(state)
-    source = Bars(state.fixture.clock() - timedelta(hours=2))
+    source = Bars(state.fixture.clock(), bar_age=timedelta(hours=2))
+    market, _source = install(state, source)
     with pytest.raises(MarketDataUnavailable) as error:
-        await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+        await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     assert error.value.reason == "closed_bar_stale"
     assert source.calls == 1
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
@@ -277,9 +339,8 @@ async def test_legacy_source_less_adapter_cannot_issue_a_worker_signal(model_wor
     from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
 
     state = model_worker
-    install(state)
+    market, _source = install(state)
     scope = approved_fixture(state)
-    before_requests = len(state.fixture.requests)
 
     class LegacyOnly:
         calls = 0
@@ -294,19 +355,18 @@ async def test_legacy_source_less_adapter_cannot_issue_a_worker_signal(model_wor
     source = LegacyOnly()
     with pytest.raises(MarketDataUnavailable) as caught:
         await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
-    assert caught.value.reason == "closed_bar_source_required"
+    assert caught.value.reason == "public_source_required"
     assert source.calls == 0
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
-    capture_requests = state.fixture.requests[before_requests:]
-    assert capture_requests and all(request.url.host == "api.bybit.com"
-        and request.url.path == "/v5/market/instruments-info" for request in capture_requests)
+    assert state.worker._entry_model_market_v1 is market
 
 
 async def test_same_watermark_uses_latest_source_window_and_retires_previous_handle(model_worker: Any) -> None:
     state = model_worker
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
-    repeated = await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+    repeated = await state.worker.capture_builtin_signal_v1(
+        scope=scope, market=state.worker._entry_model_market_v1)
     second = state.worker.consume_builtin_signal_v1(repeated)
     assert second.direction == first.direction and second.bar_watermark == first.bar_watermark
     assert second.snapshot_id != first.snapshot_id and second.observed_at >= first.observed_at
@@ -315,13 +375,13 @@ async def test_same_watermark_uses_latest_source_window_and_retires_previous_han
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
-def model_phase_stop_context(state: Any) -> Any:
+def model_phase_stop_context(state: Any, source: Bars | None = None) -> Any:
     """Bind the genuine negative cancellation owner; no native admission is fabricated."""
     import asyncio
 
     from multi_exchange_trader.execution.model_observation_phase_v2 import ModelObservationPhaseV2
 
-    install(state)
+    install(state, source)
     worker = state.worker
     stop = asyncio.Event()
     phase = ModelObservationPhaseV2(worker)
@@ -340,19 +400,12 @@ async def test_original_phase_stop_during_public_bar_await_rejects_signal(model_
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state)
     entered, release = asyncio.Event(), asyncio.Event()
-
-    class AwaitingBars(Bars):
-        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
-            rows = await super().get_candles(*_args, **_kwargs)
-            entered.set()
-            await release.wait()
-            return rows
-
-    source = AwaitingBars(state.fixture.clock())
+    source = Bars(state.fixture.clock(), async_gate=(entered, release))
+    stop = model_phase_stop_context(state, source)
+    market = state._signal_test_market_v1
     task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
-        scope=scope, market=MarketDataService({"bybit": source})))
+        scope=scope, market=market))
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         assert not task.done() and not state.worker._stopping
@@ -383,9 +436,9 @@ async def test_original_phase_stop_retires_previously_issued_signal(model_worker
     with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
         state.worker.consume_builtin_signal_v1(handle)
     assert state.worker._strategy_signal_owner_v1._current is None
-    source = Bars(state.fixture.clock())
+    source = state._signal_test_source_v1
     with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
-        await state.worker.capture_builtin_signal_v1(scope=_scope, market=MarketDataService({"bybit": source}))
+        await state.worker.capture_builtin_signal_v1(scope=_scope, market=state._signal_test_market_v1)
     assert source.calls == 0 and state.worker._strategy_signal_owner_v1._current is None
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
@@ -422,19 +475,12 @@ async def test_replaced_original_phase_during_public_bar_await_rejects_signal(mo
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state)
     entered, release = asyncio.Event(), asyncio.Event()
-
-    class AwaitingBars(Bars):
-        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
-            rows = await super().get_candles(*_args, **_kwargs)
-            entered.set()
-            await release.wait()
-            return rows
-
-    source = AwaitingBars(state.fixture.clock())
+    source = Bars(state.fixture.clock(), async_gate=(entered, release))
+    stop = model_phase_stop_context(state, source)
+    market = state._signal_test_market_v1
     task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
-        scope=scope, market=MarketDataService({"bybit": source})))
+        scope=scope, market=market))
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         stop.set()
@@ -461,20 +507,13 @@ async def test_rebound_original_phase_stop_event_during_public_bar_await_rejects
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state)
-    phase = state.worker._model_observation_phase_v2
     entered, release = asyncio.Event(), asyncio.Event()
-
-    class AwaitingBars(Bars):
-        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
-            rows = await super().get_candles(*_args, **_kwargs)
-            entered.set()
-            await release.wait()
-            return rows
-
-    source = AwaitingBars(state.fixture.clock())
+    source = Bars(state.fixture.clock(), async_gate=(entered, release))
+    stop = model_phase_stop_context(state, source)
+    phase = state.worker._model_observation_phase_v2
+    market = state._signal_test_market_v1
     task = asyncio.create_task(state.worker.capture_builtin_signal_v1(
-        scope=scope, market=MarketDataService({"bybit": source})))
+        scope=scope, market=market))
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         stop.set()

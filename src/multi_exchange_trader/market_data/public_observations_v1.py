@@ -59,6 +59,92 @@ def _nonnegative(value: Decimal) -> None:
         _reject("public_quote_invalid")
 
 
+class _BybitPublicReadReceiptV1:
+    """Opaque in-process evidence that the exact DTO came from one trusted adapter."""
+
+    __slots__ = ("_adapter", "_read", "_source", "_kind", "_endpoint", "_query",
+                 "_raw_body_sha256", "_content_sha256", "_seal")
+
+    def __new__(cls, *, seal: object, adapter: object, read: object, source: object,
+                kind: str, endpoint: str, query: tuple[tuple[str, str], ...],
+                raw_body_sha256: str, content_sha256: str) -> _BybitPublicReadReceiptV1:
+        if seal is not _READ_RECEIPT_SEAL:
+            _reject("public_read_receipt_required")
+        value = object.__new__(cls)
+        object.__setattr__(value, "_adapter", adapter)
+        object.__setattr__(value, "_read", read)
+        object.__setattr__(value, "_source", source)
+        object.__setattr__(value, "_kind", kind)
+        object.__setattr__(value, "_endpoint", endpoint)
+        object.__setattr__(value, "_query", query)
+        object.__setattr__(value, "_raw_body_sha256", raw_body_sha256)
+        object.__setattr__(value, "_content_sha256", content_sha256)
+        object.__setattr__(value, "_seal", seal)
+        return value
+
+
+_READ_RECEIPT_SEAL = object()
+
+
+def _read_content_payload_v1(read: object, kind: str) -> object:
+    if kind == "quote" and type(read) is BybitTickerQuoteReadV1:
+        return (read.symbol, str(read.bid_price), str(read.bid_size),
+                str(read.ask_price), str(read.ask_size), source_ref_payload_v1(read.source))
+    if kind == "candle" and type(read) is BybitCandleReadV1:
+        return (read.symbol, read.interval, read.limit,
+                tuple((item.timestamp.isoformat(), str(item.open), str(item.high), str(item.low),
+                       str(item.close), str(item.volume), item.is_closed) for item in read.candles),
+                source_ref_payload_v1(read.source))
+    _reject("public_read_receipt_required")
+
+
+def _issue_bybit_public_read_receipt_v1(adapter: object, read: object, *, kind: str,
+                                        issuer: object) -> None:
+    """Adapter-only issuance called after the real fixed-route response is parsed."""
+    from .adapters.bybit import BybitAdapter
+
+    if (type(adapter) is not BybitAdapter or issuer is not adapter._public_read_issuer_v1
+            or kind not in ("quote", "candle")):
+        _reject("public_read_receipt_required")
+    if kind == "quote" and type(read) is BybitTickerQuoteReadV1:
+        dto, source = read, read.source
+    elif kind == "candle" and type(read) is BybitCandleReadV1:
+        dto, source = read, read.source
+    else:
+        _reject("public_read_receipt_required")
+    _source_payload(source)
+    receipt = _BybitPublicReadReceiptV1(seal=_READ_RECEIPT_SEAL, adapter=adapter, read=dto,
+        source=source, kind=kind, endpoint=source.endpoint, query=source.query,
+        raw_body_sha256=source.raw_body_sha256, content_sha256=_digest(_read_content_payload_v1(dto, kind)))
+    object.__setattr__(dto, "_source_receipt_v1", receipt)
+
+
+def require_bybit_public_read_receipt_v1(adapter: object, read: object, *, kind: str) -> None:
+    """Require a receipt minted by this exact BybitAdapter for this immutable DTO."""
+    from .adapters.bybit import BybitAdapter
+
+    if type(adapter) is not BybitAdapter:
+        _reject("public_read_receipt_required")
+    if kind == "quote" and type(read) is BybitTickerQuoteReadV1:
+        source = read.source
+    elif kind == "candle" and type(read) is BybitCandleReadV1:
+        source = read.source
+    else:
+        _reject("public_read_receipt_required")
+    try:
+        receipt = object.__getattribute__(read, "_source_receipt_v1")
+        if (type(source) is not BybitPublicSourceRefV1
+                or type(receipt) is not _BybitPublicReadReceiptV1
+                or receipt._seal is not _READ_RECEIPT_SEAL or receipt._adapter is not adapter
+                or receipt._read is not read or receipt._source is not source or receipt._kind != kind
+                or receipt._endpoint != source.endpoint or receipt._query != source.query
+                or receipt._raw_body_sha256 != source.raw_body_sha256
+                or receipt._content_sha256 != _digest(_read_content_payload_v1(read, kind))):
+            _reject("public_read_receipt_required")
+    except (AttributeError, TypeError, ValueError):
+        _reject("public_read_receipt_required")
+
+
 @dataclass(frozen=True)
 class BybitPublicSourceRefV1:
     """Immutable custody fields for one keyless public Bybit API response."""
@@ -158,6 +244,7 @@ class BybitCandleReadV1:
     limit: int
     candles: tuple[Candle, ...]
     source: BybitPublicSourceRefV1
+    _source_receipt_v1: object = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (self.symbol not in ("BTCUSDT", "ETHUSDT") or self.interval not in INTERVALS
@@ -180,6 +267,7 @@ class BybitTickerQuoteReadV1:
     ask_price: Decimal
     ask_size: Decimal
     source: BybitPublicSourceRefV1
+    _source_receipt_v1: object = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.symbol not in ("BTCUSDT", "ETHUSDT"):
@@ -310,9 +398,11 @@ def quote_snapshot_sha256_v1(value: BybitPublicQuoteSnapshotV1) -> str:
 
 def bind_bybit_quote_snapshot_v1(read: BybitTickerQuoteReadV1, catalog_producer: object,
                                 catalog_receipt: object, expected_catalog_revision: str, *,
-                                now: datetime, max_age: timedelta) -> BybitPublicQuoteSnapshotV1:
+                                adapter: object, now: datetime,
+                                max_age: timedelta) -> BybitPublicQuoteSnapshotV1:
     if type(read) is not BybitTickerQuoteReadV1:
         _reject("public_quote_source_required")
+    require_bybit_public_read_receipt_v1(adapter, read, kind="quote")
     BybitTickerQuoteReadV1.__post_init__(read)
     now = _utc(now)
     view = _current_catalog_view_v1(catalog_producer, catalog_receipt, expected_catalog_revision, now)
@@ -338,9 +428,11 @@ def bind_bybit_quote_snapshot_v1(read: BybitTickerQuoteReadV1, catalog_producer:
 
 def validate_candle_source_binding_v1(read: BybitCandleReadV1, catalog_producer: object,
                                      catalog_receipt: object, expected_catalog_revision: str, *,
-                                     now: datetime, max_age: timedelta) -> tuple[str, str, datetime]:
+                                     adapter: object, now: datetime,
+                                     max_age: timedelta) -> tuple[str, str, datetime]:
     if type(read) is not BybitCandleReadV1:
         _reject("public_candle_source_required")
+    require_bybit_public_read_receipt_v1(adapter, read, kind="candle")
     BybitCandleReadV1.__post_init__(read)
     now = _utc(now)
     view = _current_catalog_view_v1(catalog_producer, catalog_receipt, expected_catalog_revision, now)

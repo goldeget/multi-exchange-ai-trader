@@ -1,9 +1,13 @@
 """Adversarial public observation bindings; all source times and data are synthetic."""
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
 
+from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
+from multi_exchange_trader.market_data.adapters.bybit import BybitAdapter
 from multi_exchange_trader.market_data.bybit_public_contracts import TICKER_URL
 from multi_exchange_trader.market_data.instrument_catalog import InstrumentCatalog, build_instrument_catalog
 from multi_exchange_trader.market_data.instrument_definition import (
@@ -17,7 +21,9 @@ from multi_exchange_trader.market_data.public_observations_v1 import (
     _source_freshness_v1,
     bind_bybit_quote_snapshot_v1,
     make_source_ref_v1,
+    require_bybit_public_read_receipt_v1,
 )
+from multi_exchange_trader.market_data.service import MarketDataService
 from multi_exchange_trader.trading_product import InstrumentKey
 
 
@@ -50,12 +56,58 @@ def plain_linear_catalog() -> InstrumentCatalog:
         max_age=timedelta(seconds=10))
 
 
-def test_plain_catalog_and_forged_receipt_cannot_bind_public_quote() -> None:
+def test_direct_quote_dto_cannot_bind_even_with_a_plain_catalog() -> None:
     catalog = plain_linear_catalog()
     read = public_quote_read()
-    with pytest.raises(PublicObservationRejected, match="public_catalog_receipt_required"):
+    with pytest.raises(PublicObservationRejected, match="public_read_receipt_required"):
         bind_bybit_quote_snapshot_v1(read, catalog, object(), catalog.revision,
-            now=NOW, max_age=timedelta(seconds=5))
+            adapter=object(), now=NOW, max_age=timedelta(seconds=5))
+
+
+async def test_direct_dto_and_fake_mapping_adapter_cannot_claim_bybit_source() -> None:
+    read = public_quote_read()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: pytest.fail("no synthetic route should be used"))) as async_client:
+        adapter = BybitAdapter(async_client, clock=lambda: NOW)
+        with pytest.raises(PublicObservationRejected, match="public_read_receipt_required"):
+            require_bybit_public_read_receipt_v1(adapter, read, kind="quote")
+
+        class MappingAdapter:
+            async def get_quote_read_v1(self, _symbol: str) -> BybitTickerQuoteReadV1:
+                return read
+
+        service = MarketDataService({"bybit": MappingAdapter()})
+        with pytest.raises(MarketDataUnavailable, match="pinned Bybit public adapter"):
+            service._require_bybit_public_owner_v1()
+        with pytest.raises(TypeError):
+            service._adapters["bybit"] = adapter
+        with pytest.raises(AttributeError):
+            service._bybit_public_owner_v1 = adapter
+
+
+async def test_exact_bybit_public_route_issues_receipt_for_raw_response() -> None:
+    calls = []
+    raw_hashes = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/v5/market/tickers"
+        assert dict(request.url.params) == {"symbol": "BTCUSDT", "category": "linear"}
+        raw = {"retCode": 0, "time": int(NOW.timestamp() * 1000), "result": {
+            "category": "linear", "list": [{"symbol": "BTCUSDT", "bid1Price": "100",
+                "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}]}}
+        response = httpx.Response(200, json=raw, request=request)
+        raw_hashes.append(hashlib.sha256(response.content).hexdigest())
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BybitAdapter(client, clock=lambda: NOW)
+        read = await adapter.get_quote_read_v1("BTCUSDT")
+        require_bybit_public_read_receipt_v1(adapter, read, kind="quote")
+        assert read.source.endpoint == TICKER_URL
+        assert read.source.raw_body_sha256 == raw_hashes[0]
+    assert len(calls) == len(raw_hashes) == 1
 
 
 @pytest.mark.parametrize("received,server,now,reason", [
