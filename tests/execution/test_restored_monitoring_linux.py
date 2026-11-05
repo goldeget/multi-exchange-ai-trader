@@ -79,6 +79,8 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
         def capture_safe_failure_path(code):
             if code == "MONITORING_METADATA_INVALID":
                 capture_active_failure("metadata-boundary")
+            elif code == "MONITORING_HTTP_FAILED":
+                capture_active_failure("native-http-boundary")
             original_fault(code)
 
         def capture_native_mismatch(code):
