@@ -90,7 +90,12 @@ class Fixture:
 
     async def send(self, client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
         assert type(client) is httpx.AsyncClient and request.method == "GET"
-        assert kwargs == {"auth": None, "follow_redirects": False}
+        if request.url.host == "api-demo.bybit.com":
+            assert kwargs == {"stream": True}
+        elif request.url.host == "api.bybit.com":
+            assert kwargs == {"auth": None, "follow_redirects": False}
+        else:
+            raise AssertionError("unexpected fixture request host")
         self.requests.append(request)
         path, params = request.url.path, request.url.params
         if request.url.host == "api-demo.bybit.com" and path != "/v5/market/time":
