@@ -311,6 +311,12 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     old_operation = core.runtime._attached_read_operations_v1["position-1"]
     owned_orders = core.runtime.projection("position-1").orders
     original_rows = list(core.rows)
+    source_entry = core.journal.get("entry")
+    assert source_entry is not None
+    pending_payload = json.loads(source_entry.payload_json)
+    pending_payload["position_id"] = "pending-position"
+    pending = core.journal.register("pending-entry", CommandKind.ENTRY, pending_payload)
+    assert pending.state.value == "PENDING"
     core.rows.pop()
 
     incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
@@ -333,8 +339,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert replayed is not None and replayed.revision == revision
 
     assert_entry_blocked("blocked-entry", "position-2")
-    pending = core.journal.register("pending-entry", CommandKind.ENTRY, {"version": 1})
-    assert pending.state.value == "PENDING"
     with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
         core.runtime.dispatch("pending-entry")
 
@@ -353,7 +357,8 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     core.rows[:] = original_rows
     core.clock[0] += timedelta(seconds=1)
     complete = await core.runtime.poll_readback(core.adapter, "position-1")
-    assert complete.status == "OPEN_PROTECTED"
+    assert complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0
+    assert core.runtime._recovery_required_v1() is False
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
     assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
 
@@ -443,7 +448,8 @@ async def test_recovery_capacity_overflow_latch_survives_restart(attached_core: 
 
     core.rows[:] = original_rows
     core.clock[0] += timedelta(seconds=1)
-    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    complete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert complete.status == "ATTENTION" and complete.entries_blocked is True
     with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
         core.runtime._require_protection_recovery_clear_v1()
 
