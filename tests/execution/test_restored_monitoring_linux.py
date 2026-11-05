@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import importlib
 import inspect
 import sys
 import threading
@@ -201,7 +202,10 @@ async def test_unknown_fee_restored_uses_public_demo_envelope_and_observation_re
         assert evidence.envelope.decoded_body_sha256 == hashlib.sha256(
             evidence.envelope.decoded_body_bytes
         ).hexdigest()
-        instrument = h.assembly.node.cache.instrument("BTCUSDT-LINEAR.BYBIT")
+        from nautilus_trader.model.identifiers import InstrumentId
+
+        instrument_id = InstrumentId.from_str("BTCUSDT-LINEAR.BYBIT")
+        instrument = h.assembly.node.cache.instrument(instrument_id)
         spec = evidence.projection.spec
         assert type(spec) is LinearInstrumentSpec
         assert spec.max_limit_quantity.raw == "100.000"
