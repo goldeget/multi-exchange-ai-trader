@@ -19,8 +19,10 @@ from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
 from .native_monitor_http import MonitoringHttpAdapter
 from .native_instrument_receipts import (
     NativeInstrumentReceiptV1,
+    NativeUnknownFeeInstrumentReceiptV1,
     _PendingNativeInstrumentCaptureV1,
     native_instrument_semantics_sha256,
+    require_native_metadata_profile_v1,
 )
 from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .private_monitor_stream import OwnedPrivateMonitorStream
@@ -149,7 +151,9 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         self._monitor_account_event: Any = None
         self._monitor_attestation = monitor_session._attested
         self._native_instrument_capture_v1: _PendingNativeInstrumentCaptureV1 | None = None
-        self._native_instrument_receipt_v1: NativeInstrumentReceiptV1 | None = None
+        self._native_instrument_receipt_v1: (
+            NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1 | None
+        ) = None
         self._native_instrument_receipt_ready_v1 = asyncio.Event()
         self._native_instrument_group_closed_v1 = asyncio.Event()
         super().__init__(**kwargs)
@@ -233,11 +237,39 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
     async def wait_native_instrument_receipt_ready_v1(self) -> bool:
         await self._native_instrument_receipt_ready_v1.wait()
         slot = self._native_instrument_capture_v1
-        return (
+        receipt = self._native_instrument_receipt_v1
+        base_ready = (
             slot is not None
             and slot.phase == "ISSUED"
-            and self._native_instrument_receipt_v1 is not None
+            and receipt is not None
             and self.monitoring_fault is None
+        )
+        if not base_ready:
+            return False
+        assert slot is not None and receipt is not None
+        if self._metadata_profile == ACTUAL_ACCOUNT_FEE_V1:
+            if type(receipt) is not NativeInstrumentReceiptV1:
+                return False
+            self._monitor_session.require_native_instrument_receipt_v1(
+                receipt,
+                binding=self._monitor_binding,
+                scope=slot.scope,
+                target=slot.target,
+            )
+            return True
+        from .native_instrument_receipts import NativeUnknownFeeInstrumentReceiptViewV1
+
+        if type(receipt) is not NativeUnknownFeeInstrumentReceiptV1:
+            return False
+        view = self._monitor_session.require_native_unknown_fee_instrument_receipt_v1(
+            receipt,
+            binding=self._monitor_binding,
+            scope=slot.scope,
+            target=slot.target,
+        )
+        return (
+            type(view) is NativeUnknownFeeInstrumentReceiptViewV1
+            and view.metadata_profile == self._metadata_profile
         )
 
     def arm_monitoring(self, target: MonitoringTarget) -> None:
@@ -366,6 +398,8 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
                 self._deny()
             for key, instrument in updated_provider.items():
                 cached = self._cache.instrument(key)
+                require_native_metadata_profile_v1(cached, slot.metadata_profile)
+                require_native_metadata_profile_v1(instrument, slot.metadata_profile)
                 if (
                     cached is None
                     or native_instrument_semantics_sha256(cached)

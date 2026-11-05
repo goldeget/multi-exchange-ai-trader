@@ -54,6 +54,8 @@ from .native_instrument_receipts import (
     NativeInstrumentReceiptRegistryV1,
     NativeInstrumentReceiptV1,
     NativeInstrumentReceiptViewV1,
+    NativeUnknownFeeInstrumentReceiptV1,
+    NativeUnknownFeeInstrumentReceiptViewV1,
     _PendingNativeInstrumentCaptureV1,
 )
 from .protection import ProtectionScope
@@ -1324,7 +1326,7 @@ class BybitDemoAccountSession:
 
     def _issue_native_instrument_receipt_v1(
         self, slot: _PendingNativeInstrumentCaptureV1, *, wallet_event: object,
-    ) -> NativeInstrumentReceiptV1:
+    ) -> NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1:
         return self._native_instrument_receipts_v1.issue_after_wallet_ack(
             slot, wallet_event=wallet_event
         )
@@ -1333,9 +1335,27 @@ class BybitDemoAccountSession:
         self, receipt: NativeInstrumentReceiptV1, *, binding: AuthenticatedAccountBinding,
         scope: ProtectionScope, target: MonitoringTarget,
     ) -> NativeInstrumentReceiptViewV1:
-        return self._native_instrument_receipts_v1.require_current(
+        view = self._native_instrument_receipts_v1.require_current(
             receipt, binding=binding, scope=scope, target=target
         )
+        if type(view) is not NativeInstrumentReceiptViewV1:
+            raise MonitoringError("MONITORING_INSTRUMENT_RECEIPT_REQUIRED")
+        return view
+
+    def require_native_unknown_fee_instrument_receipt_v1(
+        self,
+        receipt: NativeUnknownFeeInstrumentReceiptV1,
+        *,
+        binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+        target: MonitoringTarget,
+    ) -> NativeUnknownFeeInstrumentReceiptViewV1:
+        view = self._native_instrument_receipts_v1.require_current(
+            receipt, binding=binding, scope=scope, target=target
+        )
+        if type(view) is not NativeUnknownFeeInstrumentReceiptViewV1:
+            raise MonitoringError("MONITORING_INSTRUMENT_RECEIPT_REQUIRED")
+        return view
 
     def _prune_monitoring_receipts(self) -> tuple[datetime, float]:
         try:

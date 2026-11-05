@@ -1,4 +1,4 @@
-"""Twelve actual restored-monitor contracts; only isolated Linux qualifies them.
+"""Fifteen actual restored-monitor contracts; only isolated Linux qualifies them.
 
 Every worker uses production construction, original stream parsing, engines,
 portfolio, SQLite quarantine and shutdown. The two synthetic seams are HTTP send
@@ -42,6 +42,15 @@ from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudg
 from multi_exchange_trader.execution.monitoring_models import MonitoringError
 from multi_exchange_trader.execution.monitoring_receipts import AuthenticatedMonitoringReceipt
 from multi_exchange_trader.execution.native_restart_store import decode_document
+from multi_exchange_trader.execution.native_instrument_receipts import (
+    NativeUnknownFeeInstrumentReceiptV1,
+    NativeUnknownFeeInstrumentReceiptViewV1,
+    native_instrument_semantics_sha256,
+)
+from multi_exchange_trader.execution.observation_instrument_v1 import (
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    observation_metadata_marker_v1,
+)
 from multi_exchange_trader.execution.runtime import RuntimeBlocked
 from multi_exchange_trader.market_data.instrument_definition import LinearInstrumentSpec
 
@@ -155,6 +164,159 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
             await h.worker.resume_restored_monitoring()
         with pytest.raises(FrozenInstanceError):
             status.trading_enabled = True
+
+
+async def test_unknown_fee_restored_uses_public_demo_envelope_and_observation_receipt(
+    tmp_path, monkeypatch
+):
+    async with restored_case(
+        tmp_path,
+        monkeypatch,
+        metadata_profile=SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    ) as h:
+        sends_before = len(h.io.sends)
+        status = await admit(h)
+        client = h.assembly.execution_client
+        slot = client._native_instrument_capture_v1
+        receipt = client._native_instrument_receipt_v1
+        assert slot is not None and receipt is not None
+        assert slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        assert type(receipt) is NativeUnknownFeeInstrumentReceiptV1
+        view = h.session.require_native_unknown_fee_instrument_receipt_v1(
+            receipt,
+            binding=h.worker.binding,
+            scope=SCOPE,
+            target=slot.target,
+        )
+        assert type(view) is NativeUnknownFeeInstrumentReceiptViewV1
+        assert view.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        assert view.symbols == ("BTCUSDT",) and len(view.evidence) == 1
+        evidence = view.evidence[0]
+        assert evidence.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        assert not hasattr(evidence, "fee")
+        assert evidence.envelope.key.symbol == "BTCUSDT"
+        assert evidence.envelope.sent_origin.host == "api-demo.bybit.com"
+        assert evidence.envelope.response_origin == evidence.envelope.sent_origin
+        assert evidence.envelope.response_status == 200
+        assert evidence.envelope.decoded_body_sha256 == hashlib.sha256(
+            evidence.envelope.decoded_body_bytes
+        ).hexdigest()
+        instrument = h.assembly.node.cache.instrument("BTCUSDT-LINEAR.BYBIT")
+        spec = evidence.projection.spec
+        assert type(spec) is LinearInstrumentSpec
+        assert spec.max_limit_quantity.raw == "100.000"
+        assert spec.max_market_quantity.raw == "80.000"
+        assert spec.source_price_scale == 2
+        assert spec.max_leverage.raw == "75"
+        assert instrument.max_quantity.as_decimal() == Decimal("100.000")
+        assert instrument.price_increment.as_decimal() == Decimal("0.10")
+        assert (
+            native_instrument_semantics_sha256(instrument)
+            == evidence.native_semantics_sha256
+        )
+        assert instrument.info == observation_metadata_marker_v1()
+        assert instrument.maker_fee == instrument.taker_fee == Decimal("0.001")
+        assert slot.fees == {} and slot.evidence == {}
+        assert set(slot.unknown_fee_evidence) == {"BTCUSDT"}
+        assert slot.last_logical - slot.logical_start == 2  # one instrument + one wallet GET
+        assert 2 <= h.worker._monitoring.budget.physical_attempts - slot.physical_start <= 6
+        assert slot.wallet_reads == 1
+        account = h.assembly.node.cache.account(client.account_id)
+        assert account.last_event is client._monitor_account_event
+        assert not any(path == "/v5/account/fee-rate" for path, _ in h.io.sends)
+        assert not any((
+            status.trading_enabled,
+            status.credit_authorized,
+            status.production_supported,
+            status.venue_event_complete,
+        ))
+        assert client._native_instrument_group_closed_v1.is_set()
+        assert slot.phase == "ISSUED" and not slot.startup_open
+
+        with pytest.raises(MonitoringError):
+            h.session.require_native_unknown_fee_instrument_receipt_v1(
+                receipt,
+                binding=object(),
+                scope=SCOPE,
+                target=slot.target,
+            )
+        assert h.session._native_instrument_receipts_v1._slot is None
+        with pytest.raises(MonitoringError):
+            h.session.require_native_unknown_fee_instrument_receipt_v1(
+                receipt,
+                binding=h.worker.binding,
+                scope=SCOPE,
+                target=slot.target,
+            )
+        relevant = [
+            path for path, _ in h.io.sends[sends_before:]
+            if path in (
+                "/v5/market/instruments-info",
+                "/v5/account/fee-rate",
+                "/v5/account/wallet-balance",
+            )
+        ]
+        assert relevant.count("/v5/market/instruments-info") == 1
+        assert "/v5/account/fee-rate" not in relevant
+        assert relevant.count("/v5/account/wallet-balance") == 1
+
+
+async def test_unknown_fee_provider_or_cache_marker_corruption_blocks_wallet_and_stream(
+    tmp_path, monkeypatch
+):
+    for corruption in ("provider", "cache"):
+        with monkeypatch.context() as case_patch:
+            async with restored_case(
+                tmp_path / corruption,
+                case_patch,
+                metadata_profile=SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+            ) as h:
+                client_type = importlib.import_module(
+                    "multi_exchange_trader.execution.native_monitor_client"
+                ).MonitoringBybitExecutionClient
+                base = module("adapters.bybit.execution").BybitExecutionClient
+                send_start = len(h.io.sends)
+                mutated = {"value": False}
+                if corruption == "provider":
+                    original_cache = client_type._cache_instruments
+
+                    async def mutate_provider(client):
+                        if client._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+                            instrument = next(
+                                iter(client.bybit_instrument_provider.get_all().values())
+                            )
+                            instrument.info["financial_use"] = "ALLOWED"
+                            mutated["value"] = True
+                        await original_cache(client)
+
+                    case_patch.setattr(client_type, "_cache_instruments", mutate_provider)
+                else:
+                    original_cache = base._cache_instruments
+
+                    async def cache_then_mutate(client):
+                        await original_cache(client)
+                        if client._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+                            cached = client._cache.instrument("BTCUSDT-LINEAR.BYBIT")
+                            cached.info["financial_use"] = "ALLOWED"
+                            mutated["value"] = True
+
+                    case_patch.setattr(base, "_cache_instruments", cache_then_mutate)
+
+                with pytest.raises((MonitoringError, ValueError, RuntimeError)):
+                    async with asyncio.timeout(30):
+                        await h.worker.resume_restored_monitoring()
+                assert mutated["value"]
+                observed_paths = [path for path, _params in h.io.sends[send_start:]]
+                assert observed_paths.count("/v5/market/instruments-info") == 1
+                assert "/v5/account/fee-rate" not in observed_paths
+                assert "/v5/account/wallet-balance" not in observed_paths
+                assert (
+                    h.assembly.execution_client.monitoring_fault
+                    == "MONITORING_NATIVE_CONNECT_FAILED"
+                )
+                assert h.assembly.execution_client._native_instrument_receipt_v1 is None
+                assert h.session._native_instrument_receipts_v1._slot is None
+                assert not h.io.wires
 
 
 async def test_issued_t4_receipt_rejects_extra_native_get_before_send(tmp_path, monkeypatch):

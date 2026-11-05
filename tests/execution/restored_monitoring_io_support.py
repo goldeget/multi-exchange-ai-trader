@@ -28,6 +28,11 @@ from multi_exchange_trader.execution.account_binding import BybitDemoAccountSess
 from multi_exchange_trader.execution.journal import CommandState
 from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.monitoring_models import MonitoringError
+from multi_exchange_trader.execution.observation_instrument_v1 import (
+    ACTUAL_ACCOUNT_FEE_V1,
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+    convert_observation_instrument_v1,
+)
 from multi_exchange_trader.execution.monitoring_resume import MonitoringResume
 from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
@@ -267,7 +272,14 @@ class IO:
         return httpx.Response(status, json=response, headers=headers, request=request)
 
 
-async def make_worker(directory, io, previous=None, *, binding_age=30):
+async def make_worker(
+    directory,
+    io,
+    previous=None,
+    *,
+    binding_age=30,
+    metadata_profile=ACTUAL_ACCOUNT_FEE_V1,
+):
     directory.mkdir(parents=True, exist_ok=True)
     locks = directory.parent / "leases"
     locks.mkdir(mode=0o700, exist_ok=True)
@@ -318,15 +330,14 @@ async def make_worker(directory, io, previous=None, *, binding_age=30):
     worker = ExecutionWorker(directory=directory, scope=SCOPE, session=session, binding=binding,
         symbols=("BTCUSDT",), trader_id="WORKER-001", policy_book=book, registry=registry,
         entry_risk=lambda _plan, _now, _reservations: plan, clock=lambda: datetime.now(UTC),
-        max_age=timedelta(seconds=10), lock_directory=locks)
+        max_age=timedelta(seconds=10), lock_directory=locks,
+        metadata_profile=metadata_profile)
     assert worker._factory is None and worker._decoder is None
     return SimpleNamespace(worker=worker, session=session, book=book, request=request,
         registry=registry, plan=plan, io=io, assembly=None)
 
 
 async def seed_baseline(h, *, filled=False):
-    from multi_exchange_trader.execution.native_monitor_http import convert_instrument
-
     await h.worker.start_passive()
     h.assembly = h.worker._assembly
     record = await h.worker.stage(command_key="entry", position_id="position-1",
@@ -334,8 +345,17 @@ async def seed_baseline(h, *, filled=False):
     assert record.state is CommandState.PENDING
     request = h.worker.runtime._request(record)
     ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
-    instrument = module("model.instruments").instruments_from_pyo3([
-        convert_instrument(h.io.instrument, h.io.fee, "BTCUSDT", milliseconds())])[0]
+    if h.worker.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+        native_instrument = convert_observation_instrument_v1(
+            h.io.instrument, "BTCUSDT", milliseconds()
+        )
+    else:
+        from multi_exchange_trader.execution.native_monitor_http import convert_instrument
+
+        native_instrument = convert_instrument(
+            h.io.instrument, h.io.fee, "BTCUSDT", milliseconds()
+        )
+    instrument = module("model.instruments").instruments_from_pyo3([native_instrument])[0]
     order = h.assembly.strategy.order_factory.market(instrument_id=instrument.id,
         order_side=enums.OrderSide.BUY, quantity=objects.Quantity.from_str(str(request.owned.quantity)),
         client_order_id=ids.ClientOrderId(record.client_order_id), reduce_only=False)
@@ -435,7 +455,14 @@ def cleanup_evidence(contract, owner):
 
 
 @asynccontextmanager
-async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
+async def restored_case(
+    tmp_path,
+    monkeypatch,
+    *,
+    filled=False,
+    binding_age=30,
+    metadata_profile=ACTUAL_ACCOUNT_FEE_V1,
+):
     """Own every session, native task, fixture gate and temporary store in finally."""
     io, owners = IO(monkeypatch), []
     loop = asyncio.get_running_loop()
@@ -443,10 +470,18 @@ async def restored_case(tmp_path, monkeypatch, *, filled=False, binding_age=30):
     loop.set_exception_handler(lambda _loop, context: errors.append(context))
     initial_tasks = asyncio.all_tasks()
     try:
-        source = await make_worker(tmp_path, io)
+        source = await make_worker(
+            tmp_path, io, metadata_profile=metadata_profile
+        )
         owners.append(source)
         await seed_baseline(source, filled=filled)
-        h = await make_worker(tmp_path, io, source, binding_age=binding_age)
+        h = await make_worker(
+            tmp_path,
+            io,
+            source,
+            binding_age=binding_age,
+            metadata_profile=metadata_profile,
+        )
         owners.append(h)
         await h.worker.start_passive()
         h.assembly, h.order_id = h.worker._assembly, source.order_id

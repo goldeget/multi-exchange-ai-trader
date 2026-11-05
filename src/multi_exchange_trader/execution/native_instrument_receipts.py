@@ -31,6 +31,10 @@ from ..market_data.instrument_source_projection import (
 )
 from .monitoring_budget import MonitoringReadBudget, _ReceiptBudget
 from .monitoring_models import MonitoringError, MonitoringTarget
+from .observation_instrument_v1 import (
+    ACTUAL_ACCOUNT_FEE_V1,
+    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+)
 from .protection import ProtectionScope
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -150,6 +154,39 @@ class NativeInstrumentEvidenceV1:
 
 
 @dataclass(frozen=True, repr=False)
+class NativeUnknownFeeInstrumentEvidenceV1:
+    """Public DEMO definition evidence with explicitly unknown account fees."""
+
+    key: InstrumentKey
+    envelope: InstrumentEnvelopeRead
+    projection: SupportedInstrumentProjection
+    metadata_profile: str
+    native_semantics_sha256: str
+
+    def __post_init__(self) -> None:
+        try:
+            validate_instrument_envelope_read(self.envelope)
+            validate_supported_instrument_projection(self.projection)
+        except (InstrumentSourceError, CatalogRejected):
+            _deny("MONITORING_INSTRUMENT_SOURCE_INVALID")
+        if (
+            type(self.key) is not InstrumentKey
+            or self.key.venue != "BYBIT"
+            or self.key.product != "LINEAR"
+            or self.envelope.key != self.key
+            or self.envelope.sent_origin != _DEMO
+            or self.envelope.response_origin != _DEMO
+            or self.projection.key != self.key
+            or type(self.metadata_profile) is not str
+            or self.metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+            or type(self.native_semantics_sha256) is not str
+            or _DIGEST.fullmatch(self.native_semantics_sha256) is None
+            or type(self.projection.spec) is not LinearInstrumentSpec
+        ):
+            _deny("MONITORING_INSTRUMENT_SOURCE_INVALID")
+
+
+@dataclass(frozen=True, repr=False)
 class NativeInstrumentReceiptViewV1:
     scope: ProtectionScope
     target_fingerprint: str
@@ -169,6 +206,43 @@ class NativeInstrumentReceiptViewV1:
             or len(set(self.symbols)) != len(self.symbols)
             or type(self.evidence) is not tuple
             or any(type(item) is not NativeInstrumentEvidenceV1 for item in self.evidence)
+            or tuple(item.key.symbol for item in self.evidence) != self.symbols
+        ):
+            _deny("MONITORING_INSTRUMENT_RECEIPT_INVALID")
+        armed, issued = _utc(self.armed_at), _utc(self.issued_at)
+        if armed > issued:
+            _deny("MONITORING_INSTRUMENT_RECEIPT_CLOCK_INVALID")
+
+
+@dataclass(frozen=True, repr=False)
+class NativeUnknownFeeInstrumentReceiptViewV1:
+    """Profile-tagged observation evidence; never actual-fee evidence."""
+
+    metadata_profile: str
+    scope: ProtectionScope
+    target_fingerprint: str
+    symbols: tuple[str, ...]
+    evidence: tuple[NativeUnknownFeeInstrumentEvidenceV1, ...]
+    armed_at: datetime
+    issued_at: datetime
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.metadata_profile) is not str
+            or self.metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+            or type(self.scope) is not ProtectionScope
+            or type(self.target_fingerprint) is not str
+            or not self.target_fingerprint
+            or type(self.symbols) is not tuple
+            or not 1 <= len(self.symbols) <= 15
+            or any(type(symbol) is not str or not symbol for symbol in self.symbols)
+            or len(set(self.symbols)) != len(self.symbols)
+            or type(self.evidence) is not tuple
+            or any(
+                type(item) is not NativeUnknownFeeInstrumentEvidenceV1
+                or item.metadata_profile != self.metadata_profile
+                for item in self.evidence
+            )
             or tuple(item.key.symbol for item in self.evidence) != self.symbols
         ):
             _deny("MONITORING_INSTRUMENT_RECEIPT_INVALID")
@@ -198,6 +272,27 @@ class NativeInstrumentReceiptV1:
         return "NativeInstrumentReceiptV1(opaque=True)"
 
 
+class NativeUnknownFeeInstrumentReceiptV1:
+    """Opaque observation-only receipt distinct from actual account-fee proof."""
+
+    __slots__ = ()
+
+    def __new__(cls) -> NativeUnknownFeeInstrumentReceiptV1:
+        _deny()
+
+    def __copy__(self) -> NoReturn:
+        _deny()
+
+    def __deepcopy__(self, memo: dict[int, object]) -> NoReturn:
+        _deny()
+
+    def __reduce_ex__(self, protocol: int) -> NoReturn:
+        _deny()
+
+    def __repr__(self) -> str:
+        return "NativeUnknownFeeInstrumentReceiptV1(opaque=True)"
+
+
 class _PendingNativeInstrumentCaptureV1:
     owner: Any
     generation: object
@@ -222,6 +317,7 @@ class _PendingNativeInstrumentCaptureV1:
     armed_mono: float
     last_wall: datetime
     last_mono: float
+    metadata_profile: str
     physical_start: int
     logical_start: int
     phase: str
@@ -229,8 +325,9 @@ class _PendingNativeInstrumentCaptureV1:
     inflight: set[str]
     fees: dict[str, NativeFeeResponseV1]
     evidence: dict[str, NativeInstrumentEvidenceV1]
-    view: NativeInstrumentReceiptViewV1 | None
-    handle: NativeInstrumentReceiptV1 | None
+    unknown_fee_evidence: dict[str, NativeUnknownFeeInstrumentEvidenceV1]
+    view: NativeInstrumentReceiptViewV1 | NativeUnknownFeeInstrumentReceiptViewV1 | None
+    handle: NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1 | None
     startup_open: bool
     wallet_reads: int
     last_logical: int
@@ -241,7 +338,9 @@ class _PendingNativeInstrumentCaptureV1:
         "assembly", "channel", "client", "provider", "adapter", "cache", "target",
         "target_fingerprint", "witness", "symbols", "budget", "group", "owner_guard",
         "armed_at", "armed_mono", "last_wall", "last_mono", "physical_start",
-        "logical_start", "phase", "initializations", "inflight", "fees", "evidence",
+        "metadata_profile", "logical_start", "phase", "initializations",
+        "inflight", "fees", "evidence",
+        "unknown_fee_evidence",
         "view", "handle", "startup_open", "wallet_reads",
         "last_logical", "last_physical",
     )
@@ -254,8 +353,11 @@ class _PendingNativeInstrumentCaptureV1:
         self.inflight: set[str] = set()
         self.fees: dict[str, NativeFeeResponseV1] = {}
         self.evidence: dict[str, NativeInstrumentEvidenceV1] = {}
-        self.view: NativeInstrumentReceiptViewV1 | None = None
-        self.handle: NativeInstrumentReceiptV1 | None = None
+        self.unknown_fee_evidence: dict[str, NativeUnknownFeeInstrumentEvidenceV1] = {}
+        self.view: (
+            NativeInstrumentReceiptViewV1 | NativeUnknownFeeInstrumentReceiptViewV1 | None
+        ) = None
+        self.handle: NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1 | None = None
         self.startup_open = True
         self.wallet_reads = 0
         self.last_logical = self.logical_start
@@ -308,7 +410,6 @@ class NativeInstrumentReceiptRegistryV1:
         from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
         from .native_monitor_http import MonitoringHttpAdapter
         from .native_monitor_client import MonitoringBybitExecutionClient
-        from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1
         from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
 
         if self._slot is not None:
@@ -332,7 +433,11 @@ class NativeInstrumentReceiptRegistryV1:
                 or client.bybit_instrument_provider is not provider
                 or type(adapter) is not MonitoringHttpAdapter
                 or client._http_client is not adapter
-                or client._metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+                or client._metadata_profile not in (
+                    ACTUAL_ACCOUNT_FEE_V1,
+                    SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+                )
+                or adapter._metadata_profile != client._metadata_profile
                 or adapter._session is not owner
                 or adapter._binding is not binding
                 or adapter._scope != scope
@@ -364,10 +469,11 @@ class NativeInstrumentReceiptRegistryV1:
                 _deny("MONITORING_INSTRUMENT_RECEIPT_CAPACITY")
             token = receipt.token
             view = budget.require_active_group(token)
-            required = 2 * len(target.symbols) + 1
+            actual_fees = client._metadata_profile == ACTUAL_ACCOUNT_FEE_V1
+            required = (2 if actual_fees else 1) * len(target.symbols) + 1
             if view.remaining_gets < required:
                 _deny("MONITORING_INSTRUMENT_RECEIPT_CAPACITY")
-            max_physical = 6 * len(target.symbols) + 3
+            max_physical = (6 if actual_fees else 3) * len(target.symbols) + 3
             if 200 - budget.physical_attempts < max_physical:
                 _deny("MONITORING_INSTRUMENT_RECEIPT_CAPACITY")
             budget.check()
@@ -402,6 +508,7 @@ class NativeInstrumentReceiptRegistryV1:
                 armed_mono=mono,
                 last_wall=now,
                 last_mono=mono,
+                metadata_profile=client._metadata_profile,
                 physical_start=budget.physical_attempts,
                 logical_start=budget.require_active_group(token).logical_gets,
             )
@@ -448,9 +555,11 @@ class NativeInstrumentReceiptRegistryV1:
                 or slot.client._http_client is not slot.adapter
                 or slot.client.bybit_instrument_provider is not slot.provider
                 or slot.client._cache is not slot.cache
+                or slot.client._metadata_profile != slot.metadata_profile
                 or slot.adapter._binding is not slot.binding
                 or slot.adapter._scope != slot.scope
                 or slot.adapter._symbols != slot.symbols
+                or slot.adapter._metadata_profile != slot.metadata_profile
                 or slot.adapter._cancelled
                 or slot.target.scope != slot.scope
                 or slot.target.symbols != slot.symbols
@@ -485,7 +594,27 @@ class NativeInstrumentReceiptRegistryV1:
                 for item in slot.view.evidence:
                     if not timedelta(0) <= now - item.envelope.received_at <= maximum:
                         _deny("MONITORING_INSTRUMENT_RECEIPT_EXPIRED")
-                    if not timedelta(0) <= now - item.fee.received_at <= maximum:
+                    if (
+                        slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+                        and not timedelta(0)
+                        <= now - item.envelope.response_time
+                        <= maximum
+                    ):
+                        _deny("MONITORING_INSTRUMENT_RECEIPT_EXPIRED")
+                    fee_received = getattr(item, "fee", None)
+                    if (
+                        fee_received is not None
+                        and not timedelta(0)
+                        <= now - fee_received.received_at
+                        <= maximum
+                    ):
+                        _deny("MONITORING_INSTRUMENT_RECEIPT_EXPIRED")
+            elif slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+                for item in slot.unknown_fee_evidence.values():
+                    if (
+                        not timedelta(0) <= now - item.envelope.received_at <= maximum
+                        or not timedelta(0) <= now - item.envelope.response_time <= maximum
+                    ):
                         _deny("MONITORING_INSTRUMENT_RECEIPT_EXPIRED")
             if self._slot is not slot or slot.generation is not self._generation:
                 _deny("MONITORING_INSTRUMENT_RECEIPT_REVOKED")
@@ -513,6 +642,7 @@ class NativeInstrumentReceiptRegistryV1:
             or slot.inflight
             or symbol in slot.inflight
             or symbol in slot.evidence
+            or symbol in slot.unknown_fee_evidence
         ):
             self.revoke(slot)
             _deny("MONITORING_INSTRUMENT_DUPLICATE_OR_SCOPE")
@@ -521,7 +651,8 @@ class NativeInstrumentReceiptRegistryV1:
     def record_fee(self, slot: _PendingNativeInstrumentCaptureV1, fee: NativeFeeResponseV1) -> None:
         self.require(slot, phases=("INITIALIZING",))
         if (
-            fee.symbol not in slot.inflight
+            slot.metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+            or fee.symbol not in slot.inflight
             or fee.symbol in slot.fees
             or fee.scope != slot.scope
             or fee.logical_ordinal != slot.last_logical + 1
@@ -542,7 +673,8 @@ class NativeInstrumentReceiptRegistryV1:
         self.require(slot, phases=("INITIALIZING",))
         symbol = evidence.key.symbol
         if (
-            symbol not in slot.inflight
+            slot.metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+            or symbol not in slot.inflight
             or symbol in slot.evidence
             or slot.fees.get(symbol) != evidence.fee
             or evidence.key != InstrumentKey("BYBIT", "LINEAR", symbol)
@@ -557,13 +689,43 @@ class NativeInstrumentReceiptRegistryV1:
         slot.last_logical = evidence.envelope.logical_ordinal
         slot.last_physical = evidence.envelope.physical_end
 
+    def record_unknown_fee_instrument(
+        self,
+        slot: _PendingNativeInstrumentCaptureV1,
+        evidence: NativeUnknownFeeInstrumentEvidenceV1,
+    ) -> None:
+        self.require(slot, phases=("INITIALIZING",))
+        symbol = evidence.key.symbol
+        if (
+            slot.metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+            or symbol not in slot.inflight
+            or symbol in slot.unknown_fee_evidence
+            or slot.fees
+            or slot.evidence
+            or evidence.metadata_profile != slot.metadata_profile
+            or evidence.key != InstrumentKey("BYBIT", "LINEAR", symbol)
+            or evidence.envelope.logical_ordinal != slot.last_logical + 1
+            or evidence.envelope.physical_start != slot.last_physical
+            or evidence.envelope.physical_end > slot.budget.physical_attempts
+        ):
+            self.revoke(slot)
+            _deny("MONITORING_INSTRUMENT_SOURCE_INVALID")
+        slot.unknown_fee_evidence[symbol] = evidence
+        slot.inflight.remove(symbol)
+        slot.last_logical = evidence.envelope.logical_ordinal
+        slot.last_physical = evidence.envelope.physical_end
+
     def complete_initialization(self, slot: _PendingNativeInstrumentCaptureV1) -> None:
         self.require(slot, phases=("INITIALIZING",))
+        unknown_fees = slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        current_evidence = slot.unknown_fee_evidence if unknown_fees else slot.evidence
         if (
             slot.inflight
-            or len(slot.evidence) != len(slot.symbols)
-            or set(slot.evidence) != set(slot.symbols)
-            or set(slot.fees) != set(slot.symbols)
+            or len(current_evidence) != len(slot.symbols)
+            or set(current_evidence) != set(slot.symbols)
+            or (unknown_fees and bool(slot.fees))
+            or (not unknown_fees and set(slot.fees) != set(slot.symbols))
+            or (not unknown_fees and slot.unknown_fee_evidence)
         ):
             self.revoke(slot)
             _deny("MONITORING_INSTRUMENT_INCOMPLETE")
@@ -586,7 +748,12 @@ class NativeInstrumentReceiptRegistryV1:
         try:
             for key, instrument in instruments.items():
                 symbol = str(key).removesuffix("-LINEAR.BYBIT")
-                evidence = slot.evidence[symbol]
+                evidence = (
+                    slot.unknown_fee_evidence[symbol]
+                    if slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+                    else slot.evidence[symbol]
+                )
+                require_native_metadata_profile_v1(instrument, slot.metadata_profile)
                 if semantics_sha256(instrument) != evidence.native_semantics_sha256:
                     self.revoke(slot)
                     _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
@@ -612,6 +779,7 @@ class NativeInstrumentReceiptRegistryV1:
             cached = slot.cache.instrument(key)
             if (
                 cached is None
+                or _native_metadata_profile_mismatch(cached, slot.metadata_profile)
                 or native_instrument_semantics_sha256(cached)
                 != native_instrument_semantics_sha256(instrument)
             ):
@@ -624,21 +792,28 @@ class NativeInstrumentReceiptRegistryV1:
         slot: _PendingNativeInstrumentCaptureV1,
         *,
         wallet_event: object,
-    ) -> NativeInstrumentReceiptV1:
+    ) -> NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1:
         self.require(slot, phases=("CACHED",))
-        expected_gets = 2 * len(slot.symbols) + 1
+        unknown_fees = slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        reads_per_symbol = 1 if unknown_fees else 2
+        expected_gets = reads_per_symbol * len(slot.symbols) + 1
+        max_physical = (3 if unknown_fees else 6) * len(slot.symbols) + 3
+        current_evidence = slot.unknown_fee_evidence if unknown_fees else slot.evidence
         group = slot.budget.require_active_group(slot.group)
         physical = slot.budget.physical_attempts - slot.physical_start
         if (
             type(wallet_event) is not type(slot.client._monitor_account_event)
             or wallet_event is not slot.client._monitor_account_event
             or group.logical_gets - slot.logical_start != expected_gets
-            or not expected_gets <= physical <= 6 * len(slot.symbols) + 3
+            or not expected_gets <= physical <= max_physical
             or slot.inflight
             or slot.wallet_reads != 1
-            or len(slot.evidence) != len(slot.symbols)
-            or set(slot.evidence) != set(slot.symbols)
-            or set(slot.fees) != set(slot.symbols)
+            or len(current_evidence) != len(slot.symbols)
+            or set(current_evidence) != set(slot.symbols)
+            or (unknown_fees and (slot.fees or slot.evidence))
+            or (not unknown_fees and (
+                set(slot.fees) != set(slot.symbols) or slot.unknown_fee_evidence
+            ))
         ):
             self.revoke(slot)
             _deny("MONITORING_INSTRUMENT_WALLET_ACK_REQUIRED")
@@ -649,32 +824,59 @@ class NativeInstrumentReceiptRegistryV1:
             _deny("MONITORING_INSTRUMENT_WALLET_ACK_REQUIRED")
         self.require(slot, phases=("CACHED",))
         now, _mono = self._clock()
-        evidence = tuple(slot.evidence[symbol] for symbol in slot.symbols)
-        view = NativeInstrumentReceiptViewV1(
-            slot.scope, slot.target_fingerprint, slot.symbols, evidence, slot.armed_at, now
-        )
-        handle = object.__new__(NativeInstrumentReceiptV1)
+        if unknown_fees:
+            evidence = tuple(
+                slot.unknown_fee_evidence[symbol] for symbol in slot.symbols
+            )
+            view = NativeUnknownFeeInstrumentReceiptViewV1(
+                slot.metadata_profile,
+                slot.scope,
+                slot.target_fingerprint,
+                slot.symbols,
+                evidence,
+                slot.armed_at,
+                now,
+            )
+            handle = object.__new__(NativeUnknownFeeInstrumentReceiptV1)
+        else:
+            evidence = tuple(slot.evidence[symbol] for symbol in slot.symbols)
+            view = NativeInstrumentReceiptViewV1(
+                slot.scope, slot.target_fingerprint, slot.symbols, evidence, slot.armed_at, now
+            )
+            handle = object.__new__(NativeInstrumentReceiptV1)
         self.require(slot, phases=("CACHED",))
         slot.view, slot.handle, slot.phase = view, handle, "ISSUED"
         return handle
 
     def require_current(
         self,
-        receipt: NativeInstrumentReceiptV1,
+        receipt: NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1,
         *,
         binding: object,
         scope: ProtectionScope,
         target: MonitoringTarget,
-    ) -> NativeInstrumentReceiptViewV1:
+    ) -> NativeInstrumentReceiptViewV1 | NativeUnknownFeeInstrumentReceiptViewV1:
         slot = self._slot
+        unknown_fees = (
+            slot is not None
+            and slot.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        )
         if (
-            type(receipt) is not NativeInstrumentReceiptV1
+            type(receipt) is not (
+                NativeUnknownFeeInstrumentReceiptV1
+                if unknown_fees
+                else NativeInstrumentReceiptV1
+            )
             or slot is None
             or slot.handle is not receipt
             or slot.binding is not binding
             or slot.scope != scope
             or slot.target is not target
             or slot.view is None
+            or unknown_fees
+            and type(slot.view) is not NativeUnknownFeeInstrumentReceiptViewV1
+            or not unknown_fees
+            and type(slot.view) is not NativeInstrumentReceiptViewV1
         ):
             self.revoke(slot)
             _deny("MONITORING_INSTRUMENT_RECEIPT_REQUIRED")
@@ -697,6 +899,7 @@ class NativeInstrumentReceiptRegistryV1:
         current.phase = "REVOKED"
         current.fees.clear()
         current.evidence.clear()
+        current.unknown_fee_evidence.clear()
         current.inflight.clear()
         current.view = None
         current.handle = None
@@ -732,12 +935,81 @@ def native_instrument_semantics_sha256(instrument: Any) -> str:
         _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
 
 
+def _native_metadata_profile_mismatch(instrument: Any, profile: str) -> bool:
+    try:
+        from .observation_instrument_v1 import require_instrument_metadata_profile_v1
+
+        require_instrument_metadata_profile_v1(instrument, profile)
+        return False
+    except BaseException as error:
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        return True
+
+
+def require_native_metadata_profile_v1(instrument: Any, profile: str) -> None:
+    if _native_metadata_profile_mismatch(instrument, profile):
+        _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
+
+
 def require_native_matches_projection(
     projection: SupportedInstrumentProjection,
     instrument: Any,
     fee: NativeFeeResponseV1,
 ) -> str:
     """Compare exact T3 fields to SDK semantics without inventing venue limits."""
+    try:
+        if type(fee) is not NativeFeeResponseV1:
+            _deny("MONITORING_INSTRUMENT_FEE_SOURCE_INVALID")
+        return _require_native_projection_fields(
+            projection,
+            instrument,
+            maker_fee=Decimal(fee.maker_fee_rate),
+            taker_fee=Decimal(fee.taker_fee_rate),
+        )
+    except BaseException as error:
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        if isinstance(error, MonitoringError):
+            raise
+        _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
+
+
+def require_native_observation_matches_projection(
+    projection: SupportedInstrumentProjection,
+    instrument: Any,
+) -> str:
+    """Compare public source geometry while preserving UNKNOWN fee semantics."""
+    try:
+        from .observation_instrument_v1 import (
+            SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+            require_instrument_metadata_profile_v1,
+        )
+
+        require_instrument_metadata_profile_v1(
+            instrument, SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+        )
+        return _require_native_projection_fields(
+            projection,
+            instrument,
+            maker_fee=Decimal("0.001"),
+            taker_fee=Decimal("0.001"),
+        )
+    except BaseException as error:
+        if isinstance(error, asyncio.CancelledError):
+            raise
+        if isinstance(error, MonitoringError):
+            raise
+        _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
+
+
+def _require_native_projection_fields(
+    projection: SupportedInstrumentProjection,
+    instrument: Any,
+    *,
+    maker_fee: Decimal,
+    taker_fee: Decimal,
+) -> str:
     try:
         from nautilus_trader.core import nautilus_pyo3 as p
         from nautilus_trader.model.instruments import CryptoPerpetual, instruments_from_pyo3
@@ -772,8 +1044,8 @@ def require_native_matches_projection(
             "min_quantity": spec.min_quantity.value,
             "min_price": spec.min_price.value,
             "max_price": spec.max_price.value,
-            "maker_fee": Decimal(fee.maker_fee_rate),
-            "taker_fee": Decimal(fee.taker_fee_rate),
+            "maker_fee": maker_fee,
+            "taker_fee": taker_fee,
             "multiplier": Decimal("1"),
             "margin_init": Decimal("0.1"),
             "margin_maint": Decimal("0.1"),
