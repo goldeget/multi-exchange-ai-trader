@@ -365,10 +365,10 @@ async def test_same_watermark_uses_latest_source_window_and_retires_previous_han
     state = model_worker
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
-    from dataclasses import replace
 
     # Keep the closed-bar watermark fixed while the latest raw source window changes.
-    source.rows[-1] = replace(source.rows[-1], volume=source.rows[-1].volume + Decimal(1))
+    source.rows[-1] = Candle.model_validate({**source.rows[-1].model_dump(),
+        "volume": source.rows[-1].volume + Decimal(1)})
     repeated = await state.worker.capture_builtin_signal_v1(
         scope=scope, market=state.worker._entry_model_market_v1)
     second = state.worker.consume_builtin_signal_v1(repeated)

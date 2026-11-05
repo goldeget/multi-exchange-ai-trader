@@ -237,7 +237,7 @@ class WorkerStrategySignalOwnerV1:
                 or type(slot.catalog_receipt) is not CurrentCatalogReceipt
                 or self._catalog_producer._current is not slot.catalog_current
                 or type(scope) is not c.RiskScopeV2
-                or read.scope != scope
+                or slot.scope != scope
                 or scope.instrument not in read.catalog.declared_universe
                 or read.catalog.revision != slot.catalog_current.view.catalog.revision):
             _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
