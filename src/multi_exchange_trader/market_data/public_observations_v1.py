@@ -334,8 +334,6 @@ def _current_catalog_view_v1(
             or type(receipt) is not CurrentCatalogReceipt
             or type(expected_revision) is not str or _HEX.fullmatch(expected_revision) is None):
         _reject("public_catalog_receipt_required")
-    producer = cast(BybitInstrumentCatalogProducer, producer)
-    receipt = cast(CurrentCatalogReceipt, receipt)
     try:
         view = producer.require_current(receipt, expected_revision=expected_revision)
         if (type(view) is not CatalogReceiptView or view.catalog.revision != expected_revision
@@ -352,7 +350,6 @@ def _catalog_instrument_v1(view: object, symbol: str) -> InstrumentObservation:
 
     if type(view) is not CatalogReceiptView:
         _reject("public_catalog_required")
-    view = cast(CatalogReceiptView, view)
     catalog = view.catalog
     if type(catalog) is not InstrumentCatalog:
         _reject("public_catalog_invalid")
