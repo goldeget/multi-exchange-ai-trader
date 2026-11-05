@@ -1,7 +1,9 @@
 """Public read contract, input allowlists and transport error boundary."""
 
-from collections.abc import Iterator
+import hashlib
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -32,6 +34,64 @@ class MarketAdapter(Protocol):
     async def get_candles(
         self, symbol: str, market_type: MarketType, interval: str, limit: int
     ) -> list[Candle]: ...
+
+
+@dataclass(frozen=True)
+class PublicJsonReadV1:
+    """Loaded public JSON response with exact request custody and raw bytes hash."""
+
+    body: Any
+    endpoint: str
+    query: tuple[tuple[str, str], ...]
+    request_started_at: datetime
+    received_at: datetime
+    raw_body_sha256: str
+
+
+def _utc_clock_v1(clock: Callable[[], datetime]) -> datetime:
+    value = clock()
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+        raise MarketDataUnavailable("clock_invalid", "Public market clock is invalid")
+    return value.astimezone(UTC)
+
+
+async def request_json_observation_v1(
+    client: httpx.AsyncClient,
+    url: str,
+    params: dict[str, str | int],
+    *,
+    clock: Callable[[], datetime],
+) -> PublicJsonReadV1:
+    """Fetch public JSON without losing response bytes, query, or timing evidence."""
+    started = _utc_clock_v1(clock)
+    try:
+        response = await client.get(
+            url, params=params, timeout=10, follow_redirects=False, auth=None
+        )
+        received = _utc_clock_v1(clock)
+        if response.status_code in (403, 451):
+            reason = (
+                "geographic_restriction"
+                if safe_denial_evidence(response)["denial_category"] == "geographic_restriction"
+                else "access_restricted"
+            )
+            raise MarketDataUnavailable(reason, "Public market access is restricted")
+        if response.status_code == 429:
+            raise MarketDataUnavailable("rate_limited", "Provider rate limit reached")
+        if not 200 <= response.status_code < 300 or response.history or response.request is None:
+            raise MarketDataUnavailable("upstream", "Provider request failed")
+        request = response.request
+        endpoint = f"{request.url.scheme}://{request.url.host}{request.url.path}"
+        query = tuple(sorted((str(key), str(value)) for key, value in request.url.params.multi_items()))
+        body = response.json()
+        digest = hashlib.sha256(response.content).hexdigest()
+        return PublicJsonReadV1(body, endpoint, query, started, received, digest)
+    except httpx.TimeoutException as exc:
+        raise MarketDataUnavailable("timeout", "Provider request timed out") from exc
+    except httpx.HTTPError as exc:
+        raise MarketDataUnavailable("upstream", "Provider request failed") from exc
+    except ValueError as exc:
+        raise MarketDataUnavailable("malformed", "Malformed provider response") from exc
 
 
 def validate_selection(symbol: str, market_type: MarketType) -> None:

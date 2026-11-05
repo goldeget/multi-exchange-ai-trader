@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -82,3 +84,67 @@ async def test_wrong_envelopes_are_rejected(kind, mutation, make_client):
                 await BybitAdapter(client).get_ticker("BTCUSDT", "spot")
             else:
                 await BybitAdapter(client).get_candles("BTCUSDT", "spot", "1m", 1)
+
+
+async def test_source_bound_linear_candle_and_quote_keep_exact_public_response_custody() -> None:
+    from multi_exchange_trader.market_data.bybit_public_contracts import CANDLE_URL, TICKER_URL
+
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    now_ms = int(now.timestamp() * 1000)
+    start_ms = now_ms - 60_000
+    captured: list[tuple[str, tuple[tuple[str, str], ...], bytes]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        query = tuple(sorted((key, value) for key, value in request.url.params.multi_items()))
+        if request.url.path == "/v5/market/kline":
+            body = {"retCode": 0, "result": {"category": "linear", "symbol": "BTCUSDT",
+                "list": [[str(start_ms), "100", "102", "99", "101", "4", "400"]]}, "time": now_ms}
+        else:
+            assert request.url.path == "/v5/market/tickers"
+            body = {"retCode": 0, "result": {"category": "linear", "list": [{"symbol": "BTCUSDT",
+                "bid1Price": "100", "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}]}, "time": now_ms}
+        raw = json.dumps(body, separators=(",", ":")).encode()
+        captured.append((request.url.path, query, raw))
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = BybitAdapter(client, clock=lambda: now)
+        candles = await adapter.get_candle_read_v1("BTCUSDT", "1m", 1)
+        quote = await adapter.get_quote_read_v1("BTCUSDT")
+
+    assert captured[0][:2] == ("/v5/market/kline", (("category", "linear"), ("interval", "1"),
+        ("limit", "1"), ("symbol", "BTCUSDT")))
+    assert captured[1][:2] == ("/v5/market/tickers", (("category", "linear"), ("symbol", "BTCUSDT")))
+    assert candles.source.endpoint == CANDLE_URL and candles.source.query == captured[0][1]
+    assert candles.source.raw_body_sha256 == hashlib.sha256(captured[0][2]).hexdigest()
+    assert candles.source.server_observed_at == now and candles.candles[0].is_closed
+    assert quote.source.endpoint == TICKER_URL and quote.source.query == captured[1][1]
+    assert quote.source.raw_body_sha256 == hashlib.sha256(captured[1][2]).hexdigest()
+    assert (quote.bid_price, quote.bid_size, quote.ask_price, quote.ask_size) == (
+        Decimal("100"), Decimal("2"), Decimal("101"), Decimal("3"))
+
+
+async def test_source_bound_reader_rejects_wrong_route_and_product() -> None:
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    now_ms = int(now.timestamp() * 1000)
+    body = {"retCode": 0, "result": {"category": "linear", "symbol": "BTCUSDT",
+        "list": [[str(now_ms - 60_000), "100", "102", "99", "101", "4", "400"]]}, "time": now_ms}
+    raw = json.dumps(body, separators=(",", ":")).encode()
+
+    def wrong_route(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "https://api-testnet.bybit.com/v5/market/kline?category=linear&interval=1&limit=1&symbol=BTCUSDT"))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(wrong_route)) as client:
+        with pytest.raises(MarketDataUnavailable, match="source did not match"):
+            await BybitAdapter(client, clock=lambda: now).get_candle_read_v1("BTCUSDT", "1m", 1)
+
+    body["result"]["category"] = "spot"
+    raw = json.dumps(body, separators=(",", ":")).encode()
+
+    def wrong_product(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(wrong_product)) as client:
+        with pytest.raises(MarketDataUnavailable):
+            await BybitAdapter(client, clock=lambda: now).get_candle_read_v1("BTCUSDT", "1m", 1)

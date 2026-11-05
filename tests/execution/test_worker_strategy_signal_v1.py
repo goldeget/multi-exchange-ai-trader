@@ -1,15 +1,24 @@
 """Original worker/publication/bar owners; temporary approval fixtures never enable orders."""
 from __future__ import annotations
 
+import hashlib
 import importlib
-from datetime import timedelta
+import json
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 import test_worker_entry_model_v2 as original_worker_fixture
 from test_bybit_linear_source_assembler_v1 import SCOPE
 
+from multi_exchange_trader.market_data.bybit_public_contracts import CANDLE_URL, TICKER_URL
 from multi_exchange_trader.market_data.models import Candle, Ticker
+from multi_exchange_trader.market_data.public_observations_v1 import (
+    BybitCandleReadV1,
+    BybitTickerQuoteReadV1,
+    make_source_ref_v1,
+)
 from multi_exchange_trader.market_data.service import MarketDataService
 
 model_worker = original_worker_fixture.model_worker
@@ -19,6 +28,7 @@ class Bars:
     def __init__(self, now: Any) -> None:
         from decimal import Decimal
 
+        self._sequence = 0
         anchor = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
         self.rows = [Candle(timestamp=anchor - timedelta(minutes=15 * (5 - index)),
             open=Decimal(100 + index), high=Decimal(101 + index), low=Decimal(99 + index),
@@ -29,12 +39,46 @@ class Bars:
         self.calls += 1
         return list(self.rows)
 
+    @staticmethod
+    def _source(endpoint: str, query: tuple[tuple[str, str], ...], body: object) -> Any:
+        received = datetime.now(UTC)
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        return make_source_ref_v1(source_generation="signal-fixture-v1", endpoint=endpoint, query=query,
+            request_started_at=received - timedelta(milliseconds=1), received_at=received,
+            server_observed_at=received, raw_body_sha256=hashlib.sha256(raw).hexdigest())
+
+    async def get_candle_read_v1(self, symbol: str, interval: str, limit: int) -> BybitCandleReadV1:
+        from multi_exchange_trader.market_data.bybit_public_contracts import INTERVALS
+
+        self._sequence += 1
+        values = tuple(await self.get_candles(symbol, "perpetual", interval, limit))
+        query = tuple(sorted((("category", "linear"), ("interval", INTERVALS[interval]),
+            ("limit", str(limit)), ("symbol", symbol))))
+        body = {"sequence": self._sequence, "bars": [[bar.timestamp.isoformat(), *(str(getattr(bar, field)) for field in
+            ("open", "high", "low", "close", "volume"))] for bar in values]}
+        source = self._source(CANDLE_URL, query, body)
+        return BybitCandleReadV1(symbol, interval, limit, values, source)
+
+    async def get_quote_read_v1(self, symbol: str) -> BybitTickerQuoteReadV1:
+        query = tuple(sorted((("category", "linear"), ("symbol", symbol))))
+        body = {"symbol": symbol, "bid1Price": "100", "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}
+        source = self._source(TICKER_URL, query, body)
+        return BybitTickerQuoteReadV1(symbol, Decimal("100"), Decimal("2"),
+            Decimal("101"), Decimal("3"), source)
+
     async def get_ticker(self, *_args: object, **_kwargs: object) -> Ticker:
         raise AssertionError("No ticker is required for a closed-bar signal")
 
 
+def install(state: Any) -> None:
+    if state.worker._entry_model_owner_v2 is None:
+        state.worker.install_entry_model_v2(public_marks=state.fixture.marks,
+            catalog_producer=state.fixture.catalog)
+
+
 async def test_no_approved_builtin_artifact_cannot_create_signal_or_entry(model_worker: Any) -> None:
     state = model_worker
+    install(state)
     source = Bars(state.fixture.clock())
     before = state.worker.runtime.journal.list_commands()
     with pytest.raises(ValueError, match="BUILTIN_STRATEGY_APPROVAL_REQUIRED"):
@@ -93,6 +137,7 @@ def approved_fixture(state: Any, *, raw_config: bytes | None = None, implementat
 
 
 async def captured(state: Any, *, raw_config: bytes | None = None) -> tuple[Any, Any, Bars]:
+    install(state)
     scope = approved_fixture(state, raw_config=raw_config)
     source = Bars(state.fixture.clock())
     handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
@@ -125,6 +170,7 @@ def test_builtin_configuration_cannot_supply_financial_values_or_unbounded_windo
 
 async def test_published_arbitrary_code_is_not_imported_or_executed(model_worker: Any) -> None:
     state = model_worker
+    install(state)
     scope = approved_fixture(state, implementation=b"raise AssertionError('this must never execute')")
     source = Bars(state.fixture.clock())
     with pytest.raises(ValueError, match="BUILTIN_STRATEGY_APPROVAL_REQUIRED"):
@@ -133,7 +179,7 @@ async def test_published_arbitrary_code_is_not_imported_or_executed(model_worker
     assert not state.strategy.commands
 
 
-@pytest.mark.parametrize("fault", ["revoked", "policy-changed", "foreign-handle", "mutated-result", "retired", "expired"])
+@pytest.mark.parametrize("fault", ["revoked", "policy-changed", "foreign-handle", "mutated-result", "retired", "expired", "catalog-receipt"])
 async def test_stale_or_replaced_original_signal_cannot_be_consumed(model_worker: Any, fault: str, monkeypatch: pytest.MonkeyPatch) -> None:
     from dataclasses import replace
 
@@ -156,6 +202,8 @@ async def test_stale_or_replaced_original_signal_cannot_be_consumed(model_worker
         object.__setattr__(slot.value, "direction", replace(slot.value.direction, side="SHORT"))
     elif fault == "retired":
         state.worker._retire_entry_publications_v2()
+    elif fault == "catalog-receipt":
+        state.worker._strategy_signal_owner_v1._catalog_producer._revoke()
     else:
         from types import SimpleNamespace
 
@@ -194,6 +242,7 @@ def test_fixed_builtin_direction_and_true_range_prices(trend: int, side: str, st
 
 async def test_current_policy_revocation_during_real_bar_await_refuses_publication(model_worker: Any) -> None:
     state = model_worker
+    install(state)
     scope = approved_fixture(state)
 
     class RevokingBars(Bars):
@@ -211,36 +260,73 @@ async def test_current_policy_revocation_during_real_bar_await_refuses_publicati
 
 
 async def test_old_closed_bars_do_not_gain_freshness_from_a_new_fetch(model_worker: Any) -> None:
+    from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
+
     state = model_worker
+    install(state)
     scope = approved_fixture(state)
     source = Bars(state.fixture.clock() - timedelta(hours=2))
-    with pytest.raises(ValueError, match="BUILTIN_STRATEGY_SIGNAL_EXPIRED"):
+    with pytest.raises(MarketDataUnavailable) as error:
         await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+    assert error.value.reason == "closed_bar_stale"
     assert source.calls == 1
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
-async def test_same_watermark_keeps_first_signal_time_and_retires_previous_handle(model_worker: Any) -> None:
+async def test_legacy_source_less_adapter_cannot_issue_a_worker_signal(model_worker: Any) -> None:
+    from multi_exchange_trader.market_data.adapters.base import MarketDataUnavailable
+
+    state = model_worker
+    install(state)
+    scope = approved_fixture(state)
+    before_requests = len(state.fixture.requests)
+
+    class LegacyOnly:
+        calls = 0
+
+        async def get_candles(self, *_args: object, **_kwargs: object) -> list[Candle]:
+            self.calls += 1
+            return []
+
+        async def get_ticker(self, *_args: object, **_kwargs: object) -> Ticker:
+            raise AssertionError("legacy signal lane must not request a ticker")
+
+    source = LegacyOnly()
+    with pytest.raises(MarketDataUnavailable) as caught:
+        await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
+    assert caught.value.reason == "closed_bar_source_required"
+    assert source.calls == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+    capture_requests = state.fixture.requests[before_requests:]
+    assert capture_requests and all(request.url.host == "api.bybit.com"
+        and request.url.path == "/v5/market/instruments-info" for request in capture_requests)
+
+
+async def test_same_watermark_uses_latest_source_window_and_retires_previous_handle(model_worker: Any) -> None:
     state = model_worker
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
     repeated = await state.worker.capture_builtin_signal_v1(scope=scope, market=MarketDataService({"bybit": source}))
     second = state.worker.consume_builtin_signal_v1(repeated)
-    assert second == first and second.observed_at == first.observed_at
+    assert second.direction == first.direction and second.bar_watermark == first.bar_watermark
+    assert second.snapshot_id != first.snapshot_id and second.observed_at >= first.observed_at
     with pytest.raises(ValueError):
         state.worker.consume_builtin_signal_v1(handle)
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
-def model_phase_stop_context(worker: Any) -> Any:
+def model_phase_stop_context(state: Any) -> Any:
     """Bind the genuine negative cancellation owner; no native admission is fabricated."""
     import asyncio
 
     from multi_exchange_trader.execution.model_observation_phase_v2 import ModelObservationPhaseV2
 
+    install(state)
+    worker = state.worker
     stop = asyncio.Event()
     phase = ModelObservationPhaseV2(worker)
     phase._stop_event = phase._original_stop_event_v2 = stop
+    phase._catalog = state.fixture.catalog
     worker._model_observation_phase_v2 = phase
     phase.require_not_stopped(worker)
     return stop
@@ -254,7 +340,7 @@ async def test_original_phase_stop_during_public_bar_await_rejects_signal(model_
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state.worker)
+    stop = model_phase_stop_context(state)
     entered, release = asyncio.Event(), asyncio.Event()
 
     class AwaitingBars(Bars):
@@ -289,7 +375,7 @@ async def test_original_phase_stop_retires_previously_issued_signal(model_worker
     from multi_exchange_trader.execution.runtime import RuntimeBlocked
 
     state = model_worker
-    stop = model_phase_stop_context(state.worker)
+    stop = model_phase_stop_context(state)
     _scope, handle, _source = await captured(state)
     assert not state.worker.consume_builtin_signal_v1(handle).financial_authority
     stop.set()
@@ -310,7 +396,7 @@ async def test_original_phase_stop_after_final_callback_rejects_signal_consume(
     from multi_exchange_trader.execution.runtime import RuntimeBlocked
 
     state = model_worker
-    stop = model_phase_stop_context(state.worker)
+    stop = model_phase_stop_context(state)
     _scope, handle, _source = await captured(state)
     owner = state.worker._strategy_signal_owner_v1
     original_guard = owner._guard
@@ -336,7 +422,7 @@ async def test_replaced_original_phase_during_public_bar_await_rejects_signal(mo
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state.worker)
+    stop = model_phase_stop_context(state)
     entered, release = asyncio.Event(), asyncio.Event()
 
     class AwaitingBars(Bars):
@@ -375,7 +461,7 @@ async def test_rebound_original_phase_stop_event_during_public_bar_await_rejects
 
     state = model_worker
     scope = approved_fixture(state)
-    stop = model_phase_stop_context(state.worker)
+    stop = model_phase_stop_context(state)
     phase = state.worker._model_observation_phase_v2
     entered, release = asyncio.Event(), asyncio.Event()
 

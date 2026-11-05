@@ -197,3 +197,105 @@ async def test_added_history_prefix_stays_immutable_after_same_watermark_capture
     with pytest.raises(MarketDataUnavailable) as caught:
         await collect(MarketDataService({"bybit": source}), path, NOW + timedelta(minutes=2))
     assert caught.value.reason == "closed_bar_conflict"
+
+
+def source_ref(stamp: datetime, *, source_generation: str = "a03-fixture-v1",
+               body_hash: str = "a" * 64, limit: int = 3):
+    from multi_exchange_trader.market_data.bybit_public_contracts import CANDLE_URL
+    from multi_exchange_trader.market_data.public_observations_v1 import make_source_ref_v1
+
+    query = tuple(sorted((("category", "linear"), ("interval", "15"),
+        ("limit", str(limit)), ("symbol", "BTCUSDT"))))
+    return make_source_ref_v1(source_generation=source_generation, endpoint=CANDLE_URL, query=query,
+        request_started_at=stamp - timedelta(milliseconds=10), received_at=stamp,
+        server_observed_at=stamp, raw_body_sha256=body_hash)
+
+
+def capture_source_bound(store, values: list[Candle], stamp: datetime, *, body_hash: str = "a" * 64,
+                         source_generation: str = "a03-fixture-v1", catalog_revision: str = "c" * 64,
+                         cutoff: datetime | None = None):
+    from multi_exchange_trader.market_data.closed_bars import ClosedBarScope
+
+    observed = cutoff or stamp
+    return store.capture(ClosedBarScope("BTCUSDT", "15m"), values, collected_at=stamp,
+        cutoff=observed, source=source_ref(stamp, source_generation=source_generation, body_hash=body_hash,
+            limit=len(values)), catalog_revision=catalog_revision, instrument_revision="d" * 64,
+        valid_until=stamp + timedelta(seconds=30))
+
+
+async def test_source_bound_same_watermark_updates_durable_latest_after_restart(tmp_path: Path) -> None:
+    from multi_exchange_trader.market_data.closed_bars import ClosedBarScope, ClosedBarSnapshotStore
+
+    path = tmp_path / "source-bars.sqlite3"
+    scope = ClosedBarScope("BTCUSDT", "15m")
+    values = [bar(NOW - STEP * index) for index in (3, 2, 1)]
+    first = capture_source_bound(ClosedBarSnapshotStore(path), values, NOW)
+    assert first.is_new_input is True
+    second_time = NOW + timedelta(seconds=1)
+    second = capture_source_bound(ClosedBarSnapshotStore(path), values, second_time,
+        body_hash="b" * 64, source_generation="a03-fixture-v2")
+    assert second.is_new_input is False and second.watermark == first.watermark
+    assert second.snapshot_id != first.snapshot_id
+
+    restarted = ClosedBarSnapshotStore(path)
+    latest = restarted.latest_source_v1(scope, catalog_revision="c" * 64,
+        now=NOW + timedelta(seconds=2), max_bar_age=timedelta(hours=1))
+    assert latest.snapshot_id == second.snapshot_id
+    assert latest.source is not None and latest.source.raw_body_sha256 == "b" * 64
+    assert latest.source.source_generation == "a03-fixture-v2"
+    with pytest.raises(ValueError):
+        restarted.latest_source_v1(scope, catalog_revision="e" * 64,
+            now=NOW + timedelta(seconds=2), max_bar_age=timedelta(hours=1))
+    with pytest.raises(ValueError):
+        restarted.latest_source_v1(scope, catalog_revision="c" * 64,
+            now=NOW + timedelta(seconds=31), max_bar_age=timedelta(hours=1))
+
+
+async def test_source_less_legacy_rows_cannot_be_promoted_by_signal_consumer_or_overwrite(tmp_path: Path) -> None:
+    from multi_exchange_trader.market_data.closed_bars import ClosedBarRejected, ClosedBarScope, ClosedBarSnapshotStore
+
+    path = tmp_path / "legacy-bars.sqlite3"
+    scope = ClosedBarScope("BTCUSDT", "15m")
+    values = [bar(NOW - STEP * index) for index in (3, 2, 1)]
+    legacy = ClosedBarSnapshotStore(path)
+    legacy.capture(scope, values, collected_at=NOW, cutoff=NOW)
+    with pytest.raises(ClosedBarRejected):
+        legacy.latest_source_v1(scope, catalog_revision="c" * 64,
+            now=NOW + timedelta(seconds=1), max_bar_age=timedelta(hours=1))
+
+    source_bound = capture_source_bound(legacy, values, NOW + timedelta(seconds=1))
+    assert source_bound.source is not None
+    with pytest.raises(ClosedBarRejected) as caught:
+        legacy.capture(scope, values, collected_at=NOW + timedelta(seconds=2),
+            cutoff=NOW + timedelta(seconds=2))
+    assert caught.value.reason == "closed_bar_source_required"
+
+
+async def test_source_bound_cutoff_future_and_gap_replay_reject_after_restart(tmp_path: Path) -> None:
+    from multi_exchange_trader.market_data.closed_bars import ClosedBarRejected, ClosedBarScope, ClosedBarSnapshotStore
+
+    path = tmp_path / "gap-bars.sqlite3"
+    scope = ClosedBarScope("BTCUSDT", "15m")
+    rows = [bar(NOW - STEP * index) for index in (3, 2, 1)]
+    store = ClosedBarSnapshotStore(path)
+    first = capture_source_bound(store, rows, NOW)
+    with pytest.raises(ClosedBarRejected) as cutoff_error:
+        capture_source_bound(store, rows, NOW + timedelta(seconds=1), cutoff=NOW + timedelta(seconds=2))
+    assert cutoff_error.value.reason == "closed_bar_source"
+    future = [bar(NOW + STEP)]
+    with pytest.raises(ClosedBarRejected) as future_error:
+        capture_source_bound(ClosedBarSnapshotStore(tmp_path / "future.sqlite3"), future, NOW)
+    assert future_error.value.reason == "closed_bar_future"
+
+    gap_rows = [bar(NOW + STEP), bar(NOW + STEP * 2)]
+    with pytest.raises(ClosedBarRejected) as gap_error:
+        capture_source_bound(store, gap_rows, NOW + STEP * 3)
+    assert gap_error.value.reason == "closed_bar_gap"
+    restarted = ClosedBarSnapshotStore(path)
+    assert restarted.watermark(scope) == first.watermark
+    with pytest.raises(ClosedBarRejected):
+        restarted.latest_source_v1(scope, catalog_revision="c" * 64,
+            now=NOW + STEP * 3, max_bar_age=timedelta(hours=1))
+    with pytest.raises(ClosedBarRejected) as replay:
+        capture_source_bound(restarted, rows, NOW + STEP * 3)
+    assert replay.value.reason == "closed_bar_gap"
