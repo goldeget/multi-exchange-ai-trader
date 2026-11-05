@@ -52,7 +52,6 @@ _READBACK_FAILURE_CODES = {
         "ACCOUNT_BINDING_CLOCK_INVALID", "ACCOUNT_BINDING_STALE", "ACCOUNT_HELD_SOURCE_REQUIRED",
         "ACCOUNT_INFO_SOURCE_CAPTURE_FAILED", "ACCOUNT_INFO_SOURCE_OVERLAP", "ACCOUNT_INFO_SOURCE_REQUIRED",
         "ACCOUNT_INFO_SOURCE_RETIRED", "ACCOUNT_LINEAR_PERMISSIONS_REQUIRED", "ACCOUNT_NETWORK_TRANSPORT_REQUIRED",
-        "ACCOUNT_HELD_SOURCE_CAPTURE_FAILED",
         "ACCOUNT_SESSION_MISMATCH_OR_CLOSED", "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",
         "AUTHENTICATED_ACCOUNT_SCOPE_MISMATCH", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",
     }),
@@ -403,17 +402,20 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
         max_evidence_age=timedelta(seconds=10), receipt_session=new_owner, history_store=core.history)
     readback_failures: list[str] = []
 
-    def trace(stage: str, operation: Any) -> Any:
+    def trace(stage: str, operation: Any, *, trace_success: bool = False) -> Any:
         def invoke(*args: Any, **kwargs: Any) -> Any:
             try:
                 result = operation(*args, **kwargs)
             except Exception as exc:
                 readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
                 raise
+            if trace_success:
+                readback_failures.append(f"{stage}:OK")
             return result
         return invoke
 
-    def trace_async(stage: str, operation: Any, *, trace_owner_guard: bool = False) -> Any:
+    def trace_async(stage: str, operation: Any, *, trace_owner_guard: bool = False,
+                    trace_success: bool = False) -> Any:
         async def invoke(*args: Any, **kwargs: Any) -> Any:
             if trace_owner_guard and callable(kwargs.get("owner_guard")):
                 kwargs = dict(kwargs)
@@ -429,10 +431,13 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
 
                 kwargs["owner_guard"] = guarded_owner
             try:
-                return await operation(*args, **kwargs)
+                result = await operation(*args, **kwargs)
             except Exception as exc:
                 readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
                 raise
+            if trace_success:
+                readback_failures.append(f"{stage}:OK")
+            return result
         return invoke
 
     original_read_attached = new_owner.read_attached_protection_v1
@@ -448,8 +453,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
         trace("session-require", new_owner.require_attached_protection_v1))
     core.monkeypatch.setattr(new_owner, "_require_attached_protection_closed_v1",
         trace("session-close", new_owner._require_attached_protection_closed_v1))
-    core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
-        trace("session-held-pages", new_owner._require_linear_held_v1))
     core.monkeypatch.setattr(new_owner, "_capture_linear_positions_v1",
         trace_async("positions-capture", new_owner._capture_linear_positions_v1,
                     trace_owner_guard=True))
@@ -457,16 +460,30 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
         trace_async("orders-capture", new_owner._capture_linear_orders_v1,
                     trace_owner_guard=True))
     core.monkeypatch.setattr(new_owner._client, "_capture_private_account_pages_v1",
-        trace_async("private-pages", new_owner._client._capture_private_account_pages_v1))
+        trace_async("private-pages", new_owner._client._capture_private_account_pages_v1,
+                    trace_success=True))
     core.monkeypatch.setattr(new_owner, "_check_linear_account_info_v1",
-        trace("linear-check", new_owner._check_linear_account_info_v1))
+        trace("linear-check", new_owner._check_linear_account_info_v1, trace_success=True))
     core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
-        trace("held-require", new_owner._require_linear_held_v1))
+        trace("held-require", new_owner._require_linear_held_v1, trace_success=True))
+    core.monkeypatch.setattr(new_owner, "_set_linear_private_current_v1",
+        trace("slot-publish", new_owner._set_linear_private_current_v1, trace_success=True))
     private_client = new_owner._client
     assert type(private_client) is BybitReadOnlyClient
     original_private_page = private_client._capture_private_account_page_v1
     core.monkeypatch.setattr(private_client, "_capture_private_account_page_v1",
         trace_async("private-page", original_private_page))
+    from multi_exchange_trader.execution import account_binding as account_binding_module
+    from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as linear_model_inputs
+    core.monkeypatch.setattr(account_binding_module, "_account_info_capture_preimage",
+        trace("capture-preimage", account_binding_module._account_info_capture_preimage,
+              trace_success=True))
+    core.monkeypatch.setattr(account_binding_module, "_linear_source_preimage",
+        trace("source-preimage", account_binding_module._linear_source_preimage, trace_success=True))
+    core.monkeypatch.setattr(linear_model_inputs.BybitModelSourceRefV1, "__init__",
+        trace("source-model", linear_model_inputs.BybitModelSourceRefV1.__init__, trace_success=True))
+    core.monkeypatch.setattr(linear_model_inputs, "bybit_source_ref_sha256_v1",
+        trace("source-hash", linear_model_inputs.bybit_source_ref_sha256_v1, trace_success=True))
     assert_entry_blocked("blocked-after-restart", "position-3")
 
     core.rows[:] = original_rows
