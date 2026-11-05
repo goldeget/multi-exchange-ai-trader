@@ -18,6 +18,7 @@ from restored_monitoring_io_support import admit, restored_case
 
 from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.execution import risk_domain_v2 as domain_v2
+from multi_exchange_trader.execution.account_binding import AccountBindingError
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
 from multi_exchange_trader.execution.native_instrument_receipts import (
     NativeInstrumentReceiptViewV1,
@@ -67,7 +68,21 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
 
         # This runs the real restored worker/assembly path and issues its current
         # actual-fee T4 receipt using only restored_monitoring_io_support.IO.
-        await admit(h)
+        try:
+            await admit(h)
+        except AccountBindingError as error:
+            if not error.args or error.args[0] != "ACCOUNT_AUTHENTICATION_FAILED":
+                raise
+            cause = error.__context__
+            cause_name = type(cause).__name__ if cause is not None else "NO_CONTEXT"
+            if (type(cause) is AccountBindingError and len(cause.args) == 1
+                    and type(cause.args[0]) is str
+                    and cause.args[0].replace("_", "").isalnum()
+                    and cause.args[0] == cause.args[0].upper()):
+                cause_name = cause.args[0]
+            raise AssertionError(
+                f"TEST_FIXTURE_AUTH_FAILURE:{h.io.auth_stage}:{cause_name}"
+            ) from None
         client = h.assembly.execution_client
         assert type(client) is MonitoringBybitExecutionClient
         assert client._metadata_profile == ACTUAL_ACCOUNT_FEE_V1
