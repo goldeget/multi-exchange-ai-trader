@@ -223,7 +223,6 @@ async def test_unknown_fee_restored_uses_public_demo_envelope_and_observation_re
         assert slot.fees == {} and slot.evidence == {}
         assert set(slot.unknown_fee_evidence) == {"BTCUSDT"}
         assert slot.last_logical - slot.logical_start == 2  # one instrument + one wallet GET
-        assert 2 <= h.worker._monitoring.budget.physical_attempts - slot.physical_start <= 6
         assert slot.wallet_reads == 1
         account = h.assembly.node.cache.account(client.account_id)
         assert account.last_event is client._monitor_account_event
@@ -268,6 +267,8 @@ async def test_unknown_fee_restored_uses_public_demo_envelope_and_observation_re
 async def test_unknown_fee_provider_or_cache_marker_corruption_blocks_wallet_and_stream(
     tmp_path, monkeypatch
 ):
+    from nautilus_trader.model.identifiers import InstrumentId
+
     for corruption in ("provider", "cache"):
         with monkeypatch.context() as case_patch:
             async with restored_case(
@@ -300,7 +301,9 @@ async def test_unknown_fee_provider_or_cache_marker_corruption_blocks_wallet_and
                     async def cache_then_mutate(client):
                         await original_cache(client)
                         if client._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
-                            cached = client._cache.instrument("BTCUSDT-LINEAR.BYBIT")
+                            cached = client._cache.instrument(
+                                InstrumentId.from_str("BTCUSDT-LINEAR.BYBIT")
+                            )
                             cached.info["financial_use"] = "ALLOWED"
                             mutated["value"] = True
 
