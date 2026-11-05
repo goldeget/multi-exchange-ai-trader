@@ -155,7 +155,7 @@ async def attached_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         store.close()
         journal.close()
         lock.release()
-        await owner.aclose()
+        await core.owner.aclose()
 
 
 async def test_authenticated_attached_children_allow_protection_and_owned_exit(attached_core: Any) -> None:
