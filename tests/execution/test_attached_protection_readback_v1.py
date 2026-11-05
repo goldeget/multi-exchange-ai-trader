@@ -40,6 +40,7 @@ from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import RiskScope, assess_entry
 from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, RuntimeBlocked
+from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
 from multi_exchange_trader.execution.state_store import RuntimeStateStore
 from multi_exchange_trader.execution.venue_readback import BybitVenueReadback
 
@@ -64,6 +65,10 @@ _READBACK_FAILURE_CODES = {
     RuntimeBlocked: frozenset({
         "ACCOUNT_WORKER_LEASE_REQUIRED", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED", "UTC_CLOCK_REQUIRED",
     }),
+    RiskV2Rejected: frozenset({
+        "RISK_V2_CAUSAL_ORDER_INVALID", "RISK_V2_INPUT_INVALID", "RISK_V2_RESOURCE_LIMIT",
+        "RISK_V2_SCOPE_MISMATCH", "RISK_V2_SOURCE_MISMATCH", "RISK_V2_UNSUPPORTED_PRODUCT",
+    }),
 }
 _READBACK_EXCEPTION_CLASSES = {
     AccountBindingError: "ACCOUNT_BINDING_ERROR",
@@ -74,6 +79,7 @@ _READBACK_EXCEPTION_CLASSES = {
     IndexError: "INDEX_ERROR",
     KeyError: "KEY_ERROR",
     RuntimeBlocked: "RUNTIME_BLOCKED",
+    RiskV2Rejected: "RISK_V2_REJECTED",
     TypeError: "TYPE_ERROR",
     ValueError: "VALUE_ERROR",
     TimeoutError: "TIMEOUT_ERROR",
