@@ -739,11 +739,24 @@ def require_native_matches_projection(
 ) -> str:
     """Compare exact T3 fields to SDK semantics without inventing venue limits."""
     try:
+        from nautilus_trader.core import nautilus_pyo3 as p
+        from nautilus_trader.model.instruments import CryptoPerpetual, instruments_from_pyo3
+
         validate_supported_instrument_projection(projection)
         spec = projection.spec
         if type(spec) is not LinearInstrumentSpec:
             _deny("MONITORING_INSTRUMENT_SOURCE_INVALID")
-        raw = instrument.to_dict(instrument)
+        if type(instrument) is not p.CryptoPerpetual:
+            _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
+        converted = instruments_from_pyo3([instrument])
+        if (
+            type(converted) is not list
+            or len(converted) != 1
+            or type(converted[0]) is not CryptoPerpetual
+        ):
+            _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
+        model_instrument = converted[0]
+        raw = model_instrument.to_dict(model_instrument)
         if type(raw) is not dict:
             _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
         currencies = {
@@ -795,7 +808,7 @@ def require_native_matches_projection(
             _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
         # Market cap, priceScale, leverage and KnownNotPublished are retained and
         # revalidated above in the source projection; they have no native field mapping.
-        return native_instrument_semantics_sha256(instrument)
+        return native_instrument_semantics_sha256(model_instrument)
     except BaseException as error:
         if isinstance(error, asyncio.CancelledError):
             raise
