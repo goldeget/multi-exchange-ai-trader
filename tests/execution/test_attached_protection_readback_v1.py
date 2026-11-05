@@ -323,10 +323,19 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert_entry_blocked("blocked-entry", "position-2")
 
     core.runtime.shutdown()
+    await core.owner.aclose()
+    new_owner = BybitDemoAccountSession(api_key="ATTACHED-TEST-KEY", api_secret="ATTACHED-TEST-SECRET",
+        clock=lambda: core.clock[0])
+    core.owner = new_owner
+    new_binding = await new_owner.authenticate(expected_uid="12345", expected_parent_uid="56789",
+        expected_is_master=False)
+    core.binding = new_binding
+    core.adapter = BybitVenueReadback(client=new_owner.read_client(new_binding, scope=SCOPE), scope=SCOPE,
+        clock=lambda: core.clock[0], max_evidence_age=timedelta(seconds=10))
     core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store, worker_lock=core.lock,
         lock_directory=core.directory, bridge=core.bridge,
         entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
-        max_evidence_age=timedelta(seconds=10), receipt_session=core.owner, history_store=core.history)
+        max_evidence_age=timedelta(seconds=10), receipt_session=new_owner, history_store=core.history)
     assert_entry_blocked("blocked-after-restart", "position-3")
 
     core.rows[:] = original_rows
