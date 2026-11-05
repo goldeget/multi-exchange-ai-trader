@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta
@@ -107,6 +108,12 @@ QUALIFICATION_BLOCKERS = (
     "OWNED_CANCEL_AND_PROTECTION_REPAIR_REQUIRED",
     "VENUE_READBACK_QUALIFICATION_REQUIRED",
 )
+_PROTECTION_RECOVERY_PROJECTION_V1 = "protection-recovery-admission-v1"
+_PROTECTION_RECOVERY_SCHEMA_V1 = "PROTECTION_RECOVERY_ADMISSION_V1"
+_PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1 = "protection-recovery-overflow-v1"
+_PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1 = "PROTECTION_RECOVERY_OVERFLOW_V1"
+_PROTECTION_RECOVERY_ACTIVE_LIMIT_V1 = 256
+_PROTECTION_RECOVERY_PROJECTION_LIMIT_V1 = 65536
 RiskCheck = Callable[[r.EntryDecision, datetime, r.ReservationTotals], r.EntryDecision]
 _OWNERS: WeakValueDictionary[str, NativeExecutionRuntime] = WeakValueDictionary()
 _OWNERS_LOCK = RLock()
@@ -114,6 +121,14 @@ _OWNERS_LOCK = RLock()
 
 class RuntimeBlocked(ValueError):
     """Fixed execution blocker; never transport error text."""
+
+
+class ProtectionRecoveryGateError(RuntimeBlocked):
+    """A durable protection-recovery admission gate cannot be trusted."""
+
+
+class ProtectionRecoveryPersistenceError(ProtectionRecoveryGateError):
+    """An authenticated recovery gate could not be durably recorded."""
 
 
 @dataclass(frozen=True)
@@ -606,6 +621,238 @@ class NativeExecutionRuntime:
                                                       environment=self.journal.scope.environment)):
             self._active = False
             raise RuntimeBlocked("ACCOUNT_WORKER_LEASE_REQUIRED")
+
+    def _protection_recovery_projection_v1(self) -> tuple[int, dict[str, dict[str, object]]]:
+        try:
+            record = self.journal.get_projection(_PROTECTION_RECOVERY_PROJECTION_V1)
+        except Exception:  # noqa: BLE001 - inability to read the admission gate fails closed.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
+        if record is None:
+            return 0, {}
+        try:
+            payload = json.loads(record.payload_json)
+            if (type(payload) is not dict or set(payload) != {"schema", "active"}
+                    or payload["schema"] != _PROTECTION_RECOVERY_SCHEMA_V1
+                    or type(payload["active"]) is not dict or len(payload["active"]) > 256):
+                raise ValueError
+            active: dict[str, dict[str, object]] = {}
+            required = {"entry_client_order_id", "policy_revision", "policy_generation",
+                        "target_sha256", "observed_at", "server_observed_at",
+                        "reason_code"}
+            for position_id, item in payload["active"].items():
+                if (type(position_id) is not str or not position_id.strip()
+                        or len(position_id) > 256 or type(item) is not dict
+                        or set(item) != required
+                        or type(item["entry_client_order_id"]) is not str
+                        or re.fullmatch(r"ec_[0-9a-f]{32}", item["entry_client_order_id"]) is None
+                        or type(item["policy_revision"]) is not str or not item["policy_revision"]
+                        or len(item["policy_revision"]) > 256
+                        or type(item["policy_generation"]) is not int
+                        or item["policy_generation"] < 0
+                        or type(item["target_sha256"]) is not str
+                        or re.fullmatch(r"[0-9a-f]{64}", item["target_sha256"]) is None
+                        or type(item["reason_code"]) is not str
+                        or item["reason_code"] != "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE"):
+                    raise ValueError
+                for field_name in ("observed_at", "server_observed_at"):
+                    stamp = datetime.fromisoformat(item[field_name])
+                    if (type(item[field_name]) is not str or stamp.tzinfo is None
+                            or stamp.utcoffset() != timedelta(0)):
+                        raise ValueError
+                active[position_id] = item
+            return record.revision, active
+        except Exception:  # noqa: BLE001 - retained recovery state must fail closed.
+            self._active = False
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID") from None
+
+    def _recovery_required_v1(self) -> bool:
+        return (bool(self._protection_recovery_projection_v1()[1])
+                or self._protection_recovery_overflow_state_v1()[1])
+
+    def _protection_recovery_overflow_state_v1(self) -> tuple[int, bool]:
+        try:
+            record = self.journal.get_projection(_PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1)
+        except Exception:  # noqa: BLE001 - inability to read the global latch fails closed.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
+        if record is None:
+            return 0, False
+        try:
+            payload = json.loads(record.payload_json)
+            if (type(payload) is not dict
+                    or set(payload) != {"schema", "reason_code", "position_id_sha256",
+                                        "observed_at", "server_observed_at"}
+                    or payload["schema"] != _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1
+                    or payload["reason_code"] not in (
+                        "PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT",
+                        "PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+                    or type(payload["position_id_sha256"]) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", payload["position_id_sha256"]) is None):
+                raise ValueError
+            for field_name in ("observed_at", "server_observed_at"):
+                stamp = datetime.fromisoformat(payload[field_name])
+                if (type(payload[field_name]) is not str or stamp.tzinfo is None
+                        or stamp.utcoffset() != timedelta(0)):
+                    raise ValueError
+            return record.revision, True
+        except Exception:  # noqa: BLE001 - a damaged global latch cannot be ignored.
+            self._active = False
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID") from None
+
+    def _latch_protection_recovery_overflow_v1(self, *, target: AttachedProtectionTargetV1,
+            snapshot: VenueSnapshot, reason_code: str) -> None:
+        revision, latched = self._protection_recovery_overflow_state_v1()
+        if latched:
+            return
+        server_observed = snapshot.server_observed_at
+        if server_observed is None:
+            raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        payload = {
+            "schema": _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1,
+            "reason_code": reason_code,
+            "position_id_sha256": hashlib.sha256(target.position_id.encode()).hexdigest(),
+            "observed_at": snapshot.observed_at.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+        }
+        event = {
+            "schema": _PROTECTION_RECOVERY_OVERFLOW_SCHEMA_V1,
+            "action": "LATCHED",
+            "reason_code": reason_code,
+            "position_id": target.position_id,
+            "target_sha256": target.projection_sha256,
+            "cycle_id": snapshot.cycle_id,
+            "observed_at": snapshot.observed_at.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+        }
+        event_json = json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        event_id = "protection-recovery-overflow-v1-" + hashlib.sha256(event_json.encode()).hexdigest()
+        try:
+            self.journal.apply_event(event_id, event, _PROTECTION_RECOVERY_OVERFLOW_PROJECTION_V1,
+                                     revision, payload)
+        except Exception:  # noqa: BLE001 - capacity overflow must persist or runtime stays inactive.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
+
+    def _apply_protection_recovery_event_v1(self, *, event: dict[str, object],
+            active: dict[str, dict[str, object]], expected_revision: int) -> None:
+        event_json = json.dumps(event, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        event_id = "protection-recovery-v1-" + hashlib.sha256(event_json.encode()).hexdigest()
+        payload = {"schema": _PROTECTION_RECOVERY_SCHEMA_V1, "active": active}
+        try:
+            self.journal.apply_event(event_id, event, _PROTECTION_RECOVERY_PROJECTION_V1,
+                                     expected_revision, payload)
+        except Exception:  # noqa: BLE001 - do not continue after a failed durable gate write.
+            self._active = False
+            raise ProtectionRecoveryPersistenceError(
+                "PROTECTION_RECOVERY_PERSISTENCE_FAILED") from None
+
+    def _require_protection_recovery_clear_v1(self) -> None:
+        if self._recovery_required_v1():
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_REQUIRED")
+
+    def _require_protection_recovery_v1(self, target: AttachedProtectionTargetV1,
+            snapshot: VenueSnapshot) -> None:
+        revision, active = self._protection_recovery_projection_v1()
+        previous = active.get(target.position_id)
+        if previous is not None and previous["entry_client_order_id"] != target.parent_client_order_id:
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_OWNER_MISMATCH")
+        overflow = self._protection_recovery_overflow_state_v1()[1]
+        if overflow and previous is None:
+            return
+        observed = snapshot.observed_at
+        server_observed = snapshot.server_observed_at
+        if server_observed is None:
+            raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        if previous is not None:
+            prior_observed_text = previous["observed_at"]
+            prior_server_text = previous["server_observed_at"]
+            if type(prior_observed_text) is not str or type(prior_server_text) is not str:
+                self._active = False
+                raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID")
+            prior_observed = datetime.fromisoformat(prior_observed_text)
+            prior_server = datetime.fromisoformat(prior_server_text)
+            if observed <= prior_observed or server_observed <= prior_server:
+                return
+        item = {
+            "entry_client_order_id": target.parent_client_order_id,
+            "policy_revision": target.policy_revision,
+            "policy_generation": target.policy_generation,
+            "target_sha256": target.projection_sha256,
+            "observed_at": observed.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+        if previous is None and len(active) >= _PROTECTION_RECOVERY_ACTIVE_LIMIT_V1:
+            self._latch_protection_recovery_overflow_v1(target=target, snapshot=snapshot,
+                reason_code="PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT")
+            return
+        candidate_active = dict(active)
+        candidate_active[target.position_id] = item
+        candidate_payload = {"schema": _PROTECTION_RECOVERY_SCHEMA_V1, "active": candidate_active}
+        candidate_size = len(json.dumps(candidate_payload, ensure_ascii=True, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"))
+        if candidate_size > _PROTECTION_RECOVERY_PROJECTION_LIMIT_V1:
+            self._latch_protection_recovery_overflow_v1(target=target, snapshot=snapshot,
+                reason_code="PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+            return
+        active[target.position_id] = item
+        event = {
+            "schema": _PROTECTION_RECOVERY_SCHEMA_V1,
+            "action": "REQUIRED",
+            "position_id": target.position_id,
+            "entry_client_order_id": target.parent_client_order_id,
+            "policy_revision": target.policy_revision,
+            "policy_generation": target.policy_generation,
+            "target_sha256": target.projection_sha256,
+            "cycle_id": snapshot.cycle_id,
+            "observed_at": observed.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+        self._apply_protection_recovery_event_v1(event=event, active=active,
+                                                 expected_revision=revision)
+
+    def _clear_protection_recovery_v1(self, target: AttachedProtectionTargetV1,
+            snapshot: VenueSnapshot) -> None:
+        revision, active = self._protection_recovery_projection_v1()
+        previous = active.get(target.position_id)
+        if previous is None:
+            return
+        if (previous["entry_client_order_id"] != target.parent_client_order_id
+                or previous["policy_revision"] != target.policy_revision
+                or previous["policy_generation"] != target.policy_generation):
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_OWNER_MISMATCH")
+        server_observed = snapshot.server_observed_at
+        if server_observed is None:
+            raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
+        prior_observed_text = previous["observed_at"]
+        prior_server_text = previous["server_observed_at"]
+        if type(prior_observed_text) is not str or type(prior_server_text) is not str:
+            self._active = False
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID")
+        prior_observed = datetime.fromisoformat(prior_observed_text)
+        prior_server = datetime.fromisoformat(prior_server_text)
+        if snapshot.observed_at <= prior_observed or server_observed <= prior_server:
+            return
+        del active[target.position_id]
+        event = {
+            "schema": _PROTECTION_RECOVERY_SCHEMA_V1,
+            "action": "CLEARED",
+            "position_id": target.position_id,
+            "entry_client_order_id": target.parent_client_order_id,
+            "policy_revision": target.policy_revision,
+            "policy_generation": target.policy_generation,
+            "target_sha256": target.projection_sha256,
+            "cycle_id": snapshot.cycle_id,
+            "observed_at": snapshot.observed_at.isoformat(),
+            "server_observed_at": server_observed.isoformat(),
+        }
+        self._apply_protection_recovery_event_v1(event=event, active=active,
+                                                 expected_revision=revision)
 
     def _now(self) -> datetime:
         now = self._clock()
@@ -1655,6 +1902,7 @@ class NativeExecutionRuntime:
         """Stage a server plan. Selection authorizes neither risk nor dispatch."""
         with self._mutex:
             self._guard()
+            self._require_protection_recovery_clear_v1()
             now = self._now()
             modes.public_candidate_request(selection_request, now=now)
             if mode is modes.AutomaticMode.FULL_AUTO:
@@ -1723,6 +1971,7 @@ class NativeExecutionRuntime:
 
     def _entry_gate(self, record: CommandRecord, final: r.EntryDecision) -> None:
         self._guard()
+        self._require_protection_recovery_clear_v1()
         self._require_qualification()
         self._leverage_gate(record, final)
         if (self._control_busy or not self._active
@@ -1970,6 +2219,8 @@ class NativeExecutionRuntime:
                 return record  # In particular, UNKNOWN never resubmits.
             if record.kind not in (CommandKind.ENTRY, CommandKind.EXIT):
                 raise RuntimeBlocked("EXPLICIT_CONTROL_DISPATCH_REQUIRED")
+            if record.kind is CommandKind.ENTRY:
+                self._require_protection_recovery_clear_v1()
             if record.kind is CommandKind.ENTRY and self._entry_version(record) == 2:
                 raise RuntimeBlocked("V2_FINANCIAL_DISPATCH_UNAVAILABLE")
             self._require_qualification()
@@ -2270,6 +2521,8 @@ class NativeExecutionRuntime:
             view = session.require_attached_protection_v1(receipt, target=target)
             return self.consume_readback(position_id, view.snapshot,
                 attached_receipt=receipt, attached_target=target, _attached_operation=operation)
+        except ProtectionRecoveryGateError:
+            raise
         except Exception:  # noqa: BLE001 - missing, conflicting and retired proofs are observations, not authority.
             snapshot = VenueSnapshot(self.bridge.scope, symbol, uuid4().hex, self._now(),
                 None, False, (), (), ("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",))
@@ -2321,6 +2574,7 @@ class NativeExecutionRuntime:
                                              now=self._now(), max_age=self._max_age)
             self._attached_readbacks_v1.pop(position_id, None)
             authenticated = False
+            attached_view: AttachedProtectionViewV1 | None = None
             if attached_receipt is not None and attached_target is not None and self._receipt_session is not None:
                 try:
                     if (not valid or _attached_operation is None
@@ -2328,6 +2582,7 @@ class NativeExecutionRuntime:
                             or self._attached_target_v1(position_id) != attached_target):
                         raise RuntimeBlocked("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
                     view = self._current_attached_view_v1(attached_receipt, attached_target, snapshot, _attached_operation)
+                    attached_view = view
                     # Actual child venue IDs remain separate from local registered orders.
                     # The same original receipt proves ownership even if protection is incomplete.
                     # Its coverage label is observational; no entry/financial permission is granted.
@@ -2342,12 +2597,20 @@ class NativeExecutionRuntime:
                     authenticated = True
                 except Exception:  # noqa: BLE001 - no copied, stale or foreign receipt is authority.
                     valid = False
+            clear_recovery_after_persist = (
+                authenticated and attached_view is not None and attached_target is not None
+                and attached_view.protection_coverage == "COMPLETE")
+            if (authenticated and attached_view is not None and attached_target is not None
+                    and not clear_recovery_after_persist):
+                self._require_protection_recovery_v1(attached_target, snapshot)
             if not authenticated:
                 self._attached_read_operations_v1.pop(position_id, None)
                 assessment = replace(assessment, entries_blocked=True,
                     status="ATTENTION" if assessment.status == "OPEN_PROTECTED" else assessment.status,
                     reasons=assessment.reasons + ("AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",))
             self._persist(("READBACK", snapshot.cycle_id, assessment), state)
+            if clear_recovery_after_persist and attached_target is not None:
+                self._clear_protection_recovery_v1(attached_target, snapshot)
             self._readbacks.pop(position_id, None)
             if valid:
                 self._readbacks[position_id] = snapshot

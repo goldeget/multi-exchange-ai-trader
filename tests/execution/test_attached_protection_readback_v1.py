@@ -15,9 +15,14 @@ from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import qualified_inputs
 from test_runtime import selection
 
+from multi_exchange_trader.account.bybit_readonly import BybitReadError, BybitReadOnlyClient
 from multi_exchange_trader.execution.account_binding import (
+    AccountBindingError,
     BybitDemoAccountSession,
     _HistoryReceiptSlot,
+)
+from multi_exchange_trader.execution.attached_protection_readback_v1 import (
+    AttachedProtectionErrorV1,
 )
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
 from multi_exchange_trader.execution.history import (
@@ -31,18 +36,85 @@ from multi_exchange_trader.execution.history_receipts import (
     HistoryReceiptView,
 )
 from multi_exchange_trader.execution.history_store import HistoryStore
-from multi_exchange_trader.execution.journal import CommandJournal, ExecutionScope
+from multi_exchange_trader.execution.journal import CommandJournal, CommandKind, ExecutionScope
 from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import RiskScope, assess_entry
-from multi_exchange_trader.execution.runtime import NativeExecutionRuntime
+from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
+from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, RuntimeBlocked
 from multi_exchange_trader.execution.state_store import RuntimeStateStore
 from multi_exchange_trader.execution.venue_readback import BybitVenueReadback
 
 SCOPE = ProtectionScope("12345", "DEMO")
 OBSERVED = datetime.now(UTC)
 STAMP = 0
+
+_READBACK_FAILURE_CODES = {
+    AccountBindingError: frozenset({
+        "ACCOUNT_BINDING_CLOCK_INVALID", "ACCOUNT_BINDING_STALE", "ACCOUNT_HELD_SOURCE_REQUIRED",
+        "ACCOUNT_INFO_SOURCE_CAPTURE_FAILED", "ACCOUNT_INFO_SOURCE_OVERLAP", "ACCOUNT_INFO_SOURCE_REQUIRED",
+        "ACCOUNT_INFO_SOURCE_RETIRED", "ACCOUNT_LINEAR_PERMISSIONS_REQUIRED", "ACCOUNT_NETWORK_TRANSPORT_REQUIRED",
+        "ACCOUNT_SESSION_MISMATCH_OR_CLOSED", "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",
+        "AUTHENTICATED_ACCOUNT_SCOPE_MISMATCH", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",
+    }),
+    AttachedProtectionErrorV1: frozenset({"AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED"}),
+    BybitReadError: frozenset({
+        "account_info_capture_failed", "account_info_source_invalid", "dns", "http_status", "invalid_json",
+        "monitoring_operation_overlap", "network", "proxy", "redirect", "response_too_large", "ret_10006",
+        "timeout", "truncated",
+    }),
+    RuntimeBlocked: frozenset({
+        "ACCOUNT_WORKER_LEASE_REQUIRED", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED", "UTC_CLOCK_REQUIRED",
+    }),
+    RiskV2Rejected: frozenset({
+        "RISK_V2_CAUSAL_ORDER_INVALID", "RISK_V2_INPUT_INVALID", "RISK_V2_RESOURCE_LIMIT",
+        "RISK_V2_SCOPE_MISMATCH", "RISK_V2_SOURCE_MISMATCH", "RISK_V2_UNSUPPORTED_PRODUCT",
+    }),
+}
+_READBACK_EXCEPTION_CLASSES = {
+    AccountBindingError: "ACCOUNT_BINDING_ERROR",
+    AttachedProtectionErrorV1: "ATTACHED_PROTECTION_ERROR",
+    AttributeError: "ATTRIBUTE_ERROR",
+    AssertionError: "ASSERTION_ERROR",
+    BybitReadError: "BYBIT_READ_ERROR",
+    IndexError: "INDEX_ERROR",
+    KeyError: "KEY_ERROR",
+    RuntimeBlocked: "RUNTIME_BLOCKED",
+    RiskV2Rejected: "RISK_V2_REJECTED",
+    TypeError: "TYPE_ERROR",
+    ValueError: "VALUE_ERROR",
+    TimeoutError: "TIMEOUT_ERROR",
+    OSError: "OS_ERROR",
+    httpx.ConnectError: "HTTPX_CONNECT_ERROR",
+    httpx.ReadError: "HTTPX_READ_ERROR",
+    httpx.ReadTimeout: "HTTPX_READ_TIMEOUT",
+    httpx.RemoteProtocolError: "HTTPX_REMOTE_PROTOCOL_ERROR",
+}
+_ASSESSMENT_REASON_CODES = frozenset({
+    "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED", "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+    "CONTRADICTORY_PROTECTION_REPORT", "CURRENT_GENERATION_POLICY_CONFLICT",
+    "FINANCIAL_ENTRY_AUTHORITY_NOT_GRANTED", "INDEPENDENT_FLAT_EVIDENCE_REQUIRED", "MISSING_EXACT_CURRENT_STOP_OR_TAKE_PROFIT",
+    "MISSING_POSITION", "POSITION_CONFLICT", "PROJECTION_CONFLICT",
+})
+
+
+def _sanitized_readback_failure(exc: Exception) -> str:
+    allowed = _READBACK_FAILURE_CODES.get(type(exc))
+    args = exc.args
+    if (allowed is not None and type(args) is tuple and len(args) == 1
+            and type(args[0]) is str and args[0] in allowed):
+        return args[0]
+    exception_class = _READBACK_EXCEPTION_CLASSES.get(type(exc))
+    if exception_class is not None:
+        return f"EXCEPTION_{exception_class}"
+    return "NON_CODE_EXCEPTION"
+
+
+def _sanitized_assessment_reasons(reasons: tuple[str, ...]) -> tuple[tuple[str, ...], int]:
+    known = tuple(reason for reason in reasons
+        if type(reason) is str and reason in _ASSESSMENT_REASON_CODES)
+    return known, len(reasons) - len(known)
 
 
 class _WallClock:
@@ -155,7 +227,7 @@ async def attached_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         store.close()
         journal.close()
         lock.release()
-        await owner.aclose()
+        await core.owner.aclose()
 
 
 async def test_authenticated_attached_children_allow_protection_and_owned_exit(attached_core: Any) -> None:
@@ -281,6 +353,291 @@ async def test_restart_restores_ownership_but_not_authenticated_child_receipt(at
     with pytest.raises(ValueError):
         core.runtime.queue_exit("cleanup", "position-1", Decimal(1), Decimal(100))
     assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+
+
+async def test_authenticated_incomplete_protection_persists_entry_admission_gate(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    plan_data = qualified_inputs()
+    risk_scope = RiskScope("12345", "DEMO", "BTCUSDT", "strategy-1")
+    for key in ("policy", "market", "instrument", "account", "tiers", "reservations",
+                "liquidation", "leverage_readback"):
+        plan_data[key] = replace(plan_data[key], scope=risk_scope)
+    plan = assess_entry(**plan_data)
+    selection_request = selection()
+    selection_request = replace(selection_request,
+        scope=replace(selection_request.scope, account_id="12345"),
+        policy=replace(selection_request.policy, account_id="12345"),
+        candidates=tuple(replace(candidate, account_id="12345")
+            for candidate in selection_request.candidates))
+    protection_policy = ProtectionPolicy("policy-1", 0, Decimal(90), Decimal(120), "MarkPrice")
+
+    def assert_entry_blocked(command_key: str, position_id: str) -> None:
+        with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+            core.runtime.queue_entry(command_key, position_id, plan_id="plan-1", plan=plan,
+                protection_policy=protection_policy, mode=AutomaticMode.FULL_AUTO,
+                selection_request=selection_request)
+
+    owned_orders = core.runtime.projection("position-1").orders
+    original_rows = list(core.rows)
+    core.rows.pop()
+
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    assert core.runtime.projection("position-1").orders == owned_orders
+    projection = core.journal.get_projection("protection-recovery-admission-v1")
+    assert projection is not None
+    state = json.loads(projection.payload_json)
+    assert set(state["active"]) == {"position-1"}
+    assert state["active"]["position-1"]["reason_code"] == (
+        "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE")
+
+    assert_entry_blocked("blocked-entry", "position-2")
+
+    core.runtime.shutdown()
+    await core.owner.aclose()
+    new_owner = BybitDemoAccountSession(api_key="ATTACHED-TEST-KEY", api_secret="ATTACHED-TEST-SECRET",
+        clock=lambda: core.clock[0])
+    core.owner = new_owner
+    new_binding = await new_owner.authenticate(expected_uid="12345", expected_parent_uid="56789",
+        expected_is_master=False)
+    core.binding = new_binding
+    core.adapter = BybitVenueReadback(client=new_owner.read_client(new_binding, scope=SCOPE), scope=SCOPE,
+        clock=lambda: core.clock[0], max_evidence_age=timedelta(seconds=10))
+    core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store, worker_lock=core.lock,
+        lock_directory=core.directory, bridge=core.bridge,
+        entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
+        max_evidence_age=timedelta(seconds=10), receipt_session=new_owner, history_store=core.history)
+    readback_failures: list[str] = []
+
+    def trace(stage: str, operation: Any, *, trace_success: bool = False) -> Any:
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = operation(*args, **kwargs)
+            except Exception as exc:
+                readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
+                raise
+            if trace_success:
+                readback_failures.append(f"{stage}:OK")
+            return result
+        return invoke
+
+    def trace_async(stage: str, operation: Any, *, trace_owner_guard: bool = False,
+                    trace_success: bool = False) -> Any:
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
+            if trace_owner_guard and callable(kwargs.get("owner_guard")):
+                kwargs = dict(kwargs)
+                owner_guard = kwargs["owner_guard"]
+
+                def guarded_owner(*guard_args: Any, **guard_kwargs: Any) -> Any:
+                    try:
+                        return owner_guard(*guard_args, **guard_kwargs)
+                    except Exception as exc:
+                        readback_failures.append(
+                            f"{stage}-owner-guard:{_sanitized_readback_failure(exc)}")
+                        raise
+
+                kwargs["owner_guard"] = guarded_owner
+            try:
+                result = await operation(*args, **kwargs)
+            except Exception as exc:
+                readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
+                raise
+            if trace_success:
+                readback_failures.append(f"{stage}:OK")
+            return result
+        return invoke
+
+    original_read_attached = new_owner.read_attached_protection_v1
+    core.monkeypatch.setattr(new_owner, "read_attached_protection_v1",
+        trace_async("session-read", original_read_attached, trace_owner_guard=True))
+    core.monkeypatch.setattr(core.runtime, "_attached_target_v1",
+        trace("target", core.runtime._attached_target_v1))
+    core.monkeypatch.setattr(core.runtime, "_current_attached_view_v1",
+        trace("view", core.runtime._current_attached_view_v1))
+    core.monkeypatch.setattr(new_owner, "read_client",
+        trace("read-client", new_owner.read_client))
+    core.monkeypatch.setattr(new_owner, "require_attached_protection_v1",
+        trace("session-require", new_owner.require_attached_protection_v1))
+    core.monkeypatch.setattr(new_owner, "_require_attached_protection_closed_v1",
+        trace("session-close", new_owner._require_attached_protection_closed_v1))
+    core.monkeypatch.setattr(new_owner, "_capture_linear_positions_v1",
+        trace_async("positions-capture", new_owner._capture_linear_positions_v1,
+                    trace_owner_guard=True))
+    core.monkeypatch.setattr(new_owner, "_capture_linear_orders_v1",
+        trace_async("orders-capture", new_owner._capture_linear_orders_v1,
+                    trace_owner_guard=True))
+    core.monkeypatch.setattr(new_owner._client, "_capture_private_account_pages_v1",
+        trace_async("private-pages", new_owner._client._capture_private_account_pages_v1,
+                    trace_success=True))
+    core.monkeypatch.setattr(new_owner, "_check_linear_account_info_v1",
+        trace("linear-check", new_owner._check_linear_account_info_v1, trace_success=True))
+    core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
+        trace("held-require", new_owner._require_linear_held_v1, trace_success=True))
+    core.monkeypatch.setattr(new_owner, "_set_linear_private_current_v1",
+        trace("slot-publish", new_owner._set_linear_private_current_v1, trace_success=True))
+    private_client = new_owner._client
+    assert type(private_client) is BybitReadOnlyClient
+    original_private_page = private_client._capture_private_account_page_v1
+    core.monkeypatch.setattr(private_client, "_capture_private_account_page_v1",
+        trace_async("private-page", original_private_page))
+    from multi_exchange_trader.execution import account_binding as account_binding_module
+    from multi_exchange_trader.execution import bybit_linear_model_inputs_v1 as linear_model_inputs
+    core.monkeypatch.setattr(account_binding_module, "_account_info_capture_preimage",
+        trace("capture-preimage", account_binding_module._account_info_capture_preimage,
+              trace_success=True))
+    core.monkeypatch.setattr(account_binding_module, "_linear_source_preimage",
+        trace("source-preimage", account_binding_module._linear_source_preimage, trace_success=True))
+    core.monkeypatch.setattr(linear_model_inputs.BybitModelSourceRefV1, "__init__",
+        trace("source-model", linear_model_inputs.BybitModelSourceRefV1.__init__, trace_success=True))
+    core.monkeypatch.setattr(linear_model_inputs, "bybit_source_ref_sha256_v1",
+        trace("source-hash", linear_model_inputs.bybit_source_ref_sha256_v1, trace_success=True))
+    assert_entry_blocked("blocked-after-restart", "position-3")
+
+    core.rows[:] = original_rows
+    complete = await core.runtime.poll_readback(core.adapter, "position-1")
+    known_reasons, unknown_reason_count = _sanitized_assessment_reasons(complete.reasons)
+    assert (complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0), (
+        f"known assessment reasons={known_reasons}; unknown reason count={unknown_reason_count}; "
+        f"sanitized readback failures={tuple(readback_failures)}")
+    assert core.runtime._recovery_required_v1() is False
+    cleared = core.journal.get_projection("protection-recovery-admission-v1")
+    assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
+
+
+async def test_authenticated_incomplete_protection_replay_is_idempotent(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    projection = core.journal.get_projection("protection-recovery-admission-v1")
+    assert projection is not None
+    revision = projection.revision
+
+    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
+    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
+    operation = core.runtime._attached_read_operations_v1["position-1"]
+    replay = core.runtime.consume_readback("position-1", snapshot, attached_receipt=receipt,
+        attached_target=target, _attached_operation=operation)
+    assert replay.status == "ATTENTION" and replay.entries_blocked is True
+    replayed = core.journal.get_projection("protection-recovery-admission-v1")
+    assert replayed is not None and replayed.revision == revision
+
+
+async def test_recovery_gate_blocks_pending_entry_dispatch(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    old_receipt, old_target = core.runtime._attached_readbacks_v1["position-1"]
+    old_snapshot = core.owner.require_attached_protection_v1(old_receipt, target=old_target).snapshot
+    old_operation = core.runtime._attached_read_operations_v1["position-1"]
+    source_entry = core.journal.get("entry")
+    assert source_entry is not None
+    pending_payload = json.loads(source_entry.payload_json)
+    pending_payload["position_id"] = "pending-position"
+    pending = core.journal.register("pending-entry", CommandKind.ENTRY, pending_payload)
+    assert pending.state.value == "PENDING"
+
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime.dispatch("pending-entry")
+    core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
+        attached_target=old_target, _attached_operation=old_operation)
+    retained = core.journal.get_projection("protection-recovery-admission-v1")
+    assert retained is not None and "position-1" in json.loads(retained.payload_json)["active"]
+
+
+@pytest.mark.parametrize("capacity", ["active-count", "projection-size"])
+async def test_recovery_capacity_overflow_latch_survives_restart(attached_core: Any,
+        monkeypatch: pytest.MonkeyPatch, capacity: str) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
+    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
+    original_rows = list(core.rows)
+    observed_at = snapshot.observed_at.isoformat()
+    server_observed_at = snapshot.server_observed_at.isoformat()
+
+    def active_item(index: int, policy_revision: str = "p") -> dict[str, object]:
+        return {
+            "entry_client_order_id": "ec_" + f"{index:032x}",
+            "policy_revision": policy_revision,
+            "policy_generation": 0,
+            "target_sha256": "0" * 64,
+            "observed_at": observed_at,
+            "server_observed_at": server_observed_at,
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+
+    active: dict[str, dict[str, object]] = {}
+    if capacity == "active-count":
+        active = {f"capacity-position-{index}": active_item(index) for index in range(256)}
+    else:
+        target_item = {
+            "entry_client_order_id": target.parent_client_order_id,
+            "policy_revision": target.policy_revision,
+            "policy_generation": target.policy_generation,
+            "target_sha256": target.projection_sha256,
+            "observed_at": observed_at,
+            "server_observed_at": server_observed_at,
+            "reason_code": "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+        }
+        def projection_size(records: dict[str, dict[str, object]]) -> int:
+            payload = {"schema": "PROTECTION_RECOVERY_ADMISSION_V1", "active": records}
+            return len(json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":")).encode())
+
+        target_projection = dict(active)
+        target_projection[target.position_id] = target_item
+        target_delta = projection_size(target_projection) - projection_size(active)
+        for index in range(1, 256):
+            active = {f"capacity-{item}": active_item(item) for item in range(index)}
+            needed_padding = 65536 - projection_size(active) - target_delta + 1
+            if 0 <= needed_padding <= 255 * len(active):
+                remaining = needed_padding
+                for item in active.values():
+                    extra = min(remaining, 255)
+                    item["policy_revision"] = "p" * (1 + extra)
+                    remaining -= extra
+                    if remaining == 0:
+                        break
+                break
+        target_projection = dict(active)
+        target_projection[target.position_id] = target_item
+        assert (len(active) < 256 and projection_size(active) <= 65536
+                < projection_size(target_projection))
+
+    monkeypatch.setattr(core.runtime, "_protection_recovery_projection_v1",
+        lambda: (0, active))
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION"
+    overflow = core.journal.get_projection("protection-recovery-overflow-v1")
+    assert overflow is not None
+    overflow_payload = json.loads(overflow.payload_json)
+    expected_reason = ("PROTECTION_RECOVERY_ACTIVE_COUNT_LIMIT" if capacity == "active-count"
+                       else "PROTECTION_RECOVERY_PROJECTION_SIZE_LIMIT")
+    assert overflow_payload["reason_code"] == expected_reason
+    assert core.journal.get_projection("protection-recovery-admission-v1") is None
+
+    core.runtime.shutdown()
+    core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store,
+        worker_lock=core.lock, lock_directory=core.directory, bridge=core.bridge,
+        entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
+        max_evidence_age=timedelta(seconds=10), receipt_session=core.owner,
+        history_store=core.history)
+    assert core.runtime._recovery_required_v1() is True
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime._require_protection_recovery_clear_v1()
+
+    core.rows[:] = original_rows
+    core.clock[0] += timedelta(seconds=1)
+    complete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert complete.status == "ATTENTION" and complete.entries_blocked is True
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime._require_protection_recovery_clear_v1()
 
 
 @pytest.mark.parametrize("mutate", ["children", "snapshot"])
