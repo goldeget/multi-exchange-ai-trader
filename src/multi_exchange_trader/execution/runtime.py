@@ -768,8 +768,13 @@ class NativeExecutionRuntime:
         if server_observed is None:
             raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
         if previous is not None:
-            prior_observed = datetime.fromisoformat(previous["observed_at"])
-            prior_server = datetime.fromisoformat(previous["server_observed_at"])
+            prior_observed_text = previous["observed_at"]
+            prior_server_text = previous["server_observed_at"]
+            if type(prior_observed_text) is not str or type(prior_server_text) is not str:
+                self._active = False
+                raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID")
+            prior_observed = datetime.fromisoformat(prior_observed_text)
+            prior_server = datetime.fromisoformat(prior_server_text)
             if observed <= prior_observed or server_observed <= prior_server:
                 return
         item = {
@@ -824,8 +829,13 @@ class NativeExecutionRuntime:
         server_observed = snapshot.server_observed_at
         if server_observed is None:
             raise ProtectionRecoveryGateError("AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED")
-        prior_observed = datetime.fromisoformat(previous["observed_at"])
-        prior_server = datetime.fromisoformat(previous["server_observed_at"])
+        prior_observed_text = previous["observed_at"]
+        prior_server_text = previous["server_observed_at"]
+        if type(prior_observed_text) is not str or type(prior_server_text) is not str:
+            self._active = False
+            raise ProtectionRecoveryGateError("PROTECTION_RECOVERY_STATE_INVALID")
+        prior_observed = datetime.fromisoformat(prior_observed_text)
+        prior_server = datetime.fromisoformat(prior_server_text)
         if snapshot.observed_at <= prior_observed or server_observed <= prior_server:
             return
         del active[target.position_id]
