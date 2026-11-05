@@ -90,10 +90,27 @@ class Fixture:
 
     async def send(self, client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
         assert type(client) is httpx.AsyncClient and request.method == "GET"
-        if request.url.host == "api-demo.bybit.com":
-            assert kwargs == {"stream": True}
-        elif request.url.host == "api.bybit.com":
-            assert kwargs == {"auth": None, "follow_redirects": False}
+        host, path = request.url.host, request.url.path
+        if host == "api-demo.bybit.com":
+            demo_paths = {
+                "/v5/market/time", "/v5/user/query-api", "/v5/account/info",
+                "/v5/account/wallet-balance", "/v5/account/fee-rate",
+                "/v5/account/user-setting-config", "/v5/position/list",
+                "/v5/order/realtime",
+            }
+            if path not in demo_paths or kwargs != {"stream": True}:
+                raise AssertionError("unexpected DEMO fixture request")
+        elif host == "api.bybit.com":
+            readonly_stream_paths = {
+                "/v5/market/time", "/v5/market/instruments-info",
+                "/v5/market/risk-limit", "/v5/market/tickers",
+            }
+            adapter_get_paths = {"/v5/market/kline", "/v5/market/tickers"}
+            readonly_stream = path in readonly_stream_paths and kwargs == {"stream": True}
+            adapter_get = (path in adapter_get_paths
+                           and kwargs == {"auth": None, "follow_redirects": False})
+            if not (readonly_stream or adapter_get):
+                raise AssertionError("unexpected public fixture request")
         else:
             raise AssertionError("unexpected fixture request host")
         self.requests.append(request)
