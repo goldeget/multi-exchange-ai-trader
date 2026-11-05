@@ -43,7 +43,7 @@ async def prepare_signal_plan(
     entry_price: Decimal = Decimal(104),
     stop_price: Decimal = Decimal(100),
 ) -> tuple[Any, Any, Any]:
-    market, scope, read = await prepare_entry_read(state, include_held_eth=True)
+    market, scope, read = await prepare_entry_read(state)
     signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
     signal = state.worker.consume_builtin_signal_v1(signal_handle)
     entry_owner = state.worker._entry_model_owner_v2
@@ -55,12 +55,7 @@ async def prepare_signal_plan(
     assert signal_issued.catalog_receipt is entry_slot.catalog_receipt
     assert state.fixture.catalog._current is entry_slot.catalog_current
     assert entry_slot.catalog_current.view.source_environment == "PUBLIC_MAINNET"
-    assert {key.symbol for key in read.catalog.declared_universe} >= {"BTCUSDT", "ETHUSDT"}
-    assert {row.instrument_pin.key.symbol for row in read.venue.held_positions} == {"ETHUSDT"}
-    assert {row.instrument_pin.key.symbol for row in read.venue.held_orders} == {"ETHUSDT"}
-    assert read.venue.wallet.total_position_im.value == Decimal(10)
-    assert read.venue.wallet.total_order_im.value == Decimal(2)
-    assert any(observation.key.symbol == "ETHUSDT" for observation in read.catalog.observations)
+    assert {key.symbol for key in read.catalog.declared_universe} == {"BTCUSDT"}
     inputs, domain = economic_inputs(read, state.book, state.fixture.clock(), scope=scope,
         side=signal.direction.side, entry_price=entry_price, stop_price=stop_price,
         lifetime_seconds=120)
@@ -130,6 +125,34 @@ async def test_joint_signal_rejects_entry_catalog_missing_selected_instrument(mo
 
 
 model_worker = signal_support.model_worker
+
+
+@pytest.mark.asyncio
+async def test_signal_reuses_entry_read_for_dynamic_held_eth_catalog(model_worker: Any) -> None:
+    state = model_worker
+    market, scope, read = await prepare_entry_read(state, include_held_eth=True)
+    entry_owner = state.worker._entry_model_owner_v2
+    entry_slot = entry_owner._assembler._current
+    assert entry_owner._read is read and entry_slot is not None and entry_slot.result is read
+    assert {key.symbol for key in read.catalog.declared_universe} == {"BTCUSDT", "ETHUSDT"}
+    assert {row.instrument_pin.key.symbol for row in read.venue.held_positions} == {"ETHUSDT"}
+    assert {row.instrument_pin.key.symbol for row in read.venue.held_orders} == {"ETHUSDT"}
+    assert read.venue.wallet.total_position_im.value == Decimal(10)
+    assert read.venue.wallet.total_order_im.value == Decimal(2)
+    assert {observation.key.symbol for observation in read.catalog.observations} == {"BTCUSDT", "ETHUSDT"}
+    assert entry_slot.catalog_current.view.source_environment == "PUBLIC_MAINNET"
+    assert state.fixture.catalog._current is entry_slot.catalog_current
+
+    private_requests = tuple(state.fixture.requests)
+    signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    signal = state.worker.consume_builtin_signal_v1(signal_handle)
+    signal_issued = state.worker._strategy_signal_owner_v1._current
+    assert signal.scope == scope
+    assert entry_owner._read is read and entry_owner._assembler._current is entry_slot
+    assert signal_issued.entry_read is read and signal_issued.entry_read_slot is entry_slot
+    assert signal_issued.catalog_receipt is entry_slot.catalog_receipt
+    assert state.fixture.catalog._current is entry_slot.catalog_current
+    assert tuple(state.fixture.requests) == private_requests
 
 
 @pytest.mark.asyncio
