@@ -21,7 +21,9 @@ from multi_exchange_trader.execution.account_binding import (
     BybitDemoAccountSession,
     _HistoryReceiptSlot,
 )
-from multi_exchange_trader.execution.attached_protection_readback_v1 import AttachedProtectionErrorV1
+from multi_exchange_trader.execution.attached_protection_readback_v1 import (
+    AttachedProtectionErrorV1,
+)
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
 from multi_exchange_trader.execution.history import (
     ExecutionRecord,
