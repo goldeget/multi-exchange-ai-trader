@@ -122,7 +122,7 @@ async def test_source_bound_linear_candle_and_quote_keep_exact_public_response_c
     assert quote.source.endpoint == TICKER_URL and quote.source.query == captured[1][1]
     assert quote.source.raw_body_sha256 == hashlib.sha256(captured[1][2]).hexdigest()
     assert (quote.bid_price, quote.bid_size, quote.ask_price, quote.ask_size) == (
-        Decimal("100"), Decimal("2"), Decimal("101"), Decimal("3"))
+        Decimal(100), Decimal(2), Decimal(101), Decimal(3))
 
 
 async def test_source_bound_reader_rejects_wrong_route_and_product(monkeypatch: pytest.MonkeyPatch) -> None:

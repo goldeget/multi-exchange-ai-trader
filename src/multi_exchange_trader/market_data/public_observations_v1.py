@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Literal, Self
 
 from ..trading_product import InstrumentKey
 from .bybit_public_contracts import CANDLE_URL, INTERVALS, TICKER_URL
@@ -62,12 +62,12 @@ def _nonnegative(value: Decimal) -> None:
 class _BybitPublicReadReceiptV1:
     """Opaque in-process evidence that the exact DTO came from one trusted adapter."""
 
-    __slots__ = ("_adapter", "_read", "_source", "_kind", "_endpoint", "_query",
-                 "_raw_body_sha256", "_content_sha256", "_seal")
+    __slots__ = ("_adapter", "_content_sha256", "_endpoint", "_kind", "_query",
+                 "_raw_body_sha256", "_read", "_seal", "_source")
 
     def __new__(cls, *, seal: object, adapter: object, read: object, source: object,
                 kind: str, endpoint: str, query: tuple[tuple[str, str], ...],
-                raw_body_sha256: str, content_sha256: str) -> _BybitPublicReadReceiptV1:
+                raw_body_sha256: str, content_sha256: str) -> Self:
         if seal is not _READ_RECEIPT_SEAL:
             _reject("public_read_receipt_required")
         value = object.__new__(cls)
@@ -106,9 +106,8 @@ def _issue_bybit_public_read_receipt_v1(adapter: object, read: object, *, kind: 
     if (type(adapter) is not BybitAdapter or issuer is not adapter._public_read_issuer_v1
             or kind not in ("quote", "candle")):
         _reject("public_read_receipt_required")
-    if kind == "quote" and type(read) is BybitTickerQuoteReadV1:
-        dto, source = read, read.source
-    elif kind == "candle" and type(read) is BybitCandleReadV1:
+    if ((kind == "quote" and type(read) is BybitTickerQuoteReadV1)
+            or (kind == "candle" and type(read) is BybitCandleReadV1)):
         dto, source = read, read.source
     else:
         _reject("public_read_receipt_required")
@@ -125,9 +124,8 @@ def require_bybit_public_read_receipt_v1(adapter: object, read: object, *, kind:
 
     if type(adapter) is not BybitAdapter:
         _reject("public_read_receipt_required")
-    if kind == "quote" and type(read) is BybitTickerQuoteReadV1:
-        source = read.source
-    elif kind == "candle" and type(read) is BybitCandleReadV1:
+    if ((kind == "quote" and type(read) is BybitTickerQuoteReadV1)
+            or (kind == "candle" and type(read) is BybitCandleReadV1)):
         source = read.source
     else:
         _reject("public_read_receipt_required")

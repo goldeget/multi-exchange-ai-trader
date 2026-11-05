@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MappingProxyType
 
+from ..account.instrument_envelope import CurrentCatalogReceipt
 from .adapters.base import INTERVAL_SECONDS, MarketAdapter, MarketDataUnavailable, validate_candle_selection
 from .adapters.bybit import BybitAdapter
 from .closed_bars import (
@@ -15,9 +16,8 @@ from .closed_bars import (
     ClosedBarSnapshot,
     ClosedBarSnapshotStore,
 )
-from .models import Candle, MarketType, Ticker
-from ..account.instrument_envelope import CurrentCatalogReceipt
 from .instrument_producer import BybitInstrumentCatalogProducer
+from .models import Candle, MarketType, Ticker
 from .public_observations_v1 import (
     BybitPublicQuoteSnapshotV1,
     PublicObservationRejected,

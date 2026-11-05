@@ -10,7 +10,14 @@ from uuid import uuid4
 
 import httpx
 
+from ..bybit_public_contracts import CATEGORIES, CANDLE_URL, INTERVALS, TICKER_URL
 from ..models import Candle, MarketType, Ticker
+from ..public_observations_v1 import (
+    BybitCandleReadV1,
+    BybitTickerQuoteReadV1,
+    _issue_bybit_public_read_receipt_v1,
+    make_source_ref_v1,
+)
 from .base import (
     INTERVAL_SECONDS,
     MarketAdapter,
@@ -22,14 +29,6 @@ from .base import (
     timestamp_ms,
     validate_candle_selection,
     validate_selection,
-)
-
-from ..bybit_public_contracts import CATEGORIES, CANDLE_URL, INTERVALS, TICKER_URL
-from ..public_observations_v1 import (
-    BybitCandleReadV1,
-    BybitTickerQuoteReadV1,
-    _issue_bybit_public_read_receipt_v1,
-    make_source_ref_v1,
 )
 
 

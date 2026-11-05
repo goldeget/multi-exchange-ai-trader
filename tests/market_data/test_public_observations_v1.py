@@ -31,12 +31,12 @@ NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 
 
 def public_quote_read(*, received: datetime = NOW, server: datetime = NOW,
-                      bid: Decimal = Decimal("100"), ask: Decimal = Decimal("101")) -> BybitTickerQuoteReadV1:
+                      bid: Decimal = Decimal(100), ask: Decimal = Decimal(101)) -> BybitTickerQuoteReadV1:
     query = (("category", "linear"), ("symbol", "BTCUSDT"))
     source = make_source_ref_v1(source_generation="quote-fixture-v1", endpoint=TICKER_URL,
         query=query, request_started_at=received - timedelta(milliseconds=1), received_at=received,
         server_observed_at=server, raw_body_sha256="a" * 64)
-    return BybitTickerQuoteReadV1("BTCUSDT", bid, Decimal("2"), ask, Decimal("3"), source)
+    return BybitTickerQuoteReadV1("BTCUSDT", bid, Decimal(2), ask, Decimal(3), source)
 
 
 def plain_linear_catalog() -> InstrumentCatalog:
@@ -124,11 +124,11 @@ def test_quote_evidence_fails_closed_when_stale_or_future(received: datetime, se
 
 def test_quote_crossing_and_wrong_product_route_are_rejected() -> None:
     with pytest.raises(PublicObservationRejected, match="public_quote_crossed"):
-        public_quote_read(bid=Decimal("102"), ask=Decimal("101"))
+        public_quote_read(bid=Decimal(102), ask=Decimal(101))
 
     source = make_source_ref_v1(source_generation="quote-fixture-v1", endpoint=TICKER_URL,
         query=(("category", "spot"), ("symbol", "BTCUSDT")),
         request_started_at=NOW - timedelta(milliseconds=1), received_at=NOW, server_observed_at=NOW,
         raw_body_sha256="b" * 64)
     with pytest.raises(PublicObservationRejected, match="public_quote_source_mismatch"):
-        BybitTickerQuoteReadV1("BTCUSDT", Decimal("100"), Decimal("1"), Decimal("101"), Decimal("1"), source)
+        BybitTickerQuoteReadV1("BTCUSDT", Decimal(100), Decimal(1), Decimal(101), Decimal(1), source)

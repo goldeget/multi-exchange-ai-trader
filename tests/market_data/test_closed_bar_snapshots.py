@@ -252,7 +252,11 @@ async def test_source_bound_same_watermark_updates_durable_latest_after_restart(
 
 
 async def test_source_less_legacy_rows_cannot_be_promoted_by_signal_consumer_or_overwrite(tmp_path: Path) -> None:
-    from multi_exchange_trader.market_data.closed_bars import ClosedBarRejected, ClosedBarScope, ClosedBarSnapshotStore
+    from multi_exchange_trader.market_data.closed_bars import (
+        ClosedBarRejected,
+        ClosedBarScope,
+        ClosedBarSnapshotStore,
+    )
 
     path = tmp_path / "legacy-bars.sqlite3"
     scope = ClosedBarScope("BTCUSDT", "15m")
@@ -272,7 +276,11 @@ async def test_source_less_legacy_rows_cannot_be_promoted_by_signal_consumer_or_
 
 
 async def test_source_bound_cutoff_future_and_gap_replay_reject_after_restart(tmp_path: Path) -> None:
-    from multi_exchange_trader.market_data.closed_bars import ClosedBarRejected, ClosedBarScope, ClosedBarSnapshotStore
+    from multi_exchange_trader.market_data.closed_bars import (
+        ClosedBarRejected,
+        ClosedBarScope,
+        ClosedBarSnapshotStore,
+    )
 
     path = tmp_path / "gap-bars.sqlite3"
     scope = ClosedBarScope("BTCUSDT", "15m")

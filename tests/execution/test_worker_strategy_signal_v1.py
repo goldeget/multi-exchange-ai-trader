@@ -231,7 +231,6 @@ async def test_stale_or_replaced_original_signal_cannot_be_consumed(model_worker
 
 @pytest.mark.parametrize("trend,side,stop,target", [(1, "LONG", 100, 112), (-1, "SHORT", 100, 88), (0, "FLAT", None, None)])
 def test_fixed_builtin_direction_and_true_range_prices(trend: int, side: str, stop: int | None, target: int | None) -> None:
-    from datetime import UTC, datetime
     from decimal import Decimal
     from fractions import Fraction
 
@@ -271,7 +270,9 @@ async def test_current_policy_revocation_during_real_bar_await_refuses_publicati
 async def test_final_capture_callback_cannot_revoke_catalog_receipt_before_signal_issue(
     model_worker: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from multi_exchange_trader.execution.worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1
+    from multi_exchange_trader.execution.worker_strategy_signal_v1 import (
+        WorkerStrategySignalOwnerV1,
+    )
 
     state = model_worker
     scope = approved_fixture(state)
@@ -298,7 +299,9 @@ async def test_final_capture_callback_cannot_revoke_catalog_receipt_before_signa
 async def test_final_consume_callback_cannot_revoke_catalog_receipt_before_signal_return(
     model_worker: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from multi_exchange_trader.execution.worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1
+    from multi_exchange_trader.execution.worker_strategy_signal_v1 import (
+        WorkerStrategySignalOwnerV1,
+    )
 
     state = model_worker
     _scope, handle, source = await captured(state)
