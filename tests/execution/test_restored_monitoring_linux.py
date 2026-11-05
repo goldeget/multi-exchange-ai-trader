@@ -10,8 +10,10 @@ import asyncio
 import copy
 import hashlib
 import inspect
+import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
@@ -51,7 +53,31 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
         position = cache.position_for_order(h.order_id)
         instrument = cache.instrument(order.instrument_id)
         before = order.to_dict(), position.to_dict(), instrument.to_dict(instrument)
-        status = await admit(h)
+        client = h.assembly.execution_client
+        adapter = client._http_client
+        metadata_failure_paths = []
+        original_fault = adapter._fault
+
+        def capture_safe_failure_path(code):
+            if code == "MONITORING_METADATA_INVALID":
+                active = sys.exception()
+                if active is not None:
+                    frames = traceback.extract_tb(active.__traceback__)
+                    safe_frames = tuple(
+                        (frame.filename.replace("\\", "/").rsplit("/", 1)[-1],
+                         frame.lineno, frame.name)
+                        for frame in frames[-8:]
+                    )
+                    exception_type = f"{type(active).__module__}.{type(active).__qualname__}"
+                    metadata_failure_paths.append((exception_type, safe_frames))
+            original_fault(code)
+
+        monkeypatch.setattr(adapter, "_fault", capture_safe_failure_path)
+        try:
+            status = await admit(h)
+        except Exception as error:
+            detail = metadata_failure_paths or [(type(error).__name__, ())]
+            pytest.fail(f"restored native admission failed; safe source path={detail!r}", pytrace=False)
         client = h.assembly.execution_client
         receipt = client._native_instrument_receipt_v1
         slot = client._native_instrument_capture_v1
