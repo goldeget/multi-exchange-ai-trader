@@ -65,6 +65,24 @@ _READBACK_FAILURE_CODES = {
         "ACCOUNT_WORKER_LEASE_REQUIRED", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED", "UTC_CLOCK_REQUIRED",
     }),
 }
+_READBACK_EXCEPTION_CLASSES = {
+    AccountBindingError: "ACCOUNT_BINDING_ERROR",
+    AttachedProtectionErrorV1: "ATTACHED_PROTECTION_ERROR",
+    AttributeError: "ATTRIBUTE_ERROR",
+    AssertionError: "ASSERTION_ERROR",
+    BybitReadError: "BYBIT_READ_ERROR",
+    IndexError: "INDEX_ERROR",
+    KeyError: "KEY_ERROR",
+    RuntimeBlocked: "RUNTIME_BLOCKED",
+    TypeError: "TYPE_ERROR",
+    ValueError: "VALUE_ERROR",
+    TimeoutError: "TIMEOUT_ERROR",
+    OSError: "OS_ERROR",
+    httpx.ConnectError: "HTTPX_CONNECT_ERROR",
+    httpx.ReadError: "HTTPX_READ_ERROR",
+    httpx.ReadTimeout: "HTTPX_READ_TIMEOUT",
+    httpx.RemoteProtocolError: "HTTPX_REMOTE_PROTOCOL_ERROR",
+}
 _ASSESSMENT_REASON_CODES = frozenset({
     "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED", "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
     "CONTRADICTORY_PROTECTION_REPORT", "CURRENT_GENERATION_POLICY_CONFLICT",
@@ -79,6 +97,9 @@ def _sanitized_readback_failure(exc: Exception) -> str:
     if (allowed is not None and type(args) is tuple and len(args) == 1
             and type(args[0]) is str and args[0] in allowed):
         return args[0]
+    exception_class = _READBACK_EXCEPTION_CLASSES.get(type(exc))
+    if exception_class is not None:
+        return f"EXCEPTION_{exception_class}"
     return "NON_CODE_EXCEPTION"
 
 
@@ -391,16 +412,31 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
             return result
         return invoke
 
+    def trace_async(stage: str, operation: Any, *, trace_owner_guard: bool = False) -> Any:
+        async def invoke(*args: Any, **kwargs: Any) -> Any:
+            if trace_owner_guard and callable(kwargs.get("owner_guard")):
+                kwargs = dict(kwargs)
+                owner_guard = kwargs["owner_guard"]
+
+                def guarded_owner(*guard_args: Any, **guard_kwargs: Any) -> Any:
+                    try:
+                        return owner_guard(*guard_args, **guard_kwargs)
+                    except Exception as exc:
+                        readback_failures.append(
+                            f"{stage}-owner-guard:{_sanitized_readback_failure(exc)}")
+                        raise
+
+                kwargs["owner_guard"] = guarded_owner
+            try:
+                return await operation(*args, **kwargs)
+            except Exception as exc:
+                readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
+                raise
+        return invoke
+
     original_read_attached = new_owner.read_attached_protection_v1
-
-    async def traced_read_attached(binding: Any, **kwargs: Any) -> Any:
-        try:
-            return await original_read_attached(binding, **kwargs)
-        except Exception as exc:
-            readback_failures.append(f"session-read:{_sanitized_readback_failure(exc)}")
-            raise
-
-    core.monkeypatch.setattr(new_owner, "read_attached_protection_v1", traced_read_attached)
+    core.monkeypatch.setattr(new_owner, "read_attached_protection_v1",
+        trace_async("session-read", original_read_attached, trace_owner_guard=True))
     core.monkeypatch.setattr(core.runtime, "_attached_target_v1",
         trace("target", core.runtime._attached_target_v1))
     core.monkeypatch.setattr(core.runtime, "_current_attached_view_v1",
@@ -413,19 +449,17 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
         trace("session-close", new_owner._require_attached_protection_closed_v1))
     core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
         trace("session-held-pages", new_owner._require_linear_held_v1))
+    core.monkeypatch.setattr(new_owner, "_capture_linear_positions_v1",
+        trace_async("positions-capture", new_owner._capture_linear_positions_v1,
+                    trace_owner_guard=True))
+    core.monkeypatch.setattr(new_owner, "_capture_linear_orders_v1",
+        trace_async("orders-capture", new_owner._capture_linear_orders_v1,
+                    trace_owner_guard=True))
     private_client = new_owner._client
     assert type(private_client) is BybitReadOnlyClient
     original_private_page = private_client._capture_private_account_page_v1
-
-    async def traced_private_page(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return await original_private_page(*args, **kwargs)
-        except Exception as exc:
-            readback_failures.append(f"private-page:{_sanitized_readback_failure(exc)}")
-            raise
-
     core.monkeypatch.setattr(private_client, "_capture_private_account_page_v1",
-        traced_private_page)
+        trace_async("private-page", original_private_page))
     assert_entry_blocked("blocked-after-restart", "position-3")
 
     core.rows[:] = original_rows
