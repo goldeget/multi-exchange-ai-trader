@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, NoReturn, Self
+from typing import Any, NoReturn, Self, SupportsIndex, cast
 
 from multi_exchange_trader.trading_product import InstrumentKey
 
@@ -31,7 +31,7 @@ from ..market_data.instrument_source_projection import (
     validate_supported_instrument_projection,
 )
 from .monitoring_budget import MonitoringReadBudget, _ReceiptBudget
-from .monitoring_models import MonitoringError, MonitoringTarget
+from .monitoring_models import MonitoringError, MonitoringTarget, MonitoringWitness
 from .observation_instrument_v1 import (
     ACTUAL_ACCOUNT_FEE_V1,
     SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
@@ -266,7 +266,7 @@ class NativeInstrumentReceiptV1:
     def __deepcopy__(self, memo: dict[int, object]) -> NoReturn:
         _deny()
 
-    def __reduce_ex__(self, protocol: int) -> NoReturn:
+    def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
         _deny()
 
     def __repr__(self) -> str:
@@ -287,7 +287,7 @@ class NativeUnknownFeeInstrumentReceiptV1:
     def __deepcopy__(self, memo: dict[int, object]) -> NoReturn:
         _deny()
 
-    def __reduce_ex__(self, protocol: int) -> NoReturn:
+    def __reduce_ex__(self, protocol: SupportsIndex) -> NoReturn:
         _deny()
 
     def __repr__(self) -> str:
@@ -309,7 +309,7 @@ class _PendingNativeInstrumentCaptureV1:
     cache: Any
     target: MonitoringTarget
     target_fingerprint: str
-    witness: Any
+    witness: MonitoringWitness
     symbols: tuple[str, ...]
     budget: MonitoringReadBudget
     group: Any
@@ -463,7 +463,6 @@ class NativeInstrumentReceiptRegistryV1:
                 or type(provider) is not BybitInstrumentProvider
                 or client.bybit_instrument_provider is not provider
                 or type(adapter) is not MonitoringHttpAdapter
-                or client._http_client is not adapter
                 or client._metadata_profile not in (
                     ACTUAL_ACCOUNT_FEE_V1,
                     SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
@@ -475,6 +474,7 @@ class NativeInstrumentReceiptRegistryV1:
                 or adapter._symbols != target.symbols
                 or adapter._cancelled
                 or adapter._native_capture_slot is not None
+                or cast(object, client._http_client) is not adapter
                 or client._cache is not cache
                 or client._native_instrument_capture_v1 is not None
                 or not callable(owner_guard)
@@ -483,9 +483,10 @@ class NativeInstrumentReceiptRegistryV1:
             ):
                 _deny("MONITORING_INSTRUMENT_RECEIPT_ARM_REQUIRED")
             witness = target._witness
+            if witness is None:
+                _deny("MONITORING_INSTRUMENT_RECEIPT_ARM_REQUIRED")
             if (
-                witness is None
-                or witness._assembly is not assembly
+                witness._assembly is not assembly
                 or witness._channel is not channel
                 or witness._worker.binding is not binding
                 or witness._assembly.execution_client is not client
@@ -567,9 +568,13 @@ class NativeInstrumentReceiptRegistryV1:
 
         try:
             owner = self._owner
+            if type(slot) is not _PendingNativeInstrumentCaptureV1:
+                _deny("MONITORING_INSTRUMENT_RECEIPT_REVOKED")
+            witness = slot.witness
+            if type(witness) is not MonitoringWitness:
+                _deny("MONITORING_INSTRUMENT_RECEIPT_REVOKED")
             if (
-                type(slot) is not _PendingNativeInstrumentCaptureV1
-                or self._slot is not slot
+                self._slot is not slot
                 or slot.owner is not owner
                 or slot.generation is not self._generation
                 or slot.phase not in phases
@@ -583,7 +588,6 @@ class NativeInstrumentReceiptRegistryV1:
                 or slot.client._monitor_target is not slot.target
                 or slot.client._monitor_binding is not slot.binding
                 or slot.client._monitor_attestation is not slot.attestation
-                or slot.client._http_client is not slot.adapter
                 or slot.client.bybit_instrument_provider is not slot.provider
                 or slot.client._cache is not slot.cache
                 or slot.client._metadata_profile != slot.metadata_profile
@@ -595,16 +599,17 @@ class NativeInstrumentReceiptRegistryV1:
                 or slot.target.scope != slot.scope
                 or slot.target.symbols != slot.symbols
                 or slot.target.fingerprint != slot.target_fingerprint
-                or slot.target._witness is not slot.witness
-                or slot.witness._assembly is not slot.assembly
-                or slot.witness._channel is not slot.channel
-                or slot.witness._worker.binding is not slot.binding
+                or slot.target._witness is not witness
+                or witness._assembly is not slot.assembly
+                or witness._channel is not slot.channel
+                or witness._worker.binding is not slot.binding
                 or slot.assembly.execution_client is not slot.client
+                or cast(object, slot.client._http_client) is not slot.adapter
             ):
                 _deny("MONITORING_INSTRUMENT_RECEIPT_REVOKED")
             owner._guard()
             owner.require_observation_binding(slot.binding, scope=slot.scope)
-            slot.witness.require()
+            witness.require()
             slot.owner_guard()
             if active_group:
                 if owner._client._operation.get() is not slot.budget:
@@ -802,8 +807,6 @@ class NativeInstrumentReceiptRegistryV1:
 
     def require_cached_native_matches(self, slot: _PendingNativeInstrumentCaptureV1) -> None:
         self.require(slot, phases=("CACHED",))
-        from .native_monitor_client import native_instrument_semantics_sha256
-
         fresh = slot.provider.get_all()
         self.require_provider_semantics(slot, fresh, native_instrument_semantics_sha256)
         for key, instrument in fresh.items():
@@ -855,8 +858,10 @@ class NativeInstrumentReceiptRegistryV1:
             _deny("MONITORING_INSTRUMENT_WALLET_ACK_REQUIRED")
         self.require(slot, phases=("CACHED",))
         now, _mono = self._clock()
+        view: NativeInstrumentReceiptViewV1 | NativeUnknownFeeInstrumentReceiptViewV1
+        handle: NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1
         if unknown_fees:
-            evidence = tuple(
+            unknown_fee_evidence = tuple(
                 slot.unknown_fee_evidence[symbol] for symbol in slot.symbols
             )
             view = NativeUnknownFeeInstrumentReceiptViewV1(
@@ -864,15 +869,20 @@ class NativeInstrumentReceiptRegistryV1:
                 slot.scope,
                 slot.target_fingerprint,
                 slot.symbols,
-                evidence,
+                unknown_fee_evidence,
                 slot.armed_at,
                 now,
             )
             handle = object.__new__(NativeUnknownFeeInstrumentReceiptV1)
         else:
-            evidence = tuple(slot.evidence[symbol] for symbol in slot.symbols)
+            actual_fee_evidence = tuple(slot.evidence[symbol] for symbol in slot.symbols)
             view = NativeInstrumentReceiptViewV1(
-                slot.scope, slot.target_fingerprint, slot.symbols, evidence, slot.armed_at, now
+                slot.scope,
+                slot.target_fingerprint,
+                slot.symbols,
+                actual_fee_evidence,
+                slot.armed_at,
+                now,
             )
             handle = object.__new__(NativeInstrumentReceiptV1)
         self.require(slot, phases=("CACHED",))
@@ -1098,8 +1108,8 @@ def _require_native_projection_fields(
             _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
         if raw.get("size_precision") != spec.quantity_step.scale:
             _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
-        for field_name, expected in currencies.items():
-            if raw.get(field_name) != expected:
+        for field_name, currency_code in currencies.items():
+            if raw.get(field_name) != currency_code:
                 _deny("MONITORING_INSTRUMENT_NATIVE_MISMATCH")
         notional = raw.get("min_notional")
         if type(notional) is not str or notional.split(" ", 1)[-1] != spec.quote_coin:

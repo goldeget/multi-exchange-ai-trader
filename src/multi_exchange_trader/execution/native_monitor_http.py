@@ -426,13 +426,13 @@ class MonitoringHttpAdapter:
                 envelope.decoded_body_bytes
             )
             registry.require(slot, phases=("INITIALIZING",))
+            result = body.get("result")
             if (
                 body.get("retCode") != 0
                 or type(body.get("retCode")) is not int
-                or type(body.get("result")) is not dict
+                or type(result) is not dict
             ):
                 self._deny()
-            result = body["result"]
             rows = result.get("list")
             stamp_ms = body.get("time")
             if (
@@ -506,13 +506,13 @@ class MonitoringHttpAdapter:
                 envelope.decoded_body_bytes
             )
             registry.require(slot, phases=("INITIALIZING",))
+            result = body.get("result")
             if (
                 body.get("retCode") != 0
                 or type(body.get("retCode")) is not int
-                or type(body.get("result")) is not dict
+                or type(result) is not dict
             ):
                 self._deny()
-            result = body["result"]
             rows = result.get("list")
             stamp_ms = body.get("time")
             if (
