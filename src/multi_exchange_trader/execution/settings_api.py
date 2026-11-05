@@ -6,7 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from multi_exchange_trader.trading_product import InstrumentKey
@@ -57,7 +57,7 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
         except (ValueError, TypeError, OSError, sqlite3.Error):
             return JSONResponse(status_code=503, content={"reason": "automatic_storage_unavailable"})
 
-    async def require_operator_principal(
+    def require_operator_principal(
         request: Request,
     ) -> VerifiedOperatorPrincipalV1 | None:
         hosts = request.headers.getlist("host")
@@ -156,11 +156,9 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
         return preview, artifact
 
     @router.post("/strategies/preview")
-    async def preview_strategy(
-        request: Request,
-        principal: VerifiedOperatorPrincipalV1 | None = Depends(require_operator_principal),
-    ) -> Any:
+    async def preview_strategy(request: Request) -> Any:
         try:
+            principal = require_operator_principal(request)
             if type(principal) is not VerifiedOperatorPrincipalV1:
                 raise PermissionError("operator required")
             value = await publication_body(request, publishing=False)
@@ -178,11 +176,9 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
             return JSONResponse(status_code=503, content={"reason": "automatic_storage_unavailable"})
 
     @router.post("/strategies/publish")
-    async def publish_strategy(
-        request: Request,
-        principal: VerifiedOperatorPrincipalV1 | None = Depends(require_operator_principal),
-    ) -> Any:
+    async def publish_strategy(request: Request) -> Any:
         try:
+            principal = require_operator_principal(request)
             if type(principal) is not VerifiedOperatorPrincipalV1:
                 raise PermissionError("operator required")
             value = await publication_body(request, publishing=True)
