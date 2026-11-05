@@ -279,7 +279,8 @@ class MonitoringHttpAdapter:
             physical_before = None
             if slot is not None:
                 registry = self._session._native_instrument_receipts_v1
-                group_before = registry.require(slot, phases=("CACHED",))
+                registry.require(slot, phases=("CACHED",))
+                group_before = slot.budget.require_active_group(slot.group)
                 physical_before = slot.budget.physical_attempts
                 if path != "/v5/account/wallet-balance" or slot.wallet_reads != 0:
                     registry.revoke(slot)
@@ -316,7 +317,8 @@ class MonitoringHttpAdapter:
             self._session.require_observation_binding(self._binding, scope=self._scope)
             if slot is not None:
                 assert group_before is not None and physical_before is not None
-                group_after = registry.require(slot, phases=("CACHED",))
+                registry.require(slot, phases=("CACHED",))
+                group_after = slot.budget.require_active_group(slot.group)
                 physical_after = slot.budget.physical_attempts
                 if (
                     group_after.logical_gets != group_before.logical_gets + 1
