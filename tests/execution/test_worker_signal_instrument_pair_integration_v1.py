@@ -68,6 +68,7 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
 
         # This runs the real restored worker/assembly path and issues its current
         # actual-fee T4 receipt using only restored_monitoring_io_support.IO.
+        h.io.auth_stage = "NOT_STARTED"
         try:
             await admit(h)
         except AccountBindingError as error:
@@ -80,8 +81,15 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
                     and cause.args[0].replace("_", "").isalnum()
                     and cause.args[0] == cause.args[0].upper()):
                 cause_name = cause.args[0]
+            frames: list[str] = []
+            traceback = None if cause is None else cause.__traceback__
+            while traceback is not None:
+                code = traceback.tb_frame.f_code
+                frames.append(f"{Path(code.co_filename).name}:{traceback.tb_lineno}:{code.co_name}")
+                traceback = traceback.tb_next
+            cause_location = "|".join(frames[-3:]) if frames else "NO_FRAME"
             raise AssertionError(
-                f"TEST_FIXTURE_AUTH_FAILURE:{h.io.auth_stage}:{cause_name}"
+                f"TEST_FIXTURE_AUTH_FAILURE:{h.io.auth_stage}:{cause_name}:{cause_location}"
             ) from None
         client = h.assembly.execution_client
         assert type(client) is MonitoringBybitExecutionClient
