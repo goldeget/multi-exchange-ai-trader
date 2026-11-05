@@ -111,6 +111,9 @@ class MonitoringResume:
     def fresh_guard(self) -> None:
         self.owner_guard()
         self.budget.check()
+        self.observation_guard()
+
+    def observation_guard(self) -> None:
         self.session.require_observation_binding(self.binding, scope=self.scope)
 
     def capture(self) -> MonitoringTarget:
@@ -197,7 +200,7 @@ class MonitoringResume:
                         native_capture = None
                         try:
                             with self.budget.receipt(
-                                guard=self.fresh_guard, owner_guard=self.owner_guard
+                                guard=self.observation_guard, owner_guard=self.owner_guard
                             ):
                                 self.fresh_guard()
                                 self.assembly.arm_monitoring(target)
