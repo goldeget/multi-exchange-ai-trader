@@ -150,6 +150,8 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         self._monitor_attestation = monitor_session._attested
         self._native_instrument_capture_v1: _PendingNativeInstrumentCaptureV1 | None = None
         self._native_instrument_receipt_v1: NativeInstrumentReceiptV1 | None = None
+        self._native_instrument_receipt_ready_v1 = asyncio.Event()
+        self._native_instrument_group_closed_v1 = asyncio.Event()
         super().__init__(**kwargs)
         # No await has occurred: constructor-scheduled repayment cannot tick yet.
         self._ws_private_client = _UnconnectedSocket(self._ws_private_client, self._fault)  # type: ignore[assignment]  # Runtime duck-typed transport fence.
@@ -223,6 +225,16 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         ):
             self._fault("MONITORING_SESSION_REPLACED")
             raise MonitoringError("MONITORING_SESSION_REPLACED")
+
+    async def wait_native_instrument_receipt_ready_v1(self) -> bool:
+        await self._native_instrument_receipt_ready_v1.wait()
+        slot = self._native_instrument_capture_v1
+        return (
+            slot is not None
+            and slot.phase == "ISSUED"
+            and self._native_instrument_receipt_v1 is not None
+            and self.monitoring_fault is None
+        )
 
     def arm_monitoring(self, target: MonitoringTarget) -> None:
         from .monitoring_reconciliation import require_current_target
@@ -361,7 +373,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
 
     async def _connect(self) -> None:
         slot = self._native_instrument_capture_v1
-        startup_succeeded = False
+        receipt_finalized = False
         try:
             self._event_guard()
             if slot is not None:
@@ -377,6 +389,8 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             finally:
                 self._monitor_account_emit = False
             await self._await_account_registered()
+            if slot is not None:
+                self._event_guard()
             if self._monitor_account_event is None:
                 raise MonitoringError("MONITORING_FRESH_ACCOUNT_ACK_REQUIRED")
             if slot is not None:
@@ -386,21 +400,25 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
                         slot, wallet_event=self._monitor_account_event
                     )
                 )
+                self._monitor_session._native_instrument_receipts_v1.finish_startup(
+                    slot, success=True
+                )
+                receipt_finalized = True
+                self._native_instrument_receipt_ready_v1.set()
+                await self._native_instrument_group_closed_v1.wait()
+                self._event_guard()
             assert self._monitor_stream is not None
             budget = self._monitor_session._client._operation.get()
             if not isinstance(budget, MonitoringReadBudget):
                 self._deny()
             import time
-            deadline = budget.deadline
-            if slot is not None:
-                deadline = min(deadline, budget.require_active_group(slot.group).deadline)
-            await self._monitor_stream.connect(timeout=min(10, deadline - time.monotonic()))
+            timeout = (
+                10
+                if slot is not None
+                else min(10, budget.deadline - time.monotonic())
+            )
+            await self._monitor_stream.connect(timeout=timeout)
             self._event_guard()
-            if slot is not None:
-                self._monitor_session._native_instrument_receipts_v1.finish_startup(
-                    slot, success=True
-                )
-            startup_succeeded = True
             return
         except asyncio.CancelledError:
             self._fault("MONITORING_NATIVE_CONNECT_FAILED")
@@ -408,10 +426,12 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         except Exception:  # noqa: BLE001 - inherited task logging must see fixed codes only.
             self._fault("MONITORING_NATIVE_CONNECT_FAILED")
         finally:
-            if slot is not None and not startup_succeeded:
+            if slot is not None and not receipt_finalized:
                 self._monitor_session._native_instrument_receipts_v1.finish_startup(
                     slot, success=False
                 )
+            if slot is not None:
+                self._native_instrument_receipt_ready_v1.set()
         raise MonitoringError("MONITORING_NATIVE_CONNECT_FAILED") from None
 
     async def _apply_account_configuration(self) -> None:

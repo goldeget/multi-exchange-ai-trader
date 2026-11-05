@@ -195,22 +195,38 @@ class MonitoringResume:
                         # Native metadata, cache and wallet ACK share one fresh
                         # bounded group. The child task inherits this exact token.
                         native_capture = None
-                        with self.budget.receipt(
-                            guard=self.fresh_guard, owner_guard=self.owner_guard
-                        ):
-                            self.fresh_guard()
-                            self.assembly.arm_monitoring(target)
-                            native_capture = self.client._native_instrument_capture_v1
-                            try:
+                        try:
+                            with self.budget.receipt(
+                                guard=self.fresh_guard, owner_guard=self.owner_guard
+                            ):
+                                self.fresh_guard()
+                                self.assembly.arm_monitoring(target)
+                                native_capture = self.client._native_instrument_capture_v1
+                                if native_capture is None:
+                                    raise MonitoringError(
+                                        "MONITORING_INSTRUMENT_RECEIPT_REQUIRED"
+                                    )
                                 self.armed = True
                                 self.state = replace(self.state, phase="CONNECTING")
                                 self.worker._node_task = self.loop.create_task(self._run_node())
-                                await self.assembly.wait_monitoring_ready()
-                            finally:
-                                if native_capture is not None and native_capture.startup_open:
-                                    self.session._native_instrument_receipts_v1.finish_startup(
-                                        native_capture, success=False
+                                issued = (
+                                    await self.client.wait_native_instrument_receipt_ready_v1()
+                                )
+                                self.fresh_guard()
+                                if not issued:
+                                    raise MonitoringError(
+                                        self.client.monitoring_fault
+                                        or "MONITORING_INSTRUMENT_RECEIPT_REQUIRED"
                                     )
+                        finally:
+                            if native_capture is not None and native_capture.startup_open:
+                                self.session._native_instrument_receipts_v1.finish_startup(
+                                    native_capture, success=False
+                                )
+                            self.client._native_instrument_group_closed_v1.set()
+                        # The stream handshake uses its existing timeout after the
+                        # exact HTTP read group has ended.
+                        await self.assembly.wait_monitoring_ready()
                     finally:
                         self.session.discard_monitoring_receipt(pre_receipt)
                     self.fresh_guard()
@@ -283,6 +299,7 @@ class MonitoringResume:
         except Exception:  # noqa: BLE001 - retrieve native failure without leaking payloads.
             self.retire("MONITORING_NODE_FAILED")
         finally:
+            self.client._native_instrument_receipt_ready_v1.set()
             if not self.worker._stopped:
                 self.retire("MONITORING_NODE_ENDED")
 
