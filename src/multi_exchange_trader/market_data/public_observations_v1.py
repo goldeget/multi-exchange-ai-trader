@@ -21,8 +21,8 @@ from .instrument_definition import InstrumentObservation, LinearInstrumentSpec
 from .models import Candle
 
 if TYPE_CHECKING:
-    from ..account.instrument_envelope import CatalogReceiptView, CurrentCatalogReceipt
-    from .instrument_producer import BybitInstrumentCatalogProducer
+    from ..account.instrument_envelope import CatalogReceiptView
+
 
 _HEX = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", re.ASCII)

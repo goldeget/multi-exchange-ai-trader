@@ -10,12 +10,7 @@ from uuid import uuid4
 
 import httpx
 
-from ..bybit_public_contracts import (
-    CANDLE_URL as CANDLE_URL,
-    CATEGORIES,
-    INTERVALS,
-    TICKER_URL as TICKER_URL,
-)
+from .. import bybit_public_contracts as _bybit_public_contracts
 from ..models import Candle, MarketType, Ticker
 from ..public_observations_v1 import (
     BybitCandleReadV1,
@@ -35,6 +30,12 @@ from .base import (
     validate_candle_selection,
     validate_selection,
 )
+
+CANDLE_URL = _bybit_public_contracts.CANDLE_URL
+CATEGORIES = _bybit_public_contracts.CATEGORIES
+INTERVALS = _bybit_public_contracts.INTERVALS
+TICKER_URL = _bybit_public_contracts.TICKER_URL
+del _bybit_public_contracts
 
 
 def _envelope(body: Any, category: str) -> tuple[dict[str, Any], datetime]:
