@@ -319,15 +319,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert set(state["active"]) == {"position-1"}
     assert state["active"]["position-1"]["reason_code"] == (
         "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE")
-    revision = projection.revision
-
-    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
-    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
-    operation = core.runtime._attached_read_operations_v1["position-1"]
-    core.runtime.consume_readback("position-1", snapshot, attached_receipt=receipt,
-        attached_target=target, _attached_operation=operation)
-    replayed = core.journal.get_projection("protection-recovery-admission-v1")
-    assert replayed is not None and replayed.revision == revision
 
     assert_entry_blocked("blocked-entry", "position-2")
 
@@ -345,6 +336,26 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert core.runtime._recovery_required_v1() is False
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
     assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
+
+
+async def test_authenticated_incomplete_protection_replay_is_idempotent(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    projection = core.journal.get_projection("protection-recovery-admission-v1")
+    assert projection is not None
+    revision = projection.revision
+
+    receipt, target = core.runtime._attached_readbacks_v1["position-1"]
+    snapshot = core.owner.require_attached_protection_v1(receipt, target=target).snapshot
+    operation = core.runtime._attached_read_operations_v1["position-1"]
+    replay = core.runtime.consume_readback("position-1", snapshot, attached_receipt=receipt,
+        attached_target=target, _attached_operation=operation)
+    assert replay.status == "ATTENTION" and replay.entries_blocked is True
+    replayed = core.journal.get_projection("protection-recovery-admission-v1")
+    assert replayed is not None and replayed.revision == revision
 
 
 async def test_recovery_gate_blocks_pending_entry_dispatch(attached_core: Any) -> None:
