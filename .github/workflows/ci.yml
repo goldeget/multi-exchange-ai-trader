@@ -114,7 +114,7 @@ jobs:
         run: |
           command -v unshare
           sudo unshare --net -- env -i PATH="$PATH" LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" LANG=C.UTF-8 PYTHONPATH="$PWD/src" REQUIRE_NATIVE_CONTRACTS=1 NATIVE_NETWORK_ISOLATED=1 OPENBLAS_NUM_THREADS=1 "$PWD/.venv/bin/python" -m pytest -q tests/execution/test_restored_monitoring_linux.py --junitxml=restored-monitoring-contracts.xml
-      - name: Require all twelve exact restored monitoring contracts
+      - name: Require all thirteen exact restored monitoring contracts
         run: |
           .venv/bin/python - <<'PY'
           import xml.etree.ElementTree as ET
@@ -122,6 +122,7 @@ jobs:
           suites, cases = list(root.iter("testsuite")), list(root.iter("testcase"))
           expected = {
               "test_actual_restored_lifecycle_and_one_shot_admission",
+              "test_issued_t4_receipt_rejects_extra_native_get_before_send",
               "test_readonly_binding_without_capital_or_trading_permission",
               "test_forged_stale_phase_and_budget_receipts_cannot_admit",
               "test_all_financial_and_reconciliation_fences",
@@ -137,13 +138,13 @@ jobs:
           total = sum(int(s.attrib.get("tests", 0)) for s in suites)
           bad = sum(int(s.attrib.get(key, 0)) for s in suites for key in ("skipped", "errors", "failures"))
           names = [case.attrib.get("name", "") for case in cases]
-          if (total != 12 or len(cases) != 12 or bad or len(set(names)) != 12
+          if (total != 13 or len(cases) != 13 or bad or len(set(names)) != 13
                   or set(names) != expected
                   or any(case.attrib.get("classname", "").split(".")[-1]
                          != "test_restored_monitoring_linux" for case in cases)
                   or any(list(case.iter(tag)) for case in cases for tag in ("skipped", "failure", "error"))):
-              raise SystemExit("Restored monitoring requires exactly 12 named unskipped passing cases")
-          print("Verified 12 actual restored monitoring contracts without network access")
+              raise SystemExit("Restored monitoring requires exactly 13 named unskipped passing cases")
+          print("Verified 13 actual restored monitoring contracts without network access")
           PY
       - name: Require isolated actual fresh monitoring bootstrap contracts
         run: |
