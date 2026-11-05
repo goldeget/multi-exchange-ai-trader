@@ -52,6 +52,7 @@ _READBACK_FAILURE_CODES = {
         "ACCOUNT_BINDING_CLOCK_INVALID", "ACCOUNT_BINDING_STALE", "ACCOUNT_HELD_SOURCE_REQUIRED",
         "ACCOUNT_INFO_SOURCE_CAPTURE_FAILED", "ACCOUNT_INFO_SOURCE_OVERLAP", "ACCOUNT_INFO_SOURCE_REQUIRED",
         "ACCOUNT_INFO_SOURCE_RETIRED", "ACCOUNT_LINEAR_PERMISSIONS_REQUIRED", "ACCOUNT_NETWORK_TRANSPORT_REQUIRED",
+        "ACCOUNT_HELD_SOURCE_CAPTURE_FAILED",
         "ACCOUNT_SESSION_MISMATCH_OR_CLOSED", "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",
         "AUTHENTICATED_ACCOUNT_SCOPE_MISMATCH", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",
     }),
@@ -455,6 +456,12 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     core.monkeypatch.setattr(new_owner, "_capture_linear_orders_v1",
         trace_async("orders-capture", new_owner._capture_linear_orders_v1,
                     trace_owner_guard=True))
+    core.monkeypatch.setattr(new_owner._client, "_capture_private_account_pages_v1",
+        trace_async("private-pages", new_owner._client._capture_private_account_pages_v1))
+    core.monkeypatch.setattr(new_owner, "_check_linear_account_info_v1",
+        trace("linear-check", new_owner._check_linear_account_info_v1))
+    core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
+        trace("held-require", new_owner._require_linear_held_v1))
     private_client = new_owner._client
     assert type(private_client) is BybitReadOnlyClient
     original_private_page = private_client._capture_private_account_page_v1
