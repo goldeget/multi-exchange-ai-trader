@@ -20,6 +20,13 @@ def instrument_row():
         "symbol": "BTCUSDT",
         "contractType": "LinearPerpetual",
         "status": "Trading",
+        "priceScale": "2",
+        "isPreListing": False,
+        "leverageFilter": {
+            "minLeverage": "1",
+            "maxLeverage": "75",
+            "leverageStep": "0.01",
+        },
         "baseCoin": "BTC",
         "quoteCoin": "USDT",
         "settleCoin": "USDT",
@@ -28,6 +35,7 @@ def instrument_row():
             "qtyStep": "0.001",
             "minOrderQty": "0.001",
             "maxOrderQty": "100.000",
+            "maxMktOrderQty": "80.000",
             "minNotionalValue": "5",
         },
     }

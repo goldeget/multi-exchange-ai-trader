@@ -192,13 +192,27 @@ class MonitoringResume:
                             raise MonitoringError("MONITORING_PRE_MISMATCH")
                         self.session.consume_monitoring_receipt(pre_receipt,
                             binding=self.binding, target=target, phase="PRE")
-                        self.assembly.arm_monitoring(target)
-                        self.armed = True
-                        self.state = replace(self.state, phase="CONNECTING")
-                        self.worker._node_task = self.loop.create_task(self._run_node())
+                        # Native metadata, cache and wallet ACK share one fresh
+                        # bounded group. The child task inherits this exact token.
+                        native_capture = None
+                        with self.budget.receipt(
+                            guard=self.fresh_guard, owner_guard=self.owner_guard
+                        ):
+                            self.fresh_guard()
+                            self.assembly.arm_monitoring(target)
+                            native_capture = self.client._native_instrument_capture_v1
+                            try:
+                                self.armed = True
+                                self.state = replace(self.state, phase="CONNECTING")
+                                self.worker._node_task = self.loop.create_task(self._run_node())
+                                await self.assembly.wait_monitoring_ready()
+                            finally:
+                                if native_capture is not None and native_capture.startup_open:
+                                    self.session._native_instrument_receipts_v1.finish_startup(
+                                        native_capture, success=False
+                                    )
                     finally:
                         self.session.discard_monitoring_receipt(pre_receipt)
-                    await self.assembly.wait_monitoring_ready()
                     self.fresh_guard()
                     await self.assembly.monitoring_barrier()
                     self.fresh_guard()

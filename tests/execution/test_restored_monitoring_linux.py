@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import inspect
 import threading
 import time
@@ -40,6 +41,7 @@ from multi_exchange_trader.execution.monitoring_models import MonitoringError
 from multi_exchange_trader.execution.monitoring_receipts import AuthenticatedMonitoringReceipt
 from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.runtime import RuntimeBlocked
+from multi_exchange_trader.market_data.instrument_definition import LinearInstrumentSpec
 
 
 async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkeypatch):
@@ -50,6 +52,43 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
         instrument = cache.instrument(order.instrument_id)
         before = order.to_dict(), position.to_dict(), instrument.to_dict(instrument)
         status = await admit(h)
+        client = h.assembly.execution_client
+        receipt = client._native_instrument_receipt_v1
+        slot = client._native_instrument_capture_v1
+        assert receipt is not None
+        assert slot is not None
+        view = h.session.require_native_instrument_receipt_v1(
+            receipt, binding=h.worker.binding, scope=SCOPE, target=slot.target
+        )
+        assert view.symbols == ("BTCUSDT",)
+        assert len(view.evidence) == 1
+        evidence = view.evidence[0]
+        assert evidence.envelope.key.symbol == "BTCUSDT"
+        assert evidence.envelope.sent_origin.host == "api-demo.bybit.com"
+        assert evidence.envelope.response_origin == evidence.envelope.sent_origin
+        assert evidence.envelope.response_status == 200
+        assert evidence.envelope.decoded_body_sha256 == hashlib.sha256(
+            evidence.envelope.decoded_body_bytes
+        ).hexdigest()
+        spec = evidence.projection.spec
+        assert type(spec) is LinearInstrumentSpec
+        assert spec.max_limit_quantity.raw == "100.000"
+        assert spec.max_market_quantity.raw == "80.000"
+        assert spec.source_price_scale == 2
+        assert spec.max_leverage.raw == "75"
+        assert instrument.max_quantity.as_decimal() == Decimal("100.000")
+        assert instrument.margin_init == instrument.margin_maint == Decimal("0.1")
+        assert evidence.fee.path == "/v5/account/fee-rate"
+        assert evidence.fee.query == (("category", "linear"), ("symbol", "BTCUSDT"))
+        assert evidence.fee.signed is True
+        assert evidence.fee.origin == evidence.envelope.sent_origin
+        assert evidence.fee.response_status == 200
+        assert not hasattr(evidence.fee, "raw_body")
+        _fee_generation, fee_slot = h.session._linear_private_state_v1("FEE")
+        assert fee_slot is not None
+        assert fee_slot.capture.raw_body_sha256 == evidence.fee.body_sha256
+        assert fee_slot.capture.request_started_at == evidence.fee.request_started_at
+        assert fee_slot.capture.received_at == evidence.fee.received_at
         assert type(h.assembly.node) is module("live.node").TradingNode
         assert type(position) is module("model.position").Position
         assert h.assembly.strategy.cache is cache
@@ -71,6 +110,22 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
             await h.worker.resume_restored_monitoring()
         with pytest.raises(FrozenInstanceError):
             status.trading_enabled = True
+
+
+async def test_issued_t4_receipt_rejects_extra_native_get_before_send(tmp_path, monkeypatch):
+    async with restored_case(tmp_path, monkeypatch) as h:
+        await admit(h)
+        client = h.assembly.execution_client
+        before = len(h.io.sends)
+        with pytest.raises(MonitoringError):
+            await client._http_client._get(
+                "/v5/account/fee-rate",
+                [("category", "linear"), ("symbol", "BTCUSDT")],
+                signed=True,
+            )
+        assert len(h.io.sends) == before
+        assert client._native_instrument_receipt_v1 is None
+        assert client.monitoring_fault
 
 
 async def test_readonly_binding_without_capital_or_trading_permission(tmp_path, monkeypatch):

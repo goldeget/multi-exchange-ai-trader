@@ -146,6 +146,10 @@ async def test_actual_fresh_bootstrap_installs_provider_metadata_and_streams_onc
         assert controller.source_generation_id is None
         assert not any(path == "/v5/account/fee-rate" for path, _ in h.io.sends)
         client, cache = h.assembly.execution_client, h.assembly.node.cache
+        assert client._native_instrument_capture_v1 is None
+        assert client._native_instrument_receipt_v1 is None
+        assert client._http_client._native_capture_slot is None
+        assert h.session._native_instrument_receipts_v1._slot is None
         assert type(h.assembly.node) is module("live.node").TradingNode
         loaded = client.bybit_instrument_provider.get_all()
         assert {str(key) for key in loaded} == {"BTCUSDT-LINEAR.BYBIT"}
