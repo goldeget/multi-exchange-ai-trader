@@ -493,7 +493,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert_entry_blocked("blocked-after-restart", "position-3")
 
     core.rows[:] = original_rows
-    core.clock[0] += timedelta(seconds=1)
     complete = await core.runtime.poll_readback(core.adapter, "position-1")
     known_reasons, unknown_reason_count = _sanitized_assessment_reasons(complete.reasons)
     assert (complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0), (
