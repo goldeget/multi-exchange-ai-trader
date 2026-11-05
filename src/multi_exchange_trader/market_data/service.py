@@ -137,6 +137,7 @@ class MarketDataService:
             completed_at = current()
             if (type(completed_at) is not datetime or completed_at.tzinfo is None
                     or completed_at.utcoffset() is None
+                    or result.valid_until is None
                     or completed_at.astimezone(UTC) >= result.valid_until):
                 raise PublicObservationRejected("closed_bar_stale")
             catalog_producer.require_current(catalog_receipt, expected_revision=expected_catalog_revision)

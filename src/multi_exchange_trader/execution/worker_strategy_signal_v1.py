@@ -231,15 +231,16 @@ class WorkerStrategySignalOwnerV1:
             # A retired assembler slot is not a prepared entry read. The standalone
             # signal lane will issue its own receipt and revoke that old slot.
             return None
+        catalog_current = self._catalog_producer._current
         if (slot is None or slot.result is not read
                 or self._worker._entry_model_owner_v2 is not entry_owner
                 or assembler.catalog_producer is not self._catalog_producer
                 or type(slot.catalog_receipt) is not CurrentCatalogReceipt
-                or self._catalog_producer._current is not slot.catalog_current
+                or catalog_current is None or catalog_current is not slot.catalog_current
                 or type(scope) is not c.RiskScopeV2
                 or slot.scope != scope
                 or scope.instrument not in read.catalog.declared_universe
-                or read.catalog.revision != slot.catalog_current.view.catalog.revision):
+                or read.catalog.revision != catalog_current.view.catalog.revision):
             _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
         assembler.require_current_v1(read)
         if (entry_owner._read is not read or assembler._current is not slot
@@ -416,6 +417,8 @@ class WorkerStrategySignalOwnerV1:
                     _reject()
                 snapshot = self._snapshot(store, bars, ClosedBarScope(scope.instrument.symbol, configuration.interval),
                     catalog_revision=catalog_revision, now=_utc(self._clock()), max_bar_age=max_bar_age)
+                if snapshot.catalog_revision is None or snapshot.valid_until is None:
+                    _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
                 direction = self._derive(snapshot.candles, configuration)
                 expiry = min(snapshot.collected_at + timedelta(seconds=configuration.signal_ttl_seconds),
                     snapshot.valid_until, quote.valid_until,

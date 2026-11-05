@@ -10,7 +10,12 @@ from uuid import uuid4
 
 import httpx
 
-from ..bybit_public_contracts import CANDLE_URL, CATEGORIES, INTERVALS, TICKER_URL
+from ..bybit_public_contracts import (
+    CANDLE_URL as CANDLE_URL,
+    CATEGORIES,
+    INTERVALS,
+    TICKER_URL as TICKER_URL,
+)
 from ..models import Candle, MarketType, Ticker
 from ..public_observations_v1 import (
     BybitCandleReadV1,
@@ -56,7 +61,7 @@ class BybitAdapter(MarketAdapter):
     async def get_candle_read_v1(self, symbol: str, interval: str, limit: int) -> BybitCandleReadV1:
         """Capture linear candles with the exact public response custody fields."""
         validate_candle_selection(symbol, "perpetual", interval, limit)
-        params = {
+        params: dict[str, str | int] = {
             "symbol": symbol,
             "category": "linear",
             "interval": INTERVALS[interval],
@@ -105,7 +110,7 @@ class BybitAdapter(MarketAdapter):
     async def get_quote_read_v1(self, symbol: str) -> BybitTickerQuoteReadV1:
         """Capture a linear best bid/ask with source timestamps and response hash."""
         validate_selection(symbol, "perpetual")
-        params = {"symbol": symbol, "category": "linear"}
+        params: dict[str, str | int] = {"symbol": symbol, "category": "linear"}
         read = await request_json_observation_v1(self.client, TICKER_URL, params, clock=self._clock)
         expected_query = tuple(sorted((key, str(value)) for key, value in params.items()))
         if read.endpoint != TICKER_URL or read.query != expected_query:

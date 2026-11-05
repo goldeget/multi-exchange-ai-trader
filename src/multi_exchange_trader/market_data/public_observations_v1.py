@@ -12,13 +12,17 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, cast
 
 from ..trading_product import InstrumentKey
 from .bybit_public_contracts import CANDLE_URL, INTERVALS, TICKER_URL
 from .instrument_catalog import InstrumentCatalog, _freshness
 from .instrument_definition import InstrumentObservation, LinearInstrumentSpec
 from .models import Candle
+
+if TYPE_CHECKING:
+    from ..account.instrument_envelope import CatalogReceiptView, CurrentCatalogReceipt
+    from .instrument_producer import BybitInstrumentCatalogProducer
 
 _HEX = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", re.ASCII)
@@ -30,7 +34,7 @@ class PublicObservationRejected(ValueError):
         super().__init__(reason)
 
 
-def _reject(reason: str) -> None:
+def _reject(reason: str) -> NoReturn:
     raise PublicObservationRejected(reason)
 
 
@@ -64,6 +68,16 @@ class _BybitPublicReadReceiptV1:
 
     __slots__ = ("_adapter", "_content_sha256", "_endpoint", "_kind", "_query",
                  "_raw_body_sha256", "_read", "_seal", "_source")
+
+    _adapter: object
+    _content_sha256: str
+    _endpoint: str
+    _kind: str
+    _query: tuple[tuple[str, str], ...]
+    _raw_body_sha256: str
+    _read: object
+    _seal: object
+    _source: object
 
     def __new__(cls, *, seal: object, adapter: object, read: object, source: object,
                 kind: str, endpoint: str, query: tuple[tuple[str, str], ...],
@@ -202,18 +216,23 @@ def source_ref_payload_v1(value: BybitPublicSourceRefV1) -> dict[str, object]:
 
 
 def source_ref_from_payload_v1(value: object) -> BybitPublicSourceRefV1:
-    if type(value) is not dict or set(value) != {
+    if type(value) is not dict:
+        _reject("public_source_identity_invalid")
+    # The exact-dict check establishes the container shape; the existing source
+    # validator still checks every decoded field after this static payload cast.
+    payload = cast(dict[str, Any], value)
+    if set(payload) != {
             "source_id", "source_generation", "observation_id", "source_environment", "endpoint",
             "query", "request_started_at", "received_at", "server_observed_at", "raw_body_sha256"}:
         _reject("public_source_identity_invalid")
     try:
-        query = tuple(tuple(pair) for pair in value["query"])
+        query = tuple(tuple(pair) for pair in payload["query"])
         return BybitPublicSourceRefV1(
-            value["source_id"], value["source_generation"], value["observation_id"],
-            value["source_environment"], value["endpoint"], query,
-            datetime.fromisoformat(value["request_started_at"]),
-            datetime.fromisoformat(value["received_at"]),
-            datetime.fromisoformat(value["server_observed_at"]), value["raw_body_sha256"],
+            payload["source_id"], payload["source_generation"], payload["observation_id"],
+            payload["source_environment"], payload["endpoint"], query,
+            datetime.fromisoformat(payload["request_started_at"]),
+            datetime.fromisoformat(payload["received_at"]),
+            datetime.fromisoformat(payload["server_observed_at"]), payload["raw_body_sha256"],
         )
     except (TypeError, ValueError, KeyError):
         _reject("public_source_identity_invalid")
@@ -304,7 +323,9 @@ class BybitPublicQuoteSnapshotV1:
         object.__setattr__(self, "valid_until", _utc(self.valid_until))
 
 
-def _current_catalog_view_v1(producer: object, receipt: object, expected_revision: str, now: datetime) -> object:
+def _current_catalog_view_v1(
+    producer: object, receipt: object, expected_revision: str, now: datetime
+) -> CatalogReceiptView:
     """Resolve catalog data only through the producer's opaque current receipt."""
     from ..account.instrument_envelope import CatalogReceiptView, CurrentCatalogReceipt
     from .instrument_producer import BybitInstrumentCatalogProducer
@@ -313,6 +334,8 @@ def _current_catalog_view_v1(producer: object, receipt: object, expected_revisio
             or type(receipt) is not CurrentCatalogReceipt
             or type(expected_revision) is not str or _HEX.fullmatch(expected_revision) is None):
         _reject("public_catalog_receipt_required")
+    producer = cast(BybitInstrumentCatalogProducer, producer)
+    receipt = cast(CurrentCatalogReceipt, receipt)
     try:
         view = producer.require_current(receipt, expected_revision=expected_revision)
         if (type(view) is not CatalogReceiptView or view.catalog.revision != expected_revision
@@ -329,6 +352,7 @@ def _catalog_instrument_v1(view: object, symbol: str) -> InstrumentObservation:
 
     if type(view) is not CatalogReceiptView:
         _reject("public_catalog_required")
+    view = cast(CatalogReceiptView, view)
     catalog = view.catalog
     if type(catalog) is not InstrumentCatalog:
         _reject("public_catalog_invalid")
