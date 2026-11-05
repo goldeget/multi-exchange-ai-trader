@@ -365,6 +365,10 @@ async def test_same_watermark_uses_latest_source_window_and_retires_previous_han
     state = model_worker
     scope, handle, source = await captured(state)
     first = state.worker.consume_builtin_signal_v1(handle)
+    from dataclasses import replace
+
+    # Keep the closed-bar watermark fixed while the latest raw source window changes.
+    source.rows[-1] = replace(source.rows[-1], volume=source.rows[-1].volume + Decimal(1))
     repeated = await state.worker.capture_builtin_signal_v1(
         scope=scope, market=state.worker._entry_model_market_v1)
     second = state.worker.consume_builtin_signal_v1(repeated)
@@ -437,9 +441,10 @@ async def test_original_phase_stop_retires_previously_issued_signal(model_worker
         state.worker.consume_builtin_signal_v1(handle)
     assert state.worker._strategy_signal_owner_v1._current is None
     source = state._signal_test_source_v1
+    calls_before_stop_capture = source.calls
     with pytest.raises(RuntimeBlocked, match="MODEL_OBSERVATION_STOP_REQUESTED"):
         await state.worker.capture_builtin_signal_v1(scope=_scope, market=state._signal_test_market_v1)
-    assert source.calls == 0 and state.worker._strategy_signal_owner_v1._current is None
+    assert source.calls == calls_before_stop_capture and state.worker._strategy_signal_owner_v1._current is None
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 

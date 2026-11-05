@@ -255,6 +255,19 @@ class ExecutionWorker:
         if type(owner) is WorkerEntryModelOwnerV2:
             WorkerEntryModelOwnerV2.retire(owner)
 
+    def _retire_entry_model_plan_preserving_read_v2(
+            self, read: BybitLinearVenueReadV1) -> None:
+        """Withdraw prior plan handles while retaining one captured source read."""
+        owner = self._entry_model_owner_v2
+        if (type(owner) is not WorkerEntryModelOwnerV2
+                or self._entry_publication_frame_v2 is not None
+                or self._entry_binding_refresh_v2 is not None
+                or self._operations != 1 or self._staging
+                or type(read) is not BybitLinearVenueReadV1):
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_OPERATION_IN_PROGRESS")
+        owner.retire_plan_preserving_read_v1(read)
+        self._entry_publication_generation_v2 = object()
+
     def _entry_publication_links_v2(self, *,
             fresh_binding: AuthenticatedAccountBinding | None = None) -> tuple[object, ...]:
         """Callbackful local lifetime checks, never an after-clock or finance proof."""
@@ -393,16 +406,30 @@ class ExecutionWorker:
         self._require_admission()
         if type(market) is not MarketDataService or market is not self._entry_model_market_v1:
             raise MarketDataUnavailable("public_source_required", "The installed public market owner is required")
-        self._retire_entry_publications_v2()
-        self._require_model_observation_not_stopped_v2()
         if (self._operations or self._staging or self._entry_publication_frame_v2 is not None
                 or self._entry_binding_refresh_v2 is not None):
+            self._retire_entry_publications_v2()
             raise RuntimeBlocked("WORKER_STRATEGY_SIGNAL_OPERATION_IN_PROGRESS")
-        owner = WorkerStrategySignalOwnerV1(self, market)
-        self._strategy_signal_owner_v1 = owner
         self._operations += 1
         try:
+            self._require_model_observation_not_stopped_v2()
+            owner = WorkerStrategySignalOwnerV1(self, market)
+            entry_catalog = owner._entry_catalog_for_scope_v1(scope)
+            if entry_catalog is None:
+                # Standalone signals refresh their own narrow worker-symbol universe.
+                self._retire_entry_publications_v2()
+            else:
+                # The entry owner's full dynamic universe is already current. Retire
+                # any old plan/signal handles without discarding that exact read.
+                self._retire_entry_model_plan_preserving_read_v2(entry_catalog[2])
+                signal_owner = self._strategy_signal_owner_v1
+                if type(signal_owner) is WorkerStrategySignalOwnerV1:
+                    WorkerStrategySignalOwnerV1.retire(signal_owner)
+            self._strategy_signal_owner_v1 = owner
             return await owner.capture(scope)
+        except BaseException:
+            self._retire_entry_publications_v2()
+            raise
         finally:
             self._operations -= 1
 

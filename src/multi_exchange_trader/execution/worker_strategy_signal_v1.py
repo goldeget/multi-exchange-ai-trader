@@ -9,8 +9,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, SupportsIndex, cast
 
+from ..account.instrument_envelope import CatalogReceiptView, CurrentCatalogReceipt
 from ..market_data.adapters.base import MarketDataUnavailable
 from ..market_data.closed_bars import ClosedBarScope, ClosedBarSnapshot, ClosedBarSnapshotStore
+from ..market_data.instrument_definition import InstrumentObservation
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from ..market_data.public_observations_v1 import (
     BybitPublicQuoteSnapshotV1,
@@ -21,6 +23,7 @@ from ..market_data.service import MarketDataService
 from ..trading_product import InstrumentKey
 from . import builtin_sma_atr_v1 as builtin
 from . import risk_v2_contracts as c
+from .bybit_linear_source_assembler_v1 import BybitLinearVenueReadV1
 from .monitoring_budget import MonitoringReadBudget
 from .policy_sections import catalog_from_wire, eligible_references
 from .runtime_policy import RuntimePolicyBook
@@ -133,8 +136,10 @@ class _Issued:
     policy_key: str
     artifact: StrategyArtifactBytesV1
     quote: BybitPublicQuoteSnapshotV1
-    catalog_receipt: object
+    catalog_receipt: CurrentCatalogReceipt
     catalog_revision: str
+    entry_read: BybitLinearVenueReadV1 | None
+    entry_read_slot: object | None
     roots: tuple[object, ...]
     epoch: object
 
@@ -211,6 +216,84 @@ class WorkerStrategySignalOwnerV1:
     def retire(self) -> None:
         self._current = None
         self._epoch = object()
+
+    def _entry_catalog_for_scope_v1(
+        self, scope: c.RiskScopeV2,
+    ) -> tuple[CurrentCatalogReceipt, str, BybitLinearVenueReadV1, object] | None:
+        """Reuse only the original entry owner's complete, still-current read."""
+        entry_owner = self._entry_owner
+        assembler = entry_owner._assembler
+        read = entry_owner._read
+        slot = assembler._current
+        if entry_owner._busy is not None:
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        if read is None:
+            # A retired assembler slot is not a prepared entry read. The standalone
+            # signal lane will issue its own receipt and revoke that old slot.
+            return None
+        if (slot is None or slot.result is not read
+                or self._worker._entry_model_owner_v2 is not entry_owner
+                or assembler.catalog_producer is not self._catalog_producer
+                or type(slot.catalog_receipt) is not CurrentCatalogReceipt
+                or self._catalog_producer._current is not slot.catalog_current
+                or type(scope) is not c.RiskScopeV2
+                or read.scope != scope
+                or scope.instrument not in read.catalog.declared_universe
+                or read.catalog.revision != slot.catalog_current.view.catalog.revision):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        assembler.require_current_v1(read)
+        if (entry_owner._read is not read or assembler._current is not slot
+                or self._catalog_producer._current is not slot.catalog_current):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        current = self._catalog_producer.require_current(
+            slot.catalog_receipt, expected_revision=read.catalog.revision)
+        if type(current) is not CatalogReceiptView:
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        universe = current.catalog.declared_universe
+        observations = current.catalog.observations
+        if (type(universe) is not tuple or type(observations) is not tuple
+                or len(observations) != len(universe)):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        observed_keys = tuple(item.key for item in observations
+            if type(item) is InstrumentObservation)
+        matches = tuple(item for item in observations
+            if type(item) is InstrumentObservation and item.key == scope.instrument)
+        if (current.source_environment != "PUBLIC_MAINNET"
+                or current.catalog is not read.catalog
+                or len(observed_keys) != len(universe)
+                or set(observed_keys) != set(universe)
+                or len(matches) != 1
+                or current.catalog.revision != read.catalog.revision
+                or current.catalog.declared_universe != read.catalog.declared_universe):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        return slot.catalog_receipt, read.catalog.revision, read, slot
+
+    def _require_catalog_current_v1(
+        self, receipt: CurrentCatalogReceipt, revision: str,
+        entry_read: BybitLinearVenueReadV1 | None, entry_read_slot: object | None,
+    ) -> None:
+        """Run any owner callbacks first; finish with the exact producer receipt check."""
+        if entry_read is not None:
+            entry_owner = self._entry_owner
+            assembler = entry_owner._assembler
+            slot = entry_read_slot
+            if (entry_owner._busy is not None or entry_owner._read is not entry_read
+                    or assembler._current is not slot or slot is None
+                    or slot.result is not entry_read
+                    or slot.catalog_receipt is not receipt
+                    or slot.catalog_current is not self._catalog_producer._current):
+                _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+            assembler.require_current_v1(entry_read)
+            if (entry_owner._read is not entry_read or assembler._current is not slot
+                    or slot.catalog_current is not self._catalog_producer._current):
+                _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        current = self._catalog_producer.require_current(receipt, expected_revision=revision)
+        if (type(current) is not CatalogReceiptView
+                or current.source_environment != "PUBLIC_MAINNET"
+                or current.catalog.revision != revision):
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+        if entry_read is not None and current.catalog is not entry_read.catalog:
+            _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
 
     def _closed_guard(self, token: object, epoch: object, roots: tuple[object, ...]) -> None:
         worker = self._worker
@@ -295,16 +378,21 @@ class WorkerStrategySignalOwnerV1:
                 _revision, _generation, policy_key, artifact, configuration = self._context(scope, db)
             self._guard()
             budget = MonitoringReadBudget(guard=self._guard)
-            declared_universe = tuple(InstrumentKey("BYBIT", "LINEAR", symbol)
-                for symbol in self._worker.symbols)
-            catalog_receipt = await self._catalog_producer.refresh(
-                declared_universe=declared_universe, max_age=self._worker.max_age, budget=budget)
-            current_catalog = self._catalog_producer._current
-            if current_catalog is None:
-                _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
-            catalog_view = self._catalog_producer.require_current(
-                catalog_receipt, expected_revision=current_catalog.view.catalog.revision)
-            catalog_revision = catalog_view.catalog.revision
+            entry_catalog = self._entry_catalog_for_scope_v1(scope)
+            if entry_catalog is None:
+                declared_universe = tuple(InstrumentKey("BYBIT", "LINEAR", symbol)
+                    for symbol in self._worker.symbols)
+                catalog_receipt = await self._catalog_producer.refresh(
+                    declared_universe=declared_universe, max_age=self._worker.max_age, budget=budget)
+                current_catalog = self._catalog_producer._current
+                if current_catalog is None:
+                    _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
+                catalog_view = self._catalog_producer.require_current(
+                    catalog_receipt, expected_revision=current_catalog.view.catalog.revision)
+                catalog_revision = catalog_view.catalog.revision
+                entry_read = entry_read_slot = None
+            else:
+                catalog_receipt, catalog_revision, entry_read, entry_read_slot = entry_catalog
             source_ttl = min(self._worker.max_age, timedelta(minutes=5))
             max_bar_age = timedelta(seconds=configuration.max_bar_age_seconds)
             snapshot = await self._market.get_closed_snapshot_v1(
@@ -347,12 +435,11 @@ class WorkerStrategySignalOwnerV1:
                     _reject()
                 handle = object.__new__(WorkerStrategySignalV1)
                 issued = _Issued(handle, value, value_key, snapshot_key, current_key, artifact,
-                    quote, catalog_receipt, catalog_revision, roots, epoch)
+                    quote, catalog_receipt, catalog_revision, entry_read, entry_read_slot, roots, epoch)
             self._closed_guard(token, epoch, roots)
             if _data_key(value) != value_key:
                 _reject()
-            self._catalog_producer.require_current(
-                catalog_receipt, expected_revision=catalog_revision)
+            self._require_catalog_current_v1(catalog_receipt, catalog_revision, entry_read, entry_read_slot)
             self._current = issued
             return handle
         except BaseException:
@@ -405,8 +492,8 @@ class WorkerStrategySignalOwnerV1:
                 db.execute("BEGIN IMMEDIATE")
                 bars.execute("BEGIN IMMEDIATE")
                 revision, generation, policy_key, artifact, configuration = self._context(issued.value.scope, db)
-                self._catalog_producer.require_current(
-                    issued.catalog_receipt, expected_revision=issued.catalog_revision)
+                self._require_catalog_current_v1(issued.catalog_receipt, issued.catalog_revision,
+                    issued.entry_read, issued.entry_read_slot)
                 snapshot = self._snapshot(store, bars,
                     ClosedBarScope(issued.value.scope.instrument.symbol, configuration.interval),
                     catalog_revision=issued.catalog_revision, now=_utc(self._clock()),
@@ -427,8 +514,8 @@ class WorkerStrategySignalOwnerV1:
             self._closed_guard(token, epoch, issued.roots)
             if self._current is not issued or _data_key(issued.value) != issued.value_key:
                 _reject()
-            self._catalog_producer.require_current(
-                issued.catalog_receipt, expected_revision=issued.catalog_revision)
+            self._require_catalog_current_v1(issued.catalog_receipt, issued.catalog_revision,
+                issued.entry_read, issued.entry_read_slot)
             return issued.value
         except BaseException:
             self.retire()
