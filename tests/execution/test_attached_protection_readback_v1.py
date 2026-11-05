@@ -1,5 +1,6 @@
 """Original authenticated page issuance into the real runtime; synthetic HTTP only."""
 import json
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -15,6 +16,7 @@ from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import qualified_inputs
 from test_runtime import selection
 
+from multi_exchange_trader.account.bybit_readonly import BybitReadOnlyClient
 from multi_exchange_trader.execution.account_binding import (
     BybitDemoAccountSession,
     _HistoryReceiptSlot,
@@ -43,6 +45,14 @@ from multi_exchange_trader.execution.venue_readback import BybitVenueReadback
 SCOPE = ProtectionScope("12345", "DEMO")
 OBSERVED = datetime.now(UTC)
 STAMP = 0
+
+
+def _sanitized_readback_failure(exc: Exception) -> str:
+    args = getattr(exc, "args", None)
+    if (type(args) is tuple and len(args) == 1 and type(args[0]) is str
+            and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", args[0])):
+        return args[0]
+    return "NON_CODE_EXCEPTION"
 
 
 class _WallClock:
@@ -336,12 +346,61 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
         lock_directory=core.directory, bridge=core.bridge,
         entry_risk=lambda *_args: assess_entry(**qualified_inputs()), clock=lambda: core.clock[0],
         max_evidence_age=timedelta(seconds=10), receipt_session=new_owner, history_store=core.history)
+    readback_failures: list[str] = []
+
+    def trace(stage: str, operation: Any) -> Any:
+        def invoke(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = operation(*args, **kwargs)
+            except Exception as exc:
+                readback_failures.append(f"{stage}:{_sanitized_readback_failure(exc)}")
+                raise
+            return result
+        return invoke
+
+    original_read_attached = new_owner.read_attached_protection_v1
+
+    async def traced_read_attached(binding: Any, **kwargs: Any) -> Any:
+        try:
+            return await original_read_attached(binding, **kwargs)
+        except Exception as exc:
+            readback_failures.append(f"session-read:{_sanitized_readback_failure(exc)}")
+            raise
+
+    core.monkeypatch.setattr(new_owner, "read_attached_protection_v1", traced_read_attached)
+    core.monkeypatch.setattr(core.runtime, "_attached_target_v1",
+        trace("target", core.runtime._attached_target_v1))
+    core.monkeypatch.setattr(core.runtime, "_current_attached_view_v1",
+        trace("view", core.runtime._current_attached_view_v1))
+    core.monkeypatch.setattr(new_owner, "read_client",
+        trace("read-client", new_owner.read_client))
+    core.monkeypatch.setattr(new_owner, "require_attached_protection_v1",
+        trace("session-require", new_owner.require_attached_protection_v1))
+    core.monkeypatch.setattr(new_owner, "_require_attached_protection_closed_v1",
+        trace("session-close", new_owner._require_attached_protection_closed_v1))
+    core.monkeypatch.setattr(new_owner, "_require_linear_held_v1",
+        trace("session-held-pages", new_owner._require_linear_held_v1))
+    private_client = new_owner._client
+    assert type(private_client) is BybitReadOnlyClient
+    original_private_page = private_client._capture_private_account_page_v1
+
+    async def traced_private_page(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await original_private_page(*args, **kwargs)
+        except Exception as exc:
+            readback_failures.append(f"private-page:{_sanitized_readback_failure(exc)}")
+            raise
+
+    core.monkeypatch.setattr(private_client, "_capture_private_account_page_v1",
+        traced_private_page)
     assert_entry_blocked("blocked-after-restart", "position-3")
 
     core.rows[:] = original_rows
     core.clock[0] += timedelta(seconds=1)
     complete = await core.runtime.poll_readback(core.adapter, "position-1")
-    assert complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0
+    assert (complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0), (
+        f"recovered assessment reasons={complete.reasons}; "
+        f"sanitized readback failures={tuple(readback_failures)}")
     assert core.runtime._recovery_required_v1() is False
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
     assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
