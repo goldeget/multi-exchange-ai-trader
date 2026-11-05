@@ -44,12 +44,21 @@ from .bybit_native import build_demo_exec_config
 from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import (
+    MonitoringError,
     MonitoringReceiptView,
     MonitoringStatus,
     MonitoringTarget,
     _MonitoringTargetInvalidated,
 )
 from .monitoring_receipts import AuthenticatedMonitoringReceipt
+from .native_instrument_receipts import (
+    NativeInstrumentReceiptRegistryV1,
+    NativeInstrumentReceiptV1,
+    NativeInstrumentReceiptViewV1,
+    NativeUnknownFeeInstrumentReceiptV1,
+    NativeUnknownFeeInstrumentReceiptViewV1,
+    _PendingNativeInstrumentCaptureV1,
+)
 from .protection import ProtectionScope
 
 if TYPE_CHECKING:
@@ -72,6 +81,7 @@ if TYPE_CHECKING:
         BybitUsdtWalletV1,
         BybitUtaModeV1,
     )
+    from .native_instrument_receipts import NativeFeeResponseV1
     from .risk_v2_contracts import InstrumentPinV2
 
 _PERMISSIONS = {
@@ -347,6 +357,7 @@ class BybitDemoAccountSession:
         self._monitoring_receipts: dict[object, _MonitoringSlot] = {}
         self._monitoring_generation = object()
         self._monitoring_last_clock: tuple[datetime, float] | None = None
+        self._native_instrument_receipts_v1 = NativeInstrumentReceiptRegistryV1(self)
         self._linear_info_self = self
         self._linear_info_generation = object()
         self._linear_info_pending: _LinearAccountInfoSlot | None = None
@@ -1212,6 +1223,140 @@ class BybitDemoAccountSession:
         self._monitoring_receipts.clear()
         self._monitoring_generation = object()
         self._monitoring_last_clock = None
+        self._native_instrument_receipts_v1.revoke()
+
+    def _arm_native_instrument_capture_v1(
+        self, **parts: object,
+    ) -> _PendingNativeInstrumentCaptureV1:
+        return self._native_instrument_receipts_v1.arm(**parts)  # type: ignore[arg-type]
+
+    def _revoke_native_instrument_capture_v1(
+        self, slot: _PendingNativeInstrumentCaptureV1 | None = None,
+    ) -> None:
+        self._native_instrument_receipts_v1.revoke(slot)
+
+    def _require_native_instrument_capture_v1(
+        self, slot: _PendingNativeInstrumentCaptureV1, *, active_group: bool = True,
+        phases: tuple[str, ...] = ("ARMED", "INITIALIZING", "METADATA", "CACHED", "ISSUED"),
+    ) -> None:
+        self._native_instrument_receipts_v1.require(
+            slot, active_group=active_group, phases=phases
+        )
+
+    async def _capture_native_fee_response_v1(
+        self, slot: _PendingNativeInstrumentCaptureV1, *, symbol: str,
+    ) -> NativeFeeResponseV1:
+        from . import bybit_linear_model_inputs_v1 as inputs
+        from .native_instrument_receipts import NativeFeeResponseV1
+
+        registry = self._native_instrument_receipts_v1
+        try:
+            registry.require(slot, phases=("INITIALIZING",))
+            source = await self._capture_linear_fee_rate_v1(
+                slot.binding, symbol=symbol, scope=slot.scope, budget=slot.budget,
+                owner_guard=lambda: registry.require(slot, phases=("INITIALIZING",)),
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            taker, maker = self._project_linear_fee_rates_v1(
+                source, symbol=symbol, binding=slot.binding, scope=slot.scope
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            _generation, current = self._linear_private_state_v1("FEE")
+            capture = None if current is None else current.capture
+            if (
+                type(source) is not inputs.BybitModelSourceRefV1
+                or type(current) is not _LinearAccountInfoSlot
+                or current.source is not source
+                or type(capture) is not _AccountInfoCaptureV1
+                or source.source_environment != "DEMO"
+                or source.account_scope != slot.scope
+                or source.path != "/v5/account/fee-rate"
+                or source.query != (("category", "linear"), ("symbol", symbol))
+                or capture.endpoint != "FEE"
+                or capture.budget is not slot.budget
+                or capture.group is not slot.group
+                or capture.receipt.token is not slot.group
+                or not capture.receipt.active
+                or capture.path != source.path
+                or capture.query != source.query
+                or capture.response_status != 200
+                or capture.raw_body_sha256 != source.raw_body_sha256
+                or capture.sent_origin != source.origin
+                or capture.response_origin != source.origin
+                or capture.request_started_at != source.request_started_at
+                or capture.received_at != source.received_at
+                or capture.envelope_time_ms != source.envelope_time_ms
+                or source.page_ordinal != 1
+                or capture.accepted_attempt != source.accepted_attempt
+                or taker.reference.source is not source
+                or maker.reference.source is not source
+                or taker.reference.wire_kind != "STRING"
+                or maker.reference.wire_kind != "STRING"
+                or type(taker.reference.wire_spelling) is not str
+                or type(maker.reference.wire_spelling) is not str
+            ):
+                raise AccountBindingError("ACCOUNT_DATA_PROJECTION_REQUIRED")
+            registry.require(slot, phases=("INITIALIZING",))
+            return NativeFeeResponseV1(
+                symbol=symbol,
+                scope=slot.scope,
+                maker_fee_rate=maker.reference.wire_spelling,
+                taker_fee_rate=taker.reference.wire_spelling,
+                body_sha256=capture.raw_body_sha256,
+                path=source.path,
+                query=source.query,
+                signed=True,
+                origin=capture.sent_origin,
+                response_origin=capture.response_origin,
+                response_status=capture.response_status,
+                request_started_at=capture.request_started_at,
+                received_at=capture.received_at,
+                started_mono=capture.started_mono,
+                received_mono=capture.received_mono,
+                accepted_attempt=capture.accepted_attempt,
+                logical_ordinal=capture.logical_ordinal,
+                physical_start=capture.physical_start,
+                physical_end=capture.physical_end,
+                envelope_time_ms=capture.envelope_time_ms,
+            )
+        except BaseException as error:
+            registry.revoke(slot)
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            raise MonitoringError("MONITORING_INSTRUMENT_FEE_SOURCE_INVALID") from None
+
+    def _issue_native_instrument_receipt_v1(
+        self, slot: _PendingNativeInstrumentCaptureV1, *, wallet_event: object,
+    ) -> NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1:
+        return self._native_instrument_receipts_v1.issue_after_wallet_ack(
+            slot, wallet_event=wallet_event
+        )
+
+    def require_native_instrument_receipt_v1(
+        self, receipt: NativeInstrumentReceiptV1, *, binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope, target: MonitoringTarget,
+    ) -> NativeInstrumentReceiptViewV1:
+        view = self._native_instrument_receipts_v1.require_current(
+            receipt, binding=binding, scope=scope, target=target
+        )
+        if type(view) is not NativeInstrumentReceiptViewV1:
+            raise MonitoringError("MONITORING_INSTRUMENT_RECEIPT_REQUIRED")
+        return view
+
+    def require_native_unknown_fee_instrument_receipt_v1(
+        self,
+        receipt: NativeUnknownFeeInstrumentReceiptV1,
+        *,
+        binding: AuthenticatedAccountBinding,
+        scope: ProtectionScope,
+        target: MonitoringTarget,
+    ) -> NativeUnknownFeeInstrumentReceiptViewV1:
+        view = self._native_instrument_receipts_v1.require_current(
+            receipt, binding=binding, scope=scope, target=target
+        )
+        if type(view) is not NativeUnknownFeeInstrumentReceiptViewV1:
+            raise MonitoringError("MONITORING_INSTRUMENT_RECEIPT_REQUIRED")
+        return view
 
     def _prune_monitoring_receipts(self) -> tuple[datetime, float]:
         try:

@@ -16,6 +16,13 @@ from nautilus_trader.core import nautilus_pyo3 as p
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
+from .native_instrument_receipts import (
+    NativeInstrumentReceiptV1,
+    NativeUnknownFeeInstrumentReceiptV1,
+    _PendingNativeInstrumentCaptureV1,
+    native_instrument_semantics_sha256,
+    require_native_metadata_profile_v1,
+)
 from .native_monitor_http import MonitoringHttpAdapter
 from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .private_monitor_stream import OwnedPrivateMonitorStream
@@ -143,6 +150,12 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         self._monitor_account_emit = False
         self._monitor_account_event: Any = None
         self._monitor_attestation = monitor_session._attested
+        self._native_instrument_capture_v1: _PendingNativeInstrumentCaptureV1 | None = None
+        self._native_instrument_receipt_v1: (
+            NativeInstrumentReceiptV1 | NativeUnknownFeeInstrumentReceiptV1 | None
+        ) = None
+        self._native_instrument_receipt_ready_v1 = asyncio.Event()
+        self._native_instrument_group_closed_v1 = asyncio.Event()
         super().__init__(**kwargs)
         # No await has occurred: constructor-scheduled repayment cannot tick yet.
         self._ws_private_client = _UnconnectedSocket(self._ws_private_client, self._fault)  # type: ignore[assignment]  # Runtime duck-typed transport fence.
@@ -160,6 +173,11 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
     def _fault(self, reason: str) -> None:
         # Preserve the stream's original loss/fault evidence when stop follows.
         self._monitor_fault = self.monitoring_fault or reason
+        if self._native_instrument_capture_v1 is not None:
+            self._monitor_session._revoke_native_instrument_capture_v1(
+                self._native_instrument_capture_v1
+            )
+            self._native_instrument_receipt_v1 = None
         if self._monitor_stream is not None:
             self._monitor_stream.retire(self._monitor_fault)
 
@@ -178,6 +196,24 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         return self._monitor_stream.stamp() if self._monitor_stream else StreamStamp(0, "", 0, 0)
 
     def _event_guard(self) -> None:
+        slot = self._native_instrument_capture_v1
+        try:
+            self._event_guard_base()
+        except BaseException:
+            if slot is not None:
+                self._monitor_session._revoke_native_instrument_capture_v1(slot)
+                self._native_instrument_receipt_v1 = None
+            raise
+        # The source-bound instrument receipt remains strict through admission's
+        # explicit GET-group close. After that boundary, the authenticated stream
+        # stays monitor-only for its bounded lifetime even when read authority
+        # expires; event safety is enforced by the witness and session guards.
+        if slot is not None and not self._native_instrument_group_closed_v1.is_set():
+            self._monitor_session._require_native_instrument_capture_v1(
+                slot, active_group=True
+            )
+
+    def _event_guard_base(self) -> None:
         if self.monitoring_fault or self._monitor_target is None:
             raise MonitoringError(self.monitoring_fault or "MONITORING_NOT_ARMED")
         witness = self._monitor_target._witness
@@ -197,6 +233,44 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         ):
             self._fault("MONITORING_SESSION_REPLACED")
             raise MonitoringError("MONITORING_SESSION_REPLACED")
+
+    async def wait_native_instrument_receipt_ready_v1(self) -> bool:
+        await self._native_instrument_receipt_ready_v1.wait()
+        slot = self._native_instrument_capture_v1
+        receipt = self._native_instrument_receipt_v1
+        base_ready = (
+            slot is not None
+            and slot.phase == "ISSUED"
+            and receipt is not None
+            and self.monitoring_fault is None
+        )
+        if not base_ready:
+            return False
+        assert slot is not None and receipt is not None
+        if self._metadata_profile == ACTUAL_ACCOUNT_FEE_V1:
+            if type(receipt) is not NativeInstrumentReceiptV1:
+                return False
+            self._monitor_session.require_native_instrument_receipt_v1(
+                receipt,
+                binding=self._monitor_binding,
+                scope=slot.scope,
+                target=slot.target,
+            )
+            return True
+        from .native_instrument_receipts import NativeUnknownFeeInstrumentReceiptViewV1
+
+        if type(receipt) is not NativeUnknownFeeInstrumentReceiptV1:
+            return False
+        view = self._monitor_session.require_native_unknown_fee_instrument_receipt_v1(
+            receipt,
+            binding=self._monitor_binding,
+            scope=slot.scope,
+            target=slot.target,
+        )
+        return (
+            type(view) is NativeUnknownFeeInstrumentReceiptViewV1
+            and view.metadata_profile == self._metadata_profile
+        )
 
     def arm_monitoring(self, target: MonitoringTarget) -> None:
         from .monitoring_reconciliation import require_current_target
@@ -224,6 +298,27 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             guard=self._event_guard,
             dispatch=self._monitor_reports.dispatch,
         )
+        budget = self._monitor_session._client._operation.get()
+        try:
+            slot = self._monitor_session._arm_native_instrument_capture_v1(
+                binding=binding,
+                scope=target.scope,
+                assembly=witness._assembly,
+                channel=witness._channel,
+                client=self,
+                provider=self.bybit_instrument_provider,
+                adapter=self._http_client,
+                cache=self._cache,
+                target=target,
+                budget=budget,
+                owner_guard=self._event_guard_base,
+            )
+        except BaseException:
+            self._fault("MONITORING_INSTRUMENT_RECEIPT_ARM_FAILED")
+            raise
+        self._native_instrument_capture_v1 = slot
+        self._native_instrument_receipt_v1 = None
+        self._http_client._native_capture_slot = slot
 
     async def prepare_fresh_metadata_v1(self, witness: FreshMonitoringWitnessV1) -> None:
         from .fresh_monitoring_v1 import FreshMonitoringWitnessV1
@@ -278,6 +373,11 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         assert self._monitor_target is not None
         expected = {symbol + "-LINEAR.BYBIT" for symbol in self._monitor_target.symbols}
         fresh = provider.get_all()
+        slot = self._native_instrument_capture_v1
+        if slot is not None:
+            self._monitor_session._native_instrument_receipts_v1.require_provider_semantics(
+                slot, fresh, native_instrument_semantics_sha256
+            )
         if {str(key) for key in fresh} != expected:
             self._deny()
         for key, instrument in fresh.items():
@@ -288,11 +388,38 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
                 self._fault("MONITORING_INSTRUMENT_DRIFT")
                 raise MonitoringError("MONITORING_INSTRUMENT_DRIFT")
         await super()._cache_instruments()
+        self._event_guard()
+        if slot is not None:
+            updated_provider = provider.get_all()
+            self._monitor_session._native_instrument_receipts_v1.require_provider_semantics(
+                slot, updated_provider, native_instrument_semantics_sha256
+            )
+            if {str(key) for key in updated_provider} != expected:
+                self._deny()
+            for key, instrument in updated_provider.items():
+                cached = self._cache.instrument(key)
+                require_native_metadata_profile_v1(cached, slot.metadata_profile)
+                require_native_metadata_profile_v1(instrument, slot.metadata_profile)
+                if (
+                    cached is None
+                    or native_instrument_semantics_sha256(cached)
+                    != native_instrument_semantics_sha256(instrument)
+                ):
+                    self._fault("MONITORING_INSTRUMENT_CACHE_DRIFT")
+                    raise MonitoringError("MONITORING_INSTRUMENT_CACHE_DRIFT")
+            self._monitor_session._native_instrument_receipts_v1.cache_updated(slot)
 
     async def _connect(self) -> None:
+        slot = self._native_instrument_capture_v1
+        receipt_finalized = False
         try:
             self._event_guard()
+            if slot is not None:
+                self._monitor_session._native_instrument_receipts_v1.begin_initialization(slot)
             await self._instrument_provider.initialize()
+            self._event_guard()
+            if slot is not None:
+                self._monitor_session._native_instrument_receipts_v1.complete_initialization(slot)
             await self._cache_instruments()
             self._monitor_account_emit = True
             try:
@@ -300,21 +427,49 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             finally:
                 self._monitor_account_emit = False
             await self._await_account_registered()
+            if slot is not None:
+                self._event_guard()
             if self._monitor_account_event is None:
                 raise MonitoringError("MONITORING_FRESH_ACCOUNT_ACK_REQUIRED")
+            if slot is not None:
+                self._event_guard()
+                self._native_instrument_receipt_v1 = (
+                    self._monitor_session._issue_native_instrument_receipt_v1(
+                        slot, wallet_event=self._monitor_account_event
+                    )
+                )
+                self._monitor_session._native_instrument_receipts_v1.finish_startup(
+                    slot, success=True
+                )
+                receipt_finalized = True
+                self._native_instrument_receipt_ready_v1.set()
+                await self._native_instrument_group_closed_v1.wait()
+                self._event_guard()
             assert self._monitor_stream is not None
             budget = self._monitor_session._client._operation.get()
             if not isinstance(budget, MonitoringReadBudget):
                 self._deny()
             import time
-
-            await self._monitor_stream.connect(timeout=min(10, budget.deadline - time.monotonic()))
+            timeout = (
+                10
+                if slot is not None
+                else min(10, budget.deadline - time.monotonic())
+            )
+            await self._monitor_stream.connect(timeout=timeout)
+            self._event_guard()
             return
         except asyncio.CancelledError:
             self._fault("MONITORING_NATIVE_CONNECT_FAILED")
             raise
         except Exception:  # noqa: BLE001 - inherited task logging must see fixed codes only.
             self._fault("MONITORING_NATIVE_CONNECT_FAILED")
+        finally:
+            if slot is not None and not receipt_finalized:
+                self._monitor_session._native_instrument_receipts_v1.finish_startup(
+                    slot, success=False
+                )
+            if slot is not None:
+                self._native_instrument_receipt_ready_v1.set()
         raise MonitoringError("MONITORING_NATIVE_CONNECT_FAILED") from None
 
     async def _apply_account_configuration(self) -> None:
@@ -326,6 +481,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
         if not self._monitor_account_emit:
             self._deny()
         await super()._update_account_state()
+        self._event_guard()
 
     def generate_account_state(self, *args: Any, **kwargs: Any) -> None:
         if not self._monitor_account_emit:
@@ -335,6 +491,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
     def _send_account_state(self, account_state: Any) -> None:
         if not self._monitor_account_emit:
             self._deny()
+        self._event_guard()
         super()._send_account_state(account_state)
         # Portfolio.update_account is a synchronous MessageBus endpoint in the
         # pinned SDK. Verify the actual event, not mere account presence.
@@ -354,6 +511,7 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
             self._fault("MONITORING_FRESH_ACCOUNT_NOT_APPLIED")
             raise MonitoringError("MONITORING_FRESH_ACCOUNT_NOT_APPLIED")
         self._monitor_account_event = account_state
+        self._event_guard()
 
     def _send_order_event(self, event: Any) -> None:
         if not self._monitor_emit:

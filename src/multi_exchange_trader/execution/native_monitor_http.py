@@ -13,10 +13,27 @@ from datetime import timedelta
 from decimal import Context, Decimal, Inexact, Rounded, localcontext
 from typing import Any, NoReturn
 
+from ..account.instrument_envelope import (
+    decode_instrument_envelope,
+    validate_instrument_envelope_read,
+)
+from ..market_data.instrument_source_projection import (
+    project_supported_instrument_row,
+    validate_supported_instrument_projection,
+)
+from ..trading_product import InstrumentKey
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError
 from .native_events import bounded_decimal
+from .native_instrument_receipts import (
+    NativeFeeResponseV1,
+    NativeInstrumentEvidenceV1,
+    NativeUnknownFeeInstrumentEvidenceV1,
+    _PendingNativeInstrumentCaptureV1,
+    require_native_matches_projection,
+    require_native_observation_matches_projection,
+)
 from .observation_instrument_v1 import (
     ACTUAL_ACCOUNT_FEE_V1,
     SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
@@ -221,6 +238,7 @@ class MonitoringHttpAdapter:
         self._symbols, self._fault = symbols, fault
         self._instruments: dict[str, Any] = {}
         self._cancelled = False
+        self._native_capture_slot: _PendingNativeInstrumentCaptureV1 | None = None
         self._metadata_profile = metadata_profile
 
     def __repr__(self) -> str:
@@ -252,11 +270,32 @@ class MonitoringHttpAdapter:
 
     def cancel_all_requests(self) -> None:
         self._cancelled = True
+        self._session._revoke_native_instrument_capture_v1(self._native_capture_slot)
 
     async def _get(
         self, path: str, params: list[tuple[str, str]], *, signed: bool
     ) -> tuple[dict[str, Any], int]:
+        slot = self._native_capture_slot
         try:
+            group_before = None
+            physical_before = None
+            if slot is not None:
+                registry = self._session._native_instrument_receipts_v1
+                registry.require(slot, phases=("CACHED",))
+                group_before = slot.budget.require_active_group(slot.group)
+                physical_before = slot.budget.physical_attempts
+                if path != "/v5/account/wallet-balance" or slot.wallet_reads != 0:
+                    registry.revoke(slot)
+                    self._deny()
+                if (
+                    group_before.logical_gets != slot.last_logical
+                    or physical_before != slot.last_physical
+                ):
+                    registry.revoke(slot)
+                    self._deny()
+                # Reserve the one wallet read before I/O so a retry or duplicate
+                # call cannot create another GET under the same T4 receipt.
+                slot.wallet_reads = 1
             if path not in (
                 "/v5/account/fee-rate",
                 "/v5/market/instruments-info",
@@ -278,6 +317,19 @@ class MonitoringHttpAdapter:
                 self._deny()
             result, stamp = await client.read(path, params, signed=signed, deadline=budget.deadline)
             self._session.require_observation_binding(self._binding, scope=self._scope)
+            if slot is not None:
+                assert group_before is not None and physical_before is not None
+                registry.require(slot, phases=("CACHED",))
+                group_after = slot.budget.require_active_group(slot.group)
+                physical_after = slot.budget.physical_attempts
+                if (
+                    group_after.logical_gets != group_before.logical_gets + 1
+                    or not 1 <= physical_after - physical_before <= 3
+                ):
+                    registry.revoke(slot)
+                    self._deny()
+                slot.last_logical = group_after.logical_gets
+                slot.last_physical = physical_after
             if self._cancelled or type(stamp) is not int or stamp <= 0:
                 self._deny()
             from .history import EPOCH, utc
@@ -311,6 +363,18 @@ class MonitoringHttpAdapter:
         assert symbol is not None
         params = [("category", "linear"), ("symbol", symbol)]
         validate_metadata_profile_v1(self._metadata_profile)
+        if self._native_capture_slot is not None:
+            if self._metadata_profile == ACTUAL_ACCOUNT_FEE_V1:
+                return await self._request_bound_instrument_v1(
+                    symbol, self._native_capture_slot
+                )
+            if self._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
+                return await self._request_bound_unknown_fee_instrument_v1(
+                    symbol, self._native_capture_slot
+                )
+            else:
+                self._session._revoke_native_instrument_capture_v1(self._native_capture_slot)
+                self._deny()
         if self._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
             return await self._request_observation_instruments_v1(symbol, params)
         fees, _ = await self._get("/v5/account/fee-rate", params, signed=True)
@@ -334,6 +398,157 @@ class MonitoringHttpAdapter:
             self._fault("MONITORING_METADATA_INVALID")
             raise
         except Exception:  # noqa: BLE001 - SDK errors may contain original payloads.
+            self._fault("MONITORING_METADATA_INVALID")
+        raise MonitoringError("MONITORING_METADATA_INVALID") from None
+
+    async def _request_bound_instrument_v1(
+        self, symbol: str, slot: _PendingNativeInstrumentCaptureV1,
+    ) -> list[Any]:
+        registry = self._session._native_instrument_receipts_v1
+        try:
+            registry.begin_symbol(slot, symbol)
+            fee: NativeFeeResponseV1 = await self._session._capture_native_fee_response_v1(
+                slot, symbol=symbol
+            )
+            registry.record_fee(slot, fee)
+            registry.require(slot, phases=("INITIALIZING",))
+            client = self._session.read_client(self._binding, scope=self._scope)
+            if client._operation.get() is not slot.budget:
+                self._deny()
+            envelope = await client.read_instrument_envelope(
+                InstrumentKey("BYBIT", "LINEAR", symbol),
+                budget=slot.budget,
+                group=slot.group,
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            validate_instrument_envelope_read(envelope)
+            body, _canonical, response_time = decode_instrument_envelope(
+                envelope.decoded_body_bytes
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            result = body.get("result")
+            if (
+                body.get("retCode") != 0
+                or type(body.get("retCode")) is not int
+                or type(result) is not dict
+            ):
+                self._deny()
+            rows = result.get("list")
+            stamp_ms = body.get("time")
+            if (
+                result.get("category") != "linear"
+                or result.get("nextPageCursor") != ""
+                or type(rows) is not list
+                or len(rows) != 1
+                or type(rows[0]) is not dict
+                or type(stamp_ms) is not int
+                or stamp_ms <= 0
+                or response_time != envelope.response_time
+            ):
+                self._deny()
+            key = InstrumentKey("BYBIT", "LINEAR", symbol)
+            projection = project_supported_instrument_row(rows[0], expected=key)
+            validate_supported_instrument_projection(projection)
+            registry.require(slot, phases=("INITIALIZING",))
+            fee_row = {
+                "symbol": symbol,
+                "makerFeeRate": fee.maker_fee_rate,
+                "takerFeeRate": fee.taker_fee_rate,
+            }
+            instrument = convert_instrument(rows[0], fee_row, symbol, stamp_ms)
+            registry.require(slot, phases=("INITIALIZING",))
+            native_digest = require_native_matches_projection(projection, instrument, fee)
+            evidence = NativeInstrumentEvidenceV1(
+                key, envelope, projection, fee, native_digest
+            )
+            registry.record_instrument(slot, evidence)
+            return [instrument]
+        except asyncio.CancelledError:
+            registry.revoke(slot)
+            self._fault("MONITORING_METADATA_INVALID")
+            raise
+        except Exception:  # noqa: BLE001 - original source and SDK details stay private.
+            registry.revoke(slot)
+            self._fault("MONITORING_METADATA_INVALID")
+        raise MonitoringError("MONITORING_METADATA_INVALID") from None
+
+    async def _request_bound_unknown_fee_instrument_v1(
+        self, symbol: str, slot: _PendingNativeInstrumentCaptureV1,
+    ) -> list[Any]:
+        registry = self._session._native_instrument_receipts_v1
+        try:
+            registry.begin_symbol(slot, symbol)
+            key = InstrumentKey("BYBIT", "LINEAR", symbol)
+            client = self._session.read_client(self._binding, scope=self._scope)
+            if (
+                client._operation.get() is not slot.budget
+                or self._metadata_profile != SDK1231_OBSERVATION_UNKNOWN_FEES_V1
+            ):
+                self._deny()
+            # This is the same non-injected, owner-bound DEMO client used by the
+            # accepted wallet read. The endpoint is public (unsigned); the exact
+            # source envelope consumes the current group and has no fee response.
+            envelope = await client.read_instrument_envelope(
+                key, budget=slot.budget, group=slot.group
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            validate_instrument_envelope_read(envelope)
+            if (
+                envelope.key != key
+                or envelope.sent_origin.scheme != "https"
+                or envelope.sent_origin.host != "api-demo.bybit.com"
+                or envelope.sent_origin.port != 443
+                or envelope.response_origin != envelope.sent_origin
+                or envelope.response_status != 200
+            ):
+                self._deny()
+            body, _canonical, response_time = decode_instrument_envelope(
+                envelope.decoded_body_bytes
+            )
+            registry.require(slot, phases=("INITIALIZING",))
+            result = body.get("result")
+            if (
+                body.get("retCode") != 0
+                or type(body.get("retCode")) is not int
+                or type(result) is not dict
+            ):
+                self._deny()
+            rows = result.get("list")
+            stamp_ms = body.get("time")
+            if (
+                result.get("category") != "linear"
+                or result.get("nextPageCursor") != ""
+                or type(rows) is not list
+                or len(rows) != 1
+                or type(rows[0]) is not dict
+                or type(stamp_ms) is not int
+                or stamp_ms <= 0
+                or response_time != envelope.response_time
+            ):
+                self._deny()
+            projection = project_supported_instrument_row(rows[0], expected=key)
+            validate_supported_instrument_projection(projection)
+            registry.require(slot, phases=("INITIALIZING",))
+            instrument = convert_observation_instrument_v1(rows[0], symbol, stamp_ms)
+            registry.require(slot, phases=("INITIALIZING",))
+            native_digest = require_native_observation_matches_projection(
+                projection, instrument
+            )
+            evidence = NativeUnknownFeeInstrumentEvidenceV1(
+                key,
+                envelope,
+                projection,
+                SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
+                native_digest,
+            )
+            registry.record_unknown_fee_instrument(slot, evidence)
+            return [instrument]
+        except asyncio.CancelledError:
+            registry.revoke(slot)
+            self._fault("MONITORING_METADATA_INVALID")
+            raise
+        except Exception:  # noqa: BLE001 - source and SDK details remain private.
+            registry.revoke(slot)
             self._fault("MONITORING_METADATA_INVALID")
         raise MonitoringError("MONITORING_METADATA_INVALID") from None
 
