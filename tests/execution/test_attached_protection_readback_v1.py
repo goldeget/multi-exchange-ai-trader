@@ -311,12 +311,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     old_operation = core.runtime._attached_read_operations_v1["position-1"]
     owned_orders = core.runtime.projection("position-1").orders
     original_rows = list(core.rows)
-    source_entry = core.journal.get("entry")
-    assert source_entry is not None
-    pending_payload = json.loads(source_entry.payload_json)
-    pending_payload["position_id"] = "pending-position"
-    pending = core.journal.register("pending-entry", CommandKind.ENTRY, pending_payload)
-    assert pending.state.value == "PENDING"
     core.rows.pop()
 
     incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
@@ -339,8 +333,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert replayed is not None and replayed.revision == revision
 
     assert_entry_blocked("blocked-entry", "position-2")
-    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
-        core.runtime.dispatch("pending-entry")
 
     core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
         attached_target=old_target, _attached_operation=old_operation)
@@ -361,6 +353,23 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     assert core.runtime._recovery_required_v1() is False
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
     assert cleared is not None and json.loads(cleared.payload_json)["active"] == {}
+
+
+async def test_recovery_gate_blocks_pending_entry_dispatch(attached_core: Any) -> None:
+    core = attached_core
+    assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    source_entry = core.journal.get("entry")
+    assert source_entry is not None
+    pending_payload = json.loads(source_entry.payload_json)
+    pending_payload["position_id"] = "pending-position"
+    pending = core.journal.register("pending-entry", CommandKind.ENTRY, pending_payload)
+    assert pending.state.value == "PENDING"
+
+    core.rows.pop()
+    incomplete = await core.runtime.poll_readback(core.adapter, "position-1")
+    assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
+    with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
+        core.runtime.dispatch("pending-entry")
 
 
 @pytest.mark.parametrize("capacity", ["active-count", "projection-size"])
