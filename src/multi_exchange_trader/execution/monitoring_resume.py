@@ -212,7 +212,7 @@ class MonitoringResume:
                                 issued = (
                                     await self.client.wait_native_instrument_receipt_ready_v1()
                                 )
-                                self.fresh_guard()
+                                self.client._event_guard()
                                 if not issued:
                                     raise MonitoringError(
                                         self.client.monitoring_fault
