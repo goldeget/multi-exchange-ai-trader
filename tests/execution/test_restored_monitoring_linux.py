@@ -57,22 +57,39 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
         adapter = client._http_client
         metadata_failure_paths = []
         original_fault = adapter._fault
+        from multi_exchange_trader.execution import native_instrument_receipts
+
+        original_deny = native_instrument_receipts._deny
+
+        def capture_active_failure(stage):
+            active = sys.exception()
+            if active is None:
+                return
+            safe_frames = tuple(
+                (
+                    frame.f_code.co_filename.replace("\\", "/").rsplit("/", 1)[-1],
+                    line_number,
+                    frame.f_code.co_name,
+                )
+                for frame, line_number in traceback.walk_tb(active.__traceback__)
+            )[-8:]
+            exception_type = f"{type(active).__module__}.{type(active).__qualname__}"
+            metadata_failure_paths.append((stage, exception_type, safe_frames))
 
         def capture_safe_failure_path(code):
             if code == "MONITORING_METADATA_INVALID":
-                active = sys.exception()
-                if active is not None:
-                    frames = traceback.extract_tb(active.__traceback__)
-                    safe_frames = tuple(
-                        (frame.filename.replace("\\", "/").rsplit("/", 1)[-1],
-                         frame.lineno, frame.name)
-                        for frame in frames[-8:]
-                    )
-                    exception_type = f"{type(active).__module__}.{type(active).__qualname__}"
-                    metadata_failure_paths.append((exception_type, safe_frames))
+                capture_active_failure("metadata-boundary")
             original_fault(code)
 
+        def capture_native_mismatch(code):
+            if code == "MONITORING_INSTRUMENT_NATIVE_MISMATCH":
+                active = sys.exception()
+                if active is not None and not isinstance(active, MonitoringError):
+                    capture_active_failure("native-projection-validation")
+            original_deny(code)
+
         monkeypatch.setattr(adapter, "_fault", capture_safe_failure_path)
+        monkeypatch.setattr(native_instrument_receipts, "_deny", capture_native_mismatch)
         try:
             status = await admit(h)
         except Exception as error:
