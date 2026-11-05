@@ -16,7 +16,6 @@ from nautilus_trader.core import nautilus_pyo3 as p
 from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError, MonitoringTarget, StreamStamp
-from .native_monitor_http import MonitoringHttpAdapter
 from .native_instrument_receipts import (
     NativeInstrumentReceiptV1,
     NativeUnknownFeeInstrumentReceiptV1,
@@ -24,6 +23,7 @@ from .native_instrument_receipts import (
     native_instrument_semantics_sha256,
     require_native_metadata_profile_v1,
 )
+from .native_monitor_http import MonitoringHttpAdapter
 from .observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1, validate_metadata_profile_v1
 from .private_monitor_stream import OwnedPrivateMonitorStream
 from .protection import ProtectionScope

@@ -44,6 +44,7 @@ from .bybit_native import build_demo_exec_config
 from .history_receipts import AuthenticatedHistoryReceipt, HistoryReceiptView
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import (
+    MonitoringError,
     MonitoringReceiptView,
     MonitoringStatus,
     MonitoringTarget,

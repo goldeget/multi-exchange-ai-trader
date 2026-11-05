@@ -42,12 +42,12 @@ from multi_exchange_trader.execution.account_binding import BybitDemoAccountSess
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
 from multi_exchange_trader.execution.monitoring_models import MonitoringError
 from multi_exchange_trader.execution.monitoring_receipts import AuthenticatedMonitoringReceipt
-from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.native_instrument_receipts import (
     NativeUnknownFeeInstrumentReceiptV1,
     NativeUnknownFeeInstrumentReceiptViewV1,
     native_instrument_semantics_sha256,
 )
+from multi_exchange_trader.execution.native_restart_store import decode_document
 from multi_exchange_trader.execution.observation_instrument_v1 import (
     SDK1231_OBSERVATION_UNKNOWN_FEES_V1,
     observation_metadata_marker_v1,
@@ -104,7 +104,7 @@ async def test_actual_restored_lifecycle_and_one_shot_admission(tmp_path, monkey
         monkeypatch.setattr(native_instrument_receipts, "_deny", capture_native_mismatch)
         try:
             status = await admit(h)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - report unexpected admission failures safely.
             detail = metadata_failure_paths or [(type(error).__name__, ())]
             pytest.fail(f"restored native admission failed; safe source path={detail!r}", pytrace=False)
         client = h.assembly.execution_client
@@ -285,7 +285,7 @@ async def test_unknown_fee_provider_or_cache_marker_corruption_blocks_wallet_and
                 if corruption == "provider":
                     original_cache = client_type._cache_instruments
 
-                    async def mutate_provider(client):
+                    async def mutate_provider(client, original_cache=original_cache, mutated=mutated):
                         if client._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
                             instrument = next(
                                 iter(client.bybit_instrument_provider.get_all().values())
@@ -298,7 +298,7 @@ async def test_unknown_fee_provider_or_cache_marker_corruption_blocks_wallet_and
                 else:
                     original_cache = base._cache_instruments
 
-                    async def cache_then_mutate(client):
+                    async def cache_then_mutate(client, original_cache=original_cache, mutated=mutated):
                         await original_cache(client)
                         if client._metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
                             cached = client._cache.instrument(

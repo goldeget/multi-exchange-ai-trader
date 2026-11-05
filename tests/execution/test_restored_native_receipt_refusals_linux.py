@@ -134,7 +134,6 @@ async def test_t4_bad_origin_fee_source_or_spec_fails_closed(
                 elif corruption == "spec" and path == "/v5/market/instruments-info":
                     response["result"]["list"][0]["maxOrderQty"] = "99.000"
                     corruption_seen["value"] = True
-                return None
 
             h.io.on_http = corrupt
 
@@ -250,7 +249,6 @@ async def test_cancellation_after_arm_revokes_pending_slot_before_wallet_or_stre
                 fee_hold_entered["value"] = True
                 entered_fee_read.set()
                 await asyncio.Future()
-            return None
 
         monkeypatch.setattr(client_type, "_connect", tracked_connect)
         h.io.on_http = hold_fee

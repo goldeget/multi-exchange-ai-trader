@@ -13,7 +13,6 @@ from datetime import timedelta
 from decimal import Context, Decimal, Inexact, Rounded, localcontext
 from typing import Any, NoReturn
 
-from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from ..account.instrument_envelope import (
     decode_instrument_envelope,
     validate_instrument_envelope_read,
@@ -23,6 +22,7 @@ from ..market_data.instrument_source_projection import (
     validate_supported_instrument_projection,
 )
 from ..trading_product import InstrumentKey
+from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
 from .monitoring_budget import MonitoringReadBudget
 from .monitoring_models import MonitoringError
 from .native_events import bounded_decimal

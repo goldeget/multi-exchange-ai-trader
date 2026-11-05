@@ -11,10 +11,11 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable, NoReturn
+from typing import Any, NoReturn, Self
 
 from multi_exchange_trader.trading_product import InstrumentKey
 
@@ -256,7 +257,7 @@ class NativeInstrumentReceiptV1:
 
     __slots__ = ()
 
-    def __new__(cls) -> NativeInstrumentReceiptV1:
+    def __new__(cls) -> Self:
         _deny()
 
     def __copy__(self) -> NoReturn:
@@ -277,7 +278,7 @@ class NativeUnknownFeeInstrumentReceiptV1:
 
     __slots__ = ()
 
-    def __new__(cls) -> NativeUnknownFeeInstrumentReceiptV1:
+    def __new__(cls) -> Self:
         _deny()
 
     def __copy__(self) -> NoReturn:
@@ -334,15 +335,44 @@ class _PendingNativeInstrumentCaptureV1:
     last_physical: int
 
     __slots__ = (
-        "owner", "generation", "session_generation", "binding", "attestation", "scope",
-        "assembly", "channel", "client", "provider", "adapter", "cache", "target",
-        "target_fingerprint", "witness", "symbols", "budget", "group", "owner_guard",
-        "armed_at", "armed_mono", "last_wall", "last_mono", "physical_start",
-        "metadata_profile", "logical_start", "phase", "initializations",
-        "inflight", "fees", "evidence",
+        "adapter",
+        "assembly",
+        "armed_at",
+        "armed_mono",
+        "attestation",
+        "binding",
+        "budget",
+        "cache",
+        "channel",
+        "client",
+        "evidence",
+        "fees",
+        "generation",
+        "group",
+        "handle",
+        "inflight",
+        "initializations",
+        "last_logical",
+        "last_mono",
+        "last_physical",
+        "last_wall",
+        "logical_start",
+        "metadata_profile",
+        "owner",
+        "owner_guard",
+        "phase",
+        "physical_start",
+        "provider",
+        "scope",
+        "session_generation",
+        "startup_open",
+        "symbols",
+        "target",
+        "target_fingerprint",
         "unknown_fee_evidence",
-        "view", "handle", "startup_open", "wallet_reads",
-        "last_logical", "last_physical",
+        "view",
+        "wallet_reads",
+        "witness",
     )
 
     def __init__(self, **parts: Any) -> None:
@@ -407,10 +437,11 @@ class NativeInstrumentReceiptRegistryV1:
         budget: MonitoringReadBudget,
         owner_guard: Callable[[], None],
     ) -> _PendingNativeInstrumentCaptureV1:
-        from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
-        from .native_monitor_http import MonitoringHttpAdapter
-        from .native_monitor_client import MonitoringBybitExecutionClient
         from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
+
+        from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSession
+        from .native_monitor_client import MonitoringBybitExecutionClient
+        from .native_monitor_http import MonitoringHttpAdapter
 
         if self._slot is not None:
             self.revoke()
@@ -1046,7 +1077,7 @@ def _require_native_projection_fields(
             "max_price": spec.max_price.value,
             "maker_fee": maker_fee,
             "taker_fee": taker_fee,
-            "multiplier": Decimal("1"),
+            "multiplier": Decimal(1),
             "margin_init": Decimal("0.1"),
             "margin_maint": Decimal("0.1"),
         }
