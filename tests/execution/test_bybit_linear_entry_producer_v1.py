@@ -67,6 +67,7 @@ class SourceFixture(Fixture):
         self.margin = "ISOLATED_MARGIN"
         self.lpa = True
         self.fee_error = False
+        self.include_held_eth = False
         super().__init__(monkeypatch, path)
 
     async def send(self, client: httpx.AsyncClient, request: httpx.Request,
@@ -80,10 +81,12 @@ class SourceFixture(Fixture):
             result["lpaPerp"] = self.lpa
         elif request.url.path == "/v5/account/fee-rate" and self.fee_error:
             body.update(retCode=10001, result={})
-        elif request.url.path == "/v5/account/wallet-balance":
+        elif request.url.path == "/v5/account/wallet-balance" and not self.include_held_eth:
             result["list"][0]["coin"][0].update(totalPositionIM="0", totalOrderIM="0")
-        elif request.url.path == "/v5/order/realtime" or (
-            request.url.path == "/v5/position/list" and "symbol" not in request.url.params):
+        elif (
+            request.url.path == "/v5/order/realtime"
+            or (request.url.path == "/v5/position/list" and "symbol" not in request.url.params)
+        ) and not self.include_held_eth:
             result["list"] = []
         return httpx.Response(200, stream=Stream(json.dumps(body).encode()), request=request)
 

@@ -102,6 +102,12 @@ class WorkerEntryModelOwnerV2:
         self._read = None
         self._operation_generation = object()
 
+    def retire_plan_preserving_read_v1(self, read: BybitLinearVenueReadV1) -> None:
+        """Withdraw prior plan handles while preserving one exact source read for signal binding."""
+        if self._busy is not None or self._read is not read or type(read) is not BybitLinearVenueReadV1:
+            raise RuntimeBlocked("WORKER_ENTRY_MODEL_PUBLICATION_REQUIRED")
+        self._current = None
+
     def _guard(self) -> None:
         worker = self._worker
         if (self._original is not self or worker is not self._original_roots[0]

@@ -72,7 +72,10 @@ class Fixture:
             applicability_revision="fixture-fee-v1"))
         self.assembler = BybitLinearSourceAssemblerV1(session=self.session, public_marks=self.marks,
             catalog_producer=self.catalog, journal=self.journal, clock=self.clock, owner_guard=self.guard)
+        original_send = httpx.AsyncClient.send
         async def intercepted(client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+            if not isinstance(client._transport, httpx.AsyncHTTPTransport):
+                return await original_send(client, request, **kwargs)
             return await self.send(client, request, **kwargs)
 
         monkeypatch.setattr(httpx.AsyncClient, "send", intercepted)
@@ -87,7 +90,29 @@ class Fixture:
 
     async def send(self, client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
         assert type(client) is httpx.AsyncClient and request.method == "GET"
-        assert kwargs.get("stream") is True
+        host, path = request.url.host, request.url.path
+        if host == "api-demo.bybit.com":
+            demo_paths = {
+                "/v5/market/time", "/v5/user/query-api", "/v5/account/info",
+                "/v5/account/wallet-balance", "/v5/account/fee-rate",
+                "/v5/account/user-setting-config", "/v5/position/list",
+                "/v5/order/realtime",
+            }
+            if path not in demo_paths or kwargs != {"stream": True}:
+                raise AssertionError("unexpected DEMO fixture request")
+        elif host == "api.bybit.com":
+            readonly_stream_paths = {
+                "/v5/market/time", "/v5/market/instruments-info",
+                "/v5/market/risk-limit", "/v5/market/tickers",
+            }
+            adapter_get_paths = {"/v5/market/kline", "/v5/market/tickers"}
+            readonly_stream = path in readonly_stream_paths and kwargs == {"stream": True}
+            adapter_get = (path in adapter_get_paths
+                           and kwargs == {"auth": None, "follow_redirects": False})
+            if not (readonly_stream or adapter_get):
+                raise AssertionError("unexpected public fixture request")
+        else:
+            raise AssertionError("unexpected fixture request host")
         self.requests.append(request)
         path, params = request.url.path, request.url.params
         if request.url.host == "api-demo.bybit.com" and path != "/v5/market/time":
