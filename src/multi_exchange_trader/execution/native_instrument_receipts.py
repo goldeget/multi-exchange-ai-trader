@@ -336,9 +336,9 @@ class _PendingNativeInstrumentCaptureV1:
 
     __slots__ = (
         "adapter",
-        "assembly",
         "armed_at",
         "armed_mono",
+        "assembly",
         "attestation",
         "binding",
         "budget",
