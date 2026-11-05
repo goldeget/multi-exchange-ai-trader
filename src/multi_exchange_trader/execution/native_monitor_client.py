@@ -200,9 +200,13 @@ class MonitoringBybitExecutionClient(BybitExecutionClient):
                 self._monitor_session._revoke_native_instrument_capture_v1(slot)
                 self._native_instrument_receipt_v1 = None
             raise
-        if slot is not None:
+        # The source-bound instrument receipt remains strict through admission's
+        # explicit GET-group close. After that boundary, the authenticated stream
+        # stays monitor-only for its bounded lifetime even when read authority
+        # expires; event safety is enforced by the witness and session guards.
+        if slot is not None and not self._native_instrument_group_closed_v1.is_set():
             self._monitor_session._require_native_instrument_capture_v1(
-                slot, active_group=slot.startup_open
+                slot, active_group=True
             )
 
     def _event_guard_base(self) -> None:
