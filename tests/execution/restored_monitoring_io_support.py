@@ -460,6 +460,7 @@ async def restored_case(
     monkeypatch,
     *,
     filled=False,
+    pending_command=True,
     binding_age=30,
     metadata_profile=ACTUAL_ACCOUNT_FEE_V1,
 ):
@@ -474,7 +475,21 @@ async def restored_case(
             tmp_path, io, metadata_profile=metadata_profile
         )
         owners.append(source)
-        await seed_baseline(source, filled=filled)
+        if pending_command:
+            await seed_baseline(source, filled=filled)
+        else:
+            # Seal a genuine stopped worker with an empty command journal. This
+            # opt-in fixture supports read-only model ownership without altering
+            # unresolved command evidence in the default restoration scenario.
+            await source.worker.start_passive()
+            assert source.worker.runtime.journal.list_commands() == ()
+            source_reservations = source.worker.runtime.reservation_totals(source.plan.scope)
+            assert not any((source_reservations.notional_amount,
+                source_reservations.symbol_notional_amount, source_reservations.risk_amount,
+                source_reservations.margin_amount, source_reservations.position_count))
+            await source.worker.stop()
+            source.order_id = None
+            source.original_events = ()
         h = await make_worker(
             tmp_path,
             io,
@@ -487,8 +502,16 @@ async def restored_case(
         h.assembly, h.order_id = h.worker._assembly, source.order_id
         h.original_events, h.owners = source.original_events, owners
         assert h.worker.native_restart_status.status == "RESTORED_LOCAL_CACHE"
-        assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
-        h.reservations = h.worker.runtime.journal.get("entry").reservation
+        if pending_command:
+            assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
+            h.reservations = h.worker.runtime.journal.get("entry").reservation
+        else:
+            assert h.worker.runtime.journal.list_commands() == ()
+            restored_reservations = h.worker.runtime.reservation_totals(source.plan.scope)
+            assert not any((restored_reservations.notional_amount,
+                restored_reservations.symbol_notional_amount, restored_reservations.risk_amount,
+                restored_reservations.margin_amount, restored_reservations.position_count))
+            h.reservations = ()
         yield h
     finally:
         for gate in io.gates:
