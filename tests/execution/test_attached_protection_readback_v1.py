@@ -306,9 +306,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
                 protection_policy=protection_policy, mode=AutomaticMode.FULL_AUTO,
                 selection_request=selection_request)
 
-    old_receipt, old_target = core.runtime._attached_readbacks_v1["position-1"]
-    old_snapshot = core.owner.require_attached_protection_v1(old_receipt, target=old_target).snapshot
-    old_operation = core.runtime._attached_read_operations_v1["position-1"]
     owned_orders = core.runtime.projection("position-1").orders
     original_rows = list(core.rows)
     core.rows.pop()
@@ -334,11 +331,6 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
 
     assert_entry_blocked("blocked-entry", "position-2")
 
-    core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
-        attached_target=old_target, _attached_operation=old_operation)
-    retained = core.journal.get_projection("protection-recovery-admission-v1")
-    assert retained is not None and "position-1" in json.loads(retained.payload_json)["active"]
-
     core.runtime.shutdown()
     core.runtime = NativeExecutionRuntime(journal=core.journal, store=core.store, worker_lock=core.lock,
         lock_directory=core.directory, bridge=core.bridge,
@@ -358,6 +350,9 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
 async def test_recovery_gate_blocks_pending_entry_dispatch(attached_core: Any) -> None:
     core = attached_core
     assert (await core.runtime.poll_readback(core.adapter, "position-1")).status == "OPEN_PROTECTED"
+    old_receipt, old_target = core.runtime._attached_readbacks_v1["position-1"]
+    old_snapshot = core.owner.require_attached_protection_v1(old_receipt, target=old_target).snapshot
+    old_operation = core.runtime._attached_read_operations_v1["position-1"]
     source_entry = core.journal.get("entry")
     assert source_entry is not None
     pending_payload = json.loads(source_entry.payload_json)
@@ -370,6 +365,10 @@ async def test_recovery_gate_blocks_pending_entry_dispatch(attached_core: Any) -
     assert incomplete.status == "ATTENTION" and incomplete.entries_blocked is True
     with pytest.raises(ValueError, match="PROTECTION_RECOVERY_REQUIRED"):
         core.runtime.dispatch("pending-entry")
+    core.runtime.consume_readback("position-1", old_snapshot, attached_receipt=old_receipt,
+        attached_target=old_target, _attached_operation=old_operation)
+    retained = core.journal.get_projection("protection-recovery-admission-v1")
+    assert retained is not None and "position-1" in json.loads(retained.payload_json)["active"]
 
 
 @pytest.mark.parametrize("capacity", ["active-count", "projection-size"])
