@@ -24,7 +24,7 @@ async def prepare_signal_plan(
     entry_price: Decimal = Decimal(104),
     stop_price: Decimal = Decimal(100),
 ) -> tuple[Any, Any, Any]:
-    model_support.install(state)
+    signal_support.install(state)
     snapshot = state.book.read()
     draft = snapshot["policy"]
     draft["risk_v2"].update(max_quote_age_seconds="120", max_evidence_age_seconds="300")
@@ -108,7 +108,7 @@ async def test_signal_entry_or_stop_mismatch_retires_plan_and_never_stages(model
 @pytest.mark.asyncio
 async def test_incomplete_user_risk_settings_never_receive_default_values(model_worker: Any) -> None:
     state = model_worker
-    model_support.install(state)
+    signal_support.install(state)
     snapshot = state.book.read()
     draft = snapshot["policy"]
     draft["risk_v2"]["per_trade_loss"] = None

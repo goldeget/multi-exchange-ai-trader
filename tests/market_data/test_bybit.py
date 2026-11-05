@@ -2,6 +2,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 import httpx
 import pytest
@@ -124,21 +125,32 @@ async def test_source_bound_linear_candle_and_quote_keep_exact_public_response_c
         Decimal("100"), Decimal("2"), Decimal("101"), Decimal("3"))
 
 
-async def test_source_bound_reader_rejects_wrong_route_and_product() -> None:
+async def test_source_bound_reader_rejects_wrong_route_and_product(monkeypatch: pytest.MonkeyPatch) -> None:
+    from multi_exchange_trader.market_data.adapters import bybit as bybit_adapter
+
     now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
     now_ms = int(now.timestamp() * 1000)
     body = {"retCode": 0, "result": {"category": "linear", "symbol": "BTCUSDT",
         "list": [[str(now_ms - 60_000), "100", "102", "99", "101", "4", "400"]]}, "time": now_ms}
     raw = json.dumps(body, separators=(",", ":")).encode()
 
-    def wrong_route(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=raw, headers={"content-type": "application/json"},
-            request=httpx.Request("GET", "https://api-testnet.bybit.com/v5/market/kline?category=linear&interval=1&limit=1&symbol=BTCUSDT"))
+    original_request = bybit_adapter.request_json_observation_v1
 
+    async def request_wrong_route(client: httpx.AsyncClient, url: str, params: dict[str, str | int], *,
+                                  clock: Any) -> Any:
+        wrong_url = url.replace("https://api.bybit.com", "https://api-testnet.bybit.com")
+        return await original_request(client, wrong_url, params, clock=clock)
+
+    def wrong_route(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api-testnet.bybit.com"
+        return httpx.Response(200, content=raw, headers={"content-type": "application/json"}, request=request)
+
+    monkeypatch.setattr(bybit_adapter, "request_json_observation_v1", request_wrong_route)
     async with httpx.AsyncClient(transport=httpx.MockTransport(wrong_route)) as client:
         with pytest.raises(MarketDataUnavailable, match="source did not match"):
             await BybitAdapter(client, clock=lambda: now).get_candle_read_v1("BTCUSDT", "1m", 1)
 
+    monkeypatch.setattr(bybit_adapter, "request_json_observation_v1", original_request)
     body["result"]["category"] = "spot"
     raw = json.dumps(body, separators=(",", ":")).encode()
 

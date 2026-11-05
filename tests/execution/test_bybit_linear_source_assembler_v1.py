@@ -72,7 +72,10 @@ class Fixture:
             applicability_revision="fixture-fee-v1"))
         self.assembler = BybitLinearSourceAssemblerV1(session=self.session, public_marks=self.marks,
             catalog_producer=self.catalog, journal=self.journal, clock=self.clock, owner_guard=self.guard)
+        original_send = httpx.AsyncClient.send
         async def intercepted(client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+            if not isinstance(client._transport, httpx.AsyncHTTPTransport):
+                return await original_send(client, request, **kwargs)
             return await self.send(client, request, **kwargs)
 
         monkeypatch.setattr(httpx.AsyncClient, "send", intercepted)
@@ -87,7 +90,7 @@ class Fixture:
 
     async def send(self, client: httpx.AsyncClient, request: httpx.Request, **kwargs: Any) -> httpx.Response:
         assert type(client) is httpx.AsyncClient and request.method == "GET"
-        assert kwargs.get("stream") is True
+        assert kwargs == {"auth": None, "follow_redirects": False}
         self.requests.append(request)
         path, params = request.url.path, request.url.params
         if request.url.host == "api-demo.bybit.com" and path != "/v5/market/time":
