@@ -1,6 +1,5 @@
 """Original authenticated page issuance into the real runtime; synthetic HTTP only."""
 import json
-import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,11 +15,13 @@ from test_bybit_native import FakeFactory, FakeStrategy
 from test_risk import qualified_inputs
 from test_runtime import selection
 
-from multi_exchange_trader.account.bybit_readonly import BybitReadOnlyClient
+from multi_exchange_trader.account.bybit_readonly import BybitReadError, BybitReadOnlyClient
 from multi_exchange_trader.execution.account_binding import (
+    AccountBindingError,
     BybitDemoAccountSession,
     _HistoryReceiptSlot,
 )
+from multi_exchange_trader.execution.attached_protection_readback_v1 import AttachedProtectionErrorV1
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
 from multi_exchange_trader.execution.history import (
     ExecutionRecord,
@@ -38,7 +39,7 @@ from multi_exchange_trader.execution.modes import AutomaticMode
 from multi_exchange_trader.execution.ownership import AccountWorkerLock
 from multi_exchange_trader.execution.protection import ProtectionPolicy, ProtectionScope
 from multi_exchange_trader.execution.risk import RiskScope, assess_entry
-from multi_exchange_trader.execution.runtime import NativeExecutionRuntime
+from multi_exchange_trader.execution.runtime import NativeExecutionRuntime, RuntimeBlocked
 from multi_exchange_trader.execution.state_store import RuntimeStateStore
 from multi_exchange_trader.execution.venue_readback import BybitVenueReadback
 
@@ -46,13 +47,45 @@ SCOPE = ProtectionScope("12345", "DEMO")
 OBSERVED = datetime.now(UTC)
 STAMP = 0
 
+_READBACK_FAILURE_CODES = {
+    AccountBindingError: frozenset({
+        "ACCOUNT_BINDING_CLOCK_INVALID", "ACCOUNT_BINDING_STALE", "ACCOUNT_HELD_SOURCE_REQUIRED",
+        "ACCOUNT_INFO_SOURCE_CAPTURE_FAILED", "ACCOUNT_INFO_SOURCE_OVERLAP", "ACCOUNT_INFO_SOURCE_REQUIRED",
+        "ACCOUNT_INFO_SOURCE_RETIRED", "ACCOUNT_LINEAR_PERMISSIONS_REQUIRED", "ACCOUNT_NETWORK_TRANSPORT_REQUIRED",
+        "ACCOUNT_SESSION_MISMATCH_OR_CLOSED", "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED",
+        "AUTHENTICATED_ACCOUNT_SCOPE_MISMATCH", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED",
+    }),
+    AttachedProtectionErrorV1: frozenset({"AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED"}),
+    BybitReadError: frozenset({
+        "account_info_capture_failed", "account_info_source_invalid", "dns", "http_status", "invalid_json",
+        "monitoring_operation_overlap", "network", "proxy", "redirect", "response_too_large", "ret_10006",
+        "timeout", "truncated",
+    }),
+    RuntimeBlocked: frozenset({
+        "ACCOUNT_WORKER_LEASE_REQUIRED", "AUTHENTICATED_ATTACHED_PROTECTION_REQUIRED", "UTC_CLOCK_REQUIRED",
+    }),
+}
+_ASSESSMENT_REASON_CODES = frozenset({
+    "AUTHENTICATED_ACCOUNT_BINDING_REQUIRED", "AUTHENTICATED_PROTECTION_COVERAGE_INCOMPLETE",
+    "CONTRADICTORY_PROTECTION_REPORT", "CURRENT_GENERATION_POLICY_CONFLICT",
+    "FINANCIAL_ENTRY_AUTHORITY_NOT_GRANTED", "INDEPENDENT_FLAT_EVIDENCE_REQUIRED", "MISSING_EXACT_CURRENT_STOP_OR_TAKE_PROFIT",
+    "MISSING_POSITION", "POSITION_CONFLICT", "PROJECTION_CONFLICT",
+})
+
 
 def _sanitized_readback_failure(exc: Exception) -> str:
-    args = getattr(exc, "args", None)
-    if (type(args) is tuple and len(args) == 1 and type(args[0]) is str
-            and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", args[0])):
+    allowed = _READBACK_FAILURE_CODES.get(type(exc))
+    args = exc.args
+    if (allowed is not None and type(args) is tuple and len(args) == 1
+            and type(args[0]) is str and args[0] in allowed):
         return args[0]
     return "NON_CODE_EXCEPTION"
+
+
+def _sanitized_assessment_reasons(reasons: tuple[str, ...]) -> tuple[tuple[str, ...], int]:
+    known = tuple(reason for reason in reasons
+        if type(reason) is str and reason in _ASSESSMENT_REASON_CODES)
+    return known, len(reasons) - len(known)
 
 
 class _WallClock:
@@ -398,8 +431,9 @@ async def test_authenticated_incomplete_protection_persists_entry_admission_gate
     core.rows[:] = original_rows
     core.clock[0] += timedelta(seconds=1)
     complete = await core.runtime.poll_readback(core.adapter, "position-1")
+    known_reasons, unknown_reason_count = _sanitized_assessment_reasons(complete.reasons)
     assert (complete.status == "OPEN_PROTECTED" and complete.unprotected_quantity == 0), (
-        f"recovered assessment reasons={complete.reasons}; "
+        f"known assessment reasons={known_reasons}; unknown reason count={unknown_reason_count}; "
         f"sanitized readback failures={tuple(readback_failures)}")
     assert core.runtime._recovery_required_v1() is False
     cleared = core.journal.get_projection("protection-recovery-admission-v1")
