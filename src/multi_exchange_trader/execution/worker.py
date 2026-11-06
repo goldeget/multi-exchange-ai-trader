@@ -65,6 +65,7 @@ from .runtime_policy import RuntimePolicyBook
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback
 from .worker_entry_model_v2 import WorkerEntryModelOwnerV2, WorkerModelPlanV2
+from .worker_signal_instrument_pair_v1 import WorkerSignalRiskInstrumentPairV1
 from .worker_signal_risk_plan_v1 import (
     WorkerSignalRiskPlanV1,
     bind_worker_signal_risk_plan_v1,
@@ -530,6 +531,279 @@ class ExecutionWorker:
             # reusable after the signal that was supposed to qualify it failed.
             self._retire_entry_publications_v2()
             raise
+
+    def snapshot_builtin_signal_risk_instrument_pair_v1(
+            self, signal_handle: WorkerStrategySignalV1, plan_handle: WorkerModelPlanV2,
+    ) -> WorkerSignalRiskInstrumentPairV1:
+        """Observe one signal/plan key beside separate current-owner snapshots.
+
+        The sources are deliberately left unmapped. Their checks are sequential,
+        not one atomic freshness result, financial qualification, or permission.
+        """
+        try:
+            self._require_admission()
+            signal = self.consume_builtin_signal_v1(signal_handle)
+            with self.entry_model_publication_v2(plan_handle) as prepared:
+                bind_worker_signal_risk_plan_v1(signal, prepared, now=self.clock())
+                pair = self._snapshot_signal_risk_instrument_pair_v1(signal, prepared)
+                entry_owner = self._entry_model_owner_v2
+                signal_owner = self._strategy_signal_owner_v1
+                if (type(entry_owner) is not WorkerEntryModelOwnerV2
+                        or type(signal_owner) is not WorkerStrategySignalOwnerV1):
+                    raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+                entry_assembler = entry_owner._assembler
+                plan_slot = entry_owner._current
+                read_slot = entry_assembler._current
+                catalog_producer = entry_assembler.catalog_producer
+                catalog_slot = catalog_producer._current
+                signal_slot = signal_owner._current
+            with self.entry_model_publication_v2(plan_handle) as final_prepared:
+                if final_prepared is not prepared:
+                    raise RuntimeBlocked("WORKER_SIGNAL_RISK_PLAN_REPLACED")
+                bind_worker_signal_risk_plan_v1(signal, prepared, now=self.clock())
+            if self.consume_builtin_signal_v1(signal_handle) is not signal:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_SIGNAL_REPLACED")
+            final_native = self._require_current_signal_risk_native_receipt_v1(
+                signal.scope.instrument
+            )
+            from .monitoring_resume import MonitoringResume
+
+            monitoring_owner = self._monitoring
+            if type(monitoring_owner) is not MonitoringResume:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+            # The public-currentness clock is an injected callback. Pin the
+            # complete worker/MonitoringResume owner links on both sides so a
+            # callback cannot replace the session, binding, assembly, lock, or
+            # monitoring owner after the native receipt guard has run.
+            pre_public_owner_links = self._entry_publication_links_v2()
+            final_public, final_observation = self._require_current_signal_risk_public_catalog_v1(
+                signal, prepared
+            )
+            monitoring_owner.owner_guard()
+            post_public_owner_links = self._entry_publication_links_v2()
+            if any(actual is not expected for actual, expected in zip(
+                    post_public_owner_links, pre_public_owner_links, strict=True)):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+            # These are separate owner-local freshness checks, not one atomic
+            # shared-clock/source-mapping assertion. Only identity reads follow.
+            evidence = final_native[3]
+            if (final_native[0].fingerprint != pair.demo_target_fingerprint
+                    or final_native[2].issued_at != pair.demo_receipt_issued_at
+                    or evidence.projection.specification_revision
+                        != pair.demo_native_specification_revision
+                    or evidence.native_semantics_sha256 != pair.demo_native_semantics_sha256
+                    or evidence.envelope.response_origin != pair.demo_origin
+                    or final_public.source_id != pair.public_source_id
+                    or final_public.catalog.revision != pair.public_catalog_revision
+                    or final_observation.raw_row_sha256 != pair.public_raw_row_sha256
+                    or self._entry_model_owner_v2 is not entry_owner
+                    or entry_owner._current is not plan_slot
+                    or entry_owner._read is not prepared.source_read
+                    or entry_assembler is not entry_owner._assembler
+                    or entry_assembler._current is not read_slot
+                    or catalog_producer._current is not catalog_slot
+                    or catalog_slot is None
+                    or self._strategy_signal_owner_v1 is not signal_owner
+                    or signal_owner._current is not signal_slot
+                    or signal_slot is None or signal_slot.value is not signal):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+            assembly = self._assembly
+            if type(assembly) is not NativeNodeAssembly:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+            client = assembly.execution_client
+            registry_slot = self.session._native_instrument_receipts_v1._slot
+            if (registry_slot is None or registry_slot.view is not final_native[2]
+                    or registry_slot.handle is not final_native[1]
+                    or registry_slot.target is not final_native[0]
+                    or client._native_instrument_capture_v1 is not registry_slot
+                    or client._native_instrument_receipt_v1 is not final_native[1]
+                    or client._monitor_target is not final_native[0]):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REPLACED")
+            return pair
+        except BaseException:
+            self._retire_entry_publications_v2()
+            raise
+
+    def _require_current_signal_risk_public_catalog_v1(
+            self, signal: WorkerStrategySignalDataV1,
+            prepared: BybitLinearPreparedEntryV1,
+    ) -> tuple[Any, Any]:
+        from ..account.instrument_envelope import CatalogReceiptView
+        from ..market_data.instrument_catalog import require_catalog_selection
+
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_PUBLIC_CATALOG_REQUIRED")
+        assembler = owner._assembler
+        slot = assembler._current
+        producer = assembler.catalog_producer
+        if (slot is None or slot.result is not prepared.source_read
+                or owner._read is not prepared.source_read
+                or type(producer) is not BybitInstrumentCatalogProducer):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_PUBLIC_CATALOG_REQUIRED")
+        try:
+            view = producer._risk_current(
+                slot.catalog_receipt, expected_revision=signal.catalog_revision
+            )
+            if (type(view) is not CatalogReceiptView
+                    or view.source_environment != "PUBLIC_MAINNET"
+                    or view.catalog is not prepared.source_read.catalog):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_PUBLIC_CATALOG_REQUIRED")
+            # The current signal owner already checked this key against policy.
+            observation, = require_catalog_selection(
+                view.catalog,
+                allowed=(signal.scope.instrument,),
+                selected=(signal.scope.instrument,),
+                expected_product="LINEAR",
+                expected_source_environment="PUBLIC_MAINNET",
+                expected_revision=signal.catalog_revision,
+                now=self.clock(),
+            )
+            if (observation.key != signal.scope.instrument
+                    or observation.specification_revision
+                        != prepared.inputs.risk_inputs.instrument.specification_revision
+                    or producer._current is not slot.catalog_current
+                    or assembler._current is not slot or owner._read is not prepared.source_read):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_PUBLIC_CATALOG_REPLACED")
+            return view, observation
+        except RuntimeBlocked:
+            raise
+        except (AttributeError, TypeError, ValueError, ArithmeticError):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_PUBLIC_CATALOG_REQUIRED") from None
+
+    def _snapshot_signal_risk_instrument_pair_v1(
+            self, signal: WorkerStrategySignalDataV1,
+            prepared: BybitLinearPreparedEntryV1,
+    ) -> WorkerSignalRiskInstrumentPairV1:
+        from ..trading_product import InstrumentKey
+
+        key = signal.scope.instrument
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_REQUIRED")
+        assembler = owner._assembler
+        slot = assembler._current
+        producer = assembler.catalog_producer
+        if (slot is None or slot.result is not prepared.source_read
+                or owner._read is not prepared.source_read
+                or type(producer) is not BybitInstrumentCatalogProducer
+                or type(key) is not InstrumentKey
+                or key.venue != "BYBIT" or key.product != "LINEAR"
+                or prepared.inputs.risk_inputs.instrument.key != key
+                or signal.catalog_revision != prepared.source_read.catalog.revision
+                or prepared.inputs.risk_inputs.catalog_revision != signal.catalog_revision):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_MISMATCH")
+        public_view, public_observation = self._require_current_signal_risk_public_catalog_v1(
+            signal, prepared
+        )
+        if (public_observation.key != key
+                or public_observation.specification_revision
+                    != prepared.inputs.risk_inputs.instrument.specification_revision):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_INSTRUMENT_PAIR_MISMATCH")
+
+        _target, _receipt, view, evidence = self._require_current_signal_risk_native_receipt_v1(key)
+        pair = WorkerSignalRiskInstrumentPairV1(
+            signal.signal_id,
+            signal.catalog_revision,
+            prepared.inputs.risk_inputs.catalog_revision,
+            public_view.catalog.revision,
+            signal.policy_revision,
+            signal.publication_generation,
+            key,
+            public_view.source_environment,
+            public_view.source_id,
+            public_observation.source.endpoint,
+            public_observation.specification_revision,
+            public_observation.raw_row_sha256,
+            public_observation.response_time,
+            public_observation.source.received_at,
+            evidence.envelope.response_origin,
+            view.target_fingerprint,
+            evidence.projection.specification_revision,
+            evidence.native_semantics_sha256,
+            view.issued_at,
+        )
+        return pair
+
+    def _require_current_signal_risk_native_receipt_v1(
+            self, key: Any,
+    ) -> tuple[Any, Any, Any, Any]:
+        from .monitoring_models import MonitoringTarget
+        from .monitoring_resume import MonitoringResume
+        from .native_instrument_receipts import (
+            NativeInstrumentEvidenceV1,
+            NativeInstrumentReceiptV1,
+            NativeInstrumentReceiptViewV1,
+            _PendingNativeInstrumentCaptureV1,
+        )
+        from .native_monitor_client import MonitoringBybitExecutionClient
+
+        monitoring = self._monitoring
+        assembly = self._assembly
+        if (type(monitoring) is not MonitoringResume or monitoring.state.phase != "MONITORING"
+                or monitoring.state.resources_retained or monitoring.in_progress
+                or monitoring.state.reconciliation_current is not True
+                or type(assembly) is not NativeNodeAssembly):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REQUIRED")
+        try:
+            self._entry_publication_links_v2()
+            monitoring.owner_guard()
+            client = assembly.execution_client
+            target = getattr(client, "_monitor_target", None)
+            capture = getattr(client, "_native_instrument_capture_v1", None)
+            receipt = getattr(client, "_native_instrument_receipt_v1", None)
+            if (type(client) is not MonitoringBybitExecutionClient
+                    or client._monitor_session is not self.session
+                    or client._monitor_binding is not self.binding
+                    or client._metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+                    or self.metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+                    or client.monitoring_fault is not None
+                    or not client._native_instrument_group_closed_v1.is_set()
+                    or type(target) is not MonitoringTarget or target.scope != self.scope
+                    or key.symbol not in target.symbols
+                    or type(capture) is not _PendingNativeInstrumentCaptureV1
+                    or capture.phase != "ISSUED" or capture.startup_open is not False
+                    or capture.binding is not self.binding or capture.target is not target
+                    or capture.scope != self.scope or capture.metadata_profile != ACTUAL_ACCOUNT_FEE_V1
+                    or capture.target_fingerprint != target.fingerprint or capture.initializations != 1
+                    or type(receipt) is not NativeInstrumentReceiptV1):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REQUIRED")
+            client._event_guard()
+            view = self.session.require_native_instrument_receipt_v1(
+                receipt, binding=self.binding, scope=self.scope, target=target
+            )
+            if (type(view) is not NativeInstrumentReceiptViewV1
+                    or view.target_fingerprint != target.fingerprint
+                    or key.symbol not in view.symbols):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REQUIRED")
+            evidence_items = tuple(item for item in view.evidence
+                if type(item) is NativeInstrumentEvidenceV1 and item.key == key)
+            if len(evidence_items) != 1:
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REQUIRED")
+            evidence = evidence_items[0]
+            monitoring.owner_guard()
+            client._event_guard()
+            current = self.session.require_native_instrument_receipt_v1(
+                receipt, binding=self.binding, scope=self.scope, target=target
+            )
+            registry_slot = self.session._native_instrument_receipts_v1._slot
+            if (current is not view or registry_slot is not capture or capture.handle is not receipt
+                    or capture.view is not view or capture.target is not target
+                    or capture.owner is not self.session
+                    or capture.assembly is not assembly or capture.channel is not assembly.channel
+                    or capture.client is not client or capture.adapter is not client._http_client
+                    or capture.provider is not client.bybit_instrument_provider
+                    or capture.cache is not assembly.node.cache
+                    or client._native_instrument_capture_v1 is not capture
+                    or client._native_instrument_receipt_v1 is not receipt
+                    or client._monitor_target is not target
+                    or assembly.execution_client is not client):
+                raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REPLACED")
+            return target, receipt, view, evidence
+        except RuntimeBlocked:
+            raise
+        except (AttributeError, TypeError, ValueError):
+            raise RuntimeBlocked("WORKER_SIGNAL_RISK_NATIVE_RECEIPT_REQUIRED") from None
 
     async def _refresh_binding_v2(self, *, expected_uid: str, expected_parent_uid: str,
                                   expected_is_master: bool) -> None:

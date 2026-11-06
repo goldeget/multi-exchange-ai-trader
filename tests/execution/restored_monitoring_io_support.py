@@ -21,6 +21,7 @@ import httpx
 from fixtures.runtime_policy_v1 import load_v1
 from test_bybit_native_linux import module
 from test_native_monitor_http import fee_row, instrument_row, wallet_row
+from test_private_account_sources_bundle_v1 import COIN
 from test_risk import inputs
 from test_runtime import selection
 
@@ -74,7 +75,8 @@ class VenueLedger:
     def __init__(self):
         self.order = None
         self.executions = []
-        self.position = {"symbol": "BTCUSDT", "positionIdx": 0, "side": "", "size": "0"}
+        self.position = {"symbol": "BTCUSDT", "positionIdx": 0, "side": "", "size": "0.000",
+            "leverage": "7.500", "autoAddMargin": 0, "positionStatus": "Normal"}
 
     def own(self, order):
         created = order.ts_init // 1_000_000
@@ -196,7 +198,13 @@ class IO:
 
         self.ledger, self.sends, self.wires = VenueLedger(), [], []
         self.on_http, self.on_send = None, None
-        self.instrument, self.fee, self.wallet = instrument_row(), fee_row(), wallet_row()
+        self.instrument, self.fee = instrument_row(), fee_row()
+        self.wallet = wallet_row()
+        for name, value in COIN.items():
+            self.wallet["coin"][0].setdefault(name, value)
+        self.account_mode, self.margin_mode, self.lpa_perp = 5, "ISOLATED_MARGIN", True
+        self.delta_enable: bool | None = False
+        self.whole_positions, self.whole_orders = [], []
         self.gates = []
 
         async def send(client, request, **kwargs):
@@ -225,16 +233,25 @@ class IO:
         path, params = request.url.path, dict(request.url.params)
         allowed = {
             "/v5/market/time": set(), "/v5/user/query-api": set(),
+            "/v5/account/info": set(), "/v5/account/user-setting-config": set(),
             "/v5/market/instruments-info": {"category", "symbol", "limit", "cursor"},
             "/v5/account/fee-rate": {"category", "symbol"},
             "/v5/account/wallet-balance": {"accountType", "coin"},
-            "/v5/position/list": {"category", "symbol", "limit", "cursor"},
-            "/v5/order/realtime": {"category", "symbol", "limit", "cursor", "openOnly"},
+            "/v5/position/list": {"category", "symbol", "settleCoin", "limit", "cursor"},
+            "/v5/order/realtime": {"category", "symbol", "settleCoin", "limit", "cursor", "openOnly"},
             "/v5/order/history": {"category", "symbol", "limit", "cursor", "startTime", "endTime"},
             "/v5/execution/list": {"category", "symbol", "limit", "cursor", "startTime", "endTime"},
         }
         assert path in allowed and set(params) <= allowed[path]
-        if "category" in params:
+        if "settleCoin" in params:
+            assert path in ("/v5/position/list", "/v5/order/realtime")
+            assert params.get("category") == "linear"
+            assert params["settleCoin"] == "USDT" and "symbol" not in params
+            expected = {"category", "settleCoin"}
+            if path == "/v5/order/realtime":
+                expected.add("openOnly")
+            assert expected <= set(params) <= expected | {"cursor"}
+        elif "category" in params:
             assert params["category"] == "linear" and params.get("symbol") == "BTCUSDT"
         if path == "/v5/order/realtime":
             assert params["openOnly"] == "0" and "orderFilter" not in params
@@ -252,6 +269,13 @@ class IO:
         if path == "/v5/user/query-api":
             result = {"apiKey": KEY, "secret": "", "userID": 12345, "isMaster": False,
                 "parentUid": "0", "readOnly": 1, "permissions": {"Wallet": []}}
+        elif path == "/v5/account/info":
+            result = {"unifiedMarginStatus": self.account_mode,
+                "marginMode": self.margin_mode, "updatedTime": "1"}
+        elif path == "/v5/account/user-setting-config":
+            result = {"lpaPerp": self.lpa_perp, "fmsef": False}
+            if type(self.delta_enable) is bool:
+                result["deltaEnable"] = self.delta_enable
         elif path == "/v5/market/time":
             result = {}
         elif path == "/v5/market/instruments-info":
@@ -260,6 +284,12 @@ class IO:
             result = {"list": [copy.deepcopy(self.fee)]}
         elif path == "/v5/account/wallet-balance":
             result = {"list": [copy.deepcopy(self.wallet)]}
+        elif path == "/v5/position/list" and "settleCoin" in params:
+            result = {"category": "linear", "list": copy.deepcopy(self.whole_positions),
+                "nextPageCursor": ""}
+        elif path == "/v5/order/realtime" and "settleCoin" in params:
+            result = {"category": "linear", "list": copy.deepcopy(self.whole_orders),
+                "nextPageCursor": ""}
         else:
             result = self.ledger.page(path)
         response = {"retCode": 0, "result": result}
@@ -269,7 +299,8 @@ class IO:
             if override is not None:
                 status, headers = override
         response.setdefault("time", milliseconds())
-        return httpx.Response(status, json=response, headers=headers, request=request)
+        result = httpx.Response(status, json=response, headers=headers, request=request)
+        return result
 
 
 async def make_worker(
@@ -285,7 +316,9 @@ async def make_worker(
     locks.mkdir(mode=0o700, exist_ok=True)
     session = BybitDemoAccountSession(api_key=KEY, api_secret=SECRET,
         max_age=timedelta(seconds=binding_age))
-    binding = await session.authenticate(expected_uid="12345", expected_parent_uid="0", expected_is_master=False)
+    binding = await session.authenticate(
+        expected_uid="12345", expected_parent_uid="0", expected_is_master=False
+    )
     policy_path = directory / "runtime-policy.sqlite3"
     if previous is None:
         historical = load_v1()(policy_path)
@@ -337,14 +370,7 @@ async def make_worker(
         registry=registry, plan=plan, io=io, assembly=None)
 
 
-async def seed_baseline(h, *, filled=False):
-    await h.worker.start_passive()
-    h.assembly = h.worker._assembly
-    record = await h.worker.stage(command_key="entry", position_id="position-1",
-        mode=AutomaticMode.FULL_AUTO, request=h.request)
-    assert record.state is CommandState.PENDING
-    request = h.worker.runtime._request(record)
-    ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
+def fixture_native_instrument(h):
     if h.worker.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
         native_instrument = convert_observation_instrument_v1(
             h.io.instrument, "BTCUSDT", milliseconds()
@@ -355,7 +381,18 @@ async def seed_baseline(h, *, filled=False):
         native_instrument = convert_instrument(
             h.io.instrument, h.io.fee, "BTCUSDT", milliseconds()
         )
-    instrument = module("model.instruments").instruments_from_pyo3([native_instrument])[0]
+    return module("model.instruments").instruments_from_pyo3([native_instrument])[0]
+
+
+async def seed_baseline(h, *, filled=False):
+    await h.worker.start_passive()
+    h.assembly = h.worker._assembly
+    record = await h.worker.stage(command_key="entry", position_id="position-1",
+        mode=AutomaticMode.FULL_AUTO, request=h.request)
+    assert record.state is CommandState.PENDING
+    request = h.worker.runtime._request(record)
+    ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
+    instrument = fixture_native_instrument(h)
     order = h.assembly.strategy.order_factory.market(instrument_id=instrument.id,
         order_side=enums.OrderSide.BUY, quantity=objects.Quantity.from_str(str(request.owned.quantity)),
         client_order_id=ids.ClientOrderId(record.client_order_id), reduce_only=False)
@@ -460,6 +497,7 @@ async def restored_case(
     monkeypatch,
     *,
     filled=False,
+    pending_command=True,
     binding_age=30,
     metadata_profile=ACTUAL_ACCOUNT_FEE_V1,
 ):
@@ -474,7 +512,28 @@ async def restored_case(
             tmp_path, io, metadata_profile=metadata_profile
         )
         owners.append(source)
-        await seed_baseline(source, filled=filled)
+        if pending_command:
+            await seed_baseline(source, filled=filled)
+        else:
+            # Seal a genuine stopped worker with an empty command journal. This
+            # opt-in fixture supports read-only model ownership without altering
+            # unresolved command evidence in the default restoration scenario.
+            await source.worker.start_passive()
+            assert source.worker.runtime.journal.list_commands() == ()
+            source_reservations = source.worker.runtime.reservation_totals(source.plan.scope)
+            assert not any((source_reservations.notional_amount,
+                source_reservations.symbol_notional_amount, source_reservations.risk_amount,
+                source_reservations.margin_amount, source_reservations.position_count))
+            source_assembly = source.worker._assembly
+            assert source_assembly is not None
+            source_cache = source_assembly.node.cache
+            source_cache.add_instrument(fixture_native_instrument(source))
+            source_cache.build_index()
+            assert source_cache.check_integrity()
+            assert source.worker.runtime.journal.list_commands() == ()
+            await source.worker.stop()
+            source.order_id = None
+            source.original_events = ()
         h = await make_worker(
             tmp_path,
             io,
@@ -487,8 +546,16 @@ async def restored_case(
         h.assembly, h.order_id = h.worker._assembly, source.order_id
         h.original_events, h.owners = source.original_events, owners
         assert h.worker.native_restart_status.status == "RESTORED_LOCAL_CACHE"
-        assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
-        h.reservations = h.worker.runtime.journal.get("entry").reservation
+        if pending_command:
+            assert h.worker.runtime.journal.get("entry").state is CommandState.UNKNOWN
+            h.reservations = h.worker.runtime.journal.get("entry").reservation
+        else:
+            assert h.worker.runtime.journal.list_commands() == ()
+            restored_reservations = h.worker.runtime.reservation_totals(source.plan.scope)
+            assert not any((restored_reservations.notional_amount,
+                restored_reservations.symbol_notional_amount, restored_reservations.risk_amount,
+                restored_reservations.margin_amount, restored_reservations.position_count))
+            h.reservations = ()
         yield h
     finally:
         for gate in io.gates:
