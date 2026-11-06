@@ -14,6 +14,10 @@ from multi_exchange_trader.trading_product import InstrumentKey
 from ..public_dashboard_origin import PublicDashboardOrigin, dashboard_headers_allowed
 from . import builtin_sma_atr_v1 as builtin
 from .modes import StrategyReference
+from .operator_auth_v1 import (
+    VerifiedOperatorPrincipalV1,
+    verified_operator_principal_from_state_v1,
+)
 from .runtime_policy import RuntimePolicyBook, parse_json
 from .strategy_publication_v1 import StrategyArtifactBytesV1, StrategyPublicationOwnerV1
 
@@ -53,22 +57,24 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
         except (ValueError, TypeError, OSError, sqlite3.Error):
             return JSONResponse(status_code=503, content={"reason": "automatic_storage_unavailable"})
 
-    def require_operator(request: Request) -> bool:
+    def require_operator_principal(
+        request: Request,
+    ) -> VerifiedOperatorPrincipalV1 | None:
         hosts = request.headers.getlist("host")
         origins = request.headers.getlist("origin")
         fetch_site = request.headers.get("sec-fetch-site")
         client = request.client
-        return (client is not None and client.host == "127.0.0.1"
-            and public_origin is not None
-            and dashboard_headers_allowed(hosts, origins, public_origin=public_origin)
-            and origins == [public_origin.origin]
-            and request.headers.getlist("x-trader-operator") == ["trader"]
-            and request.headers.get("authorization") is None
-            and fetch_site in (None, "same-origin"))
+        if (client is None or client.host != "127.0.0.1" or public_origin is None
+                or not dashboard_headers_allowed(hosts, origins, public_origin=public_origin)
+                or origins != [public_origin.origin]
+                or request.headers.get("authorization") is not None
+                or fetch_site not in (None, "same-origin")):
+            return None
+        # Only trusted app-auth middleware may set this ASGI request-state value.
+        # No request header is interpreted as an operator identity.
+        return verified_operator_principal_from_state_v1(request)
 
     async def publication_body(request: Request, *, publishing: bool) -> dict[str, Any]:
-        if not require_operator(request):
-            raise PermissionError("operator required")
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
             raise TypeError("json required")
         chunks = bytearray()
@@ -93,7 +99,9 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
             raise ValueError("publication confirmation")
         return value
 
-    def preview_publication(request: Request, value: dict[str, Any]) -> tuple[dict[str, Any], StrategyArtifactBytesV1]:
+    def preview_publication(
+        request: Request, value: dict[str, Any], principal: VerifiedOperatorPrincipalV1,
+    ) -> tuple[dict[str, Any], StrategyArtifactBytesV1]:
         current = book(request).read()
         publication = book(request).publication_snapshot_v1()
         expected_generation = publication["generation"] if publication is not None else 0
@@ -123,7 +131,8 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
             "configuration": configuration,
             "implementation_sha256": implementation_hash,
             "configuration_sha256": configuration_hash,
-            "approval_method": "NGINX_BASIC_AUTH_SELF_APPROVAL_TRADER",
+            "approval_method": "APP_AUTHENTICATED_PRINCIPAL_SELF_APPROVAL_V1",
+            "authenticated_operator": principal.confirmation_payload(),
         }
         fingerprint_payload = json.dumps(preview, sort_keys=True, ensure_ascii=True,
             separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -139,7 +148,7 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
             "engine_contract_version": builtin.ENGINE_CONTRACT_V1,
             "permitted_instruments": [preview["instrument"]],
             "approval_reference": "operator-self-approval:" + fingerprint,
-            "approval_source_reference": "nginx-basic-auth-trader",
+            "approval_source_reference": principal.approval_source_reference,
             "approval_environments": ["DEMO"],
         }
         artifact = StrategyArtifactBytesV1(implementation, configuration_bytes,
@@ -149,8 +158,11 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
     @router.post("/strategies/preview")
     async def preview_strategy(request: Request) -> Any:
         try:
+            principal = require_operator_principal(request)
+            if type(principal) is not VerifiedOperatorPrincipalV1:
+                raise PermissionError("operator required")
             value = await publication_body(request, publishing=False)
-            preview, _artifact = await asyncio.to_thread(preview_publication, request, value)
+            preview, _artifact = await asyncio.to_thread(preview_publication, request, value, principal)
             return JSONResponse(content=preview, headers=CAPABILITY_HEADER)
         except PermissionError:
             return JSONResponse(status_code=403, content={"reason": "operator_confirmation_required"})
@@ -166,8 +178,11 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
     @router.post("/strategies/publish")
     async def publish_strategy(request: Request) -> Any:
         try:
+            principal = require_operator_principal(request)
+            if type(principal) is not VerifiedOperatorPrincipalV1:
+                raise PermissionError("operator required")
             value = await publication_body(request, publishing=True)
-            preview, artifact = await asyncio.to_thread(preview_publication, request, value)
+            preview, artifact = await asyncio.to_thread(preview_publication, request, value, principal)
             if value["confirmation_fingerprint"] != preview["confirmation_fingerprint"]:
                 raise ValueError("publication confirmation changed")
             result = await asyncio.to_thread(StrategyPublicationOwnerV1(book(request)).publish,
