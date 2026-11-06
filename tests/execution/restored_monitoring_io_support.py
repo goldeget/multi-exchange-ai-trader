@@ -21,6 +21,7 @@ import httpx
 from fixtures.runtime_policy_v1 import load_v1
 from test_bybit_native_linux import module
 from test_native_monitor_http import fee_row, instrument_row, wallet_row
+from test_private_account_sources_bundle_v1 import COIN
 from test_risk import inputs
 from test_runtime import selection
 
@@ -197,7 +198,10 @@ class IO:
 
         self.ledger, self.sends, self.wires = VenueLedger(), [], []
         self.on_http, self.on_send = None, None
-        self.instrument, self.fee, self.wallet = instrument_row(), fee_row(), wallet_row()
+        self.instrument, self.fee = instrument_row(), fee_row()
+        self.wallet = wallet_row()
+        for name, value in COIN.items():
+            self.wallet["coin"][0].setdefault(name, value)
         self.account_mode, self.margin_mode, self.lpa_perp = 5, "ISOLATED_MARGIN", True
         self.whole_positions, self.whole_orders = [], []
         self.gates = []
