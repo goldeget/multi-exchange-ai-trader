@@ -87,6 +87,21 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
             state, raw_config=signal_support.config_bytes(signal_ttl_seconds=300)
         )
         h.worker.max_age = timedelta(minutes=5)
+        # Keep the synthetic account snapshot coherent with economic_inputs:
+        # 1000 USDT equity and free margin, with no held margin or liabilities.
+        h.io.wallet["coin"][0].update({
+            "walletBalance": "1000",
+            "equity": "1000",
+            "totalPositionIM": "0",
+            "totalOrderIM": "0",
+            "locked": "0",
+            "bonus": "0",
+            "borrowAmount": "0",
+            "spotBorrow": "0",
+            "accruedInterest": "0",
+            "unrealisedPnl": "0",
+            "totalPositionMM": "0",
+        })
 
         # This runs the real restored worker/assembly path and issues its current
         # actual-fee T4 receipt using only restored_monitoring_io_support.IO.
