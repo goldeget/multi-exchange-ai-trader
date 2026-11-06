@@ -340,14 +340,7 @@ async def make_worker(
         registry=registry, plan=plan, io=io, assembly=None)
 
 
-async def seed_baseline(h, *, filled=False):
-    await h.worker.start_passive()
-    h.assembly = h.worker._assembly
-    record = await h.worker.stage(command_key="entry", position_id="position-1",
-        mode=AutomaticMode.FULL_AUTO, request=h.request)
-    assert record.state is CommandState.PENDING
-    request = h.worker.runtime._request(record)
-    ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
+def fixture_native_instrument(h):
     if h.worker.metadata_profile == SDK1231_OBSERVATION_UNKNOWN_FEES_V1:
         native_instrument = convert_observation_instrument_v1(
             h.io.instrument, "BTCUSDT", milliseconds()
@@ -358,7 +351,18 @@ async def seed_baseline(h, *, filled=False):
         native_instrument = convert_instrument(
             h.io.instrument, h.io.fee, "BTCUSDT", milliseconds()
         )
-    instrument = module("model.instruments").instruments_from_pyo3([native_instrument])[0]
+    return module("model.instruments").instruments_from_pyo3([native_instrument])[0]
+
+
+async def seed_baseline(h, *, filled=False):
+    await h.worker.start_passive()
+    h.assembly = h.worker._assembly
+    record = await h.worker.stage(command_key="entry", position_id="position-1",
+        mode=AutomaticMode.FULL_AUTO, request=h.request)
+    assert record.state is CommandState.PENDING
+    request = h.worker.runtime._request(record)
+    ids, enums, objects = module("model.identifiers"), module("model.enums"), module("model.objects")
+    instrument = fixture_native_instrument(h)
     order = h.assembly.strategy.order_factory.market(instrument_id=instrument.id,
         order_side=enums.OrderSide.BUY, quantity=objects.Quantity.from_str(str(request.owned.quantity)),
         client_order_id=ids.ClientOrderId(record.client_order_id), reduce_only=False)
@@ -490,6 +494,13 @@ async def restored_case(
             assert not any((source_reservations.notional_amount,
                 source_reservations.symbol_notional_amount, source_reservations.risk_amount,
                 source_reservations.margin_amount, source_reservations.position_count))
+            source_assembly = source.worker._assembly
+            assert source_assembly is not None
+            source_cache = source_assembly.node.cache
+            source_cache.add_instrument(fixture_native_instrument(source))
+            source_cache.build_index()
+            assert source_cache.check_integrity()
+            assert source.worker.runtime.journal.list_commands() == ()
             await source.worker.stop()
             source.order_id = None
             source.original_events = ()
