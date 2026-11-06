@@ -181,12 +181,49 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
 
             # Confirm the same T4 handle remains current after preparing the
             # signal and plan. Model reads do not substitute a DEMO/native label.
-            assert h.session.require_native_instrument_receipt_v1(
+            current_view = h.session.require_native_instrument_receipt_v1(
                 receipt,
                 binding=h.worker.binding,
                 scope=h.worker.scope,
                 target=target,
-            ) is native_view
+            )
+            assert current_view is native_view
+
+            capture = client._native_instrument_capture_v1
+            registry = h.session._native_instrument_receipts_v1
+            registry_slot = registry._slot
+            identity_checks = (
+                ("current_view_is_native_view", current_view is native_view),
+                ("registry_slot_is_capture", registry_slot is capture),
+                ("registry_slot_view_is_native_view",
+                    registry_slot is not None and registry_slot.view is native_view),
+                ("registry_slot_handle_is_receipt",
+                    registry_slot is not None and registry_slot.handle is receipt),
+                ("registry_slot_target_is_target",
+                    registry_slot is not None and registry_slot.target is target),
+                ("capture_handle_is_receipt", capture is not None and capture.handle is receipt),
+                ("capture_view_is_native_view", capture is not None and capture.view is native_view),
+                ("capture_target_is_target", capture is not None and capture.target is target),
+                ("capture_owner_is_registry", capture is not None and capture.owner is registry),
+                ("capture_assembly_is_worker_assembly",
+                    capture is not None and capture.assembly is h.assembly),
+                ("capture_channel_is_assembly_channel",
+                    capture is not None and capture.channel is h.assembly.channel),
+                ("capture_client_is_assembly_client",
+                    capture is not None and capture.client is client),
+                ("capture_adapter_is_client_adapter",
+                    capture is not None and capture.adapter is client._http_client),
+                ("capture_provider_is_client_provider",
+                    capture is not None and capture.provider is client.bybit_instrument_provider),
+                ("capture_cache_is_node_cache",
+                    capture is not None and capture.cache is h.assembly.node.cache),
+                ("client_capture_is_capture", client._native_instrument_capture_v1 is capture),
+                ("client_receipt_is_receipt", client._native_instrument_receipt_v1 is receipt),
+                ("client_target_is_target", client._monitor_target is target),
+                ("assembly_client_is_client", h.assembly.execution_client is client),
+            )
+            failed_identity_links = tuple(label for label, passed in identity_checks if not passed)
+            assert not failed_identity_links, failed_identity_links
 
             fixture_requests = tuple(fixture.requests)
             restored_requests = tuple(h.io.sends)
