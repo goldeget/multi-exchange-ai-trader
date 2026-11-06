@@ -115,7 +115,10 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
             # its source → signal → plan steps directly with the exact pre-admit
             # policy/publication state established above.
             market, _bars = signal_support.install(state)
-            fixture.mode = 3
+            h.io.account_mode = 3
+            source_journal = h.worker.runtime.journal.list_commands()
+            source_submissions = tuple(h.assembly.bridge._submissions)
+            source_native_commands = h.assembly.node.kernel.exec_engine.command_count
             read = await h.worker.capture_entry_sources_v2(
                 scope=scope,
                 profile="DEMO_UTA1_V1",
@@ -123,6 +126,9 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
                 nonvip_applicability_revision="fixture-fee-v1",
                 budget=MonitoringReadBudget(),
             )
+            assert h.worker.runtime.journal.list_commands() == source_journal == ()
+            assert tuple(h.assembly.bridge._submissions) == source_submissions == ()
+            assert h.assembly.node.kernel.exec_engine.command_count == source_native_commands
             signal_handle = await h.worker.capture_builtin_signal_v1(scope=scope, market=market)
             signal = h.worker.consume_builtin_signal_v1(signal_handle)
             entry_owner = h.worker._entry_model_owner_v2

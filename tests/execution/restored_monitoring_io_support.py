@@ -197,6 +197,7 @@ class IO:
         self.ledger, self.sends, self.wires = VenueLedger(), [], []
         self.on_http, self.on_send = None, None
         self.instrument, self.fee, self.wallet = instrument_row(), fee_row(), wallet_row()
+        self.account_mode, self.margin_mode, self.lpa_perp = 5, "ISOLATED_MARGIN", True
         self.gates = []
 
         async def send(client, request, **kwargs):
@@ -225,6 +226,7 @@ class IO:
         path, params = request.url.path, dict(request.url.params)
         allowed = {
             "/v5/market/time": set(), "/v5/user/query-api": set(),
+            "/v5/account/info": set(), "/v5/account/user-setting-config": set(),
             "/v5/market/instruments-info": {"category", "symbol", "limit", "cursor"},
             "/v5/account/fee-rate": {"category", "symbol"},
             "/v5/account/wallet-balance": {"accountType", "coin"},
@@ -252,6 +254,11 @@ class IO:
         if path == "/v5/user/query-api":
             result = {"apiKey": KEY, "secret": "", "userID": 12345, "isMaster": False,
                 "parentUid": "0", "readOnly": 1, "permissions": {"Wallet": []}}
+        elif path == "/v5/account/info":
+            result = {"unifiedMarginStatus": self.account_mode,
+                "marginMode": self.margin_mode, "updatedTime": "1"}
+        elif path == "/v5/account/user-setting-config":
+            result = {"lpaPerp": self.lpa_perp, "fmsef": False}
         elif path == "/v5/market/time":
             result = {}
         elif path == "/v5/market/instruments-info":
