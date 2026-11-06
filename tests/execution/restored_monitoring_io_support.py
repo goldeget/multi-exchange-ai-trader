@@ -203,6 +203,7 @@ class IO:
         for name, value in COIN.items():
             self.wallet["coin"][0].setdefault(name, value)
         self.account_mode, self.margin_mode, self.lpa_perp = 5, "ISOLATED_MARGIN", True
+        self.delta_enable: bool | None = False
         self.whole_positions, self.whole_orders = [], []
         self.gates = []
 
@@ -273,6 +274,8 @@ class IO:
                 "marginMode": self.margin_mode, "updatedTime": "1"}
         elif path == "/v5/account/user-setting-config":
             result = {"lpaPerp": self.lpa_perp, "fmsef": False}
+            if type(self.delta_enable) is bool:
+                result["deltaEnable"] = self.delta_enable
         elif path == "/v5/market/time":
             result = {}
         elif path == "/v5/market/instruments-info":
