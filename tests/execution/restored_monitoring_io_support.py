@@ -74,7 +74,8 @@ class VenueLedger:
     def __init__(self):
         self.order = None
         self.executions = []
-        self.position = {"symbol": "BTCUSDT", "positionIdx": 0, "side": "", "size": "0"}
+        self.position = {"symbol": "BTCUSDT", "positionIdx": 0, "side": "", "size": "0.000",
+            "leverage": "7.500", "autoAddMargin": 0, "positionStatus": "Normal"}
 
     def own(self, order):
         created = order.ts_init // 1_000_000
@@ -198,6 +199,7 @@ class IO:
         self.on_http, self.on_send = None, None
         self.instrument, self.fee, self.wallet = instrument_row(), fee_row(), wallet_row()
         self.account_mode, self.margin_mode, self.lpa_perp = 5, "ISOLATED_MARGIN", True
+        self.whole_positions, self.whole_orders = [], []
         self.gates = []
 
         async def send(client, request, **kwargs):
@@ -230,13 +232,21 @@ class IO:
             "/v5/market/instruments-info": {"category", "symbol", "limit", "cursor"},
             "/v5/account/fee-rate": {"category", "symbol"},
             "/v5/account/wallet-balance": {"accountType", "coin"},
-            "/v5/position/list": {"category", "symbol", "limit", "cursor"},
-            "/v5/order/realtime": {"category", "symbol", "limit", "cursor", "openOnly"},
+            "/v5/position/list": {"category", "symbol", "settleCoin", "limit", "cursor"},
+            "/v5/order/realtime": {"category", "symbol", "settleCoin", "limit", "cursor", "openOnly"},
             "/v5/order/history": {"category", "symbol", "limit", "cursor", "startTime", "endTime"},
             "/v5/execution/list": {"category", "symbol", "limit", "cursor", "startTime", "endTime"},
         }
         assert path in allowed and set(params) <= allowed[path]
-        if "category" in params:
+        if "settleCoin" in params:
+            assert path in ("/v5/position/list", "/v5/order/realtime")
+            assert params.get("category") == "linear"
+            assert params["settleCoin"] == "USDT" and "symbol" not in params
+            expected = {"category", "settleCoin"}
+            if path == "/v5/order/realtime":
+                expected.add("openOnly")
+            assert expected <= set(params) <= expected | {"cursor"}
+        elif "category" in params:
             assert params["category"] == "linear" and params.get("symbol") == "BTCUSDT"
         if path == "/v5/order/realtime":
             assert params["openOnly"] == "0" and "orderFilter" not in params
@@ -267,6 +277,12 @@ class IO:
             result = {"list": [copy.deepcopy(self.fee)]}
         elif path == "/v5/account/wallet-balance":
             result = {"list": [copy.deepcopy(self.wallet)]}
+        elif path == "/v5/position/list" and "settleCoin" in params:
+            result = {"category": "linear", "list": copy.deepcopy(self.whole_positions),
+                "nextPageCursor": ""}
+        elif path == "/v5/order/realtime" and "settleCoin" in params:
+            result = {"category": "linear", "list": copy.deepcopy(self.whole_orders),
+                "nextPageCursor": ""}
         else:
             result = self.ledger.page(path)
         response = {"retCode": 0, "result": result}
