@@ -789,7 +789,7 @@ class ExecutionWorker:
             registry_slot = self.session._native_instrument_receipts_v1._slot
             if (current is not view or registry_slot is not capture or capture.handle is not receipt
                     or capture.view is not view or capture.target is not target
-                    or capture.owner is not self.session._native_instrument_receipts_v1
+                    or capture.owner is not self.session
                     or capture.assembly is not assembly or capture.channel is not assembly.channel
                     or capture.client is not client or capture.adapter is not client._http_client
                     or capture.provider is not client.bybit_instrument_provider

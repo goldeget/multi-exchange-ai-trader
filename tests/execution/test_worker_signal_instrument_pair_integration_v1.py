@@ -204,7 +204,7 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
                 ("capture_handle_is_receipt", capture is not None and capture.handle is receipt),
                 ("capture_view_is_native_view", capture is not None and capture.view is native_view),
                 ("capture_target_is_target", capture is not None and capture.target is target),
-                ("capture_owner_is_registry", capture is not None and capture.owner is registry),
+                ("capture_owner_is_session", capture is not None and capture.owner is h.session),
                 ("capture_assembly_is_worker_assembly",
                     capture is not None and capture.assembly is h.assembly),
                 ("capture_channel_is_assembly_channel",
