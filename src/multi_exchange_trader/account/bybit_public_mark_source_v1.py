@@ -14,7 +14,12 @@ from uuid import uuid4
 import httpx
 from httpx._client import ClientState
 
-from ..execution.bybit_entry_market_projections_v1 import project_bybit_mark_price_v1
+from ..execution.bybit_entry_market_projections_v1 import (
+    BybitLinearFundingObservationV1,
+    project_bybit_linear_funding_v1,
+    project_bybit_last_trade_price_v1,
+    project_bybit_mark_price_v1,
+)
 from ..execution.bybit_linear_model_inputs_v1 import (
     BybitDecimalFieldV1,
     BybitModelSourceRefV1,
@@ -364,6 +369,22 @@ class BybitPublicMarkSessionV1:
         self.require_mark_v1(source, symbol=symbol)
         cap = self._current(source, symbol)
         return project_bybit_mark_price_v1(source, cap.raw, symbol=symbol)
+
+    def project_funding_v1(
+        self, source: BybitModelSourceRefV1, *, symbol: str,
+    ) -> BybitLinearFundingObservationV1:
+        """Project funding only from this owner's current original ticker bytes."""
+        self.require_mark_v1(source, symbol=symbol)
+        cap = self._current(source, symbol)
+        return project_bybit_linear_funding_v1(source, cap.raw, symbol=symbol)
+
+    def project_last_trade_price_v1(
+        self, source: BybitModelSourceRefV1, *, symbol: str,
+    ) -> BybitDecimalFieldV1:
+        """Project lastPrice only from this owner's current original ticker bytes."""
+        self.require_mark_v1(source, symbol=symbol)
+        cap = self._current(source, symbol)
+        return project_bybit_last_trade_price_v1(source, cap.raw, symbol=symbol)
 
     async def aclose(self) -> None:
         self._closed = True

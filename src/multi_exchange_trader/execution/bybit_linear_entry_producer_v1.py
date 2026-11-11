@@ -8,7 +8,7 @@ The final U2-B consumer must still seal its own admission and fresh SUBMIT.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..account.bybit_readonly import BybitReadOnlyClient
@@ -16,7 +16,6 @@ from . import bybit_demo_uta1_profile_v1 as demo
 from . import bybit_linear_model_inputs_v1 as a
 from . import bybit_linear_model_v1 as m
 from . import linear_risk_evidence_v2 as e
-from . import linear_risk_v2 as r
 from . import risk_domain_v2 as d
 from . import risk_v2_contracts as c
 from .account_binding import BybitDemoAccountSession
@@ -102,10 +101,11 @@ class BybitLinearEntryProducerV1:
     def prepare_plan_v1(self, *, read: BybitLinearVenueReadV1, inputs: e.LinearRiskInputsV2,
                         domain: d.LinearRiskDomainCoverageV2, policy_revision: int,
                         publication_generation: int) -> BybitLinearPreparedEntryV1 | m.BybitModelRejectedV1:
-        """Bind explicit economic inputs to a retained genuine read, then actually calculate.
+        """Verify current source/policy inputs and fail closed while horizon is unowned.
 
-        This is pre-registration PLAN calculation. Own-PENDING evaluation belongs
-        to the existing separate replay path and cannot omit a reservation here.
+        The current implementation does not issue a PLAN: no approved holding-
+        cost horizon or enforced exit/funding-refresh owner is available. Caller
+        costs, minimums and holding times cannot satisfy that missing prerequisite.
         """
         with self._operation() as token:
             self._current = None
@@ -116,37 +116,22 @@ class BybitLinearEntryProducerV1:
             original = self.assembler._current
             if original is None or c._scope_payload_v2(original.scope) != c._scope_payload_v2(inputs.policy.scope):
                 raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+            inputs = replace(
+                inputs,
+                last_trade_quote=self.assembler.issue_current_last_trade_quote_v2(read),
+            )
             if (c.reservation_snapshot_sha256_v2(read.full_reservations)
                     != c.reservation_snapshot_sha256_v2(read.evaluation_reservations)
                     or c.reservation_snapshot_sha256_v2(inputs.reservations)
                     != c.reservation_snapshot_sha256_v2(read.full_reservations)
                     or c.mark_set_sha256_v2(inputs.marks) != c.mark_set_sha256_v2(read.marks)):
                 raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
-            now = c._utc_v2(self.assembler.clock())
-            preparation = r.prepare_linear_entry_v2(inputs, now=now)
-            bound: ModelInputsV1
-            if type(read.venue) is demo.BybitDemoUta1VenueStateV1:
-                bound = demo.bind_bybit_demo_uta1_model_inputs_v1(inputs,
-                    preparation=preparation, domain=domain, venue=read.venue,
-                    catalog=read.catalog, selected_mark=read.selected_mark, now=now)
-                calculation = demo.calculate_bound_bybit_demo_uta1_model_v1(bound, now=now)
-            elif type(read.venue) is a.BybitVenueStateV1:
-                bound = a.bind_bybit_model_inputs_v1(inputs, preparation=preparation,
-                    domain=domain, venue=read.venue, catalog=read.catalog,
-                    selected_mark=read.selected_mark, now=now)
-                calculation = m.calculate_bound_bybit_model_v1(bound, now=now)
-            else:
-                raise RiskV2Rejected("RISK_V2_UNSUPPORTED_MODE")
-            if type(calculation) is m.BybitModelRejectedV1:
-                return calculation
-            if not isinstance(calculation, m.BybitBoundModelCalculationV1):
-                raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
-            result = BybitLinearPreparedEntryV1(read, bound, calculation, policy_revision,
-                publication_generation, min(bound.valid_until, calculation.valid_until))
-            self._current = _Current(result, self.assembler._current, _model_hash(bound),
-                m.bybit_bound_calculation_sha256_v1(calculation))
-            self._require(result, token)
-            return result
+            # No approved strategy holding-cost horizon or enforced exit/funding
+            # refresh owner exists yet. In particular, caller-provided costs,
+            # holding_until and minimum evidence cannot qualify a PLAN. Keep the
+            # source-only cost issuer available for evidence review, but do not
+            # turn its next-funding estimate into a guaranteed close horizon.
+            raise RiskV2Rejected("RISK_V2_HOLDING_HORIZON_REQUIRED")
 
     def _require(self, result: BybitLinearPreparedEntryV1, token: object) -> None:
         slot = self._current
@@ -171,6 +156,9 @@ class BybitLinearEntryProducerV1:
         # policy/publication read. This is data currentness, not a SUBMIT seal.
         now = c._utc_v2(clock())
         assembler.require_current_v1(result.source_read)
+        assembler.require_current_last_trade_quote_v2(
+            result.source_read, result.inputs.risk_inputs.last_trade_quote
+        )
         self._policy(result.inputs.risk_inputs, result.policy_revision, result.publication_generation)
         if now >= result.valid_until:
             raise RiskV2Rejected("RISK_V2_EXPIRED")

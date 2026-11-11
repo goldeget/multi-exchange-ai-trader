@@ -71,6 +71,11 @@ def test_limit_cap_is_distinct_from_market_cap() -> None:
     assert instrument_v2().spec.max_market_quantity.value == D("0.9")
 
 
+def test_stop_gap_budget_is_required_and_cost_must_match_the_policy():
+    _reject("SLIPPAGE_BOUND_UNAVAILABLE", policy=replace(policy_v2(), max_stop_gap_quote_per_base=None))
+    _reject("SOURCE_MISMATCH", costs=replace(costs_v2(), stop_gap_quote_per_base=D("0.49")))
+
+
 def _inputs() -> dict[str, Any]:
     return {
         "policy": policy_v2(),
@@ -540,7 +545,7 @@ def test_generated_derived_2001_digit_result_revalidates() -> None:
         policy_sha256=c.risk_policy_sha256_v2(policy),
         fee_quote_per_base=D("1E1000"),
         funding_quote_per_base=D("1E-1000"),
-        stop_gap_quote_per_base=D(0),
+        stop_gap_quote_per_base=D("0.5"),
     )
     result = _size(policy=policy, costs=costs)
     assert result.envelope.base_quantity == D("0.9")
@@ -551,9 +556,7 @@ def test_generated_derived_2001_digit_result_revalidates() -> None:
 def test_no_quote_time_or_holding_model_authority_from_ids() -> None:
     # Only actual-registry consumers can compare these valid alternate claims
     # with the real cost issuer; sizing preserves their new economic hash.
-    costs = replace(
-        costs_v2(), holding_until=NOW + timedelta(hours=3), stop_gap_model_revision="FIXTURE_GAP_V2"
-    )
+    costs = replace(costs_v2(), holding_until=NOW + timedelta(hours=3))
     assert _size(costs=costs).cost_allowance_sha256 != _size().cost_allowance_sha256
     policy = replace(policy_v2(), max_quote_age_seconds=D(0))
     costs = replace(costs, policy_sha256=c.risk_policy_sha256_v2(policy))

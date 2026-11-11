@@ -65,6 +65,7 @@ from .runtime_policy import RuntimePolicyBook
 from .state_store import RuntimeStateStore
 from .venue_readback import BybitVenueReadback
 from .worker_entry_model_v2 import WorkerEntryModelOwnerV2, WorkerModelPlanV2
+from .worker_risk_assessment_v2 import WorkerRiskAssessmentHandleV2, WorkerRiskAssessmentPlanV2
 from .worker_signal_instrument_pair_v1 import WorkerSignalRiskInstrumentPairV1
 from .worker_signal_risk_plan_v1 import (
     WorkerSignalRiskPlanV1,
@@ -448,6 +449,33 @@ class ExecutionWorker:
             self._retire_entry_publications_v2()
             raise RuntimeBlocked("WORKER_STRATEGY_SIGNAL_OPERATION_IN_PROGRESS")
         return owner.require(handle)
+
+    def assess_current_risk_v2(
+        self, signal_handle: WorkerStrategySignalV1,
+    ) -> WorkerRiskAssessmentHandleV2:
+        """Issue a blocker-only PLAN handle from the current worker-owned signal/read."""
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+        self._require_admission()
+        return owner.issue_risk_assessment_v2(signal_handle)
+
+    def require_current_risk_assessment_v2(
+        self, handle: WorkerRiskAssessmentHandleV2,
+    ) -> WorkerRiskAssessmentPlanV2:
+        """Revalidate and return the read-only PLAN observation, never an entry grant."""
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_HANDLE_REQUIRED")
+        self._require_admission()
+        return owner.require_risk_assessment_v2(handle)
+
+    def retire_current_risk_assessment_v2(self, handle: WorkerRiskAssessmentHandleV2) -> None:
+        """Explicitly revoke one current read-only PLAN handle."""
+        owner = self._entry_model_owner_v2
+        if type(owner) is not WorkerEntryModelOwnerV2:
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_HANDLE_REQUIRED")
+        owner.retire_risk_assessment_v2(handle)
 
     def install_entry_model_v2(self, *, public_marks: BybitPublicMarkSessionV1,
                                catalog_producer: BybitInstrumentCatalogProducer,

@@ -95,6 +95,8 @@ def value_linear_admission_v2(
     account_gross = c._gross_components_v2(account.components, prices=prices)
     reserved_gross = c._gross_components_v2(reservations.components, prices=prices)
     quantity = _fraction_v2(sizing.envelope.base_quantity)
+    # Mark-to-market admission valuation only; it does not cap fill price or
+    # future account exposure.
     proposed = quantity * _fraction_v2(prices[policy.scope.instrument])
     combined = _fraction_v2(account_gross) + _fraction_v2(reserved_gross) + proposed
     if proposed > _fraction_v2(policy.caps.max_order_admission_notional):
@@ -160,6 +162,11 @@ def size_linear_entry_v2(
         or costs.stop_price != proposal.stop_price
         or costs.origin_quote_id != proposal.entry.origin_quote_id
     ):
+        raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+    if policy.max_stop_gap_quote_per_base is None:
+        raise RiskV2Rejected("RISK_V2_SLIPPAGE_BOUND_UNAVAILABLE")
+    if (costs.stop_gap_quote_per_base != policy.max_stop_gap_quote_per_base
+            or costs.stop_gap_model_revision != c.STOP_GAP_MODEL_REVISION_V2):
         raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
 
     maximum = _fraction_v2(policy.max_evidence_age_seconds)
@@ -251,6 +258,7 @@ def prepare_linear_entry_v2(
     policy, proposal, costs = inputs.policy, inputs.proposal, inputs.costs
     account, reservations = inputs.account, inputs.reservations
     minimum, requirements = inputs.minimum_amount, inputs.requirements
+    last_trade = inputs.last_trade_quote
     pin = c.pin_instrument_v2(inputs.instrument, catalog_revision=inputs.catalog_revision)
     policy_hash = c.risk_policy_sha256_v2(policy)
     scope = c._scope_payload_v2(policy.scope)
@@ -313,6 +321,8 @@ def prepare_linear_entry_v2(
         costs.funding_reference.server_observed_at,
         costs.funding_reference.received_at,
         costs.reference.computed_at,
+        last_trade.reference.server_observed_at,
+        last_trade.reference.received_at,
         minimum.reference.computed_at,
         account.reference.server_observed_at,
         account.reference.received_at,
@@ -324,8 +334,20 @@ def prepare_linear_entry_v2(
     if any(
         c._utc_v2(reference.computed_at) < c._utc_v2(pin.received_at)
         for reference in (costs.reference, minimum.reference)
+    ) or c._utc_v2(minimum.reference.computed_at) < c._utc_v2(
+        last_trade.reference.received_at
     ):
         c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
+    c._fresh_v2(
+        last_trade.reference.server_observed_at,
+        now=now,
+        maximum=decimal_fraction_v2(policy.max_quote_age_seconds),
+    )
+    c._fresh_v2(
+        last_trade.reference.received_at,
+        now=now,
+        maximum=decimal_fraction_v2(policy.max_quote_age_seconds),
+    )
     for expiry in (
         proposal.entry.valid_until,
         costs.valid_until,
@@ -349,6 +371,13 @@ def prepare_linear_entry_v2(
     envelope_hash = c.envelope_sha256_v2(sizing.envelope)
     if minimum.envelope_sha256 != envelope_hash:
         c._reject_v2("RISK_V2_SOURCE_MISMATCH")
+    if (
+        last_trade.instrument != policy.scope.instrument
+        or last_trade.reference.observation_id not in minimum.input_observation_ids
+        or decimal_fraction_v2(minimum.evaluation_price)
+        != decimal_fraction_v2(last_trade.last_price)
+    ):
+        c._reject_v2("RISK_V2_MINIMUM_RULE_UNVERIFIED")
     spec = inputs.instrument.spec
     if type(spec) is not LinearInstrumentSpec:
         c._reject_v2("RISK_V2_UNSUPPORTED_PRODUCT")

@@ -73,7 +73,7 @@ def shared_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[S
     db = tmp_path / "policy.sqlite3"
     book = RuntimePolicyBook(db)
     book.save_v2(0, policy_fixture(), expected_strategy_generation=None,  # type: ignore[no-untyped-call]
-                 policy_sections_version=1)
+                 policy_sections_version=2)
     config = tmp_path / "policy-target.json"
     config.write_text(json.dumps({"schema_version": 1, "policy_db": str(db)}), encoding="utf-8")
     metadata = UnqualifiedPosixMetadata()

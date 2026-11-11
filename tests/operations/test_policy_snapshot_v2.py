@@ -28,10 +28,11 @@ def typed_policy():
     return fixtures["policy_fixture"]()
 
 
-@pytest.mark.parametrize("fault", [None, "partial", "orphan", "spot", "future", "hash", "global", "decimal", "size"])
+@pytest.mark.parametrize("fault", [None, "partial", "orphan", "spot", "legacy_risk_v1",
+                                   "future", "hash", "global", "decimal", "size"])
 def test_typed_pure_application_offline_parity(fault):
     policy = typed_policy()
-    accepted = fault in {None, "partial", "orphan", "spot"}
+    accepted = fault in {None, "partial", "orphan", "spot", "legacy_risk_v1"}
     if fault == "partial":
         policy["risk_v2"]["caps"] = None
         policy["scope"]["account"] = None
@@ -43,6 +44,9 @@ def test_typed_pure_application_offline_parity(fault):
         policy["scope"].update(selected_product="SPOT", allowed_products=["SPOT"],
                                allowed_instruments=None, selected_instruments=None)
         policy["risk_v2"] = policy["strategy"] = None
+    elif fault == "legacy_risk_v1":
+        policy["risk_v2"].pop("max_stop_gap_quote_per_base")
+        policy["risk_v2"]["section_version"] = 1
     elif fault == "future":
         policy["strategy"]["section_version"] = 2
     elif fault == "hash":
@@ -81,6 +85,32 @@ def test_typed_pure_application_offline_parity(fault):
     assert results == [accepted, accepted]
 
 
+def test_legacy_risk_v1_normalizes_without_a_guessed_stop_gap_budget():
+    policy = typed_policy()
+    policy["risk_v2"].pop("max_stop_gap_quote_per_base")
+    policy["risk_v2"]["section_version"] = 1
+    normalized = validate_v2(policy)
+    portable = OFFLINE["_sections_wire"](policy["scope"], policy["strategy"], policy["risk_v2"])
+    assert normalized["risk_v2"]["section_version"] == portable["risk_v2"]["section_version"] == 2
+    assert normalized["risk_v2"]["max_stop_gap_quote_per_base"] is None
+    assert portable["risk_v2"]["max_stop_gap_quote_per_base"] is None
+    from multi_exchange_trader.execution.policy_sections import section_missing_fields
+
+    assert "risk_v2.max_stop_gap_quote_per_base" in section_missing_fields(normalized)
+    OFFLINE["check_policy_sections"](policy)
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_legacy_risk_v1_requires_exact_integer_in_application_and_portable_codecs(version):
+    policy = typed_policy()
+    policy["risk_v2"].pop("max_stop_gap_quote_per_base")
+    policy["risk_v2"]["section_version"] = version
+    with pytest.raises(ValueError):
+        validate_v2(policy)
+    with pytest.raises(OFFLINE["SnapshotError"], match="Unsupported policy V2 sections"):
+        OFFLINE["check_policy_sections"](policy)
+
+
 @pytest.mark.parametrize("section,field,value", [
     ("scope", "account", {"account_id": " fixture ", "environment": "DEMO"}),
     ("scope", "mode", True), ("scope", "selected_product", "OTHER"),
@@ -93,6 +123,7 @@ def test_typed_pure_application_offline_parity(fault):
     ("risk_v2", "per_trade_loss", "0"), ("risk_v2", "per_trade_loss", "01"),
     ("risk_v2", "per_trade_loss", "10000000000000000"),
     ("risk_v2", "per_trade_loss", "1.123456789"), ("risk_v2", "max_positions", 1000001),
+    ("risk_v2", "max_stop_gap_quote_per_base", "0"),
     ("risk_v2", "liquidation_buffer_fraction", "1"), ("risk_v2", "position_mode", "HEDGE"),
 ])
 def test_typed_scalar_refusals_match_finite_application_offline_boundaries(section, field, value):
@@ -115,7 +146,7 @@ def test_typed_catalog_and_global_order_remains_semantic_and_roundtrippable():
     OFFLINE["check_policy_sections"](policy)
 
 
-@pytest.mark.parametrize("kind", ["typed", "partial", "spot"])
+@pytest.mark.parametrize("kind", ["typed", "partial", "spot", "legacy-risk-v1"])
 def test_three_file_bundle_recovers_typed_sections_without_application(state, tmp_path, kind):
     book, _ = policy_book(state, "migrated")
     policy = typed_policy()
@@ -126,7 +157,14 @@ def test_three_file_bundle_recovers_typed_sections_without_application(state, tm
         policy["scope"].update(selected_product="SPOT", allowed_products=["SPOT"],
                                allowed_instruments=None, selected_instruments=None)
         policy["risk_v2"] = policy["strategy"] = None
-    expected = book.save_v2(2, policy, expected_strategy_generation=None, policy_sections_version=1)
+    book.save_v2(2, policy, expected_strategy_generation=None, policy_sections_version=2)
+    if kind == "legacy-risk-v1":
+        with closing(sqlite3.connect(book.path)) as db, db:
+            raw = json.loads(db.execute("SELECT payload FROM runtime_policy_v2").fetchone()[0])
+            raw["risk_v2"].pop("max_stop_gap_quote_per_base")
+            raw["risk_v2"]["section_version"] = 1
+            db.execute("UPDATE runtime_policy_v2 SET payload=?", (json.dumps(raw),))
+    expected = book.read()
     before = state_bytes(state)
     bundle, elsewhere = tmp_path / "bundle", tmp_path / "elsewhere"
     bundle.mkdir()
@@ -171,7 +209,7 @@ def policy_book(directory: Path, kind: str) -> tuple[RuntimePolicyBook, str | No
     if kind in {"migrated", "typed"}:
         book.migrate_v1(1)
     if kind == "typed":
-        book.save_v2(2, typed_policy(), expected_strategy_generation=None, policy_sections_version=1)
+        book.save_v2(2, typed_policy(), expected_strategy_generation=None, policy_sections_version=2)
     return book, raw
 
 
@@ -498,7 +536,7 @@ keeper=sqlite3.connect(sys.argv[1])
 assert keeper.execute('PRAGMA journal_mode=WAL').fetchone()==('wal',)
 keeper.execute('BEGIN')
 keeper.execute('SELECT * FROM runtime_policy_v2').fetchall()
-RuntimePolicyBook(Path(sys.argv[1])).save_v2(2,json.loads(sys.argv[2]),expected_strategy_generation=None,policy_sections_version=1)
+RuntimePolicyBook(Path(sys.argv[1])).save_v2(2,json.loads(sys.argv[2]),expected_strategy_generation=None,policy_sections_version=2)
 assert Path(sys.argv[1]+'-wal').stat().st_size>0
 os._exit(0)
 """

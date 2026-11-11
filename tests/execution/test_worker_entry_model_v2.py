@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
@@ -20,9 +19,7 @@ from test_bybit_native import FakeFactory, FakeStrategy
 from test_worker import fill, quarantines
 
 from multi_exchange_trader.execution import risk_domain_v2 as d
-from multi_exchange_trader.execution.bybit_linear_entry_producer_v1 import (
-    BybitLinearPreparedEntryV1,
-)
+from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
 from multi_exchange_trader.execution.bybit_native import NativeBindings, NativeBybitBridge
 from multi_exchange_trader.execution.journal import CommandJournal, CommandKind
 from multi_exchange_trader.execution.modes import AutomaticMode
@@ -83,46 +80,45 @@ def install(state: Any) -> None:
         catalog_producer=state.fixture.catalog, market=state.market)
 
 
-async def prepare(state: Any) -> tuple[Any, Any, Any, Any]:
+async def prepare(state: Any) -> tuple[Any, Any, Any]:
     worker = state.worker
     read = await worker.capture_entry_sources_v2(scope=SCOPE, profile="UTA2_V1",
         nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
         budget=MonitoringReadBudget())
-    inputs, domain = economic_inputs(read, state.book, state.fixture.clock())
+    inputs, domain = economic_inputs(read, state.book, state.fixture.clock(),
+        assembler=worker._entry_model_owner_v2._assembler)
     # Explicit fixture-only economic sources do not become account-loss authority.
     domain = replace(domain, source_generation=worker._entry_model_owner_v2._journal_epoch)
     inputs = replace(inputs, risk_domain_sha256=d.risk_domain_sha256_v2(domain))
-    handle = worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
-        policy_revision=2, publication_generation=1)
-    assert type(handle) is WorkerModelPlanV2
-    return handle, read, inputs, domain
+    return read, inputs, domain
 
 
-async def test_actual_worker_consumes_original_sources_and_model_without_financial_grant(model_worker: Any) -> None:
+async def test_actual_worker_keeps_entry_plan_closed_without_approved_horizon(model_worker: Any) -> None:
     state = model_worker
     assert state.worker._journal._v2_meta(required=False) is None  # Passive startup does not bind entry J.
     before = len(state.fixture.requests)
     install(state)
     assert len(state.fixture.requests) == before  # Explicit installation makes no network request.
-    handle, read, inputs, _domain = await prepare(state)
+    read, inputs, domain = await prepare(state)
     owner = state.worker._entry_model_owner_v2
-    with state.worker.entry_model_publication_v2(handle) as original:
-        assert type(original) is BybitLinearPreparedEntryV1
-        assert original is owner._producer._current.result
-        assert original.source_read is read and original.inputs.risk_inputs is inputs
-        assert owner._assembler.journal is state.worker.runtime.journal
-        assert read.full_reservations.owner_generation == owner._journal_epoch
+    assert owner._read is read and owner._assembler.journal is state.worker.runtime.journal
+    assert read.full_reservations.owner_generation == owner._journal_epoch
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_HOLDING_HORIZON_REQUIRED$"):
+        state.worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1)
+    assert owner._producer._current is None and owner._current is None
+    assert owner._risk_assessment_current is None
     assert state.worker.runtime.journal.list_commands() == ()
     assert not state.strategy.commands
     with pytest.raises(RuntimeBlocked, match="NATIVE_WORKER_QUALIFICATION_REQUIRED"):
         state.worker.runtime.start()
 
 
-@pytest.mark.parametrize("fault", ["source", "read-copy", "generation", "foreign-handle", "approval", "j-epoch"])
-async def test_changed_original_owners_cannot_reuse_worker_model_plan(model_worker: Any, fault: str) -> None:
+@pytest.mark.parametrize("fault", ["source", "read-copy", "generation", "approval", "j-epoch"])
+async def test_changed_original_owners_cannot_clear_the_horizon_blocker(model_worker: Any, fault: str) -> None:
     state = model_worker
     install(state)
-    handle, read, _inputs, _domain = await prepare(state)
+    read, inputs, domain = await prepare(state)
     owner = state.worker._entry_model_owner_v2
     if fault == "source":
         owner._assembler._current = None
@@ -130,45 +126,41 @@ async def test_changed_original_owners_cannot_reuse_worker_model_plan(model_work
         owner._read = replace(read)
     elif fault == "generation":
         state.worker._retire_entry_publications_v2()
-    elif fault == "foreign-handle":
-        handle = object.__new__(WorkerModelPlanV2)
     elif fault == "approval":
         state.publication.revoke(SCOPE.strategy, expected_policy_revision=2, expected_generation=1)
     else:
         old = state.worker._journal._v2_meta(required=True)
         state.worker._journal.bind_owner_epoch_v2("competing-owner", expected_previous_owner_epoch=old[0],
             expected_journal_revision=old[1])
-    with pytest.raises(ValueError), state.worker.entry_model_publication_v2(handle):
-        pytest.fail("a retired, copied or replaced original must not yield")
+    with pytest.raises((ValueError, RuntimeBlocked, RiskV2Rejected)):
+        state.worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1)
+    assert state.worker._entry_model_owner_v2._current is None
+    assert state.worker._entry_model_owner_v2._risk_assessment_current is None
     assert not state.strategy.commands and state.worker.runtime.journal.list_commands() == ()
 
 
-async def test_handle_is_not_constructible_copyable_or_usable_outside_original_section(model_worker: Any) -> None:
+async def test_worker_plan_handle_cannot_exist_while_horizon_is_missing(model_worker: Any) -> None:
     state = model_worker
     install(state)
-    handle, _read, _inputs, _domain = await prepare(state)
+    _read, inputs, domain = await prepare(state)
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_HOLDING_HORIZON_REQUIRED$"):
+        state.worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1)
     with pytest.raises(RuntimeBlocked):
         WorkerModelPlanV2()
-    with pytest.raises(RuntimeBlocked):
-        copy.copy(handle)
-    with pytest.raises(RuntimeBlocked):
-        state.worker._entry_model_owner_v2.require(handle)
-    with state.worker.entry_model_publication_v2(handle):
-        pass
+    assert state.worker._entry_model_owner_v2._current is None
 
 
-async def test_caught_reentrant_prepare_taints_original_worker_section(model_worker: Any) -> None:
+async def test_horizon_block_clears_worker_entry_publication_section(model_worker: Any) -> None:
     state = model_worker
     install(state)
-    handle, _read, inputs, domain = await prepare(state)
-    with (
-        pytest.raises(RuntimeBlocked),
-        state.worker.entry_model_publication_v2(handle),
-        pytest.raises(RuntimeBlocked),
-    ):
+    _read, inputs, domain = await prepare(state)
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_HOLDING_HORIZON_REQUIRED$"):
         state.worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
             policy_revision=2, publication_generation=1)
     assert state.worker._entry_publication_frame_v2 is None
+    assert state.worker._entry_model_owner_v2._current is None
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
@@ -213,10 +205,13 @@ async def test_actual_j_cas_conflict_does_not_install_an_owner(model_worker: Any
 async def test_new_worker_with_same_local_lease_counter_gets_distinct_j_epoch(model_worker: Any) -> None:
     state = model_worker
     install(state)
-    handle, _read, _inputs, _domain = await prepare(state)
+    _read, inputs, domain = await prepare(state)
     first, first_owner = state.worker, state.worker._entry_model_owner_v2
     first_counter = first._lock.acquisition_id
     first_epoch = first_owner._journal_epoch
+    with pytest.raises(RiskV2Rejected, match="^RISK_V2_HOLDING_HORIZON_REQUIRED$"):
+        first.prepare_entry_plan_v2(inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1)
     await first.stop()
     worker, strategy = new_worker(state.fixture, state.book, state.path, state.binding)
     state.worker, state.strategy = worker, strategy
@@ -226,8 +221,9 @@ async def test_new_worker_with_same_local_lease_counter_gets_distinct_j_epoch(mo
     install(state)
     assert worker._entry_model_owner_v2 is not None
     assert worker._entry_model_owner_v2._journal_epoch != first_epoch
-    with pytest.raises(RuntimeBlocked), worker.entry_model_publication_v2(handle):
-        pytest.fail("old worker handle must never join the new owner")
+    with pytest.raises(RuntimeBlocked, match="PUBLICATION_REQUIRED"):
+        worker.prepare_entry_plan_v2(inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1)
     assert worker.runtime.journal.list_commands() == () and not strategy.commands
 
 
@@ -271,7 +267,7 @@ async def test_caught_capture_reentry_cannot_republish_the_outer_read(model_work
 async def test_actual_native_callback_retires_the_read_before_another_prepare(model_worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     state = model_worker
     install(state)
-    _handle, _read, inputs, domain = await prepare(state)
+    _read, inputs, domain = await prepare(state)
     before = state.worker.callback_failures
 
     def replaced_retire() -> None:
@@ -291,7 +287,7 @@ async def test_actual_native_callback_retires_the_read_before_another_prepare(mo
 async def test_successful_actual_native_fill_also_discards_the_original_model_read(model_worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     state = model_worker
     install(state)
-    _handle, _read, _inputs, _domain = await prepare(state)
+    _read, _inputs, _domain = await prepare(state)
     now = state.fixture.clock()
     monkeypatch.setattr(test_risk, "NOW", now)
     monkeypatch.setattr(test_runtime, "NOW", now)

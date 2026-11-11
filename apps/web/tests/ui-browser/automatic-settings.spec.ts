@@ -15,7 +15,7 @@ test('operator can save an unset partial policy without activating orders',async
  let backgroundRead=false;let delayRead=false;let releaseRead!:()=>void;
  const readGate=new Promise<void>(resolve=>{releaseRead=resolve});
  let snapshot:Record<string,unknown>={schema_version:1,revision:0,policy:Object.fromEntries(keys.map(key=>[key,null])),missing_fields:keys,desired_state:'STOPPED',live_order_enabled:false,worker_running:false,blockers:['POLICY_V1_MIGRATION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED']};
- const headers={'X-Automatic-Policy-Sections-Version':'1'};
+ const headers={'X-Automatic-Policy-Sections-Version':'2'};
  await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url()),entry=`${request.method()} ${url.origin===origin&&url.href.startsWith(origin+'/')?url.href.slice(origin.length):url.href}`;requested.push(entry);
   if(url.origin!==origin){blocked.push(entry);await route.abort();return}
@@ -28,8 +28,8 @@ test('operator can save an unset partial policy without activating orders',async
   }
   if(url.pathname==='/api/v1/automatic/settings'){
    if(request.method()==='PUT'){
-    const body=request.postDataJSON();expect(Object.keys(body).sort()).toEqual(['expected_strategy_generation','policy','policy_sections_version','revision','schema_version']);expect(body.policy_sections_version).toBe(1);expect(body.expected_strategy_generation).toBeNull();
-    writes.push(body);const missing=writes.length===1?['risk_v2','scope','strategy']:writes.length===2?['leverage_min','leverage_max','per_trade_loss','max_daily_loss','max_drawdown','max_total_risk','max_total_margin','margin_allocation','liquidation_buffer_fraction','max_quote_age_seconds','max_evidence_age_seconds','max_consecutive_losses','max_positions','sizing_rule','margin_mode','position_mode'].map(key=>'risk_v2.'+key).concat('strategy.eligible_pairs').sort():['risk_v2','scope.allowed_instruments','scope.selected_instruments','strategy.allowed','strategy.selected'];
+    const body=request.postDataJSON();expect(Object.keys(body).sort()).toEqual(['expected_strategy_generation','policy','policy_sections_version','revision','schema_version']);expect(body.policy_sections_version).toBe(2);expect(body.expected_strategy_generation).toBeNull();
+    writes.push(body);const missing=writes.length===1?['risk_v2','scope','strategy']:writes.length===2?['leverage_min','leverage_max','per_trade_loss','max_daily_loss','max_drawdown','max_total_risk','max_total_margin','margin_allocation','liquidation_buffer_fraction','max_quote_age_seconds','max_evidence_age_seconds','max_stop_gap_quote_per_base','max_consecutive_losses','max_positions','sizing_rule','margin_mode','position_mode'].map(key=>'risk_v2.'+key).concat('strategy.eligible_pairs').sort():['risk_v2','scope.allowed_instruments','scope.selected_instruments','strategy.allowed','strategy.selected'];
     const blockers=['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED'];if(body.policy.strategy)blockers.push('STRATEGY_CURRENT_PUBLICATION_REQUIRED');if(body.policy.scope?.selected_product==='SPOT')blockers.push('POLICY_SPOT_RISK_UNSUPPORTED');
     snapshot={...snapshot,revision:Number(snapshot.revision)+1,policy:body.policy,missing_fields:missing,blockers};
    }else if(request.method()!=='GET'){blocked.push(entry);await route.abort();return}
@@ -52,7 +52,7 @@ test('operator can save an unset partial policy without activating orders',async
  await migrate.click();await expect(page.getByText('저장된 설정을 새 운용 초안으로 전환했습니다. 실제 주문은 시작되지 않습니다.')).toBeVisible();expect(migrations).toHaveLength(1);
  await testInfo.attach('automatic-settings-migrated',{body:await page.screenshot({fullPage:true,animations:'disabled'}),contentType:'image/png'});
  await page.getByRole('button',{name:'운용 한도 저장',exact:true}).click();await expect.poll(()=>writes.length).toBe(1);
- expect(writes[0]).toEqual({schema_version:2,revision:1,expected_strategy_generation:null,policy_sections_version:1,policy:{legacy_v1:Object.fromEntries(keys.map(key=>[key,null])),scope:null,strategy:null,risk_v2:null}});
+ expect(writes[0]).toEqual({schema_version:2,revision:1,expected_strategy_generation:null,policy_sections_version:2,policy:{legacy_v1:Object.fromEntries(keys.map(key=>[key,null])),scope:null,strategy:null,risk_v2:null}});
  // A supplied synthetic catalog is a mocked server snapshot, never a new ingestion endpoint.
  const typed={legacy_v1:Object.fromEntries(keys.map(key=>[key,null])),scope:{section_version:1,account:{account_id:'fixture-account',environment:'DEMO'},mode:'FULL_AUTO',allowed_products:['LINEAR','SPOT'],selected_product:'LINEAR',permission_profile_revision:'BYBIT_SPOT_LINEAR_NO_FUNDS_V1',allowed_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT'),instrument('SOLUSDT')],selected_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT'),instrument('SOLUSDT')]},strategy:{section_version:1,catalog,allowed:[reference('beta'),reference('alpha')],selected:[reference('alpha'),reference('beta')]},risk_v2:null};
  snapshot={...snapshot,revision:3,policy:typed,missing_fields:['risk_v2','strategy.eligible_pairs'],blockers:['POLICY_V2_ADMISSION_REQUIRED','NATIVE_RUNTIME_NOT_QUALIFIED','WORKER_NOT_CONNECTED','STRATEGY_CURRENT_PUBLICATION_REQUIRED']};
@@ -79,13 +79,13 @@ test('operator can save an unset partial policy without activating orders',async
  await expect(page.getByText('연결된 전략이 없는 거래 대상: BYBIT/LINEAR/SOLUSDT')).toBeVisible();
  await page.getByRole('button',{name:'LINEAR 위험관리 입력 시작'}).click();
  await expect(page.getByLabel('실제 체결 금액 상한 선택')).toHaveValue('');
- await page.getByLabel('진입 심사 시 표시가격 기준 주문 명목 금액 상한 (USDT)').fill('100.00');
- await page.getByLabel('진입 심사 시 표시가격 기준 계좌 명목 금액 상한 (USDT)').fill('200');
+ await page.getByLabel('진입 심사 주문 명목 평가 상한 (현재 표시가격 기준, USDT)').fill('100.00');
+ await page.getByLabel('진입 심사 계좌 명목 평가 상한 (현재 표시가격 기준, USDT)').fill('200');
  await page.getByLabel('진입 심사 평가 기준').selectOption('LINEAR_MARK_GROSS_AT_ADMISSION_V1');
  await page.getByLabel('실제 체결 금액 상한 선택').selectOption('HARD_EXECUTION_QUOTE_CAP');
  await page.getByLabel('실제 체결 금액 상한 (USDT)').fill('300.00');
  delayRead=true;await page.getByRole('button',{name:'운용 한도 저장',exact:true}).click();await expect.poll(()=>writes.length).toBe(2);await expect.poll(()=>backgroundRead).toBe(true);
- expect(writes[1]).toEqual({schema_version:2,revision:3,expected_strategy_generation:null,policy_sections_version:1,policy:{...typed,risk_v2:{section_version:1,product:'LINEAR',sizing_rule:null,margin_mode:null,position_mode:null,leverage_min:null,leverage_max:null,per_trade_loss:null,max_daily_loss:null,max_drawdown:null,max_total_risk:null,max_total_margin:null,margin_allocation:null,liquidation_buffer_fraction:null,max_quote_age_seconds:null,max_evidence_age_seconds:null,max_consecutive_losses:null,max_positions:null,caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'HARD_EXECUTION_QUOTE_CAP',max_execution_quote_amount:'300.00'}}}});
+ expect(writes[1]).toEqual({schema_version:2,revision:3,expected_strategy_generation:null,policy_sections_version:2,policy:{...typed,risk_v2:{section_version:2,product:'LINEAR',sizing_rule:null,margin_mode:null,position_mode:null,leverage_min:null,leverage_max:null,per_trade_loss:null,max_daily_loss:null,max_drawdown:null,max_total_risk:null,max_total_margin:null,margin_allocation:null,liquidation_buffer_fraction:null,max_quote_age_seconds:null,max_evidence_age_seconds:null,max_stop_gap_quote_per_base:null,max_consecutive_losses:null,max_positions:null,caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'HARD_EXECUTION_QUOTE_CAP',max_execution_quote_amount:'300.00'}}}});
  await page.getByLabel('계좌 ID').fill('late-edit');releaseRead();await expect(page.getByLabel('계좌 ID')).toHaveValue('late-edit');
  await page.getByLabel('선택 거래 상품').selectOption('SPOT');await expect(page.getByRole('button',{name:'운용 한도 저장',exact:true})).toBeDisabled();await expect(page.getByLabel('실제 체결 금액 상한 (USDT)')).toHaveValue('300.00');
  await page.getByRole('button',{name:'거래 상품 변경에 맞춰 초안 비우기'}).click();await expect(page.getByText(/아직 저장하지 않은 초기화/)).toBeVisible();await expect(page.getByText(/SPOT 위험관리.*E16/)).toBeVisible();

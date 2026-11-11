@@ -2177,6 +2177,13 @@ def full_d_graph(
         d_domain.risk_domain_sha256_v2(domain),
         minimum,
         requirements,
+        d_e.LinearLastTradeQuoteV2(
+            x.key,
+            d_c.RiskObservationRefV2(
+                "ltp", "fixture-source", "FIXTURE", "fixture-last-trade-v1", NOW, NOW, "e" * 64
+            ),
+            Decimal(95),
+        ),
     )
     profile_source = raw_source("profile", "/v5/position/list", symbol=x.key.symbol)
     profile = BybitSelectedEntryProfileV1(

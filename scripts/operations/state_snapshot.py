@@ -468,7 +468,7 @@ SCOPE_FIELDS = {"section_version", "account", "mode", "allowed_products", "selec
 STRATEGY_FIELDS = {"section_version", "catalog", "allowed", "selected"}
 RISK_DECIMALS = {"leverage_min", "leverage_max", "per_trade_loss", "max_daily_loss", "max_drawdown",
                  "max_total_risk", "max_total_margin", "margin_allocation", "liquidation_buffer_fraction",
-                 "max_quote_age_seconds", "max_evidence_age_seconds"}
+                 "max_quote_age_seconds", "max_evidence_age_seconds", "max_stop_gap_quote_per_base"}
 RISK_ZERO = {"liquidation_buffer_fraction", "max_quote_age_seconds", "max_evidence_age_seconds"}
 RISK_COUNTS = {"max_consecutive_losses", "max_positions"}
 RISK_CHOICES = {"sizing_rule": {"LOSS_FIXED"}, "margin_mode": {"ISOLATED", "CROSS"},
@@ -574,11 +574,22 @@ def _catalog_wire(value: Any) -> dict[tuple[str, str], Any]:
 
 def _sections_wire(scope: Any, strategy: Any, risk_v2: Any) -> dict[str, Any]:
     """Local stdlib wire checks, including whole-catalog/global consistency."""
-    for value, fields in ((scope, SCOPE_FIELDS), (strategy, STRATEGY_FIELDS),
-                          (risk_v2, {"section_version", "product", "caps", *RISK_DECIMALS, *RISK_COUNTS, *RISK_CHOICES})):
+    risk_fields = {"section_version", "product", "caps", *RISK_DECIMALS, *RISK_COUNTS, *RISK_CHOICES}
+    legacy_risk_fields = risk_fields - {"max_stop_gap_quote_per_base"}
+    if (type(risk_v2) is dict and set(risk_v2) == legacy_risk_fields
+            and type(risk_v2.get("section_version")) is int
+            and risk_v2.get("section_version") == 1):
+        # Existing persisted v1 policies have no stop-gap budget. Preserve that
+        # absence as None; never migrate it into a guessed numeric allowance.
+        risk_v2 = {**risk_v2, "section_version": 2, "max_stop_gap_quote_per_base": None}
+    for value, fields, expected_version in (
+        (scope, SCOPE_FIELDS, 1),
+        (strategy, STRATEGY_FIELDS, 1),
+        (risk_v2, risk_fields, 2),
+    ):
         if value is not None:
             _object(value, fields)
-            if type(value["section_version"]) is not int or value["section_version"] != 1:
+            if type(value["section_version"]) is not int or value["section_version"] != expected_version:
                 _invalid()
     if scope is not None:
         account = scope["account"]
@@ -669,8 +680,9 @@ def check_policy_sections(value: object) -> None:
         _object(value, {"legacy_v1", "scope", "strategy", "risk_v2"})
         assert isinstance(value, dict)
         check_policy_legacy(value["legacy_v1"])
-        _sections_wire(value["scope"], value["strategy"], value["risk_v2"])
-        encoded = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+        sections = _sections_wire(value["scope"], value["strategy"], value["risk_v2"])
+        normalized = {"legacy_v1": value["legacy_v1"], **sections}
+        encoded = json.dumps(normalized, sort_keys=True, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
         if len(encoded.encode("utf-8")) > SECTION_LIMIT:
             _invalid()
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):

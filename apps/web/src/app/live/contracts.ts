@@ -77,13 +77,14 @@ export type StrategyPublicationSnapshot={schema_version:1;generation:number;cata
 export type LegacyPolicy=Record<string,string|number|string[]|null>;
 export type PolicyScope={section_version:1;account:{account_id:string;environment:PolicyEnvironment|null}|null;mode:'FULL_AUTO'|'ALL_IN_ONE'|null;allowed_products:PolicyProduct[]|null;selected_product:PolicyProduct|null;permission_profile_revision:'BYBIT_SPOT_LINEAR_NO_FUNDS_V1'|null;allowed_instruments:PolicyInstrument[]|null;selected_instruments:PolicyInstrument[]|null};
 export type PolicyStrategy={section_version:1;catalog:PolicyCatalog|null;allowed:PolicyReference[]|null;selected:PolicyReference[]|null};
-export const policyRiskDecimals=['leverage_min','leverage_max','per_trade_loss','max_daily_loss','max_drawdown','max_total_risk','max_total_margin','margin_allocation','liquidation_buffer_fraction','max_quote_age_seconds','max_evidence_age_seconds'] as const;
+export const policyRiskDecimals=['leverage_min','leverage_max','per_trade_loss','max_daily_loss','max_drawdown','max_total_risk','max_total_margin','margin_allocation','liquidation_buffer_fraction','max_quote_age_seconds','max_evidence_age_seconds','max_stop_gap_quote_per_base'] as const;
 export const policyRiskCounts=['max_consecutive_losses','max_positions'] as const;
 export type PolicyCaps={max_order_admission_notional:string|null;max_account_admission_notional:string|null;valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1'|null;turnover_requirement:'NOT_REQUIRED'|'HARD_EXECUTION_QUOTE_CAP'|null;max_execution_quote_amount:string|null};
-export type PolicyRisk={section_version:1;product:'LINEAR';caps:PolicyCaps|null;sizing_rule:'LOSS_FIXED'|null;margin_mode:'ISOLATED'|'CROSS'|null;position_mode:'ONE_WAY'|null}&Record<typeof policyRiskDecimals[number],string|null>&Record<typeof policyRiskCounts[number],number|null>;
+export type PolicyRisk={section_version:2;product:'LINEAR';caps:PolicyCaps|null;sizing_rule:'LOSS_FIXED'|null;margin_mode:'ISOLATED'|'CROSS'|null;position_mode:'ONE_WAY'|null}&Record<typeof policyRiskDecimals[number],string|null>&Record<typeof policyRiskCounts[number],number|null>;
 export type AutomaticPolicy={legacy_v1:LegacyPolicy;scope:PolicyScope|null;strategy:PolicyStrategy|null;risk_v2:PolicyRisk|null};
 export type AutomaticSettingsSnapshot={revision:number;missing_fields:string[];desired_state:'STOPPED';live_order_enabled:false;worker_running:false;blockers:string[]}&({schema_version:1;policy:LegacyPolicy}|{schema_version:2;policy:AutomaticPolicy});
-const legacyDecimals=['capital_usdt',...policyRiskDecimals.slice(0,5),'max_total_notional',...policyRiskDecimals.slice(5)];
+const legacyRiskDecimals=policyRiskDecimals.filter(key=>key!=='max_stop_gap_quote_per_base');
+const legacyDecimals=['capital_usdt',...legacyRiskDecimals.slice(0,5),'max_total_notional',...legacyRiskDecimals.slice(5)];
 const legacyChoices:Record<string,string[]>={mode:['FULL_AUTO','ALL_IN_ONE'],environment:['DEMO','LIVE'],sizing_rule:['LOSS_FIXED'],margin_mode:['ISOLATED','CROSS'],position_mode:['ONE_WAY','HEDGE']};
 const legacyLists=['allowed_symbols','allowed_strategies','selected_symbols','selected_strategies'];
 export const legacyPolicyKeys=[...legacyDecimals,...policyRiskCounts,...Object.keys(legacyChoices),...legacyLists];
@@ -163,7 +164,7 @@ export async function validateAutomaticPolicy(value:unknown):Promise<AutomaticPo
    for(const ref of typed.selected??[])policyAssert(typed.allowed?.some(allowed=>samePolicyValue(ref,allowed)));
   }
   if(risk!==null){
-   exactPolicyObject(risk,['section_version','product','caps',...policyRiskDecimals,...policyRiskCounts,'sizing_rule','margin_mode','position_mode']);policyAssert(risk.section_version===1);policyChoice(risk.product,['LINEAR']);
+   exactPolicyObject(risk,['section_version','product','caps',...policyRiskDecimals,...policyRiskCounts,'sizing_rule','margin_mode','position_mode']);policyAssert(risk.section_version===2);policyChoice(risk.product,['LINEAR']);
    for(const key of policyRiskDecimals)if(risk[key]!==null)policyDecimal(risk[key],zeroDecimals.includes(key));
    for(const key of policyRiskCounts)if(risk[key]!==null)policyInteger(risk[key]);
    for(const [key,values] of [['sizing_rule',['LOSS_FIXED']],['margin_mode',['ISOLATED','CROSS']],['position_mode',['ONE_WAY']]] as const)if(risk[key]!==null)policyChoice(risk[key],values);

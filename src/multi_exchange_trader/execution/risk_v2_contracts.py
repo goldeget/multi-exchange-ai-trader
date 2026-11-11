@@ -125,6 +125,7 @@ class LinearRiskPolicyV2:
     liquidation_buffer_fraction: Decimal
     max_quote_age_seconds: Decimal
     max_evidence_age_seconds: Decimal
+    max_stop_gap_quote_per_base: Decimal | None = None
 
     def __post_init__(self) -> None:
         _policy_payload_v2(self)
@@ -392,6 +393,7 @@ def _proposal_payload_v2(proposal: LinearEntryProposalV2) -> dict[str, object]:
 _IDENTIFIER_V2 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,95}", re.ASCII)
 _DIGEST_V2 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _MAX_CANONICAL_BYTES_V2 = 65536
+STOP_GAP_MODEL_REVISION_V2 = "EXPLICIT_POLICY_STOP_GAP_CAP_V1"
 
 
 def _reject_v2(code: str = "RISK_V2_INPUT_INVALID") -> NoReturn:
@@ -626,6 +628,12 @@ def _policy_payload_v2(value: object) -> dict[str, object]:
         "max_evidence_age_seconds",
     ):
         payload[name] = _decimal_text_field_v2(values, name, source=True, sign="nonnegative")
+    stop_gap = values["max_stop_gap_quote_per_base"]
+    payload["max_stop_gap_quote_per_base"] = (
+        None if stop_gap is None else decimal_text_v2(
+            _decimal_v2(stop_gap, source=True, sign="positive")
+        )
+    )
     for name in ("max_consecutive_losses", "max_positions"):
         number = values[name]
         if type(number) is not int or number <= 0:
