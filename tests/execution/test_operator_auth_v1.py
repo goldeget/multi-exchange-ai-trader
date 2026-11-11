@@ -16,7 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request as FastAPIRequest
 
 from multi_exchange_trader import api
 from multi_exchange_trader.execution.operator_auth_v1 import (
@@ -32,7 +32,7 @@ def application(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     app = api.create_app()
 
     @app.get("/__test/operator-principal")
-    async def principal(request: Request) -> dict[str, object] | None:
+    async def principal(request: FastAPIRequest) -> dict[str, object] | None:
         value = verified_operator_principal_from_state_v1(request)
         if value is None:
             return None
