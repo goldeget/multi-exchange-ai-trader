@@ -63,16 +63,16 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
         hosts = request.headers.getlist("host")
         origins = request.headers.getlist("origin")
         fetch_site = request.headers.get("sec-fetch-site")
-        client = request.client
-        if (client is None or client.host != "127.0.0.1" or public_origin is None
+        principal = verified_operator_principal_from_state_v1(request)
+        if (principal is None or public_origin is None
                 or not dashboard_headers_allowed(hosts, origins, public_origin=public_origin)
                 or origins != [public_origin.origin]
                 or request.headers.get("authorization") is not None
                 or fetch_site not in (None, "same-origin")):
             return None
         # Only trusted app-auth middleware may set this ASGI request-state value.
-        # No request header is interpreted as an operator identity.
-        return verified_operator_principal_from_state_v1(request)
+        # It accepts the identity assertion only on the permission-restricted Nginx UDS.
+        return principal
 
     async def publication_body(request: Request, *, publishing: bool) -> dict[str, Any]:
         if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":

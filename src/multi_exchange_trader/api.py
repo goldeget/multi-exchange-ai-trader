@@ -21,6 +21,7 @@ from .ai.private_factory import create_openrouter_clients
 from .controls import install as install_controls
 from .credential_resolution import CredentialResolver, CredentialStartup
 from .credentials import CredentialStoreError
+from .execution.operator_auth_v1 import install_nginx_basic_auth_principal_v1
 from .execution.runtime_policy import RuntimePolicyBook
 from .execution.settings_api import install as install_automatic_settings
 from .market_data.adapters.base import MarketDataUnavailable
@@ -183,6 +184,7 @@ def create_app(service: MarketDataService | None = None, *,
         redoc_url=None,
         openapi_url=None,
     )
+    install_nginx_basic_auth_principal_v1(application)
     if service is not None:
         application.state.market_data_service = service
 
