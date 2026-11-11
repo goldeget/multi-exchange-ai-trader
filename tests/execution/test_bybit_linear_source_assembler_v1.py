@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 import pytest
 from fixtures.bybit_instrument_v1 import row
+from risk_v2_support import policy_v2, proposal_v2
 from test_bybit_entry_market_projections_v1 import FLAT
 from test_bybit_linear_model_inputs_v1 import fee_document
 from test_bybit_position_order_projections_v1 import ORDER, POSITION
@@ -61,6 +62,10 @@ class Fixture:
         self.requests: list[httpx.Request] = []
         self.delta: bool | None = False
         self.mark_age = timedelta(0)
+        self.mark_price = "50"
+        self.last_trade_price = "50"
+        self.missing_funding = False
+        self.missing_funding_bound = False
         self.break_owner = False
         self.session = BybitDemoAccountSession(api_key=KEY, api_secret=SECRET, clock=self.clock)
         self.catalog = BybitInstrumentCatalogProducer(source_environment="PUBLIC_MAINNET")
@@ -148,7 +153,12 @@ class Fixture:
             result = {"category": "linear", "nextPageCursor": "", "list": [{**ORDER, "symbol": "ETHUSDT",
                 "price": "50", "qty": "1", "leavesQty": "1"}]}
         elif path == "/v5/market/instruments-info":
-            result = {"category": "linear", "list": [row("linear", params["symbol"])]}
+            instrument = row("linear", params["symbol"])
+            instrument["lowerFundingRate"] = "-0.003"
+            instrument["upperFundingRate"] = "0.003"
+            if self.missing_funding_bound:
+                instrument.pop("upperFundingRate")
+            result = {"category": "linear", "list": [instrument]}
         elif path == "/v5/market/risk-limit":
             result = {"category": "linear", "nextPageCursor": "", "list": [{"id": 1, "symbol": params["symbol"],
                 "riskLimitValue": "1000000", "initialMargin": 0.1, "maintenanceMargin": 0.005,
@@ -156,7 +166,12 @@ class Fixture:
         else:
             assert path == "/v5/market/tickers"
             stamp -= self.mark_age
-            result = {"category": "linear", "list": [{"symbol": params["symbol"], "markPrice": "50"}]}
+            ticker = {"symbol": params["symbol"], "markPrice": self.mark_price,
+                "lastPrice": self.last_trade_price, "fundingRate": "0.001",
+                "nextFundingTime": str(int(stamp.timestamp() * 1000) + 8 * 60 * 60 * 1000)}
+            if self.missing_funding:
+                ticker.pop("fundingRate")
+            result = {"category": "linear", "list": [ticker]}
         raw = json.dumps({"retCode": 0, "result": result, "time": int(stamp.timestamp() * 1000)}).encode()
         return httpx.Response(200, stream=Stream(raw), request=request)
 
@@ -198,6 +213,250 @@ async def test_one_coherent_original_cycle_reaches_existing_venue_and_retains_ev
         with pytest.raises(RiskV2Rejected):
             fixture.assembler.require_current_v1(read)
         assert fixture.assembler.require_current_v1(newer) is newer
+    finally:
+        await fixture.close()
+
+
+async def test_cost_allowance_issuer_binds_original_funding_fee_catalog_and_explicit_caps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        now = datetime.now(UTC)
+        mark_source = read.selected_mark.reference.source
+        funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
+        policy = replace(policy_v2(), scope=SCOPE, max_stop_gap_quote_per_base=Decimal("0.25"))
+        template = proposal_v2()
+        proposal = replace(
+            template,
+            scope=SCOPE,
+            side="LONG",
+            stop_price=Decimal("40"),
+            entry=replace(
+                template.entry,
+                side="BUY",
+                limit_price=Decimal("50"),
+                origin_quote_id=mark_source.observation_id,
+                valid_until=now + timedelta(seconds=2),
+            ),
+        )
+        cost = fixture.assembler.issue_cost_allowance_v2(
+            read,
+            policy=policy,
+            proposal=proposal,
+            holding_until=funding.next_funding_at,
+        )
+        with pytest.raises(TypeError):
+            fixture.assembler.issue_cost_allowance_v2(
+                read, policy=policy, proposal=proposal,
+                holding_until=funding.next_funding_at,
+                slippage_upper_quote_per_base=Decimal("0.00000001"),
+            )
+        assert cost.fee_reference.source_environment == "DEMO"
+        assert cost.fee_reference.observation_id == read.venue.fee.account_taker_rate.reference.source.observation_id
+        assert cost.funding_reference.source_environment == "PUBLIC_MAINNET"
+        assert cost.funding_reference.observation_id == mark_source.observation_id
+        assert cost.instrument_revision == read.catalog.observations[0].specification_revision
+        assert cost.holding_until == funding.next_funding_at
+        assert cost.fee_quote_per_base == Decimal("0.0495")
+        assert cost.funding_quote_per_base == Decimal("3000")
+        assert cost.stop_gap_quote_per_base == Decimal("0.25")
+        assert fixture.assembler.require_cost_allowance_v2(read, cost, policy=policy) is cost
+        with pytest.raises(RiskV2Rejected, match="RISK_V2_SOURCE_MISMATCH"):
+            fixture.assembler.require_cost_allowance_v2(read, replace(cost), policy=policy)
+    finally:
+        await fixture.close()
+
+
+async def test_cost_issuer_rechecks_narrow_policy_expiry_after_final_owner_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        now = fixture.clock()
+        mark_source = read.selected_mark.reference.source
+        funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
+        policy = replace(policy_v2(), scope=SCOPE, max_quote_age_seconds=Decimal("2.5"),
+            max_evidence_age_seconds=Decimal(30))
+        template = proposal_v2()
+        proposal = replace(
+            template,
+            scope=SCOPE,
+            side="LONG",
+            stop_price=Decimal("40"),
+            entry=replace(
+                template.entry,
+                side="BUY",
+                limit_price=Decimal("50"),
+                origin_quote_id=mark_source.observation_id,
+                valid_until=now + timedelta(seconds=4),
+            ),
+        )
+        policy_deadline = mark_source.request_started_at + timedelta(seconds=2.5)
+        assert policy_deadline < proposal.entry.valid_until < read.venue.valid_until
+        current_time = [now]
+        fixture.assembler.clock = lambda: current_time[0]
+        original_guard = fixture.assembler.owner_guard
+        calls = 0
+
+        def advance_final_guard() -> None:
+            nonlocal calls
+            original_guard()
+            calls += 1
+            if calls == 2:
+                current_time[0] += timedelta(seconds=3.5)
+
+        fixture.assembler.owner_guard = advance_final_guard
+        with pytest.raises(RiskV2Rejected, match="RISK_V2_STALE_EVIDENCE"):
+            fixture.assembler.issue_cost_allowance_v2(
+                read,
+                policy=policy,
+                proposal=proposal,
+                holding_until=funding.next_funding_at,
+            )
+        assert calls == 2 and current_time[0] < read.venue.valid_until
+        assert fixture.assembler._current is not None and fixture.assembler._current.issued_cost is None
+        assert fixture.journal.list_commands() == ()
+    finally:
+        await fixture.close()
+
+
+async def test_cost_admission_rechecks_narrow_proposal_expiry_after_final_owner_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        now = fixture.clock()
+        mark_source = read.selected_mark.reference.source
+        funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
+        policy = replace(policy_v2(), scope=SCOPE, max_quote_age_seconds=Decimal(10),
+            max_evidence_age_seconds=Decimal(30))
+        template = proposal_v2()
+        proposal = replace(
+            template,
+            scope=SCOPE,
+            side="LONG",
+            stop_price=Decimal("40"),
+            entry=replace(
+                template.entry,
+                side="BUY",
+                limit_price=Decimal("50"),
+                origin_quote_id=mark_source.observation_id,
+                valid_until=now + timedelta(seconds=2),
+            ),
+        )
+        cost = fixture.assembler.issue_cost_allowance_v2(
+            read,
+            policy=policy,
+            proposal=proposal,
+            holding_until=funding.next_funding_at,
+        )
+        assert cost.valid_until == proposal.entry.valid_until < read.venue.valid_until
+        current_time = [fixture.clock()]
+        fixture.assembler.clock = lambda: current_time[0]
+        original_guard = fixture.assembler.owner_guard
+        calls = 0
+
+        def advance_final_guard() -> None:
+            nonlocal calls
+            original_guard()
+            calls += 1
+            if calls == 2:
+                current_time[0] += timedelta(seconds=3)
+
+        fixture.assembler.owner_guard = advance_final_guard
+        with pytest.raises(RiskV2Rejected, match="RISK_V2_STALE_EVIDENCE"):
+            fixture.assembler.require_cost_allowance_v2(read, cost, policy=policy)
+        assert calls == 2 and current_time[0] < read.venue.valid_until
+        assert fixture.journal.list_commands() == ()
+    finally:
+        await fixture.close()
+
+
+@pytest.mark.parametrize("failure", [
+    "missing-funding", "missing-funding-bound", "expired-funding", "mixed-instrument-source",
+    "missing-stop-gap-cap", "long-horizon", "wrong-policy-scope",
+])
+async def test_cost_allowance_issuer_refuses_missing_or_unbounded_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    try:
+        binding = await fixture.auth()
+        if failure == "missing-funding":
+            fixture.missing_funding = True
+        elif failure == "missing-funding-bound":
+            fixture.missing_funding_bound = True
+        elif failure == "expired-funding":
+            fixture.mark_age = timedelta(seconds=2)
+        read = await fixture.capture(binding)
+        now = datetime.now(UTC)
+        mark_source = read.selected_mark.reference.source
+        funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT") if failure != "missing-funding" else None
+        policy = replace(policy_v2(), scope=SCOPE)
+        if failure == "missing-stop-gap-cap":
+            policy = replace(policy, max_stop_gap_quote_per_base=None)
+        if failure == "wrong-policy-scope":
+            policy = policy_v2()
+        elif failure == "expired-funding":
+            policy = replace(policy, max_quote_age_seconds=Decimal(1))
+            assert funding is not None and funding.source.envelope_time_ms is not None
+            funding_server_time = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+                milliseconds=funding.source.envelope_time_ms
+            )
+            assert now - funding_server_time > timedelta(seconds=1)
+        template = proposal_v2()
+        origin_quote_id = mark_source.observation_id
+        if failure == "mixed-instrument-source":
+            origin_quote_id = next(
+                mark.reference.observation_id for mark in read.marks if mark.instrument != SCOPE.instrument
+            )
+        proposal = replace(
+            template,
+            scope=SCOPE,
+            side="LONG",
+            stop_price=Decimal("40"),
+            entry=replace(
+                template.entry,
+                side="BUY",
+                limit_price=Decimal("50"),
+                origin_quote_id=origin_quote_id,
+                valid_until=now + timedelta(seconds=2),
+            ),
+        )
+        holding_until = (funding.next_funding_at if funding is not None else now + timedelta(hours=8))
+        if failure == "long-horizon":
+            holding_until += timedelta(hours=8)
+        if failure == "missing-stop-gap-cap":
+            with pytest.raises(RiskV2Rejected, match="RISK_V2_SLIPPAGE_BOUND_UNAVAILABLE"):
+                fixture.assembler.issue_cost_allowance_v2(
+                    read,
+                    policy=policy,
+                    proposal=proposal,
+                    holding_until=holding_until,
+                )
+        elif failure == "expired-funding":
+            with pytest.raises(RiskV2Rejected, match="RISK_V2_STALE_EVIDENCE"):
+                fixture.assembler.issue_cost_allowance_v2(
+                    read,
+                    policy=policy,
+                    proposal=proposal,
+                    holding_until=holding_until,
+                )
+        else:
+            with pytest.raises((BybitReadError, RiskV2Rejected)):
+                fixture.assembler.issue_cost_allowance_v2(
+                    read,
+                    policy=policy,
+                    proposal=proposal,
+                    holding_until=holding_until,
+                )
     finally:
         await fixture.close()
 

@@ -558,7 +558,7 @@ class RuntimePolicyBook:
     def save_v2(self, revision: object, draft: object, *,
                 expected_strategy_generation: object, policy_sections_version: object = None) -> dict[str, Any]:
         revision = validate_revision(revision, increment=True)
-        if policy_sections_version is not None and (type(policy_sections_version) is not int or policy_sections_version != 1):
+        if policy_sections_version is not None and (type(policy_sections_version) is not int or policy_sections_version != 2):
             raise ValueError("policy sections capability")
         with self._operation_v2() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -635,7 +635,7 @@ class RuntimePolicyBook:
         cap_values: dict[str, Any] = {name: (Decimal(value) if name in {"max_order_admission_notional",
                       "max_account_admission_notional", "max_execution_quote_amount"} and value is not None else value)
                       for name, value in caps.items()}
-        values: dict[str, Any] = {name: Decimal(value) if name in RISK_DECIMALS else value
+        values: dict[str, Any] = {name: Decimal(value) if value is not None and name in RISK_DECIMALS else value
                   for name, value in risk.items() if name not in {"section_version", "product", "caps"}}
         return LinearRiskPolicyV2(scope=scope, revision=str(snapshot["revision"]),
                                   caps=LinearCapitalCapsV2(**cap_values), **values)

@@ -32,7 +32,7 @@ def policy_fixture(mode="FULL_AUTO"):
         "permission_profile_revision": "BYBIT_SPOT_LINEAR_NO_FUNDS_V1",
         "allowed_instruments": instruments, "selected_instruments": copy.deepcopy(instruments),
     }, "strategy": {"section_version": 1, "catalog": catalog_wire, "allowed": refs, "selected": copy.deepcopy(refs)},
-        "risk_v2": {"section_version": 1, "product": "LINEAR", "sizing_rule": "LOSS_FIXED",
+        "risk_v2": {"section_version": 2, "product": "LINEAR", "sizing_rule": "LOSS_FIXED",
                     "caps": {"max_order_admission_notional": "100.00",
                              "max_account_admission_notional": "200", "valuation_rule": "LINEAR_MARK_GROSS_AT_ADMISSION_V1",
                              "turnover_requirement": "NOT_REQUIRED", "max_execution_quote_amount": None},
@@ -40,7 +40,8 @@ def policy_fixture(mode="FULL_AUTO"):
                        "max_daily_loss", "max_drawdown", "max_total_risk", "max_total_margin", "margin_allocation")},
                     "max_consecutive_losses": 2, "max_positions": 2, "margin_mode": "CROSS",
                     "position_mode": "ONE_WAY", "liquidation_buffer_fraction": "0.010",
-                    "max_quote_age_seconds": "0", "max_evidence_age_seconds": "0"}}
+                    "max_quote_age_seconds": "0", "max_evidence_age_seconds": "0",
+                    "max_stop_gap_quote_per_base": "1.00"}}
 
 
 def test_typed_heterogeneous_policy_preserves_all_pins_and_lexical_order():
@@ -52,11 +53,40 @@ def test_typed_heterogeneous_policy_preserves_all_pins_and_lexical_order():
     assert result != policy
 
 
-@pytest.mark.parametrize("section", ["scope", "strategy", "risk_v2"])
+@pytest.mark.parametrize("section", ["scope", "strategy"])
 @pytest.mark.parametrize("version", [True, 0, 2, None, "1"])
 def test_future_and_non_exact_versions_fail_closed(section, version):
     policy = policy_fixture()
     policy[section]["section_version"] = version
+    with pytest.raises(ValueError):
+        validate_v2(policy)
+
+
+@pytest.mark.parametrize("version", [True, 0, 3, None, "2"])
+def test_risk_v2_rejects_non_current_versions(version):
+    policy = policy_fixture()
+    policy["risk_v2"]["section_version"] = version
+    with pytest.raises(ValueError):
+        validate_v2(policy)
+
+
+def test_legacy_risk_section_reads_as_missing_stop_gap_without_a_numeric_default():
+    from multi_exchange_trader.execution.policy_sections import section_missing_fields
+
+    policy = policy_fixture()
+    policy["risk_v2"].pop("max_stop_gap_quote_per_base")
+    policy["risk_v2"]["section_version"] = 1
+    result = validate_v2(policy)
+    assert result["risk_v2"]["section_version"] == 2
+    assert result["risk_v2"]["max_stop_gap_quote_per_base"] is None
+    assert "risk_v2.max_stop_gap_quote_per_base" in section_missing_fields(result)
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_legacy_risk_section_version_requires_exact_integer(version):
+    policy = policy_fixture()
+    policy["risk_v2"].pop("max_stop_gap_quote_per_base")
+    policy["risk_v2"]["section_version"] = version
     with pytest.raises(ValueError):
         validate_v2(policy)
 
@@ -116,6 +146,7 @@ def test_partial_orphan_and_spot_are_savable_without_invented_values():
     (("risk_v2", "max_positions"), True),
     (("risk_v2", "max_consecutive_losses"), 1000001),
     (("risk_v2", "liquidation_buffer_fraction"), "1.000"),
+    (("risk_v2", "max_stop_gap_quote_per_base"), "0"),
     (("risk_v2", "caps", "max_execution_quote_amount"), "100"),
     (("strategy", "catalog", "entries", 0, "config_schema_version"), True),
     (("strategy", "catalog", "entries", 1, "approval_source_sha256"), "A" * 64),

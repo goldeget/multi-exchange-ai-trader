@@ -2,7 +2,7 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import {Field,Panel} from '../../ui/components';
 import {BuiltinStrategyPublication} from './BuiltinStrategyPublication';
 import {automaticPolicyEqual,automaticPolicyMissing,automaticPolicyPairs,parseAutomaticSettings,parseStrategyPublication,policyInstrumentName,policyReferenceName,policyRiskCounts,policyRiskDecimals,validateAutomaticPolicy,type AutomaticPolicy,type AutomaticSettingsSnapshot,type LegacyPolicy,type PolicyCaps,type PolicyInstrument,type PolicyProduct,type PolicyReference,type PolicyRisk,type PolicyScope,type StrategyPublicationSnapshot} from './contracts';
-const amounts:Record<string,string>={capital_usdt:'자동매매에 맡길 최대 자금 (USDT)',leverage_min:'최소 레버리지',leverage_max:'최대 레버리지',per_trade_loss:'거래당 최대 손실 (USDT)',max_daily_loss:'일일 최대 손실 (USDT)',max_drawdown:'최대 누적 낙폭 (USDT)',max_total_notional:'전체 포지션 최대 명목 금액 (USDT)',max_total_risk:'전체 포지션 최대 위험액 (USDT)',max_total_margin:'전체 최대 증거금 (USDT)',margin_allocation:'거래당 증거금 배정액 (USDT)',liquidation_buffer_fraction:'청산가 안전 여유 비율 (0 이상 1 미만)',max_quote_age_seconds:'시세 최대 경과 시간 (초)',max_evidence_age_seconds:'계좌 확인 최대 경과 시간 (초)'};
+const amounts:Record<string,string>={capital_usdt:'자동매매에 맡길 최대 자금 (USDT)',leverage_min:'최소 레버리지',leverage_max:'최대 레버리지',per_trade_loss:'거래당 최대 손실 (USDT)',max_daily_loss:'일일 최대 손실 (USDT)',max_drawdown:'최대 누적 낙폭 (USDT)',max_total_notional:'전체 포지션 최대 명목 금액 (USDT)',max_total_risk:'전체 포지션 최대 위험액 (USDT)',max_total_margin:'전체 최대 증거금 (USDT)',margin_allocation:'거래당 증거금 배정액 (USDT)',liquidation_buffer_fraction:'청산가 안전 여유 비율 (0 이상 1 미만)',max_quote_age_seconds:'시세 최대 경과 시간 (초)',max_evidence_age_seconds:'계좌 확인 최대 경과 시간 (초)',max_stop_gap_quote_per_base:'손절 발동 뒤 추가 불리 체결 예산 (USDT / base 1단위)'};
 const counts:Record<string,string>={max_consecutive_losses:'최대 연속 손실 횟수',max_positions:'최대 동시 포지션 수'};
 const choices:Record<string,Record<string,string>>={mode:{FULL_AUTO:'완전 자동 — 직접 고른 종목·전략',ALL_IN_ONE:'올인원 자동 — AI가 허용 후보에서 선택'},environment:{DEMO:'Bybit 연습계좌',LIVE:'Bybit 실제 계좌'},sizing_rule:{LOSS_FIXED:'거래당 손실액 기준'},margin_mode:{ISOLATED:'격리 증거금',CROSS:'교차 증거금'},position_mode:{ONE_WAY:'단방향',HEDGE:'양방향'}};
 const choiceLabels:Record<string,string>={mode:'자동매매 모드',environment:'운용 계좌',sizing_rule:'주문 수량 산정 방식',margin_mode:'증거금 모드',position_mode:'포지션 모드'};
@@ -10,7 +10,7 @@ const lists:Record<string,string>={allowed_symbols:'허용 종목',allowed_strat
 
 const emptyScope=():PolicyScope=>({section_version:1,account:null,mode:null,allowed_products:null,selected_product:null,permission_profile_revision:null,allowed_instruments:null,selected_instruments:null});
 const emptyCaps=():PolicyCaps=>({max_order_admission_notional:null,max_account_admission_notional:null,valuation_rule:null,turnover_requirement:null,max_execution_quote_amount:null});
-const emptyRisk=():PolicyRisk=>({section_version:1,product:'LINEAR',caps:null,sizing_rule:null,margin_mode:null,position_mode:null,...Object.fromEntries([...policyRiskDecimals,...policyRiskCounts].map(key=>[key,null]))} as PolicyRisk);
+const emptyRisk=():PolicyRisk=>({section_version:2,product:'LINEAR',caps:null,sizing_rule:null,margin_mode:null,position_mode:null,...Object.fromEntries([...policyRiskDecimals,...policyRiskCounts].map(key=>[key,null]))} as PolicyRisk);
 function envelope(data:AutomaticSettingsSnapshot):AutomaticPolicy{return data.schema_version===2?data.policy:{legacy_v1:data.policy,scope:null,strategy:null,risk_v2:null}}
 type InstrumentText={allowed_instruments:string;selected_instruments:string};
 function instrumentText(policy:AutomaticPolicy):InstrumentText{return {allowed_instruments:policy.scope?.allowed_instruments?.map(policyInstrumentName).join(', ')??'',selected_instruments:policy.scope?.selected_instruments?.map(policyInstrumentName).join(', ')??''}}
@@ -57,7 +57,7 @@ function AutomaticSettingsEditor(){
     ]);
     if(disposed||controller.signal.aborted)return;
     if(!response.ok||!data)throw new Error('read_contract');
-    const capable=response.headers.get('X-Automatic-Policy-Sections-Version')==='1';
+    const capable=response.headers.get('X-Automatic-Policy-Sections-Version')==='2';
     const awaiting=unresolved.current;
     if(awaiting&&capable&&data.schema_version===2&&data.revision>awaiting.revision&&automaticPolicyEqual(data.policy,awaiting.policy)){
      unresolved.current=null;setUncertain(false);
@@ -105,12 +105,12 @@ function AutomaticSettingsEditor(){
    if(!await validateAutomaticPolicy(submitted.policy)){setNotice('입력값이 서로 맞지 않거나 허용 범위를 벗어났습니다. 변경 내용을 보관했습니다.');return}
    if(!mounted.current||controller.signal.aborted)return;
    const {response,data}=await Promise.race([
-    (async()=>{const response=await fetch(migration?'/api/v1/automatic/settings/migrate':'/api/v1/automatic/settings',{method:migration?'POST':'PUT',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify(migration?{schema_version:1,revision:stored.revision}:{schema_version:2,revision,policy:submitted.policy,expected_strategy_generation:source.publication?.generation??null,policy_sections_version:1})});const data=await parseAutomaticSettings(await response.text(),source.publication);return {response,data}})(),
+    (async()=>{const response=await fetch(migration?'/api/v1/automatic/settings/migrate':'/api/v1/automatic/settings',{method:migration?'POST':'PUT',headers:{'Content-Type':'application/json'},signal:controller.signal,body:JSON.stringify(migration?{schema_version:1,revision:stored.revision}:{schema_version:2,revision,policy:submitted.policy,expected_strategy_generation:source.publication?.generation??null,policy_sections_version:2})});const data=await parseAutomaticSettings(await response.text(),source.publication);return {response,data}})(),
     new Promise<never>((_resolve,reject)=>{saveTimer.current=window.setTimeout(()=>{controller.abort();reject(new Error('save_timeout'))},15000)}),
    ]);
    if(!mounted.current)return;
    if(!response.ok){setNotice(response.status===409?'다른 곳에서 설정이 변경되었거나 입력값이 허용 범위를 벗어났습니다.':'설정을 저장하지 못했습니다.');return}
-   if(!data||data.schema_version!==2||response.headers.get('X-Automatic-Policy-Sections-Version')!=='1'||data.revision!==submitted.revision+1||!automaticPolicyEqual(data.policy,submitted.policy)){reconcile(submitted);return}
+   if(!data||data.schema_version!==2||response.headers.get('X-Automatic-Policy-Sections-Version')!=='2'||data.revision!==submitted.revision+1||!automaticPolicyEqual(data.policy,submitted.policy)){reconcile(submitted);return}
    snapshot.current=data;setSource({data,capable:true,loading:false,error:false,publication:source.publication});editRef.current=null;setEdit(null);setReadNonce(value=>value+1);setNotice(migration?'저장된 설정을 새 운용 초안으로 전환했습니다. 실제 주문은 시작되지 않습니다.':'설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
   }catch{if(mounted.current)reconcile(submitted)}
   finally{window.clearTimeout(saveTimer.current);if(pending.current===controller){pending.current=null;if(mounted.current)setSaving(false)}}
@@ -155,6 +155,7 @@ function AutomaticSettingsEditor(){
     {risk&&<>
      <p className="helper">비워 둔 금액·레버리지·시간·선택은 null로 보관합니다. 이전 자금·명목 금액은 새 상한으로 자동 전환하지 않습니다.</p>
      {policyRiskDecimals.map(key=><Field key={key} label={'새 초안 '+amounts[key]} value={risk[key]??''} disabled={disabled} onChange={text=>changeRisk(key,text||null)}/>)}
+     <p className="info-box">손절 발동 뒤 추가 불리 체결 예산은 가격이나 거래소가 보장하는 상한이 아닙니다. 운영자가 위험 계산에 포함할 예산으로 직접 선언합니다. 비워 두면 손실 계획과 비용 허용이 차단됩니다. 단위는 USDT / base 1단위입니다.</p>
      {policyRiskCounts.map(key=><Field key={key} label={'새 초안 '+counts[key]} value={risk[key]===null?'':String(risk[key])} disabled={disabled} onChange={text=>changeRisk(key,text===''?null:/^\d+$/.test(text)?Number(text):text)}/>)}
      {select('새 초안 주문 수량 산정 방식',risk.sizing_rule,{LOSS_FIXED:'거래당 손실액 기준'},value=>changeRisk('sizing_rule',value||null))}
      {select('새 초안 증거금 모드',risk.margin_mode,choices.margin_mode,value=>changeRisk('margin_mode',value||null))}
@@ -172,7 +173,7 @@ function AutomaticSettingsEditor(){
    {['mode','environment'].map(key=><div key={key}>{select(choiceLabels[key],String(policy.legacy_v1[key]??''),choices[key],value=>changeLegacy(key,value||null))}</div>)}
    {Object.entries(amounts).slice(0,5).map(([key,label])=>legacyInput(key,label))}
    {Object.entries(lists).map(([key,label])=>legacyInput(key,label))}
-   <details><summary>상세 이전 위험관리 설정</summary>{Object.entries(amounts).slice(5).map(([key,label])=>legacyInput(key,label))}{Object.entries(counts).map(([key,label])=>legacyInput(key,label))}{['sizing_rule','margin_mode','position_mode'].map(key=><div key={key}>{select(choiceLabels[key],String(policy.legacy_v1[key]??''),choices[key],value=>changeLegacy(key,value||null))}</div>)}</details>
+   <details><summary>상세 이전 위험관리 설정</summary>{Object.entries(amounts).filter(([key])=>key!=='max_stop_gap_quote_per_base').slice(5).map(([key,label])=>legacyInput(key,label))}{Object.entries(counts).map(([key,label])=>legacyInput(key,label))}{['sizing_rule','margin_mode','position_mode'].map(key=><div key={key}>{select(choiceLabels[key],String(policy.legacy_v1[key]??''),choices[key],value=>changeLegacy(key,value||null))}</div>)}</details>
    <p className="helper">저장된 설정 중 미정 항목: {source.data?.missing_fields.length??'확인 중'}개. 현재 초안 미정 항목: {typed&&!rawInvalid&&validation?.policy===policy&&validation.valid?automaticPolicyMissing(policy).length:'확인 중'}개. 실제 운용에는 거래소·체결·보호 주문 검증과 서버 연결도 필요합니다.</p>
     <button className="primary full" disabled={disabled||!typed||invalid||incompatible||publicationMismatch} onClick={()=>void save()}>{saving?'저장 결과 확인 중':'운용 한도 저장'}</button>
    <button className="secondary" disabled={saving||source.loading} onClick={()=>{if(!unresolved.current)setNotice('');reload()}}>{uncertain?'저장 결과 다시 확인하기':'저장된 설정 다시 불러오기'}</button>

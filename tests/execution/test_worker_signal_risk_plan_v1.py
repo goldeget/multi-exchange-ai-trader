@@ -25,7 +25,7 @@ async def prepare_entry_read(state: Any, *, include_held_eth: bool = False) -> t
     draft = snapshot["policy"]
     draft["risk_v2"].update(max_quote_age_seconds="120", max_evidence_age_seconds="300")
     state.book.save_v2(snapshot["revision"], draft, expected_strategy_generation=1,
-        policy_sections_version=1)
+        policy_sections_version=2)
     state.worker.max_age = timedelta(minutes=5)
     scope = signal_support.approved_fixture(
         state, raw_config=signal_support.config_bytes(signal_ttl_seconds=300))
@@ -216,7 +216,7 @@ async def test_incomplete_user_risk_settings_never_receive_default_values(model_
     draft = snapshot["policy"]
     draft["risk_v2"]["per_trade_loss"] = None
     state.book.save_v2(snapshot["revision"], draft, expected_strategy_generation=1,
-        policy_sections_version=1)
+        policy_sections_version=2)
     scope, signal_handle, _bars = await signal_support.captured(
         state, raw_config=signal_support.config_bytes(signal_ttl_seconds=300))
     assert state.worker.consume_builtin_signal_v1(signal_handle).scope == scope

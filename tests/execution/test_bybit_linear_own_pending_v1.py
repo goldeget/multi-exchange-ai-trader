@@ -152,7 +152,7 @@ def retune(
             costs,
             fee_quote_per_base=Decimal(cost),
             funding_quote_per_base=Decimal(0),
-            stop_gap_quote_per_base=Decimal(0),
+            stop_gap_quote_per_base=policy.max_stop_gap_quote_per_base,
         )
     marks = inputs.marks
     members = graph["domain"].members

@@ -39,7 +39,7 @@ def test_publication_snapshot_verify_restore_preserves_bytes_and_generation(stat
     assert api().StrategyPublicationOwnerV1(recovered).current() == published
     with pytest.raises(ValueError):
         recovered.save_v2(1, recovered.read()["policy"], expected_strategy_generation=None,
-                          policy_sections_version=1)
+                          policy_sections_version=2)
 
 
 @pytest.mark.parametrize("fault", ["partial", "artifact", "history", "generation"])

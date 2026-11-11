@@ -322,6 +322,18 @@ class MinimumAmountAssessmentV2:
 
 
 @dataclass(frozen=True)
+class LinearLastTradeQuoteV2:
+    """Typed last-trade price evidence; its owner must prove original-source currentness."""
+
+    instrument: InstrumentKey
+    reference: c.RiskObservationRefV2
+    last_price: Decimal
+
+    def __post_init__(self) -> None:
+        _last_trade_quote_payload_v2(self)
+
+
+@dataclass(frozen=True)
 class RiskRequirementsV2:
     source_mapping_revision: str
     minimum_amount_rule_revision: str
@@ -387,6 +399,7 @@ class LinearRiskInputsV2:
     risk_domain_sha256: str
     minimum_amount: MinimumAmountAssessmentV2
     requirements: RiskRequirementsV2
+    last_trade_quote: LinearLastTradeQuoteV2
 
     def __post_init__(self) -> None:
         _inputs_payload_v2(self)
@@ -447,6 +460,15 @@ def _minimum_payload_v2(value: object) -> dict[str, object]:
         c._reject_v2("RISK_V2_CAUSAL_ORDER_INVALID")
     # The full-input reference hash is opaque here; it is not an envelope hash.
     return payload
+
+
+def _last_trade_quote_payload_v2(value: object) -> dict[str, object]:
+    values = c._fields_v2(value, LinearLastTradeQuoteV2)
+    return {
+        "instrument": c._key_payload_v2(values["instrument"]),
+        "reference": c._observation_payload_v2(values["reference"]),
+        "last_price": c._decimal_text_field_v2(values, "last_price", source=True, sign="positive"),
+    }
 
 
 def _requirements_payload_v2(value: object) -> dict[str, object]:
@@ -536,6 +558,7 @@ def _inputs_payload_v2(value: object) -> dict[str, object]:
         "risk_domain_sha256": c._digest_v2(values["risk_domain_sha256"]),
         "minimum_amount": _minimum_payload_v2(values["minimum_amount"]),
         "requirements": _requirements_payload_v2(values["requirements"]),
+        "last_trade_quote": _last_trade_quote_payload_v2(values["last_trade_quote"]),
         "catalog_revision": c._identifier_v2(values["catalog_revision"]),
     }
     pin = c.pin_instrument_v2(values["instrument"], catalog_revision=values["catalog_revision"])

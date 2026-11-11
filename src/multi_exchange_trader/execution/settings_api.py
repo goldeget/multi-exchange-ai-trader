@@ -23,7 +23,7 @@ from .strategy_publication_v1 import StrategyArtifactBytesV1, StrategyPublicatio
 
 AUTOMATIC_BODY_LIMIT = 64 * 1024
 CAPABILITY_HEADER = {
-    "X-Automatic-Policy-Sections-Version": "1",
+    "X-Automatic-Policy-Sections-Version": "2",
     "X-Automatic-Strategy-Publication-Version": "1",
 }
 
@@ -226,7 +226,7 @@ def install(application: FastAPI, *, public_origin: PublicDashboardOrigin | None
                 "schema_version", "revision", "policy", "expected_strategy_generation"}
             if not migration and type(value) is dict and "policy_sections_version" in value:
                 expected.add("policy_sections_version")
-                if type(value["policy_sections_version"]) is not int or value["policy_sections_version"] != 1:
+                if type(value["policy_sections_version"]) is not int or value["policy_sections_version"] != 2:
                     raise ValueError("settings capability")
             if (type(value) is not dict or set(value) != expected
                     or type(value["schema_version"]) is not int

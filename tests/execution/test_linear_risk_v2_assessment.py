@@ -95,13 +95,16 @@ def _inputs(side: Literal["LONG", "SHORT"] = "LONG") -> e.LinearRiskInputsV2:
         D(95),
         EXPIRY,
     )
+    last_trade_quote = e.LinearLastTradeQuoteV2(
+        instrument.key, observation_ref_v2("LTP"), D(95)
+    )
     requirements = e.RiskRequirementsV2(
         "MAPPING_V1",
         "MINIMUM_V1",
         "FIXTURE_COST_V1",
         "FIXTURE_FEE_V1",
         "FIXTURE_FUNDING_V1",
-        "FIXTURE_GAP_V1",
+        c.STOP_GAP_MODEL_REVISION_V2,
         "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
         "LOCAL_ZERO_ORIGIN_LATTICE_V1",
         "MARGIN_V1",
@@ -124,6 +127,7 @@ def _inputs(side: Literal["LONG", "SHORT"] = "LONG") -> e.LinearRiskInputsV2:
         DIGEST,
         minimum,
         requirements,
+        last_trade_quote,
     )
 
 

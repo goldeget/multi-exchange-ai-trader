@@ -105,13 +105,16 @@ def _inputs(minimum: str = "95") -> e.LinearRiskInputsV2:
         D(95),
         EXPIRY,
     )
+    last_trade_quote = e.LinearLastTradeQuoteV2(
+        instrument.key, observation_ref_v2("LTP"), D(95)
+    )
     requirements = e.RiskRequirementsV2(
         "MAPPING_V1",
         "MINIMUM_V1",
         "FIXTURE_COST_V1",
         "FIXTURE_FEE_V1",
         "FIXTURE_FUNDING_V1",
-        "FIXTURE_GAP_V1",
+        c.STOP_GAP_MODEL_REVISION_V2,
         "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
         "LOCAL_ZERO_ORIGIN_LATTICE_V1",
         "MARGIN_V1",
@@ -134,6 +137,7 @@ def _inputs(minimum: str = "95") -> e.LinearRiskInputsV2:
         DIGEST,
         minimum_amount,
         requirements,
+        last_trade_quote,
     )
 
 
@@ -171,7 +175,11 @@ def _reject(value: e.LinearRiskInputsV2, code: str, *, now: Any = NOW) -> None:
 
 
 def test_literal_distinct_mark_limit_minimum_and_exact_display() -> None:
-    prepared = r.prepare_linear_entry_v2(_inputs(), now=NOW)
+    inputs = _inputs()
+    assert inputs.proposal.entry.limit_price == D(100)
+    assert inputs.last_trade_quote.last_price == D(95)
+    assert inputs.marks[0].mark_price == D(140)
+    prepared = r.prepare_linear_entry_v2(inputs, now=NOW)
     assert prepared.sizing.envelope.base_quantity == D(1)
     assert prepared.sizing.envelope.limit_price == D(100)
     assert prepared.minimum_amount.evaluation_price == D(95)
@@ -184,8 +192,60 @@ def test_literal_distinct_mark_limit_minimum_and_exact_display() -> None:
     assert not hasattr(prepared, "submission_ready") and not hasattr(prepared, "qualified")
 
 
+def test_linear_inputs_wire_shape_carries_the_last_trade_source_identity() -> None:
+    payload = e._inputs_payload_v2(_inputs())
+    quote = payload["last_trade_quote"]
+    assert quote["last_price"] == "95"
+    assert quote["reference"]["observation_id"] == "LTP"
+    assert quote["reference"]["source_rule_revision"] == "FIXTURE_SOURCE_V1"
+    assert "LTP" in payload["minimum_amount"]["input_observation_ids"]
+
+
 def test_minimum_96_rejects_without_upsize() -> None:
     _reject(_inputs("96"), "MINIMUM_SIZE")
+
+
+def test_minimum_below_minimum_quantity_rejects_at_authentic_last_trade_price() -> None:
+    value = _policy(_inputs(), per_trade_loss=D(6))
+    sizing = r.size_linear_entry_v2(
+        policy=value.policy,
+        proposal=value.proposal,
+        instrument=value.instrument,
+        catalog_revision=value.catalog_revision,
+        costs=value.costs,
+        now=NOW,
+    )
+    assert sizing.envelope.base_quantity == D("0.5")
+    assert sizing.envelope.base_quantity * value.last_trade_quote.last_price == D("47.5")
+    assert value.minimum_amount.envelope_sha256 == c.envelope_sha256_v2(sizing.envelope)
+    authentic_assessment = replace(value.minimum_amount, evaluated_quote_amount=D("47.5"))
+    _reject(replace(value, minimum_amount=authentic_assessment), "MINIMUM_SIZE")
+
+
+def test_minimum_cannot_use_inflated_price_to_hide_small_quantity() -> None:
+    value = _policy(_inputs(), per_trade_loss=D(6))
+    sizing = r.size_linear_entry_v2(
+        policy=value.policy,
+        proposal=value.proposal,
+        instrument=value.instrument,
+        catalog_revision=value.catalog_revision,
+        costs=value.costs,
+        now=NOW,
+    )
+    assert sizing.envelope.base_quantity == D("0.5")
+    assert sizing.envelope.base_quantity * value.proposal.entry.limit_price < D(95)
+    assert value.last_trade_quote.last_price == D(95)
+    assert value.minimum_amount.envelope_sha256 == c.envelope_sha256_v2(sizing.envelope)
+    forged_evaluation = replace(
+        value.minimum_amount,
+        evaluation_price=D(200),
+        evaluated_quote_amount=D(100),
+    )
+    assert sizing.envelope.base_quantity * forged_evaluation.evaluation_price >= D(95)
+    _reject(
+        replace(value, minimum_amount=forged_evaluation),
+        "MINIMUM_RULE_UNVERIFIED",
+    )
 
 
 @pytest.mark.parametrize(
@@ -593,7 +653,7 @@ def test_requirements_literal_canonical_all_four_m1_fields() -> None:
         "cost_rule_revision": "FIXTURE_COST_V1",
         "fee_rule_revision": "FIXTURE_FEE_V1",
         "funding_rule_revision": "FIXTURE_FUNDING_V1",
-        "stop_gap_model_revision": "FIXTURE_GAP_V1",
+        "stop_gap_model_revision": "EXPLICIT_POLICY_STOP_GAP_CAP_V1",
         "tier_bound_rule_revision": "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
         "leverage_grid_rule": "LOCAL_ZERO_ORIGIN_LATTICE_V1",
         "margin_model_revision": "MARGIN_V1",

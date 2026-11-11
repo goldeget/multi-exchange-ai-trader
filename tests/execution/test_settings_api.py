@@ -17,17 +17,18 @@ async def test_typed_capability_header_union_and_finite_old_browser_refusal(tmp_
     install(app)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://localhost:8000") as client:
         initial = await client.get("/api/v1/automatic/settings")
-        assert initial.headers.get("X-Automatic-Policy-Sections-Version") == "1"
+        assert initial.headers.get("X-Automatic-Policy-Sections-Version") == "2"
         body = {"schema_version": 2, "revision": 0, "policy": policy_fixture(),
-                "expected_strategy_generation": None, "policy_sections_version": 1}
-        for marker in (None, True, "1", 2):
+                "expected_strategy_generation": None, "policy_sections_version": 2}
+        for marker in (None, True, "2", 1):
             bad = await client.put("/api/v1/automatic/settings", json=body | {"policy_sections_version": marker})
             assert bad.status_code == 409
             assert bad.json() == {"reason": "automatic_settings_conflict_or_invalid"}
         result = await client.put("/api/v1/automatic/settings", json=body)
         assert result.status_code == 200
-        assert result.headers.get("X-Automatic-Policy-Sections-Version") == "1"
+        assert result.headers.get("X-Automatic-Policy-Sections-Version") == "2"
         assert len(result.json()) == 8 and result.json()["missing_fields"] == []
+        assert result.json()["policy"]["risk_v2"]["max_stop_gap_quote_per_base"] == "1.00"
         old = {"schema_version": 2, "revision": 1, "policy": initial.json()["policy"], "expected_strategy_generation": None}
         refused = await client.put("/api/v1/automatic/settings", json=old)
         assert refused.status_code == 409
@@ -138,7 +139,7 @@ async def test_explicit_migration_http_union_and_no_automatic_upgrade(tmp_path):
             assert (await client.put("/api/v1/automatic/settings", json=body)).status_code == 409
         response = await client.post("/api/v1/automatic/settings/migrate", json={"schema_version": 1, "revision": 0})
         assert response.status_code == 200
-        assert response.headers.get("X-Automatic-Policy-Sections-Version") == "1"
+        assert response.headers.get("X-Automatic-Policy-Sections-Version") == "2"
         migrated = response.json()
         assert migrated["schema_version"] == 2
         assert migrated["revision"] == 1

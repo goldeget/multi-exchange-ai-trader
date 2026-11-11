@@ -53,13 +53,13 @@ def test_any_book_enforces_generation_catalog_and_policy_cas(tmp_path: Path) -> 
     policy = separate.read()["policy"]
     for generation in (None, 0, True):
         with pytest.raises(ValueError):
-            separate.save_v2(2, policy, expected_strategy_generation=generation, policy_sections_version=1)
+            separate.save_v2(2, policy, expected_strategy_generation=generation, policy_sections_version=2)
     forged = json.loads(json.dumps(policy))
     forged["strategy"]["catalog"] = None
     with pytest.raises(ValueError):
-        separate.save_v2(2, forged, expected_strategy_generation=1, policy_sections_version=1)
+        separate.save_v2(2, forged, expected_strategy_generation=1, policy_sections_version=2)
     policy["legacy_v1"]["capital_usdt"] = "90.00"
-    result = separate.save_v2(2, policy, expected_strategy_generation=1, policy_sections_version=1)
+    result = separate.save_v2(2, policy, expected_strategy_generation=1, policy_sections_version=2)
     assert result["revision"] == 3
     assert owner.current().policy_revision == 3 and owner.current().generation == published.generation
     with pytest.raises(ValueError):
@@ -74,7 +74,7 @@ def test_revocation_prunes_only_affected_references_and_never_reselects(tmp_path
     policy = book.read()["policy"]
     refs = [{"strategy_id": name, "revision": "r1"} for name in ("fixture-alpha", "fixture-beta")]
     policy["strategy"].update(allowed=refs, selected=refs)
-    book.save_v2(2, policy, expected_strategy_generation=1, policy_sections_version=1)
+    book.save_v2(2, policy, expected_strategy_generation=1, policy_sections_version=2)
     result = owner.revoke(StrategyReference("fixture-alpha", "r1"),
                           expected_policy_revision=3, expected_generation=1)
     current = book.read()

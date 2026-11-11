@@ -87,6 +87,7 @@ def policy_v2() -> c.LinearRiskPolicyV2:
         Decimal("0.01"),
         Decimal(2),
         Decimal(10),
+        Decimal("0.5"),
     )
 
 
@@ -133,7 +134,7 @@ def costs_v2() -> c.LinearCostAllowanceV2:
         NOW + timedelta(hours=1),
         NOW + timedelta(hours=2),
         "FIXTURE_FUNDING_V1",
-        "FIXTURE_GAP_V1",
+        c.STOP_GAP_MODEL_REVISION_V2,
         Decimal(1),
         Decimal("0.5"),
         Decimal("0.5"),

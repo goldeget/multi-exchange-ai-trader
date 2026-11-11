@@ -95,7 +95,7 @@ async def test_current_publication_settings_save_and_revocation_share_actual_gen
         policy = json.loads(json.dumps(settings["policy"]))
         policy["legacy_v1"]["capital_usdt"] = "90.00"
         body = {"schema_version": 2, "revision": settings["revision"], "policy": policy,
-                "expected_strategy_generation": None, "policy_sections_version": 1}
+                "expected_strategy_generation": None, "policy_sections_version": 2}
         assert (await client.put("/api/v1/automatic/settings", json=body)).status_code == 409
         body["expected_strategy_generation"] = 1
         saved = await client.put("/api/v1/automatic/settings", json=body)

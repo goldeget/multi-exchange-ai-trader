@@ -56,7 +56,7 @@ def test_reservation_blocks_real_writer_until_rollback_and_uses_same_connection(
     def save() -> int:
         snapshot = writer.read()
         result = writer.save_v2(revision, snapshot["policy"], expected_strategy_generation=None,
-                                policy_sections_version=1)
+                                policy_sections_version=2)
         committed.set()
         return int(result["revision"])
 
@@ -85,7 +85,7 @@ def test_prior_equal_save_invalidates_original_admission(shared_target: SharedFi
     scope, revision, digest = pins(book)
     snapshot = writer.read()
     writer.save_v2(revision, snapshot["policy"], expected_strategy_generation=None,
-                   policy_sections_version=1)
+                   policy_sections_version=2)
     with (
         pytest.raises(ValueError),
         book._private_admission_snapshot_v2(scope, revision, digest),
@@ -306,7 +306,7 @@ def test_configured_save_checks_identity_before_commit_and_rolls_back(
     monkeypatch.setattr(book, "_read", changed_after_write)
     with pytest.raises(ValueError):
         book.save_v2(1, snapshot["policy"], expected_strategy_generation=None,
-                     policy_sections_version=1)
+                     policy_sections_version=2)
     shared_target.config.write_bytes(original_config)
     assert RuntimePolicyBook(shared_target.db).read()["revision"] == 1
     scope, revision, digest = pins(RuntimePolicyBook(shared_target.db))
@@ -357,7 +357,7 @@ def test_same_projection_preserves_financial_rejections(
         snapshot["policy"]["strategy"].update(allowed=None, selected=None)
         snapshot["policy"]["risk_v2"] = None
     book.save_v2(revision, snapshot["policy"], expected_strategy_generation=None,
-                 policy_sections_version=1)
+                 policy_sections_version=2)
     revision += 1
     with pytest.raises(ValueError):
         book.risk_policy_v2(scope)
@@ -378,7 +378,7 @@ def _lifetime_operation(
             return data.revision
     if operation == "save":
         result = book.save_v2(revision, policy, expected_strategy_generation=None,
-                              policy_sections_version=1)
+                              policy_sections_version=2)
     elif operation == "migrate":
         result = book.migrate_v1(revision)
     else:

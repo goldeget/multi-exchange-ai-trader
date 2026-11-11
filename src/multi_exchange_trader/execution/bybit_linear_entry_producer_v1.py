@@ -8,7 +8,7 @@ The final U2-B consumer must still seal its own admission and fresh SUBMIT.
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ..account.bybit_readonly import BybitReadOnlyClient
@@ -116,6 +116,10 @@ class BybitLinearEntryProducerV1:
             original = self.assembler._current
             if original is None or c._scope_payload_v2(original.scope) != c._scope_payload_v2(inputs.policy.scope):
                 raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+            inputs = replace(
+                inputs,
+                last_trade_quote=self.assembler.issue_current_last_trade_quote_v2(read),
+            )
             if (c.reservation_snapshot_sha256_v2(read.full_reservations)
                     != c.reservation_snapshot_sha256_v2(read.evaluation_reservations)
                     or c.reservation_snapshot_sha256_v2(inputs.reservations)
@@ -171,6 +175,9 @@ class BybitLinearEntryProducerV1:
         # policy/publication read. This is data currentness, not a SUBMIT seal.
         now = c._utc_v2(clock())
         assembler.require_current_v1(result.source_read)
+        assembler.require_current_last_trade_quote_v2(
+            result.source_read, result.inputs.risk_inputs.last_trade_quote
+        )
         self._policy(result.inputs.risk_inputs, result.policy_revision, result.publication_generation)
         if now >= result.valid_until:
             raise RiskV2Rejected("RISK_V2_EXPIRED")

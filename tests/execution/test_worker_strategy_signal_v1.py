@@ -156,7 +156,7 @@ def approved_fixture(state: Any, *, raw_config: bytes | None = None, implementat
     draft = state.book.read()["policy"]
     draft["strategy"].update(allowed=[asdict(scope.strategy)], selected=[asdict(scope.strategy)])
     state.book.save_v2(publication.policy_revision, draft, expected_strategy_generation=publication.generation,
-        policy_sections_version=1)
+        policy_sections_version=2)
     return scope
 
 
@@ -477,7 +477,7 @@ async def test_stale_or_replaced_original_signal_cannot_be_consumed(model_worker
         current = state.book.read()
         draft = current["policy"]
         draft["strategy"]["selected"] = []
-        state.book.save_v2(current["revision"], draft, expected_strategy_generation=2, policy_sections_version=1)
+        state.book.save_v2(current["revision"], draft, expected_strategy_generation=2, policy_sections_version=2)
     elif fault == "foreign-handle":
         handle = object.__new__(WorkerStrategySignalV1)
     elif fault == "mutated-result":

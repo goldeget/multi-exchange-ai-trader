@@ -57,7 +57,7 @@ def book_for(path: Path) -> tuple[RuntimePolicyBook, StrategyPublicationOwnerV1]
         max_evidence_age_seconds="30")
     draft["risk_v2"]["caps"].update(max_order_admission_notional="500",
         max_account_admission_notional="1000")
-    book.save_v2(1, draft, expected_strategy_generation=1, policy_sections_version=1)
+    book.save_v2(1, draft, expected_strategy_generation=1, policy_sections_version=2)
     return book, publication
 
 
@@ -91,7 +91,8 @@ class SourceFixture(Fixture):
         return httpx.Response(200, stream=Stream(json.dumps(body).encode()), request=request)
 
 
-def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any, *, scope: Any = SCOPE,
+def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any, *, assembler: Any,
+                    scope: Any = SCOPE,
                     side: str = "LONG", entry_price: Decimal = Decimal(50),
                     stop_price: Decimal = Decimal(40), lifetime_seconds: int = 20) -> tuple[Any, Any]:
     """Supplied fixture-only coverage/cost/minimum values never qualify an actual ledger."""
@@ -123,27 +124,29 @@ def economic_inputs(read: Any, book: RuntimePolicyBook, now: Any, *, scope: Any 
         "fixture-fee-v1", fee.received_at, fee.received_at, fee.raw_body_sha256)
     funding = c.RiskObservationRefV2("fixture-funding", "fixture-funding", "FIXTURE",
         "fixture-funding-v1", now, now, "b" * 64)
+    last_trade_quote = assembler.issue_current_last_trade_quote_v2(read)
     costs = c.LinearCostAllowanceV2(scope,
         c.RiskComputationRefV2("fixture-cost", "fixture-cost-v1", "DEMO", now, "c" * 64),
         c.risk_policy_sha256_v2(policy), instrument.specification_revision, "fixture-quote", side,
         entry_price, stop_price, fee_ref, "USDT", "fixture-fee-v1", funding, Decimal(0),
-        now + timedelta(hours=1), now + timedelta(hours=2), "fixture-funding-v1", "fixture-gap-v1",
+        now + timedelta(hours=1), now + timedelta(hours=2), "fixture-funding-v1", c.STOP_GAP_MODEL_REVISION_V2,
         Decimal(1), Decimal("0.5"), Decimal("0.5"), expiry, "fixture-cost-v1")
     sizing = r.size_linear_entry_v2(policy=policy, proposal=proposal, instrument=instrument,
         catalog_revision=read.catalog.revision, costs=costs, now=now)
     minimum = e.MinimumAmountAssessmentV2(scope,
         c.RiskComputationRefV2("fixture-minimum", "fixture-minimum-v1", "DEMO", now, "d" * 64),
         c.envelope_sha256_v2(sizing.envelope), instrument.specification_revision,
-        "fixture-minimum-v1", ("instrument",), entry_price, Decimal(5),
-        sizing.envelope.base_quantity * entry_price, expiry)
+        "fixture-minimum-v1", ("instrument", last_trade_quote.reference.observation_id),
+        last_trade_quote.last_price, Decimal(5),
+        sizing.envelope.base_quantity * last_trade_quote.last_price, expiry)
     requirements = e.RiskRequirementsV2("fixture-mapping-v1", "fixture-minimum-v1", "fixture-cost-v1",
-        "fixture-fee-v1", "fixture-funding-v1", "fixture-gap-v1", "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
+        "fixture-fee-v1", "fixture-funding-v1", c.STOP_GAP_MODEL_REVISION_V2, "LINEAR_MARK_GROSS_UPPER_BOUND_V1",
         "LOCAL_ZERO_ORIGIN_LATTICE_V1", "fixture-margin-v1", "fixture-lp-v1",
         "POINT_ESTIMATE_WITH_RECONCILIATION_V1", "POINT_ESTIMATE_TWO_IM_ENVELOPE_V1",
         "APP_RESERVE_CEILING_QUANTUM_V1", Decimal("0.00000001"))
     return e.LinearRiskInputsV2(policy, proposal, instrument, read.catalog.revision, costs, account,
         read.full_reservations, read.marks, tiers, d.risk_domain_sha256_v2(domain), minimum,
-        requirements), domain
+        requirements, last_trade_quote), domain
 
 
 @pytest.mark.parametrize("mode", [5, 3])
@@ -159,17 +162,87 @@ async def test_original_source_policy_approval_and_actual_calculation_are_joined
         read = await capture(binding, scope=SCOPE, owner_generation="OWNER", nonvip_fee_basis=fixture.basis,
             nonvip_applicability_revision="fixture-fee-v1", budget=MonitoringReadBudget(),
             max_age=timedelta(seconds=30), max_quote_age=timedelta(seconds=5))
-        inputs, domain = economic_inputs(read, book, fixture.clock())
+        inputs, domain = economic_inputs(read, book, fixture.clock(), assembler=fixture.assembler)
+        assert inputs.last_trade_quote.last_price == Decimal(50)
+        assert inputs.minimum_amount.evaluation_price == inputs.last_trade_quote.last_price
         owner = api().BybitLinearEntryProducerV1(assembler=fixture.assembler, policy_book=book)
         result = owner.prepare_plan_v1(read=read, inputs=inputs, domain=domain,
             policy_revision=2, publication_generation=1)
         assert owner.require_current_v1(result) is result
-        assert result.source_read is read and result.inputs.risk_inputs is inputs
+        assert result.source_read is read and result.inputs.risk_inputs == inputs
         calculate = demo.calculate_bound_bybit_demo_uta1_model_v1 if mode == 3 else m.calculate_bound_bybit_model_v1
         expected = calculate(result.inputs, now=fixture.clock())
         assert result.calculation == expected
         assert type(result.calculation) is m.BybitBoundModelCalculationV1
         assert result.inputs.point.envelope.base_quantity == Decimal(1)
+        assert not fixture.journal.list_commands()
+    finally:
+        await fixture.close()
+
+
+async def test_bybit_entry_owner_rejects_caller_inflated_minimum_ltp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = SourceFixture(monkeypatch, tmp_path)
+    book, _publication = book_for(tmp_path)
+    try:
+        binding = await fixture.auth()
+        read = await fixture.assembler.capture_v1(
+            binding, scope=SCOPE, owner_generation="OWNER", nonvip_fee_basis=fixture.basis,
+            nonvip_applicability_revision="fixture-fee-v1", budget=MonitoringReadBudget(),
+            max_age=timedelta(seconds=30), max_quote_age=timedelta(seconds=5),
+        )
+        inputs, domain = economic_inputs(read, book, fixture.clock(), assembler=fixture.assembler)
+        forged_minimum = replace(
+            inputs.minimum_amount,
+            evaluation_price=Decimal(200),
+            evaluated_quote_amount=inputs.minimum_amount.evaluated_quote_amount * Decimal(4),
+        )
+        forged_inputs = replace(
+            inputs,
+            minimum_amount=forged_minimum,
+            last_trade_quote=replace(inputs.last_trade_quote, last_price=Decimal(200)),
+        )
+        owner = api().BybitLinearEntryProducerV1(assembler=fixture.assembler, policy_book=book)
+        with pytest.raises(RiskV2Rejected, match="RISK_V2_MINIMUM_RULE_UNVERIFIED"):
+            owner.prepare_plan_v1(
+                read=read, inputs=forged_inputs, domain=domain,
+                policy_revision=2, publication_generation=1,
+            )
+        assert not fixture.journal.list_commands()
+    finally:
+        await fixture.close()
+
+
+async def test_bybit_owner_accepts_current_ltp_distinct_from_limit_and_mark(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = SourceFixture(monkeypatch, tmp_path)
+    fixture.mark_price = "140"
+    fixture.last_trade_price = "95"
+    book, _publication = book_for(tmp_path)
+    try:
+        binding = await fixture.auth()
+        read = await fixture.assembler.capture_v1(
+            binding, scope=SCOPE, owner_generation="OWNER", nonvip_fee_basis=fixture.basis,
+            nonvip_applicability_revision="fixture-fee-v1", budget=MonitoringReadBudget(),
+            max_age=timedelta(seconds=30), max_quote_age=timedelta(seconds=5),
+        )
+        inputs, domain = economic_inputs(
+            read, book, fixture.clock(), assembler=fixture.assembler,
+            entry_price=Decimal(100), stop_price=Decimal(90),
+        )
+        mark = next(mark for mark in inputs.marks if mark.instrument == SCOPE.instrument)
+        assert inputs.last_trade_quote.last_price == Decimal(95)
+        assert inputs.proposal.entry.limit_price == Decimal(100)
+        assert mark.mark_price == Decimal(140)
+        owner = api().BybitLinearEntryProducerV1(assembler=fixture.assembler, policy_book=book)
+        result = owner.prepare_plan_v1(
+            read=read, inputs=inputs, domain=domain,
+            policy_revision=2, publication_generation=1,
+        )
+        assert owner.require_current_v1(result) is result
+        assert result.inputs.risk_inputs.minimum_amount.evaluation_price == Decimal(95)
         assert not fixture.journal.list_commands()
     finally:
         await fixture.close()
@@ -184,7 +257,7 @@ async def test_original_owners_or_changed_journal_data_cannot_reuse_a_plan(
     try:
         binding = await fixture.auth()
         read = await fixture.capture(binding)
-        inputs, domain = economic_inputs(read, book, fixture.clock())
+        inputs, domain = economic_inputs(read, book, fixture.clock(), assembler=fixture.assembler)
         owner = api().BybitLinearEntryProducerV1(assembler=fixture.assembler, policy_book=book)
         if fault == "journal-data":
             inputs = replace(inputs, reservations=replace(inputs.reservations, snapshot_id="not-original"))
@@ -200,7 +273,7 @@ async def test_original_owners_or_changed_journal_data_cannot_reuse_a_plan(
         result = owner.prepare_plan_v1(read=read, inputs=inputs, domain=domain,
             policy_revision=2, publication_generation=1)
         if fault == "policy":
-            book.save_v2(2, book.read()["policy"], expected_strategy_generation=1, policy_sections_version=1)
+            book.save_v2(2, book.read()["policy"], expected_strategy_generation=1, policy_sections_version=2)
         elif fault == "approval":
             publication.revoke(SCOPE.strategy, expected_policy_revision=2, expected_generation=1)
         else:
@@ -275,7 +348,7 @@ async def test_producer_clock_policy_change_is_checked_after_the_normal_control(
         if armed and sys._getframe(1).f_code is api().BybitLinearEntryProducerV1._require.__code__:
             armed = False
             book.save_v2(2, book.read()["policy"], expected_strategy_generation=1,
-                policy_sections_version=1)
+                policy_sections_version=2)
             changed = True
         return now
 
@@ -283,7 +356,7 @@ async def test_producer_clock_policy_change_is_checked_after_the_normal_control(
     try:
         binding = await fixture.auth()
         read = await fixture.capture(binding)
-        inputs, domain = economic_inputs(read, book, fixture.clock())
+        inputs, domain = economic_inputs(read, book, fixture.clock(), assembler=fixture.assembler)
         owner = api().BybitLinearEntryProducerV1(assembler=fixture.assembler, policy_book=book)
         result = owner.prepare_plan_v1(read=read, inputs=inputs, domain=domain,
             policy_revision=2, publication_generation=1)

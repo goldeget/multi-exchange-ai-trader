@@ -475,7 +475,7 @@ def test_typed_writer_guard_old_frozen_writer_and_capable_reset(tmp_path):
     book = RuntimePolicyBook(path)
     null_policy = book.read()["policy"]
     typed = policy_fixture()
-    result = book.save_v2(0, typed, expected_strategy_generation=None, policy_sections_version=1)
+    result = book.save_v2(0, typed, expected_strategy_generation=None, policy_sections_version=2)
     assert result["policy"] == typed and result["missing_fields"] == []
     assert "STRATEGY_CURRENT_PUBLICATION_REQUIRED" in result["blockers"]
     with pytest.raises(ValueError):
@@ -486,17 +486,17 @@ def test_typed_writer_guard_old_frozen_writer_and_capable_reset(tmp_path):
             writer.save_v2(1, null_policy, expected_strategy_generation=None)
     assert storage(path) == before
     assert RuntimePolicyBook(path).read() == result
-    reset = book.save_v2(1, null_policy, expected_strategy_generation=None, policy_sections_version=1)
+    reset = book.save_v2(1, null_policy, expected_strategy_generation=None, policy_sections_version=2)
     assert reset["revision"] == 2
     spot = policy_fixture()
     spot["scope"].update(selected_product="SPOT", allowed_products=["SPOT"])
     with pytest.raises(ValueError):
-        book.save_v2(2, spot, expected_strategy_generation=None, policy_sections_version=1)
+        book.save_v2(2, spot, expected_strategy_generation=None, policy_sections_version=2)
     assert book.read() == reset
     spot["scope"].update(allowed_instruments=None, selected_instruments=None)
     spot["strategy"].update(allowed=None, selected=None)
     spot["risk_v2"] = None
-    switched = book.save_v2(2, spot, expected_strategy_generation=None, policy_sections_version=1)
+    switched = book.save_v2(2, spot, expected_strategy_generation=None, policy_sections_version=2)
     assert switched["policy"] == spot
     assert "POLICY_SPOT_RISK_UNSUPPORTED" in switched["blockers"]
     assert RuntimePolicyBook(path).read() == switched
@@ -593,7 +593,7 @@ def test_typed_save_refusal_rolls_back_policy_and_revision(tmp_path, monkeypatch
             return db
         monkeypatch.setattr(book, "connect", connect)
     with pytest.raises((ValueError, sqlite3.OperationalError)):
-        book.save_v2(0, policy_fixture(), expected_strategy_generation=None, policy_sections_version=1)
+        book.save_v2(0, policy_fixture(), expected_strategy_generation=None, policy_sections_version=2)
     assert storage(book.path) == before
 
 
@@ -642,7 +642,7 @@ def test_raw_stored_v2_size_bound_precedes_json_parsing_without_update(tmp_path,
         db.execute("UPDATE runtime_policy_v2 SET payload=?", (json.dumps(policy) + " " * 65536,))
     before = storage(book.path)
     with pytest.raises(ValueError, match="policy body limit"):
-        book.save_v2(0, policy, expected_strategy_generation=None, policy_sections_version=1)
+        book.save_v2(0, policy, expected_strategy_generation=None, policy_sections_version=2)
     assert storage(book.path) == before
 
 

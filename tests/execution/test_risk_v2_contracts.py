@@ -342,6 +342,7 @@ def test_canonical_payload_matches_independent_literal_policy() -> None:
             "liquidation_buffer_fraction": "0.01",
             "max_quote_age_seconds": "2",
             "max_evidence_age_seconds": "10",
+            "max_stop_gap_quote_per_base": "0.5",
         },
     }
     text = json.dumps(
@@ -359,6 +360,16 @@ def test_valid_large_integer_counts_do_not_depend_on_global_integer_string_limit
     before = sys.get_int_max_str_digits()
     assert len(c.risk_policy_sha256_v2(policy)) == 64
     assert sys.get_int_max_str_digits() == before
+
+
+def test_stop_gap_policy_cap_is_hash_bound_and_none_is_not_filled():
+    configured = policy_v2()
+    missing = replace(configured, max_stop_gap_quote_per_base=None)
+    assert c._policy_payload_v2(configured)["max_stop_gap_quote_per_base"] == "0.5"
+    assert c._policy_payload_v2(missing)["max_stop_gap_quote_per_base"] is None
+    assert c.risk_policy_sha256_v2(configured) != c.risk_policy_sha256_v2(missing)
+    with pytest.raises(RiskV2Rejected, match="RISK_V2_INPUT_INVALID"):
+        replace(configured, max_stop_gap_quote_per_base=D(0))
 
 
 def test_public_hashes_reject_top_level_subclasses_and_nested_shared_forgeries() -> None:

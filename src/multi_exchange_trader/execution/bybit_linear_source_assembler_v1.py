@@ -6,17 +6,21 @@ day/account risk, costs, minimum assessment and approved PLAN remain separate.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from fractions import Fraction
 from typing import Literal
 
 from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
 from ..account.bybit_readonly import _PrivateAccountEndpointV1
+from ..account.risk_limit_envelope import _number_spelling_v1
 from ..account.instrument_envelope import CurrentCatalogReceipt
 from ..market_data.instrument_catalog import InstrumentCatalog
-from ..market_data.instrument_definition import LinearInstrumentSpec
+from ..market_data.instrument_definition import InstrumentObservation, LinearInstrumentSpec
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from ..trading_product import InstrumentKey
 from . import bybit_demo_uta1_profile_v1 as demo
@@ -26,7 +30,7 @@ from .account_binding import AuthenticatedAccountBinding, BybitDemoAccountSessio
 from .bybit_position_order_projections_v1 import _page
 from .journal import CommandJournal, _OwnPendingViewV2
 from .monitoring_budget import MonitoringBudgetError, MonitoringReadBudget
-from .risk_v2_math import RiskV2Rejected
+from .risk_v2_math import RiskV2Rejected, decimal_fraction_v2, decimal_text_v2, finite_decimal_v2
 
 
 @dataclass(frozen=True)
@@ -61,10 +65,24 @@ class _Read:
     command_key: str | None
     command_identity: str | None
     profile: Literal["UTA2_V1", "DEMO_UTA1_V1"]
+    issued_cost: c.LinearCostAllowanceV2 | None = None
+    issued_cost_sha256: str | None = None
+
+
+def _require_cost_window_open_v2(cost: c.LinearCostAllowanceV2, now: datetime) -> None:
+    """Reject an allowance whose bounded time window closed during final checks."""
+    now = c._utc_v2(now)
+    if now >= cost.valid_until or now >= cost.holding_until or now >= cost.next_funding_at:
+        raise RiskV2Rejected("RISK_V2_STALE_EVIDENCE")
 
 
 class BybitLinearSourceAssemblerV1:
     """Compose original owners; construction and read data grant no order rights."""
+
+    _COST_RULE_V2 = "BYBIT_LINEAR_COST_ALLOWANCE_V1"
+    _FEE_RULE_V2 = "BYBIT_ACCOUNT_TAKER_ENTRY_EXIT_V1"
+    _FUNDING_RULE_V2 = "BYBIT_NEXT_EVENT_RATE_BAND_V1"
+    _STOP_GAP_RULE_V2 = c.STOP_GAP_MODEL_REVISION_V2
 
     def __init__(self, *, session: BybitDemoAccountSession,
                  public_marks: BybitPublicMarkSessionV1,
@@ -399,3 +417,364 @@ class BybitLinearSourceAssemblerV1:
         finally:
             if self._busy is token:
                 self._busy = None
+
+    def require_current_last_trade_quote_v2(
+        self, read: BybitLinearVenueReadV1, quote: e.LinearLastTradeQuoteV2,
+    ) -> e.LinearLastTradeQuoteV2:
+        """Require a lastTrade quote projected from this read's retained ticker bytes."""
+        self.require_current_v1(read)
+        slot = self._current
+        if slot is None or slot.result is not read:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        if type(quote) is not e.LinearLastTradeQuoteV2 or quote.instrument != slot.scope.instrument:
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+        sources = tuple(
+            source for source in slot.mark_sources
+            if source.observation_id == quote.reference.observation_id
+            and source.query == (("category", "linear"), ("symbol", slot.scope.instrument.symbol))
+        )
+        if len(sources) != 1:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        source = sources[0]
+        projected = self.public_marks.project_last_trade_price_v1(
+            source, symbol=slot.scope.instrument.symbol
+        )
+        server_time = (
+            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms)
+            if source.envelope_time_ms is not None else None
+        )
+        reference = quote.reference
+        if (server_time is None
+                or quote.last_price != projected.value
+                or reference.source_id != source.source_id
+                or reference.source_environment != source.source_environment
+                or reference.rule_revision != "BYBIT_LINEAR_LAST_TRADE_PRICE_V1"
+                or reference.server_observed_at != server_time
+                or reference.received_at != source.received_at
+                or reference.payload_sha256 != a.bybit_decimal_field_sha256_v1(projected)):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        self.require_current_v1(read)
+        current = self._current
+        if current is not slot or current.result is not read:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        return quote
+
+    def issue_current_last_trade_quote_v2(
+        self, read: BybitLinearVenueReadV1,
+    ) -> e.LinearLastTradeQuoteV2:
+        """Issue the selected instrument's lastPrice from retained current ticker bytes."""
+        self.require_current_v1(read)
+        slot = self._current
+        if slot is None or slot.result is not read:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        sources = tuple(
+            source for source in slot.mark_sources
+            if source.query == (("category", "linear"), ("symbol", slot.scope.instrument.symbol))
+        )
+        if len(sources) != 1:
+            raise RiskV2Rejected("RISK_V2_MARK_COVERAGE_REQUIRED")
+        source = sources[0]
+        projected = self.public_marks.project_last_trade_price_v1(
+            source, symbol=slot.scope.instrument.symbol
+        )
+        if source.envelope_time_ms is None:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        reference = c.RiskObservationRefV2(
+            source.observation_id,
+            source.source_id,
+            source.source_environment,
+            "BYBIT_LINEAR_LAST_TRADE_PRICE_V1",
+            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms),
+            source.received_at,
+            a.bybit_decimal_field_sha256_v1(projected),
+        )
+        quote = e.LinearLastTradeQuoteV2(slot.scope.instrument, reference, projected.value)
+        self.require_current_last_trade_quote_v2(read, quote)
+        return quote
+
+    def issue_cost_allowance_v2(
+        self,
+        read: BybitLinearVenueReadV1,
+        *,
+        policy: c.LinearRiskPolicyV2,
+        proposal: c.LinearEntryProposalV2,
+        holding_until: datetime,
+    ) -> c.LinearCostAllowanceV2:
+        """Issue costs using the revision-bound explicit stop-gap risk budget.
+
+        This covers exactly the next funding event. Longer horizons need another
+        complete funding schedule observation and are rejected. The configured
+        stop-gap amount is a user-declared risk budget, not an exchange-guaranteed
+        execution-price bound; a missing value fails closed.
+        """
+        self.require_current_v1(read)
+        slot = self._current
+        if slot is None or slot.result is not read:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        policy_payload = c._policy_payload_v2(policy)
+        proposal_payload = c._proposal_payload_v2(proposal)
+        if policy.max_stop_gap_quote_per_base is None:
+            raise RiskV2Rejected("RISK_V2_SLIPPAGE_BOUND_UNAVAILABLE")
+        if (policy_payload["scope"] != c._scope_payload_v2(slot.scope)
+                or proposal_payload["scope"] != policy_payload["scope"]):
+            raise RiskV2Rejected("RISK_V2_SCOPE_MISMATCH")
+        caps = policy.caps
+        if (decimal_fraction_v2(caps.max_order_admission_notional) <= 0
+                or decimal_fraction_v2(caps.max_account_admission_notional) <= 0
+                or (caps.turnover_requirement == "HARD_EXECUTION_QUOTE_CAP"
+                    and (caps.max_execution_quote_amount is None
+                         or decimal_fraction_v2(caps.max_execution_quote_amount) <= 0))):
+            raise RiskV2Rejected("RISK_V2_INPUT_INVALID")
+        if (slot.scope.instrument.venue != "BYBIT" or slot.scope.instrument.product != "LINEAR"
+                or proposal.side not in ("LONG", "SHORT")
+                or proposal.entry.side != ("BUY" if proposal.side == "LONG" else "SELL")):
+            raise RiskV2Rejected("RISK_V2_UNSUPPORTED_PRODUCT")
+
+        now = c._utc_v2(self.clock())
+        holding_until = c._utc_v2(holding_until)
+        stop_gap = decimal_fraction_v2(policy.max_stop_gap_quote_per_base)
+        if stop_gap <= 0 or holding_until <= now:
+            raise RiskV2Rejected("RISK_V2_INPUT_INVALID")
+        catalog_rows = tuple(
+            observation for observation in read.catalog.observations
+            if observation.key == slot.scope.instrument
+        )
+        if len(catalog_rows) != 1 or type(catalog_rows[0]) is not InstrumentObservation:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        instrument = catalog_rows[0]
+        pin = c.pin_instrument_v2(instrument, catalog_revision=read.catalog.revision)
+        spec = instrument.spec
+        if (type(spec) is not LinearInstrumentSpec or spec.contract_type != "LinearPerpetual"
+                or spec.status != "Trading" or spec.quote_coin != "USDT" or spec.settle_coin != "USDT"
+                or instrument.source.source_environment not in ("PUBLIC_MAINNET", "PUBLIC_TESTNET")):
+            raise RiskV2Rejected("RISK_V2_UNSUPPORTED_PRODUCT")
+        selected_marks = tuple(mark for mark in read.marks if mark.instrument == slot.scope.instrument)
+        if len(selected_marks) != 1:
+            raise RiskV2Rejected("RISK_V2_MARK_COVERAGE_REQUIRED")
+        mark = selected_marks[0]
+        if (proposal.entry.origin_quote_id != mark.reference.observation_id
+                or read.selected_mark.reference.source.observation_id != mark.reference.observation_id
+                or decimal_fraction_v2(proposal.entry.limit_price)
+                != decimal_fraction_v2(read.selected_mark.value)):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        funding_sources = tuple(
+            source for source in slot.mark_sources
+            if source.query == (("category", "linear"), ("symbol", slot.scope.instrument.symbol))
+        )
+        if (len(funding_sources) != 1 or funding_sources[0].observation_id != mark.reference.observation_id
+                or read.selected_mark.reference.source is not funding_sources[0]
+                or funding_sources[0].source_environment != instrument.source.source_environment):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        try:
+            funding = self.public_marks.project_funding_v1(
+                funding_sources[0], symbol=slot.scope.instrument.symbol
+            )
+        except Exception:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH") from None
+        if (funding.source is not funding_sources[0]
+                or funding.next_funding_at != holding_until
+                or funding.next_funding_at <= now):
+            raise RiskV2Rejected("RISK_V2_EXPIRED")
+
+        # The raw catalog row is the original versioned instrument source. Missing
+        # funding bounds never become a zero or guessed rate.
+        raw_row = instrument.raw_row_canonical
+        if (type(raw_row) is not bytes
+                or hashlib.sha256(raw_row).hexdigest() != instrument.raw_row_sha256):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        try:
+            row = json.loads(raw_row)
+            if type(row) is not dict or row.get("symbol") != slot.scope.instrument.symbol:
+                raise ValueError
+            lower_rate = Decimal(_number_spelling_v1(row.get("lowerFundingRate")))
+            upper_rate = Decimal(_number_spelling_v1(row.get("upperFundingRate")))
+        except Exception:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH") from None
+        observed_rate = funding.funding_rate.value
+        lower_fraction, upper_fraction = decimal_fraction_v2(lower_rate), decimal_fraction_v2(upper_rate)
+        observed_fraction = decimal_fraction_v2(observed_rate)
+        if (lower_fraction >= upper_fraction or lower_fraction > observed_fraction
+                or observed_fraction > upper_fraction or max(abs(lower_fraction), abs(upper_fraction)) <= 0):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+
+        fee = read.venue.fee
+        if type(fee) is not a.BybitLinearFeeInputsV1:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        fee_source = fee.account_taker_rate.reference.source
+        fee_sources = tuple(source for kind, sources in slot.sources if kind == "FEE" for source in sources)
+        if (len(fee_sources) != 1 or fee_sources[0] is not fee_source
+                or fee_source.source_environment != slot.scope.product_scope.account.environment
+                or fee_source.account_scope != slot.scope.product_scope.account):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        self.session._require_linear_private_source_v1(
+            "FEE", fee_source, symbol=slot.scope.instrument.symbol,
+            binding=slot.binding, scope=slot.scope.product_scope.account,
+        )
+        taker_rate = decimal_fraction_v2(fee.account_taker_rate.value)
+        if taker_rate <= 0:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+
+        max_evidence = decimal_fraction_v2(policy.max_evidence_age_seconds)
+        max_quote = decimal_fraction_v2(policy.max_quote_age_seconds)
+        fee_server_time = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            milliseconds=fee_source.envelope_time_ms
+        ) if fee_source.envelope_time_ms is not None else None
+        funding_server_time = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            milliseconds=funding.source.envelope_time_ms
+        ) if funding.source.envelope_time_ms is not None else None
+        if fee_server_time is None or funding_server_time is None:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        evidence_stamps = (
+            instrument.response_time,
+            instrument.source.received_at,
+            fee_source.request_started_at,
+            fee_source.received_at,
+            fee_server_time,
+        )
+        quote_stamps = (
+            funding.source.request_started_at,
+            funding.source.received_at,
+            funding_server_time,
+        )
+        evidence_expiries: list[datetime] = []
+        for stamp in evidence_stamps:
+            c._fresh_v2(stamp, now=now, maximum=max_evidence)
+            try:
+                evidence_expiries.append(stamp + timedelta(microseconds=int(max_evidence * 1_000_000)))
+            except OverflowError:
+                raise RiskV2Rejected("RISK_V2_INPUT_INVALID") from None
+        quote_expiries: list[datetime] = []
+        for stamp in quote_stamps:
+            c._fresh_v2(stamp, now=now, maximum=max_quote)
+            try:
+                quote_expiries.append(stamp + timedelta(microseconds=int(max_quote * 1_000_000)))
+            except OverflowError:
+                raise RiskV2Rejected("RISK_V2_INPUT_INVALID") from None
+
+        fee_digest = a.bybit_decimal_field_sha256_v1(fee.account_taker_rate)
+        fee_payload_sha = c._canonical_sha256_v2("BybitAccountTakerFeeObservationV1", {
+            "source": a.bybit_source_ref_sha256_v1(fee_source),
+            "symbol": slot.scope.instrument.symbol,
+            "taker_rate": fee_digest,
+            "fee_currency": fee.fee_currency,
+            "fee_rule_revision": self._FEE_RULE_V2,
+        })
+        fee_reference = c.RiskObservationRefV2(
+            fee_source.observation_id, fee_source.source_id, fee_source.source_environment,
+            self._FEE_RULE_V2, fee_server_time, fee_source.received_at, fee_payload_sha,
+        )
+        funding_payload_sha = c._canonical_sha256_v2("BybitLinearFundingObservationV1", {
+            "source": a.bybit_source_ref_sha256_v1(funding.source),
+            "catalog_revision": read.catalog.revision,
+            "instrument_pin": c._pin_payload_v2(pin),
+            "funding_rate": a.bybit_decimal_field_sha256_v1(funding.funding_rate),
+            "next_funding_time": a.bybit_field_ref_sha256_v1(funding.next_funding_time),
+            "lower_funding_rate": decimal_text_v2(lower_rate),
+            "upper_funding_rate": decimal_text_v2(upper_rate),
+            "funding_rule_revision": self._FUNDING_RULE_V2,
+        })
+        funding_reference = c.RiskObservationRefV2(
+            funding.source.observation_id, funding.source.source_id, funding.source.source_environment,
+            self._FUNDING_RULE_V2, funding_server_time, funding.source.received_at, funding_payload_sha,
+        )
+        entry_price = decimal_fraction_v2(proposal.entry.limit_price)
+        stop_price = decimal_fraction_v2(proposal.stop_price)
+        fee_per_base = finite_decimal_v2(taker_rate * (entry_price + stop_price))
+        funding_per_base = finite_decimal_v2(
+            max(abs(lower_fraction), abs(upper_fraction)) * decimal_fraction_v2(spec.max_price.value)
+        )
+        stop_gap_decimal = finite_decimal_v2(stop_gap)
+        if fee_per_base <= 0 or funding_per_base <= 0:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        valid_until = min(
+            read.venue.valid_until,
+            proposal.entry.valid_until,
+            holding_until,
+            *evidence_expiries,
+            *quote_expiries,
+        )
+        if valid_until <= now:
+            raise RiskV2Rejected("RISK_V2_EXPIRED")
+        witness = self._witness(read, slot.captures)
+        input_sha = c._canonical_sha256_v2("BybitLinearCostIssuerInputV1", {
+            "scope": c._scope_payload_v2(slot.scope),
+            "policy_sha256": c.risk_policy_sha256_v2(policy),
+            "proposal": proposal_payload,
+            "catalog_revision": read.catalog.revision,
+            "instrument_pin": c._pin_payload_v2(pin),
+            "venue_witness": (witness[0], witness[1], witness[2]),
+            "fee_reference": fee_payload_sha,
+            "funding_reference": funding_payload_sha,
+            "holding_until": c._time_text_v2(holding_until),
+            "stop_gap_quote_per_base": decimal_text_v2(stop_gap_decimal),
+            "stop_gap_model_revision": self._STOP_GAP_RULE_V2,
+            "cost_rule_revision": self._COST_RULE_V2,
+        })
+        computation = c.RiskComputationRefV2(
+            "BYBIT_COST_" + input_sha[:32], self._COST_RULE_V2,
+            slot.scope.product_scope.account.environment, now, input_sha,
+        )
+        cost = c.LinearCostAllowanceV2(
+            slot.scope, computation, c.risk_policy_sha256_v2(policy), instrument.specification_revision,
+            proposal.entry.origin_quote_id, proposal.side, proposal.entry.limit_price, proposal.stop_price,
+            fee_reference, "USDT", self._FEE_RULE_V2, funding_reference, observed_rate,
+            funding.next_funding_at, holding_until, self._FUNDING_RULE_V2, self._STOP_GAP_RULE_V2,
+            fee_per_base, funding_per_base, stop_gap_decimal, valid_until, self._COST_RULE_V2,
+        )
+        self.public_marks.project_funding_v1(funding.source, symbol=slot.scope.instrument.symbol)
+        self.session._require_linear_private_source_v1(
+            "FEE", fee_source, symbol=slot.scope.instrument.symbol,
+            binding=slot.binding, scope=slot.scope.product_scope.account,
+        )
+        self.require_current_v1(read)
+        _require_cost_window_open_v2(cost, self.clock())
+        if self._current is not slot:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        slot.issued_cost = cost
+        slot.issued_cost_sha256 = c.cost_allowance_sha256_v2(cost)
+        return cost
+
+    def require_cost_allowance_v2(
+        self,
+        read: BybitLinearVenueReadV1,
+        cost: c.LinearCostAllowanceV2,
+        *,
+        policy: c.LinearRiskPolicyV2,
+    ) -> c.LinearCostAllowanceV2:
+        """Require the exact issued cost object while every original owner is current."""
+        slot = self._current
+        if slot is None or slot.result is not read or slot.issued_cost is not cost:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        policy_hash = c.risk_policy_sha256_v2(policy)
+        if cost.policy_sha256 != policy_hash or c._scope_payload_v2(policy.scope) != c._scope_payload_v2(slot.scope):
+            raise RiskV2Rejected("RISK_V2_REVISION_MISMATCH")
+        self.require_current_v1(read)
+        slot = self._current
+        if slot is None or slot.result is not read or slot.issued_cost is not cost:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        cost_hash = c.cost_allowance_sha256_v2(cost)
+        if slot.issued_cost_sha256 is None or cost_hash != slot.issued_cost_sha256:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        sources = tuple(
+            source for source in slot.mark_sources
+            if source.observation_id == cost.funding_reference.observation_id
+        )
+        if len(sources) != 1:
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        funding = self.public_marks.project_funding_v1(
+            sources[0], symbol=slot.scope.instrument.symbol
+        )
+        if (funding.funding_rate.value != cost.funding_rate
+                or funding.next_funding_at != cost.next_funding_at
+                or funding.source.received_at != cost.funding_reference.received_at):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        now = c._utc_v2(self.clock())
+        if now >= cost.valid_until or now >= cost.holding_until or now >= cost.next_funding_at:
+            raise RiskV2Rejected("RISK_V2_EXPIRED")
+        self.require_current_v1(read)
+        _require_cost_window_open_v2(cost, self.clock())
+        current = self._current
+        if (current is None or current is not slot or current.result is not read or current.issued_cost is not cost
+                or current.issued_cost_sha256 != cost_hash):
+            raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        return cost

@@ -190,7 +190,7 @@ const reference=(strategy_id:string)=>({strategy_id,revision:'r1'});
 const descriptor=(name:string,symbol:string)=>({reference:reference(name),implementation_sha256:'a'.repeat(64),config_sha256:'b'.repeat(64),config_schema_version:1,engine_contract_version:'engine1',permitted_instruments:[instrument(symbol)],approval_reference:'approval1',approval_source_reference:'source1',approval_source_sha256:'c'.repeat(64),approval_environments:['DEMO'],approval_status:'APPROVED'});
 const typedPolicy=()=>({...fixture.policy,scope:{section_version:1,account:{account_id:'fixture-account',environment:'DEMO'},mode:'FULL_AUTO',allowed_products:['LINEAR','SPOT'],selected_product:'LINEAR',permission_profile_revision:'BYBIT_SPOT_LINEAR_NO_FUNDS_V1',allowed_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT')],selected_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT')]},strategy:{section_version:1,catalog:{schema_version:1,revision:'sha256:9db4c2f5ec0a80264ce31538d239f4dd5f98d81d79305a213836220b8938cc1f',entries:[descriptor('beta','ETHUSDT'),descriptor('alpha','BTCUSDT')]},allowed:[reference('beta'),reference('alpha')],selected:[reference('alpha'),reference('beta')]},risk_v2:null});
 const typedSnapshot=()=>({...fixture,revision:7,policy:typedPolicy(),missing_fields:['risk_v2'],blockers:[...fixture.blockers,'STRATEGY_CURRENT_PUBLICATION_REQUIRED']});
-const capable=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'X-Automatic-Policy-Sections-Version':'1'}});
+const capable=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'X-Automatic-Policy-Sections-Version':'2'}});
 
 it('displays heterogeneous typed pins and preserves full global array orders on capable PUT',async()=>{
  const original=typedSnapshot();const fetcher=vi.fn((_url:string,options?:RequestInit)=>Promise.resolve(capable(options?.method==='PUT'?{...original,revision:8,policy:JSON.parse(String(options.body)).policy}:original)));
@@ -202,10 +202,10 @@ it('displays heterogeneous typed pins and preserves full global array orders on 
  await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());
  fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
  const put=fetcher.mock.calls.filter(call=>call[1]?.method==='PUT');expect(put).toHaveLength(1);
- expect(JSON.parse(String(put[0][1]?.body))).toEqual({schema_version:2,revision:7,policy:{...original.policy,scope:{...original.policy.scope,account:{account_id:'explicit-account',environment:'DEMO'}}},expected_strategy_generation:null,policy_sections_version:1});
+ expect(JSON.parse(String(put[0][1]?.body))).toEqual({schema_version:2,revision:7,policy:{...original.policy,scope:{...original.policy.scope,account:{account_id:'explicit-account',environment:'DEMO'}}},expected_strategy_generation:null,policy_sections_version:2});
 });
 
-it.each([undefined,'2','1, 1'])('keeps a supported old-server body read-only when discovery is %s',async header=>{
+it.each([undefined,'1','1, 1'])('keeps a supported old-server body read-only when discovery is %s',async header=>{
  const fetcher=vi.fn(()=>Promise.resolve(new Response(JSON.stringify(fixture),{headers:header?{'X-Automatic-Policy-Sections-Version':header}:{}})));
  vi.stubGlobal('fetch',fetcher);render(<AutomaticSettings/>);fireEvent.click(screen.getByRole('button',{name:'운용 한도 설정 열기'}));
  expect(await screen.findByText(/서버 업데이트가 필요/)).toBeVisible();expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeDisabled();
@@ -278,7 +278,7 @@ it.each(['descriptor','revision','global-unknown','global-revoked','environment'
  expect(await screen.findByRole('alert')).toHaveTextContent('저장을 막았습니다');expect(screen.queryByRole('button',{name:'운용 한도 저장'})).not.toBeInTheDocument();
 });
 
-const completeRisk=()=>({section_version:1,product:'LINEAR',sizing_rule:'LOSS_FIXED',caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'NOT_REQUIRED',max_execution_quote_amount:null},leverage_min:'9007199254740992.00000000',leverage_max:'9007199254740992.00000001',per_trade_loss:'1.2300',max_daily_loss:'2',max_drawdown:'3',max_total_risk:'4',max_total_margin:'5',margin_allocation:'6',liquidation_buffer_fraction:'0.010',max_quote_age_seconds:'0',max_evidence_age_seconds:'0.00',max_consecutive_losses:2,max_positions:2,margin_mode:'CROSS',position_mode:'ONE_WAY'});
+const completeRisk=()=>({section_version:2,product:'LINEAR',sizing_rule:'LOSS_FIXED',caps:{max_order_admission_notional:'100.00',max_account_admission_notional:'200',valuation_rule:'LINEAR_MARK_GROSS_AT_ADMISSION_V1',turnover_requirement:'NOT_REQUIRED',max_execution_quote_amount:null},leverage_min:'9007199254740992.00000000',leverage_max:'9007199254740992.00000001',per_trade_loss:'1.2300',max_daily_loss:'2',max_drawdown:'3',max_total_risk:'4',max_total_margin:'5',margin_allocation:'6',liquidation_buffer_fraction:'0.010',max_quote_age_seconds:'0',max_evidence_age_seconds:'0.00',max_stop_gap_quote_per_base:'0.50',max_consecutive_losses:2,max_positions:2,margin_mode:'CROSS',position_mode:'ONE_WAY'});
 const completeSnapshot=()=>({...typedSnapshot(),policy:{...typedPolicy(),risk_v2:completeRisk()},missing_fields:[] as string[]});
 
 it('parses complete explicit LINEAR decimals without floating point conversion and derives genuine heterogeneous pairs',async()=>{
@@ -434,7 +434,7 @@ it('saves exact complete text-derived arrays in independent orders with every hi
  fireEvent.change(screen.getByLabelText('계좌 ID'),{target:{value:'text-edited-account'}});expect(allowed).toHaveValue('BYBIT/LINEAR/BTCUSDT,  BYBIT/LINEAR/ETHUSDT');
  await waitFor(()=>expect(screen.getByRole('button',{name:'운용 한도 저장'})).toBeEnabled());fireEvent.click(screen.getByRole('button',{name:'운용 한도 저장'}));await screen.findByText('설정을 저장했습니다. 실제 주문은 시작되지 않습니다.');
  const puts=fetcher.mock.calls.filter(call=>call[1]?.method==='PUT');expect(puts).toHaveLength(1);
- expect(JSON.parse(String(puts[0][1]?.body))).toEqual({schema_version:2,revision:7,expected_strategy_generation:null,policy_sections_version:1,policy:{...original.policy,scope:{...original.policy.scope,account:{account_id:'text-edited-account',environment:'DEMO'},allowed_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT')],selected_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT')]}}});
+ expect(JSON.parse(String(puts[0][1]?.body))).toEqual({schema_version:2,revision:7,expected_strategy_generation:null,policy_sections_version:2,policy:{...original.policy,scope:{...original.policy.scope,account:{account_id:'text-edited-account',environment:'DEMO'},allowed_instruments:[instrument('BTCUSDT'),instrument('ETHUSDT')],selected_instruments:[instrument('ETHUSDT'),instrument('BTCUSDT')]}}});
  expect(allowed).toHaveValue('BYBIT/LINEAR/BTCUSDT, BYBIT/LINEAR/ETHUSDT');expect(selected).toHaveValue('BYBIT/LINEAR/ETHUSDT, BYBIT/LINEAR/BTCUSDT');
 });
 
@@ -515,7 +515,7 @@ it('blocks readding an unchecked selected ref while its checked allowed parent i
  fireEvent.click(selected);expect(selected).not.toBeChecked();expect(selected).toBeDisabled();expect(allowed).toBeChecked();expect(screen.getByLabelText('허용 전략 beta / r1')).toBeChecked();expect(screen.getByLabelText('선택 전략 beta / r1')).toBeChecked();expect(screen.queryByLabelText('BTCUSDT에 적용 가능한 전략')).not.toBeInTheDocument();expect(fetcher).toHaveBeenCalledTimes(1);
 });
 
-const publishedResponse=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'X-Automatic-Policy-Sections-Version':'1','X-Automatic-Strategy-Publication-Version':'1'}});
+const publishedResponse=(data:unknown,status=200)=>new Response(JSON.stringify(data),{status,headers:{'X-Automatic-Policy-Sections-Version':'2','X-Automatic-Strategy-Publication-Version':'1'}});
 const publishedCatalog=()=>({schema_version:1,generation:9,catalog:typedPolicy().strategy.catalog});
 
 it('publication: sends the current generation with the exact selected catalog and no start action',async()=>{
