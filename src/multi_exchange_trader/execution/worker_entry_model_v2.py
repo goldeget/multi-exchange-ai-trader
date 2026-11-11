@@ -25,6 +25,11 @@ from .bybit_linear_entry_producer_v1 import (
 from .bybit_linear_source_assembler_v1 import BybitLinearSourceAssemblerV1, BybitLinearVenueReadV1
 from .monitoring_budget import MonitoringReadBudget
 from .runtime import RuntimeBlocked
+from .worker_risk_assessment_v2 import (
+    WORKER_RISK_ASSESSMENT_BLOCKERS_V2,
+    WorkerRiskAssessmentHandleV2,
+    WorkerRiskAssessmentPlanV2,
+)
 
 if TYPE_CHECKING:
     from .worker import ExecutionWorker
@@ -89,6 +94,7 @@ class WorkerEntryModelOwnerV2:
         self._busy: object | None = None
         self._operation_generation = object()
         self._operation_birth: tuple[object, object] | None = None
+        self._risk_assessment_current: tuple[object, ...] | None = None
 
     def _roots(self) -> tuple[object, ...]:
         worker = self._worker
@@ -100,6 +106,7 @@ class WorkerEntryModelOwnerV2:
         """No callback or refusal: worker cleanup always withdraws old handles."""
         self._current = None
         self._read = None
+        self._risk_assessment_current = None
         self._operation_generation = object()
 
     def retire_plan_preserving_read_v1(self, read: BybitLinearVenueReadV1) -> None:
@@ -107,6 +114,7 @@ class WorkerEntryModelOwnerV2:
         if self._busy is not None or self._read is not read or type(read) is not BybitLinearVenueReadV1:
             raise RuntimeBlocked("WORKER_ENTRY_MODEL_PUBLICATION_REQUIRED")
         self._current = None
+        self._risk_assessment_current = None
 
     def _guard(self) -> None:
         worker = self._worker
@@ -181,6 +189,7 @@ class WorkerEntryModelOwnerV2:
             raise RuntimeBlocked("WORKER_ENTRY_MODEL_PUBLICATION_REQUIRED")
         # Normal capture→prepare keeps that read. Every external retirement drops it.
         self._current = None
+        self._risk_assessment_current = None
         token = object()
         self._busy = token
         self._operation_birth = self._operation_generation, worker._entry_publication_generation_v2
@@ -223,3 +232,231 @@ class WorkerEntryModelOwnerV2:
                 or any(actual is not old for actual, old in zip(self._roots(), self._original_roots, strict=True))):
             raise RuntimeBlocked("WORKER_ENTRY_MODEL_PUBLICATION_REQUIRED")
         return result
+
+    def issue_risk_assessment_v2(self, signal_handle: object) -> WorkerRiskAssessmentHandleV2:
+        """Pin one current owner-issued signal/read as a blocker-only PLAN observation."""
+        from . import bybit_demo_uta1_profile_v1 as demo
+        from . import bybit_linear_model_inputs_v1 as a
+        from .worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1, WorkerStrategySignalV1
+
+        worker = self._worker
+        self._guard()
+        signal_owner = worker._strategy_signal_owner_v1
+        if (type(signal_handle) is not WorkerStrategySignalV1
+                or type(signal_owner) is not WorkerStrategySignalOwnerV1
+                or worker._entry_publication_frame_v2 is not None or worker._operations or worker._staging):
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+        clock = worker.clock
+        self._risk_assessment_current = None
+        try:
+            with worker._entry_publication_section_v2():
+                self._guard()
+                issued_signal = signal_owner._current
+                signal = signal_owner.require(signal_handle)
+                if (issued_signal is None or signal_owner._current is not issued_signal
+                        or issued_signal.handle is not signal_handle
+                        or issued_signal.entry_read is None):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+                read = issued_signal.entry_read
+                slot = self._assembler._current
+                if (type(read) is not BybitLinearVenueReadV1 or self._read is not read
+                        or slot is None or slot.result is not read or slot.scope != signal.scope
+                        or slot.owner_generation != self._journal_epoch):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+                self._assembler.require_current_v1(read)
+                policy = worker.policy_book.risk_policy_v2(signal.scope)
+                policy_sha256 = c.risk_policy_sha256_v2(policy)
+                if policy.revision != str(signal.policy_revision):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_CHANGED")
+                max_age_microseconds = Fraction(policy.max_evidence_age_seconds) * 1_000_000
+                if max_age_microseconds.denominator != 1 or max_age_microseconds.numerator <= 0:
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_INVALID")
+                if type(read.venue) is demo.BybitDemoUta1VenueStateV1:
+                    venue_sha256 = demo.bybit_demo_uta1_venue_sha256_v1(read.venue)
+                    profile: Literal["UTA2_V1", "DEMO_UTA1_V1"] = "DEMO_UTA1_V1"
+                elif type(read.venue) is a.BybitVenueStateV1:
+                    venue_sha256 = a.bybit_venue_state_sha256_v1(read.venue)
+                    profile = "UTA2_V1"
+                else:
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+                reservation_sha256 = c.reservation_snapshot_sha256_v2(read.full_reservations)
+                evaluation_reservation_sha256 = c.reservation_snapshot_sha256_v2(
+                    read.evaluation_reservations
+                )
+                mark_sha256 = c.mark_set_sha256_v2(read.marks)
+                current_policy = worker.policy_book.risk_policy_v2(signal.scope)
+                if (current_policy.revision != policy.revision
+                        or c.risk_policy_sha256_v2(current_policy) != policy_sha256):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_CHANGED")
+                self._guard()
+                if (signal_owner._current is not issued_signal or self._read is not read
+                        or self._assembler._current is not slot
+                        or worker._entry_model_owner_v2 is not self):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+                worker_generation = worker._entry_publication_generation_v2
+                binding = worker.binding
+                catalog_current = slot.catalog_current
+                journal_epoch = self._journal_epoch
+
+            # Pin the read only after all hashes and the publication context's final
+            # owner callbacks. The source expiries remain hard upper bounds.
+            observed_at = c._utc_v2(clock())
+            policy_expiry = observed_at + timedelta(microseconds=max_age_microseconds.numerator)
+            valid_until = min(signal.valid_until, read.venue.valid_until, policy_expiry)
+            if observed_at >= valid_until:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_EXPIRED")
+            plan = WorkerRiskAssessmentPlanV2(
+                scope=signal.scope,
+                signal_id=signal.signal_id,
+                signal_policy_revision=signal.policy_revision,
+                strategy_publication_generation=signal.publication_generation,
+                policy_revision=policy.revision,
+                policy_sha256=policy_sha256,
+                source_profile=profile,
+                source_generation=slot.owner_generation,
+                catalog_revision=read.catalog.revision,
+                venue_source_sha256=venue_sha256,
+                mark_set_sha256=mark_sha256,
+                reservation_snapshot_id=read.full_reservations.snapshot_id,
+                reservation_sha256=reservation_sha256,
+                evaluation_reservation_snapshot_id=read.evaluation_reservations.snapshot_id,
+                evaluation_reservation_sha256=evaluation_reservation_sha256,
+                observed_at=observed_at,
+                valid_until=valid_until,
+            )
+            if plan.blockers != WORKER_RISK_ASSESSMENT_BLOCKERS_V2:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_BLOCKERS_CHANGED")
+            if (worker.clock is not clock or worker._entry_publication_frame_v2 is not None
+                    or worker._entry_publication_generation_v2 is not worker_generation
+                    or worker.binding is not binding or worker.policy_book is not self._original_roots[4]
+                    or worker._journal is not self._original_roots[5]
+                    or worker._entry_model_owner_v2 is not self
+                    or worker._strategy_signal_owner_v1 is not signal_owner
+                    or self._read is not read or self._assembler._current is not slot
+                    or slot.result is not read or slot.catalog_current is not catalog_current
+                    or signal_owner._current is not issued_signal or issued_signal.handle is not signal_handle
+                    or self._journal_epoch != journal_epoch):
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+            handle = object.__new__(WorkerRiskAssessmentHandleV2)
+            self._risk_assessment_current = (
+                handle, plan, signal_handle, signal_owner, issued_signal, read, slot,
+                worker_generation, binding, policy_sha256, catalog_current, journal_epoch,
+                observed_at, valid_until,
+            )
+            return handle
+        except BaseException:
+            self._risk_assessment_current = None
+            raise
+
+    def require_risk_assessment_v2(
+        self, handle: WorkerRiskAssessmentHandleV2,
+    ) -> WorkerRiskAssessmentPlanV2:
+        """Revalidate every pinned source before returning its read-only PLAN view."""
+        from . import bybit_demo_uta1_profile_v1 as demo
+        from . import bybit_linear_model_inputs_v1 as a
+        from .worker_strategy_signal_v1 import WorkerStrategySignalOwnerV1
+
+        worker = self._worker
+        current = self._risk_assessment_current
+        if (type(handle) is not WorkerRiskAssessmentHandleV2 or current is None
+                or current[0] is not handle or worker._entry_publication_frame_v2 is not None
+                or worker._operations or worker._staging):
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_HANDLE_REQUIRED")
+        clock = worker.clock
+        try:
+            with worker._entry_publication_section_v2():
+                self._guard()
+                (_issued_handle, plan, signal_handle, signal_owner, issued_signal, read, slot,
+                    worker_generation, binding, policy_sha256, catalog_current,
+                    journal_epoch, observed_at, valid_until) = current
+                if (type(signal_owner) is not WorkerStrategySignalOwnerV1
+                        or worker._strategy_signal_owner_v1 is not signal_owner
+                        or worker_generation is not worker._entry_publication_generation_v2
+                        or binding is not worker.binding or journal_epoch != self._journal_epoch
+                        or self._read is not read or self._assembler._current is not slot
+                        or slot.result is not read or slot.catalog_current is not catalog_current
+                        or worker._entry_model_owner_v2 is not self):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+                signal = signal_owner.require(signal_handle)
+                if (signal_owner._current is not issued_signal or issued_signal.handle is not signal_handle
+                        or issued_signal.entry_read is not read or signal.scope != plan.scope
+                        or signal.signal_id != plan.signal_id
+                        or signal.policy_revision != plan.signal_policy_revision
+                        or signal.publication_generation != plan.strategy_publication_generation):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SIGNAL_CHANGED")
+                self._assembler.require_current_v1(read)
+                policy = worker.policy_book.risk_policy_v2(plan.scope)
+                if (policy.revision != plan.policy_revision
+                        or c.risk_policy_sha256_v2(policy) != policy_sha256
+                        or policy_sha256 != plan.policy_sha256
+                        or str(signal.policy_revision) != policy.revision):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_CHANGED")
+                if type(read.venue) is demo.BybitDemoUta1VenueStateV1:
+                    venue_sha256 = demo.bybit_demo_uta1_venue_sha256_v1(read.venue)
+                    profile = "DEMO_UTA1_V1"
+                elif type(read.venue) is a.BybitVenueStateV1:
+                    venue_sha256 = a.bybit_venue_state_sha256_v1(read.venue)
+                    profile = "UTA2_V1"
+                else:
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+                policy_window = Fraction(policy.max_evidence_age_seconds) * 1_000_000
+                if policy_window.denominator != 1 or policy_window.numerator <= 0:
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_INVALID")
+                policy_expiry = plan.observed_at + timedelta(microseconds=policy_window.numerator)
+                if (plan.observed_at != observed_at or plan.valid_until != valid_until
+                        or plan.valid_until > signal.valid_until or plan.valid_until > read.venue.valid_until
+                        or plan.valid_until > policy_expiry
+                        or venue_sha256 != plan.venue_source_sha256 or profile != plan.source_profile
+                        or read.catalog.revision != plan.catalog_revision
+                        or c.mark_set_sha256_v2(read.marks) != plan.mark_set_sha256
+                        or read.full_reservations.snapshot_id != plan.reservation_snapshot_id
+                        or c.reservation_snapshot_sha256_v2(read.full_reservations)
+                            != plan.reservation_sha256
+                        or read.evaluation_reservations.snapshot_id
+                            != plan.evaluation_reservation_snapshot_id
+                        or c.reservation_snapshot_sha256_v2(read.evaluation_reservations)
+                            != plan.evaluation_reservation_sha256
+                        or slot.owner_generation != plan.source_generation
+                        or plan.blockers != WORKER_RISK_ASSESSMENT_BLOCKERS_V2
+                        or plan.stage != "PLAN" or plan.numeric_assessment is not None
+                        or plan.financial_authority is not False or plan.trading_enabled is not False):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+                self._guard()
+                if (self._risk_assessment_current is not current
+                        or worker._entry_publication_generation_v2 is not worker_generation
+                        or self._assembler._current is not slot or signal_owner._current is not issued_signal):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+            # This is deliberately after the context manager's owner-link callbacks,
+            # signal/source verification, and all hashing above. The suffix below is
+            # restricted to direct identity/scalar checks so expiry is the final read.
+            now = c._utc_v2(clock())
+            if now >= valid_until:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_EXPIRED")
+            if (self._risk_assessment_current is not current
+                    or worker._entry_publication_generation_v2 is not worker_generation
+                    or worker.binding is not binding or worker._entry_model_owner_v2 is not self
+                    or worker._strategy_signal_owner_v1 is not signal_owner
+                    or worker.session is not self._original_roots[2]
+                    or worker.policy_book is not self._original_roots[4]
+                    or worker._journal is not self._original_roots[5]
+                    or worker.clock is not clock
+                    or self._assembler is not self._original_components[0]
+                    or self._producer is not self._original_components[1]
+                    or self._assembler.public_marks is not self._original_components[2]
+                    or self._assembler.catalog_producer is not self._original_components[3]
+                    or worker._entry_publication_frame_v2 is not None
+                    or self._read is not read or self._assembler._current is not slot
+                    or slot.result is not read or slot.catalog_current is not catalog_current
+                    or signal_owner._current is not issued_signal or issued_signal.handle is not signal_handle
+                    or self._journal_epoch != journal_epoch):
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+            return plan
+        except BaseException:
+            self._risk_assessment_current = None
+            raise
+
+    def retire_risk_assessment_v2(self, handle: WorkerRiskAssessmentHandleV2) -> None:
+        current = self._risk_assessment_current
+        if (type(handle) is not WorkerRiskAssessmentHandleV2 or current is None or current[0] is not handle):
+            raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_HANDLE_REQUIRED")
+        self._risk_assessment_current = None
