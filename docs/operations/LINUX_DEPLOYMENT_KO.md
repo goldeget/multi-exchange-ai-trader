@@ -12,7 +12,7 @@
 | 임시·캐시 | `/var/lib/trader/tmp`, `/var/lib/trader/cache` |
 | 일반 설정 | `/etc/trader/runtime.env`, root 소유 0600 |
 | 별도 PC에서 받을 키 | `/etc/trader/credentials.env`, root 소유 0600 |
-| API | `127.0.0.1:8000`, 단일 worker |
+| API | systemd socket activation `/run/trader-api.sock`, `www-data` 소유·0600, 단일 worker |
 | 정적 웹·프록시 | nginx `127.0.0.1:5173` |
 
 템플릿은 LIVE, Bybit DEMO, TESTNET을 모두 끈다. `EnvironmentFile`은 `Environment=`보다 우선하므로 `ExecStart`의 `/usr/bin/env` 인수가 마지막으로 `LIVE_TRADING_ENABLED=false`, `BYBIT_DEMO=false`, `BYBIT_TESTNET=false`, `BYBIT_ENV_FILE=off`, `ANTHROPIC_ENV_FILE=off`, `AI_ENV_FILE=off`를 강제한다. 다른 PC의 파일에 DEMO=true가 있어도 이 서비스는 이를 활성화하지 않는다. systemd가 root 권한으로 0600 파일을 읽고 프로세스 환경으로 전달하며, trader에게 비밀 파일 읽기 권한을 주지 않는다. `LimitCORE=0`으로 키가 포함될 수 있는 core dump도 만들지 않는다.
@@ -92,9 +92,9 @@ Windows에서는 일부 네이티브·권한·nginx 검사가 건너뛰어진다
 
 ## 운영자가 실행할 설치 절차
 
-새 전용 호스트를 기준으로 한다. 기존 경로나 설정이 있으면 아래 복사를 실행하지 말고 기존 상태를 보존한 채 검토한다. 코드와 `.venv`는 trader가 수정할 수 없게 관리자가 소유권과 권한을 설정한다. nginx 사용자가 `apps/web/dist`를 읽을 수 있어야 하지만 `/etc/trader`나 상태에는 접근시키지 않는다.
+새 전용 호스트를 기준으로 한다. 기존 경로나 설정이 있으면 아래 복사를 실행하지 말고 기존 상태를 보존한 채 검토한다. 코드와 `.venv`는 trader가 수정할 수 없게 관리자가 소유권과 권한을 설정한다. nginx 사용자가 `apps/web/dist`를 읽을 수 있어야 하지만 `/etc/trader`나 상태에는 접근시키지 않는다. 로컬 dashboard와 공개 HTTPS 모두 Basic Auth를 사용하며 같은 `/etc/nginx/trader.htpasswd` 파일을 참조한다.
 
-전용 trader 계정이 아직 없을 때 관리자가 만든다. 경로가 심볼릭 링크나 기존 다른 서비스의 상태를 가리키지 않는지 먼저 확인한다. 아래 `install -d`는 새 배포의 명시적 설치 작업이다. 블록은 별도 서브셸에서 실행하며 오류가 나면 중단한다. 네 파일은 기존 파일과 끊어진 심볼릭 링크까지 거절한 경우에만 설치한다. 중간에 중단되면 이미 만든 신규 파일을 자동 삭제하거나 덮어쓰지 않고 검토한다. 부모 경로를 다른 프로세스가 동시에 바꾸지 않는 새 전용 환경을 전제로 한다.
+`htpasswd`가 없으면 `sudo apt-get install --yes apache2-utils`로 준비한다. 전용 trader 계정이 아직 없을 때 관리자가 만든다. 경로가 심볼릭 링크나 기존 다른 서비스의 상태를 가리키지 않는지 먼저 확인한다. 아래 `install -d`는 새 배포의 명시적 설치 작업이다. 블록은 별도 서브셸에서 실행하며 오류가 나면 중단한다. 다섯 템플릿은 기존 파일과 끊어진 심볼릭 링크까지 거절한 경우에만 설치한다. 중간에 중단되면 이미 만든 신규 파일을 자동 삭제하거나 덮어쓰지 않고 검토한다. 부모 경로를 다른 프로세스가 동시에 바꾸지 않는 새 전용 환경을 전제로 한다.
 
 ```sh
 (
@@ -105,6 +105,12 @@ sudo install -d -o trader -g trader -m 0700 /var/lib/trader
 sudo install -d -o trader -g trader -m 0700 /var/lib/trader/data
 sudo install -d -o trader -g trader -m 0700 /var/lib/trader/tmp
 sudo install -d -o trader -g trader -m 0700 /var/lib/trader/cache
+sudo test ! -e /etc/nginx/trader.htpasswd &&
+  sudo test ! -L /etc/nginx/trader.htpasswd &&
+  sudo install -o root -g www-data -m 0640 /dev/null /etc/nginx/trader.htpasswd &&
+  sudo htpasswd -B /etc/nginx/trader.htpasswd trader-admin &&
+  sudo chown root:www-data /etc/nginx/trader.htpasswd &&
+  sudo chmod 0640 /etc/nginx/trader.htpasswd || exit 1
 sudo test ! -e /etc/trader/runtime.env &&
   sudo test ! -L /etc/trader/runtime.env &&
   sudo install -o root -g root -m 0600 deploy/linux/runtime.env.example /etc/trader/runtime.env || exit 1
@@ -114,34 +120,41 @@ sudo test ! -e /etc/trader/credentials.env &&
 sudo test ! -e /etc/systemd/system/trader.service &&
   sudo test ! -L /etc/systemd/system/trader.service &&
   sudo install -o root -g root -m 0644 deploy/linux/trader.service /etc/systemd/system/trader.service || exit 1
+sudo test ! -e /etc/systemd/system/trader.socket &&
+  sudo test ! -L /etc/systemd/system/trader.socket &&
+  sudo install -o root -g root -m 0644 deploy/linux/trader.socket /etc/systemd/system/trader.socket || exit 1
 sudo test ! -e /etc/nginx/conf.d/trader.conf &&
   sudo test ! -L /etc/nginx/conf.d/trader.conf &&
   sudo install -o root -g root -m 0644 deploy/linux/nginx.conf /etc/nginx/conf.d/trader.conf || exit 1
 )
 ```
 
+비밀번호 입력은 터미널에서 대화형으로 진행하고, 해시 파일은 root와 `www-data`만 읽게 한다. 브라우저에서 처음 접속하면 Basic Auth 대화상자가 뜬다. 원격에서 이 로컬 HTTP dashboard를 쓸 때는 승인된 SSH 터널만 사용한다.
+
 별도 PC의 `.env`를 무검토로 전체 복사하지 않는다. 소유자가 필요한 서버용 이름과 값을 검토하여 0600 credentials 파일에 안전하게 전달한다. 여기서는 실제 값을 읽거나 복사하지 않는다. 환경·프로세스 전체를 출력하는 진단을 남기지 않는다. 소스, 웹 번들, 백업 데이터 폴더에 비밀 파일을 넣지 않는다.
 
 nginx 배포판 기본 사이트가 `0.0.0.0:80` 또는 `[::]:80`에서 열릴 수 있다. **모든** 활성 설정을 운영자가 확인하고, 새 전용 호스트에서 기본 공개 사이트가 비활성화된 것을 확인한 뒤 시작한다. 이 템플릿 하나를 추가했다고 다른 listener가 사라지지는 않는다. 이 문서는 기존 설정을 자동 삭제하지 않는다.
 
+`/run/trader-api.sock`은 소유자 `www-data`만 접근할 수 있다. 따라서 이 계정으로 실행되는 모든 코드가 API의 신뢰 경계 안에 있다. 대상 서버에서 `www-data`를 Nginx 외의 CGI/FastCGI 앱이나 예약 작업과 공유하지 말고, 모든 활성 Nginx 설정과 실행 계정을 먼저 확인한다.
+
 ```sh
-sudo systemd-analyze verify /etc/systemd/system/trader.service
+sudo systemd-analyze verify /etc/systemd/system/trader.socket /etc/systemd/system/trader.service
 sudo nginx -t
 sudo nginx -T
 sudo systemctl daemon-reload
-sudo systemctl start trader.service
+sudo systemctl enable --now trader.socket
 sudo systemctl reload nginx.service
-sudo systemctl show trader.service -p User -p Group -p MainPID -p ActiveState -p SubState -p Result
 sudo ss -lntp
-curl --fail http://127.0.0.1:8000/api/v1/health
-curl --fail http://127.0.0.1:5173/api/v1/ready
-curl --fail http://127.0.0.1:5173/api/v1/connections/status
-curl --fail http://127.0.0.1:5173/api/v1/capabilities
+sudo ss -lxnp
+curl --fail --user trader-admin http://127.0.0.1:5173/api/v1/ready
+curl --fail --user trader-admin http://127.0.0.1:5173/api/v1/connections/status
+curl --fail --user trader-admin http://127.0.0.1:5173/api/v1/capabilities
+sudo systemctl show trader.service -p User -p Group -p MainPID -p ActiveState -p SubState -p Result
 ```
 
-기존 nginx가 멈춰 있으면 `reload` 대신 운영자가 검토 후 `start`한다. 자동 부팅 `enable`은 이 확인을 마친 후 선택한다. 앱과 nginx는 정확히 IPv4 loopback에서만 보여야 한다. `ready`는 scheduler/task 상태, `connections`는 등록·검증 여부, `capabilities`는 별도 지원 범위를 확인한다. 200 liveness는 거래·계정·키·모델 준비 완료가 아니다.
+기존 nginx가 멈춰 있으면 `reload` 대신 운영자가 검토 후 `start`한다. nginx TCP listener는 정확히 IPv4 loopback `127.0.0.1:5173`이어야 하며 API TCP `8000` listener는 없어야 한다. `/run/trader-api.sock`은 `www-data` 소유·모드 `0600`이어야 한다. `ready`는 scheduler/task 상태, `connections`는 등록·검증 여부, `capabilities`는 별도 지원 범위를 확인한다. 200 liveness는 거래·계정·키·모델 준비 완료가 아니다.
 
-브라우저 주소는 `http://127.0.0.1:5173` 또는 `http://localhost:5173`이다. 원격 운영은 운영자가 승인한 SSH 터널을 쓰고 로컬 포트도 **5173 그대로** 유지한다. 프록시가 Host와 Origin을 로컬 값으로 바꾸는 편법, 임의 포트·도메인 허용, 외부 listener를 추가하지 않는다. 템플릿의 `$http_host`, `$http_origin`은 원래 요청을 그대로 전달하여 애플리케이션의 경계 검사가 유지된다.
+브라우저 주소는 `http://127.0.0.1:5173` 또는 `http://localhost:5173`이다. 처음 접속하면 설치 때 만든 `trader-admin` 자격을 묻는다. 원격 운영은 운영자가 승인한 SSH 터널을 쓰고 로컬 포트도 **5173 그대로** 유지한다. 프록시가 Host와 Origin을 로컬 값으로 바꾸는 편법, 임의 포트·도메인 허용, 외부 listener를 추가하지 않는다. 템플릿의 `$http_host`, `$http_origin`은 원래 요청을 그대로 전달하여 애플리케이션의 경계 검사가 유지된다.
 
 ## 장부와 데이터셋의 한 세대 백업
 
@@ -164,12 +177,14 @@ curl --fail http://127.0.0.1:5173/api/v1/capabilities
 
 **첫 버전은 온라인 백업을 지원하지 않는다.** 단일 SQLite backup API도 여섯 DB와 파일 데이터셋 전체의 공통 시점을 만들지 못한다. 운영자가 trader 서비스의 모든 프로세스, 별도 개발 서버, 수집기, 노트북·관리 도구, 예약 작업 등 모든 writer를 정지하고 정지 상태를 유지해야 한다. `--writers-stopped`는 그 사실에 대한 운영자의 확인이며 프로세스를 자동 탐지·정지하는 보장이 아니다. 확인할 수 없으면 실행하지 않는다. 실행 전후 해시 검사는 실수 방지 보조이며 실행 중 writer 허용 수단이 아니다.
 
-예를 들어 **운영자가** 서비스를 정지한 후 `systemctl show trader.service -p ActiveState -p SubState -p MainPID`에서 inactive/dead, MainPID=0을 확인하고, `sudo fuser -v /var/lib/trader/data/*.sqlite3*` 등으로 열린 파일과 모든 별도 writer를 점검한다. `fuser` 결과만으로 아직 파일을 열지 않은 writer가 없다고 단정하지 않는다. 서비스 재시작·타이머도 막아 둔다. 예약 중단은 운영자가 관리한다.
+예를 들어 **운영자가** socket activation을 부팅에서도 막고 앱도 정지한 뒤 `systemctl show trader.socket -p ActiveState -p UnitFileState`와 `systemctl show trader.service -p ActiveState -p SubState -p MainPID`에서 socket disabled/inactive, service inactive/dead, MainPID=0을 확인한다. `sudo fuser -v /var/lib/trader/data/*.sqlite3*` 등으로 열린 파일과 모든 별도 writer를 점검한다. `fuser` 결과만으로 아직 파일을 열지 않은 writer가 없다고 단정하지 않는다. 서비스 재시작·타이머도 막아 둔다. 예약 중단은 운영자가 관리한다.
 
 다음은 검토 후 **운영자가** 실행할 예다. `/var/backups/trader`는 미리 root 소유 0700으로 준비하고 소스 밖, 링크 없는 경로인지 확인한다. 대상 이름은 매번 새로 정한다. root로 만든 복원본은 root 소유이므로 전환 전 관리자가 trader 소유권을 설정해야 한다.
 
 ```sh
+sudo systemctl disable --now trader.socket
 sudo systemctl stop trader.service
+sudo systemctl show trader.socket -p ActiveState -p UnitFileState
 sudo systemctl show trader.service -p ActiveState -p SubState -p MainPID
 # 여기서 운영자가 모든 다른 writer도 정지·확인한다.
 sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py snapshot \
@@ -179,6 +194,8 @@ sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py verify \
 sudo python3.12 /opt/trader/app/scripts/operations/state_snapshot.py restore \
   --source /var/backups/trader/generation-001 --target /var/lib/trader/recovery-001
 ```
+
+백업·복원과 데이터 전환 확인을 마친 후 서비스 재개를 결정한 운영자만 `sudo systemctl enable --now trader.socket`을 실행한다. 이후 Nginx 첫 API 요청이 `trader.service`를 시작한다.
 
 원본 SQLite를 열거나 checkpoint하지 않고 DB·WAL·SHM을 바이트 그대로 보존한다. SQLite를 열면 SHM 생성/복구가 생길 수 있어 integrity 검사는 항상 폐기 가능한 별도 복사본에서만 한다. manifest와 독립 파일 목록의 완전 일치, 크기, SHA-256, SQLite `integrity_check`, 고정 table/column 목록, user_version과 주요 ledger metadata를 검사한다. 이는 앱의 이벤트 재생·대사·데이터셋 의미 검증을 대체하지 않는다. 원본과 백업이 변경되지 않도록 private 경로를 유지해야 하며, 동시에 공격자가 부모 디렉터리를 바꾸는 환경은 지원하지 않는다.
 

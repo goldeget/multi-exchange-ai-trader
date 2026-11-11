@@ -1,0 +1,15 @@
+[Unit]
+Description=Permission-restricted API socket for the trader dashboard
+Before=trader.service
+
+[Socket]
+ListenStream=/run/trader-api.sock
+Accept=no
+SocketUser=www-data
+SocketGroup=www-data
+SocketMode=0600
+RemoveOnStop=true
+Service=trader.service
+
+[Install]
+WantedBy=sockets.target

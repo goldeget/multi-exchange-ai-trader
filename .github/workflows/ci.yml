@@ -403,14 +403,14 @@ jobs:
       - name: Prepare nginx for isolated loopback tests
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends nginx
+          sudo apt-get install --yes --no-install-recommends nginx apache2-utils
           if systemctl is-active --quiet nginx; then
             sudo systemctl stop nginx
           fi
       - name: Verify deployment and recovery boundaries on Linux
         env:
           REQUIRE_LINUX_OPERATIONS: "1"
-        run: uv run pytest -q tests/operations
+        run: uv run pytest -q tests/operations tests/execution/test_operator_auth_v1.py
 
   frontend:
     name: Frontend checks

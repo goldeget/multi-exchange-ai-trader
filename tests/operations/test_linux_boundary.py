@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from base64 import b64encode
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -184,11 +185,36 @@ def test_executed_service_gates_override_incoming_credential_file_flags() -> Non
     }
 
 
+def test_api_service_uses_only_permission_restricted_systemd_socket() -> None:
+    from multi_exchange_trader.execution.operator_auth_v1 import _NGINX_SOCKET_PATH
+
+    unit = configparser.ConfigParser(interpolation=None, strict=False)
+    unit.read(ROOT / "deploy/linux/trader.service", encoding="utf-8")
+    command = shlex.split(unit["Service"]["ExecStart"])
+    interpreter = command.index("/opt/trader/app/.venv/bin/python")
+    assert command[interpreter + 1:] == [
+        "-m", "uvicorn", "multi_exchange_trader.api:app", "--fd", "3",
+        "--workers", "1", "--no-proxy-headers",
+    ]
+    assert "--host" not in command and "--port" not in command
+
+    socket_unit = configparser.ConfigParser(interpolation=None)
+    socket_unit.read(ROOT / "deploy/linux/trader.socket", encoding="utf-8")
+    assert socket_unit["Socket"]["ListenStream"] == "/run/trader-api.sock"
+    assert _NGINX_SOCKET_PATH == socket_unit["Socket"]["ListenStream"]
+    assert socket_unit["Socket"]["Accept"].lower() == "no"
+    assert socket_unit["Socket"]["SocketUser"] == "www-data"
+    assert socket_unit["Socket"]["SocketGroup"] == "www-data"
+    assert socket_unit["Socket"]["SocketMode"] == "0600"
+    assert socket_unit["Socket"]["RemoveOnStop"].lower() == "true"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="systemd parser requires Linux CI")
 def test_systemd_unit_is_accepted_by_real_parser() -> None:
     executable = shutil.which("systemd-analyze")
     assert executable, "Linux operations CI must provide systemd-analyze"
-    result = subprocess.run([executable, "verify", str(ROOT / "deploy/linux/trader.service")],
+    result = subprocess.run([executable, "verify", str(ROOT / "deploy/linux/trader.socket"),
+                             str(ROOT / "deploy/linux/trader.service")],
                             capture_output=True, text=True, check=False, timeout=20)
     assert result.returncode == 0, result.stderr
 
@@ -196,7 +222,9 @@ def test_systemd_unit_is_accepted_by_real_parser() -> None:
 class EchoHeaders(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         payload = json.dumps({"host": self.headers.get("Host"),
-                              "origin": self.headers.get("Origin"), "path": self.path}).encode()
+                              "origin": self.headers.get("Origin"), "path": self.path,
+                              "operator": self.headers.get("X-Trader-Operator"),
+                              "authorization": self.headers.get("Authorization")}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -207,24 +235,40 @@ class EchoHeaders(BaseHTTPRequestHandler):
         pass
 
 
+class ThreadingUnixHTTPServer(ThreadingHTTPServer):
+    address_family = socket.AF_UNIX
+
+    def server_bind(self) -> None:
+        super().server_bind()
+        os.chmod(self.server_address, 0o600)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Real nginx requires Linux CI")
-def test_real_nginx_preserves_untrusted_host_and_origin_on_loopback(tmp_path: Path) -> None:
+def test_real_nginx_authenticates_local_operator_and_preserves_origin(tmp_path: Path) -> None:
     executable = shutil.which("nginx")
-    if not executable:
+    htpasswd = shutil.which("htpasswd")
+    if not executable or not htpasswd:
         if os.environ.get("REQUIRE_LINUX_OPERATIONS") == "1":
-            pytest.fail("Linux operations job must install nginx")
-        pytest.skip("nginx absent; dedicated Linux operations CI requires it")
+            pytest.fail("Linux operations job must install nginx and apache2-utils")
+        pytest.skip("nginx and htpasswd are required for the Linux auth boundary test")
     with closing(socket.socket()) as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    backend = ThreadingHTTPServer(("127.0.0.1", 0), EchoHeaders)
+    backend_path = tmp_path / "backend.sock"
+    backend = ThreadingUnixHTTPServer(str(backend_path), EchoHeaders)
     thread = threading.Thread(target=backend.serve_forever, daemon=True)
     thread.start()
+    password_file = tmp_path / "dashboard.htpasswd"
+    subprocess.run(
+        [htpasswd, "-B", "-b", "-c", str(password_file), "trader-1", "synthetic-password"],
+        capture_output=True, text=True, check=True, timeout=5,
+    )
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist/index.html").write_text("local UI fixture", encoding="utf-8")
     template = (ROOT / "deploy/linux/nginx.conf").read_text(encoding="utf-8")
     block = template.replace("127.0.0.1:5173", f"127.0.0.1:{port}")
-    block = block.replace("127.0.0.1:8000", f"127.0.0.1:{backend.server_port}")
+    block = block.replace("/run/trader-api.sock", str(backend_path))
+    block = block.replace("/etc/nginx/trader.htpasswd", str(password_file))
     block = block.replace("/opt/trader/app/apps/web/dist", str(tmp_path / "dist"))
     config = tmp_path / "nginx.conf"
     temporary_paths = " ".join(f"{module}_temp_path {tmp_path}/{module};"
@@ -238,11 +282,18 @@ def test_real_nginx_preserves_untrusted_host_and_origin_on_loopback(tmp_path: Pa
     process = subprocess.Popen([*args, "-g", "daemon off; master_process off;"],
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     opener = build_opener(ProxyHandler({}))
+    authorization = "Basic " + b64encode(
+        b"trader-1:synthetic-password"
+    ).decode("ascii")
     try:
         deadline = time.monotonic() + 8
         while True:
             try:
-                with opener.open(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                readiness = Request(
+                    f"http://127.0.0.1:{port}/",
+                    headers={"Authorization": authorization},
+                )
+                with opener.open(readiness, timeout=1) as response:
                     assert response.read() == b"local UI fixture"
                     break
             except (OSError, HTTPError):
@@ -252,11 +303,25 @@ def test_real_nginx_preserves_untrusted_host_and_origin_on_loopback(tmp_path: Pa
                 time.sleep(0.05)
         for host, origin in [(f"127.0.0.1:{port}", "http://127.0.0.1:5173"),
                              ("attacker.invalid", "https://attacker.invalid")]:
+            unauthorized = Request(
+                f"http://127.0.0.1:{port}/api/v1/probe",
+                headers={"Host": host, "Origin": origin,
+                         "X-Trader-Operator": "forged-local-user"},
+            )
+            with pytest.raises(HTTPError) as denied:
+                opener.open(unauthorized, timeout=2)
+            assert denied.value.code == 401
             request = Request(f"http://127.0.0.1:{port}/api/v1/probe",
-                              headers={"Host": host, "Origin": origin})
+                              headers={"Host": host, "Origin": origin,
+                                       "X-Trader-Operator": "forged-local-user",
+                                       "Authorization": authorization})
             with opener.open(request, timeout=2) as response:
-                assert json.load(response) == {"host": host, "origin": origin,
-                                               "path": "/api/v1/probe"}
+                payload = json.load(response)
+                assert payload["host"] == host
+                assert payload["origin"] == origin
+                assert payload["path"] == "/api/v1/probe"
+                assert payload["operator"] == "trader-1"
+                assert payload["authorization"] is None
         # Linux kernel socket table verifies the actual nginx listener, not config text.
         matching = []
         for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:

@@ -167,13 +167,20 @@ def test_public_nginx_template_inherits_auth_for_both_locations_and_preserves_he
             statement.append(token)
     assert (1, ["listen", "443", "ssl"]) in directives
     assert (1, ["auth_basic", "Trader dashboard"]) in directives
-    assert (1, ["auth_basic_user_file", "/etc/trader/dashboard.htpasswd"]) in directives
+    assert (1, ["auth_basic_user_file", "/etc/nginx/trader.htpasswd"]) in directives
     assert (1, ["satisfy", "all"]) in directives
     assert sum(row[:1] == ["auth_basic"] for _depth, row in directives) == 1
     assert sum(token == "location" for token in tokens) == 2
-    assert (2, ["proxy_pass", "http://127.0.0.1:8000"]) in directives
+    assert (2, ["proxy_pass", "http://unix:/run/trader-api.sock:/api/"]) in directives
     assert (2, ["proxy_set_header", "Host", "$http_host"]) in directives
     assert (2, ["proxy_set_header", "Origin", "$http_origin"]) in directives
     assert (2, ["proxy_set_header", "X-Trader-Operator", "$remote_user"]) in directives
     assert (2, ["proxy_set_header", "Authorization", ""]) in directives
     assert (1, ["ssl_protocols", "TLSv1.2", "TLSv1.3"]) in directives
+
+    local_template = (root / "deploy/linux/nginx.conf").read_text(encoding="utf-8")
+    assert 'listen 127.0.0.1:5173 default_server;' in local_template
+    assert 'auth_basic "Trader dashboard";' in local_template
+    assert 'auth_basic_user_file /etc/nginx/trader.htpasswd;' in local_template
+    assert "proxy_set_header X-Trader-Operator $remote_user;" in local_template
+    assert 'proxy_set_header Authorization "";' in local_template
