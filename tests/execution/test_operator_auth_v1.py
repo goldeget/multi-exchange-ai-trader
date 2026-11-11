@@ -16,7 +16,8 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 import httpx
 import pytest
-from fastapi import FastAPI, Request as FastAPIRequest
+from fastapi import FastAPI
+from fastapi import Request as FastAPIRequest
 
 from multi_exchange_trader import api
 from multi_exchange_trader.execution.operator_auth_v1 import (
@@ -120,8 +121,8 @@ def test_basic_auth_to_publication_over_uds(
             pytest.fail("Linux operations CI must install nginx and apache2-utils")
         pytest.skip("nginx and htpasswd are required for the Linux auth bridge test")
 
-    from test_strategy_publication_v1 import fixture_book
     from test_strategy_publication_api_v1 import builtin_publication_body
+    from test_strategy_publication_v1 import fixture_book
 
     book = fixture_book(tmp_path)
     socket_path = tmp_path / "api.sock"
