@@ -185,6 +185,115 @@ async def captured_risk_assessment(state: Any, *, profile: str = "UTA2_V1",
     return scope, signal_handle, assessment_handle, source
 
 
+def assessment_source_times(owner: Any, read: Any) -> tuple[tuple[datetime, ...], tuple[datetime, ...]]:
+    """Original retained evidence times, partitioned by policy evidence/quote age."""
+    slot = owner._assembler._current
+    if slot is None:
+        raise AssertionError("captured source slot is missing")
+    evidence: list[datetime] = []
+    quotes: list[datetime] = []
+
+    def add_source(target: list[datetime], source: Any) -> None:
+        target.extend((source.request_started_at, source.received_at))
+        target.append(
+            datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms)
+            if source.envelope_time_ms is not None else source.received_at
+        )
+
+    for source in read.venue.source_records:
+        if any(source is mark_source for mark_source in slot.mark_sources):
+            continue
+        add_source(evidence, source)
+    for source in slot.mark_sources:
+        add_source(quotes, source)
+    for mark in read.marks:
+        quotes.extend((mark.reference.server_observed_at, mark.reference.received_at))
+    catalog_view = slot.catalog_current.view
+    evidence.append(catalog_view.issued_at)
+    for envelope in catalog_view.envelopes:
+        evidence.extend((envelope.request_started_at, envelope.response_time, envelope.received_at))
+    for observation in catalog_view.catalog.observations:
+        evidence.extend((observation.response_time, observation.source.received_at))
+    evidence.extend((read.full_reservations.observed_at, read.evaluation_reservations.observed_at))
+    return tuple(evidence), tuple(quotes)
+
+
+async def test_worker_risk_assessment_uses_quote_age_separately_from_evidence_age(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import test_bybit_linear_source_assembler_v1 as original_source_fixture
+
+    state = model_worker
+    scope = approved_fixture(state)
+    current = state.book.read()
+    draft = current["policy"]
+    draft["risk_v2"].update(max_evidence_age_seconds="10", max_quote_age_seconds="20")
+    state.book.save_v2(current["revision"], draft,
+        expected_strategy_generation=2, policy_sections_version=2)
+    state.fixture.mark_age = timedelta(seconds=15)
+    market, source = install(state)
+    await state.worker.capture_entry_sources_v2(scope=scope, profile="UTA2_V1",
+        nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+        budget=MonitoringReadBudget())
+    signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    owner = state.worker._entry_model_owner_v2
+    read = owner._read
+    assert read is not None
+    evidence_times, quote_times = assessment_source_times(owner, read)
+    fee_document = read.venue.fee.closing_order_reserve_nonvip_rate.reference
+    evidence_times = (*evidence_times, fee_document.captured_at)
+    fresh_quote_io_times = tuple(
+        stamp for source_ref in owner._assembler._current.mark_sources
+        for stamp in (source_ref.request_started_at, source_ref.received_at)
+    )
+    stale_server_quotes = tuple(mark.reference.server_observed_at for mark in read.marks)
+    stale_now = max((*evidence_times, *quote_times, *fresh_quote_io_times)) + timedelta(milliseconds=100)
+    assert stale_now - min(evidence_times) < timedelta(seconds=10)
+    assert all(timedelta(seconds=10) < stale_now - stamp <= timedelta(seconds=20)
+        for stamp in stale_server_quotes)
+    assert all(stale_now - stamp <= timedelta(seconds=20) for stamp in quote_times)
+    calls_before = (len(state.fixture.requests), source.calls, source.quote_calls)
+    commands_before = state.worker.runtime.journal.list_commands()
+
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(original_source_fixture, "datetime", SimpleNamespace(now=lambda _tz: stale_now))
+        handle = state.worker.assess_current_risk_v2(signal_handle)
+        view = state.worker.require_current_risk_assessment_v2(handle)
+
+    assert view.stage == "PLAN" and view.numeric_assessment is None
+    assert view.financial_authority is False and view.trading_enabled is False
+    assert (len(state.fixture.requests), source.calls, source.quote_calls) == calls_before
+    assert state.worker.runtime.journal.list_commands() == commands_before == ()
+    assert not state.strategy.commands
+
+
+async def test_worker_entry_capture_rejects_quote_older_than_quote_policy_even_if_evidence_allows(
+    model_worker: Any,
+) -> None:
+    state = model_worker
+    scope = approved_fixture(state)
+    current = state.book.read()
+    draft = current["policy"]
+    draft["risk_v2"].update(max_evidence_age_seconds="10", max_quote_age_seconds="5")
+    state.book.save_v2(current["revision"], draft,
+        expected_strategy_generation=2, policy_sections_version=2)
+    state.fixture.mark_age = timedelta(seconds=6)
+    owner = state.worker._entry_model_owner_v2
+    commands_before = state.worker.runtime.journal.list_commands()
+
+    with pytest.raises(ValueError, match="RISK_V2_EXPIRED"):
+        await state.worker.capture_entry_sources_v2(scope=scope, profile="UTA2_V1",
+            nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+            budget=MonitoringReadBudget())
+
+    assert owner._read is None
+    assert owner._risk_assessment_current is None
+    assert state.worker.runtime.journal.list_commands() == commands_before == ()
+    assert not state.strategy.commands
+
+
 async def test_original_worker_consumes_exact_approved_builtin_signal_without_entries(model_worker: Any) -> None:
     from fractions import Fraction
 
@@ -232,6 +341,100 @@ async def test_worker_risk_assessment_is_blocker_only_and_uses_current_owner_sou
     assert view.financial_authority is False and view.trading_enabled is False
     assert (len(state.fixture.requests), source.calls, source.quote_calls) == calls_before
     assert state.worker.runtime.journal.list_commands() == commands_before
+    assert not state.strategy.commands
+
+
+async def test_worker_risk_assessment_rejects_sources_older_than_policy_evidence_age(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import test_bybit_linear_source_assembler_v1 as original_source_fixture
+
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    scope = approved_fixture(state)
+    current = state.book.read()
+    draft = current["policy"]
+    draft["risk_v2"]["max_evidence_age_seconds"] = "1"
+    state.book.save_v2(current["revision"], draft,
+        expected_strategy_generation=2, policy_sections_version=2)
+    market, source = install(state)
+    await state.worker.capture_entry_sources_v2(scope=scope, profile="UTA2_V1",
+        nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+        budget=MonitoringReadBudget())
+    signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    owner = state.worker._entry_model_owner_v2
+    read = owner._read
+    assert read is not None  # capture accepts this read under worker.max_age (30 seconds)
+    evidence_times, quote_times = assessment_source_times(owner, read)
+    fee_document = read.venue.fee.closing_order_reserve_nonvip_rate.reference
+    stale_now = max((*evidence_times, *quote_times, fee_document.captured_at)) + timedelta(seconds=2)
+    calls_before = (len(state.fixture.requests), source.calls, source.quote_calls)
+    commands_before = state.worker.runtime.journal.list_commands()
+
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(original_source_fixture, "datetime", SimpleNamespace(now=lambda _tz: stale_now))
+        assert original_source_fixture.datetime.now(UTC) == stale_now
+        with pytest.raises(RuntimeBlocked, match="^WORKER_RISK_ASSESSMENT_SOURCE_NOT_FRESH$"):
+            state.worker.assess_current_risk_v2(signal_handle)
+
+    assert owner._risk_assessment_current is None
+    assert (len(state.fixture.requests), source.calls, source.quote_calls) == calls_before
+    assert state.worker.runtime.journal.list_commands() == commands_before == ()
+    assert not state.strategy.commands
+
+
+async def test_worker_risk_assessment_rejects_stale_fee_document_only(
+    model_worker: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    import test_bybit_linear_source_assembler_v1 as original_source_fixture
+
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    scope = approved_fixture(state)
+    current = state.book.read()
+    draft = current["policy"]
+    draft["risk_v2"]["max_evidence_age_seconds"] = "10"
+    state.book.save_v2(current["revision"], draft,
+        expected_strategy_generation=2, policy_sections_version=2)
+    state.fixture.basis = replace(
+        state.fixture.basis,
+        reference=replace(
+            state.fixture.basis.reference,
+            captured_at=state.fixture.now - timedelta(seconds=15),
+        ),
+    )
+    market, source = install(state)
+    await state.worker.capture_entry_sources_v2(scope=scope, profile="UTA2_V1",
+        nonvip_fee_basis=state.fixture.basis, nonvip_applicability_revision="fixture-fee-v1",
+        budget=MonitoringReadBudget())
+    signal_handle = await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    owner = state.worker._entry_model_owner_v2
+    read = owner._read
+    assert read is not None  # Capture allows 15 seconds under worker.max_age (30 seconds).
+    evidence_times, quote_times = assessment_source_times(owner, read)
+    stamps = (*evidence_times, *quote_times)
+    stale_now = max(stamps) + timedelta(milliseconds=100)
+    fee_document = read.venue.fee.closing_order_reserve_nonvip_rate.reference
+    assert stale_now - min(stamps) < timedelta(seconds=10)
+    assert stale_now - fee_document.captured_at > timedelta(seconds=10)
+    calls_before = (len(state.fixture.requests), source.calls, source.quote_calls)
+    commands_before = state.worker.runtime.journal.list_commands()
+
+    with monkeypatch.context() as scoped_patch:
+        scoped_patch.setattr(original_source_fixture, "datetime", SimpleNamespace(now=lambda _tz: stale_now))
+        with pytest.raises(RuntimeBlocked, match="^WORKER_RISK_ASSESSMENT_SOURCE_NOT_FRESH$"):
+            state.worker.assess_current_risk_v2(signal_handle)
+
+    assert owner._risk_assessment_current is None
+    assert (len(state.fixture.requests), source.calls, source.quote_calls) == calls_before
+    assert state.worker.runtime.journal.list_commands() == commands_before == ()
     assert not state.strategy.commands
 
 

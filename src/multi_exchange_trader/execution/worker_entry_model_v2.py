@@ -6,12 +6,13 @@ No candidate, economic-input issuer, reservation admission or SUBMIT seal is mad
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from fractions import Fraction
 from typing import TYPE_CHECKING, Literal, NoReturn, Self, SupportsIndex
 from uuid import uuid4
 
 from ..account.bybit_public_mark_source_v1 import BybitPublicMarkSessionV1
+from ..account.instrument_envelope import CatalogReceiptView
 from ..market_data.instrument_producer import BybitInstrumentCatalogProducer
 from . import bybit_linear_model_inputs_v1 as a
 from . import bybit_linear_model_v1 as m
@@ -271,6 +272,10 @@ class WorkerEntryModelOwnerV2:
                 max_age_microseconds = Fraction(policy.max_evidence_age_seconds) * 1_000_000
                 if max_age_microseconds.denominator != 1 or max_age_microseconds.numerator <= 0:
                     raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_INVALID")
+                max_quote_age_microseconds = Fraction(policy.max_quote_age_seconds) * 1_000_000
+                if (max_quote_age_microseconds.denominator != 1
+                        or max_quote_age_microseconds.numerator < 0):
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_POLICY_INVALID")
                 if type(read.venue) is demo.BybitDemoUta1VenueStateV1:
                     venue_sha256 = demo.bybit_demo_uta1_venue_sha256_v1(read.venue)
                     profile: Literal["UTA2_V1", "DEMO_UTA1_V1"] = "DEMO_UTA1_V1"
@@ -301,8 +306,70 @@ class WorkerEntryModelOwnerV2:
             # Pin the read only after all hashes and the publication context's final
             # owner callbacks. The source expiries remain hard upper bounds.
             observed_at = c._utc_v2(clock())
-            policy_expiry = observed_at + timedelta(microseconds=max_age_microseconds.numerator)
-            valid_until = min(signal.valid_until, read.venue.valid_until, policy_expiry)
+            evidence_window = Fraction(policy.max_evidence_age_seconds)
+            quote_window = Fraction(policy.max_quote_age_seconds)
+            evidence_duration = timedelta(microseconds=max_age_microseconds.numerator)
+            quote_duration = timedelta(microseconds=max_quote_age_microseconds.numerator)
+            freshness_expiries: list[datetime] = []
+
+            def require_fresh_stamp(stamp: datetime, *, quote: bool = False) -> None:
+                maximum = quote_window if quote else evidence_window
+                duration = quote_duration if quote else evidence_duration
+                try:
+                    c._fresh_v2(stamp, now=observed_at, maximum=maximum)
+                except c.RiskV2Rejected:
+                    raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_NOT_FRESH") from None
+                freshness_expiries.append(c._utc_v2(stamp) + duration)
+
+            for source in read.venue.source_records:
+                if any(source is mark_source for mark_source in slot.mark_sources):
+                    continue
+                require_fresh_stamp(source.request_started_at)
+                require_fresh_stamp(source.received_at)
+                server_observed_at = (
+                    datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms)
+                    if source.envelope_time_ms is not None else source.received_at
+                )
+                require_fresh_stamp(server_observed_at)
+            for source in slot.mark_sources:
+                require_fresh_stamp(source.request_started_at, quote=True)
+                require_fresh_stamp(source.received_at, quote=True)
+                server_observed_at = (
+                    datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=source.envelope_time_ms)
+                    if source.envelope_time_ms is not None else source.received_at
+                )
+                require_fresh_stamp(server_observed_at, quote=True)
+            for mark in read.marks:
+                require_fresh_stamp(mark.reference.server_observed_at, quote=True)
+                require_fresh_stamp(mark.reference.received_at, quote=True)
+            fee_document = read.venue.fee.closing_order_reserve_nonvip_rate.reference
+            if type(fee_document) is a.BybitFeeDocumentRefV1:
+                require_fresh_stamp(fee_document.captured_at)
+
+            catalog_current = slot.catalog_current
+            if type(catalog_current.view) is not CatalogReceiptView:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+            catalog_view = catalog_current.view
+            require_fresh_stamp(catalog_view.issued_at)
+            for envelope in catalog_view.envelopes:
+                for stamp in (envelope.request_started_at, envelope.response_time, envelope.received_at):
+                    require_fresh_stamp(stamp)
+            for observation in catalog_view.catalog.observations:
+                require_fresh_stamp(observation.response_time)
+                require_fresh_stamp(observation.source.received_at)
+
+            require_fresh_stamp(read.full_reservations.observed_at)
+            require_fresh_stamp(read.evaluation_reservations.observed_at)
+            if not freshness_expiries:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_REQUIRED")
+            policy_expiry = observed_at + evidence_duration
+            valid_until = min(
+                signal.valid_until,
+                read.venue.valid_until,
+                catalog_view.catalog.expires_at,
+                policy_expiry,
+                *freshness_expiries,
+            )
             if observed_at >= valid_until:
                 raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_EXPIRED")
             plan = WorkerRiskAssessmentPlanV2(
@@ -337,6 +404,8 @@ class WorkerEntryModelOwnerV2:
                     or signal_owner._current is not issued_signal or issued_signal.handle is not signal_handle
                     or self._journal_epoch != journal_epoch):
                 raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_SOURCE_CHANGED")
+            if c._utc_v2(clock()) >= valid_until:
+                raise RuntimeBlocked("WORKER_RISK_ASSESSMENT_EXPIRED")
             handle = object.__new__(WorkerRiskAssessmentHandleV2)
             self._risk_assessment_current = (
                 handle, plan, signal_handle, signal_owner, issued_signal, read, slot,
