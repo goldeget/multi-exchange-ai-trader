@@ -141,6 +141,8 @@ class _Issued:
     entry_read: BybitLinearVenueReadV1 | None
     entry_read_slot: object | None
     roots: tuple[object, ...]
+    worker_owner_links: tuple[object, ...]
+    publication_generation: object
     epoch: object
 
 
@@ -315,6 +317,23 @@ class WorkerStrategySignalOwnerV1:
                 or worker._entry_binding_refresh_v2 is not None):
             _reject()
 
+    def _require_owner_fence(
+            self, token: object, epoch: object, roots: tuple[object, ...],
+            worker_owner_links: tuple[object, ...], publication_generation: object,
+    ) -> None:
+        """Recheck the exact worker lease/account/channel links after callbacks."""
+        self._closed_guard(token, epoch, roots)
+        worker = self._worker
+        current_links = worker._entry_publication_links_v2()
+        if (self._busy is not token or self._epoch is not epoch
+                or worker._strategy_signal_owner_v1 is not self
+                or worker._entry_publication_generation_v2 is not publication_generation
+                or any(actual is not expected for actual, expected in zip(
+                    current_links, worker_owner_links, strict=True))
+                or any(actual is not expected for actual, expected in zip(
+                    self._roots(), roots, strict=True))):
+            _reject("WORKER_SIGNAL_OWNER_CHANGED")
+
     def _guard(self) -> None:
         worker = self._worker
         try:
@@ -374,6 +393,11 @@ class WorkerStrategySignalOwnerV1:
         roots = self._roots()
         try:
             self._guard()
+            publication_generation = self._worker._entry_publication_generation_v2
+            worker_owner_links = self._worker._entry_publication_links_v2()
+            self._require_owner_fence(
+                token, epoch, roots, worker_owner_links, publication_generation
+            )
             with self._book._operation_v2() as db:
                 db.execute("BEGIN")
                 _revision, _generation, policy_key, artifact, configuration = self._context(scope, db)
@@ -385,11 +409,17 @@ class WorkerStrategySignalOwnerV1:
                     for symbol in self._worker.symbols)
                 catalog_receipt = await self._catalog_producer.refresh(
                     declared_universe=declared_universe, max_age=self._worker.max_age, budget=budget)
+                self._require_owner_fence(
+                    token, epoch, roots, worker_owner_links, publication_generation
+                )
                 current_catalog = self._catalog_producer._current
                 if current_catalog is None:
                     _reject("BUILTIN_STRATEGY_SOURCE_REQUIRED")
                 catalog_view = self._catalog_producer.require_current(
                     catalog_receipt, expected_revision=current_catalog.view.catalog.revision)
+                self._require_owner_fence(
+                    token, epoch, roots, worker_owner_links, publication_generation
+                )
                 catalog_revision = catalog_view.catalog.revision
                 entry_read = entry_read_slot = None
             else:
@@ -401,10 +431,16 @@ class WorkerStrategySignalOwnerV1:
                 path=self._path, catalog_producer=self._catalog_producer,
                 catalog_receipt=catalog_receipt, expected_catalog_revision=catalog_revision,
                 source_ttl=source_ttl, max_bar_age=max_bar_age, clock=self._clock)
+            self._require_owner_fence(
+                token, epoch, roots, worker_owner_links, publication_generation
+            )
             quote = await self._market.get_public_quote_snapshot_v1(
                 scope.instrument.symbol, catalog_producer=self._catalog_producer,
                 catalog_receipt=catalog_receipt, expected_catalog_revision=catalog_revision,
                 max_age=source_ttl, clock=self._clock)
+            self._require_owner_fence(
+                token, epoch, roots, worker_owner_links, publication_generation
+            )
             self._guard()
             store = ClosedBarSnapshotStore(self._path)
             # Short write-reserved read transactions serialize policy/bar changes;
@@ -438,11 +474,17 @@ class WorkerStrategySignalOwnerV1:
                     _reject()
                 handle = object.__new__(WorkerStrategySignalV1)
                 issued = _Issued(handle, value, value_key, snapshot_key, current_key, artifact,
-                    quote, catalog_receipt, catalog_revision, entry_read, entry_read_slot, roots, epoch)
+                    quote, catalog_receipt, catalog_revision, entry_read, entry_read_slot, roots,
+                    worker_owner_links, publication_generation, epoch)
             self._closed_guard(token, epoch, roots)
             if _data_key(value) != value_key:
                 _reject()
             self._require_catalog_current_v1(catalog_receipt, catalog_revision, entry_read, entry_read_slot)
+            self._require_owner_fence(
+                token, epoch, roots, worker_owner_links, publication_generation
+            )
+            if self._current is not None:
+                _reject()
             self._current = issued
             return handle
         except BaseException:
@@ -519,6 +561,12 @@ class WorkerStrategySignalOwnerV1:
                 _reject()
             self._require_catalog_current_v1(issued.catalog_receipt, issued.catalog_revision,
                 issued.entry_read, issued.entry_read_slot)
+            self._require_owner_fence(
+                token, epoch, issued.roots, issued.worker_owner_links,
+                issued.publication_generation,
+            )
+            if self._current is not issued or _data_key(issued.value) != issued.value_key:
+                _reject()
             return issued.value
         except BaseException:
             self.retire()

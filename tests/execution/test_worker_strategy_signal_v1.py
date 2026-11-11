@@ -21,7 +21,8 @@ model_worker = original_worker_fixture.model_worker
 
 class Bars:
     def __init__(self, now: Any, *, on_candle: Any = None,
-                 bar_age: timedelta = timedelta(0), async_gate: tuple[Any, Any] | None = None) -> None:
+                 bar_age: timedelta = timedelta(0), async_gate: tuple[Any, Any] | None = None,
+                 quote_gate: tuple[Any, Any] | None = None) -> None:
         self._now = now
         self._on_candle = on_candle
         anchor = (now - bar_age).replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
@@ -29,8 +30,10 @@ class Bars:
             open=Decimal(100 + index), high=Decimal(101 + index), low=Decimal(99 + index),
             close=Decimal(100 + index), volume=Decimal(1), is_closed=True) for index in range(5)]
         self.calls = 0
+        self.quote_calls = 0
         transport: httpx.AsyncBaseTransport = (httpx.MockTransport(self._respond)
-            if async_gate is None else _BlockingSyntheticTransport(self, async_gate))
+            if async_gate is None and quote_gate is None
+            else _BlockingSyntheticTransport(self, async_gate, quote_gate))
         self.client = httpx.AsyncClient(transport=transport)
         self.adapter = BybitAdapter(self.client, clock=lambda: self._now)
 
@@ -53,6 +56,7 @@ class Bars:
         else:
             if dict(request.url.params) != {"symbol": "BTCUSDT", "category": "linear"}:
                 raise AssertionError("unexpected synthetic linear-ticker query")
+            self.quote_calls += 1
             body = {"retCode": 0, "time": now_ms,
                 "result": {"category": "linear", "list": [{"symbol": "BTCUSDT",
                     "bid1Price": "100", "bid1Size": "2", "ask1Price": "101", "ask1Size": "3"}]}}
@@ -63,13 +67,19 @@ class Bars:
 
 
 class _BlockingSyntheticTransport(httpx.AsyncBaseTransport):
-    def __init__(self, source: Bars, gate: tuple[Any, Any]) -> None:
-        self._source, self._entered, self._release = source, gate[0], gate[1]
+    def __init__(self, source: Bars, candle_gate: tuple[Any, Any] | None,
+                 quote_gate: tuple[Any, Any] | None) -> None:
+        self._source = source
+        self._candle_gate = candle_gate
+        self._quote_gate = quote_gate
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if str(request.url).split("?")[0] == CANDLE_URL:
-            self._entered.set()
-            await self._release.wait()
+        route = str(request.url).split("?")[0]
+        gate = (self._candle_gate if route == CANDLE_URL else
+            self._quote_gate if route == TICKER_URL else None)
+        if gate is not None:
+            gate[0].set()
+            await gate[1].wait()
         return self._source._respond(request)
 
 
@@ -267,7 +277,172 @@ async def test_current_policy_revocation_during_real_bar_await_refuses_publicati
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
 
-async def test_final_capture_callback_cannot_revoke_catalog_receipt_before_signal_issue(
+async def test_lease_change_during_catalog_await_stops_before_bar_source(
+    model_worker: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from multi_exchange_trader.execution.runtime import RuntimeBlocked
+
+    state = model_worker
+    scope = approved_fixture(state)
+    market, source = install(state)
+    catalog = state.fixture.catalog
+    original_refresh = catalog.refresh
+    original_acquisition_id = state.worker._lock._acquisition_id
+    entered, release = asyncio.Event(), asyncio.Event()
+    refresh_calls = 0
+
+    async def held_refresh(*args: object, **kwargs: object) -> Any:
+        nonlocal refresh_calls
+        result = await original_refresh(*args, **kwargs)
+        refresh_calls += 1
+        entered.set()
+        await release.wait()
+        return result
+
+    monkeypatch.setattr(catalog, "refresh", held_refresh)
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(scope=scope, market=market))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        state.worker._lock._acquisition_id = original_acquisition_id + 1
+        release.set()
+        with pytest.raises(RuntimeBlocked, match="WORKER_ENTRY_PUBLICATION_OWNER_CHANGED"):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        state.worker._lock._acquisition_id = original_acquisition_id
+
+    owner = state.worker._strategy_signal_owner_v1
+    assert refresh_calls == 1 and source.calls == 0 and source.quote_calls == 0
+    assert owner._current is None
+    assert state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_publication_generation_change_during_bar_await_stops_before_quote(
+    model_worker: Any,
+) -> None:
+    import asyncio
+
+    state = model_worker
+    scope = approved_fixture(state)
+    entered, release = asyncio.Event(), asyncio.Event()
+    source = Bars(state.fixture.clock(), async_gate=(entered, release))
+    market, _source = install(state, source)
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(scope=scope, market=market))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        state.worker._entry_publication_generation_v2 = object()
+        release.set()
+        with pytest.raises(ValueError, match="WORKER_SIGNAL_OWNER_CHANGED"):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    owner = state.worker._strategy_signal_owner_v1
+    assert source.calls == 1 and source.quote_calls == 0
+    assert owner._current is None
+    assert state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_publication_generation_change_during_quote_await_prevents_signal_issue(
+    model_worker: Any,
+) -> None:
+    import asyncio
+
+    state = model_worker
+    scope = approved_fixture(state)
+    entered, release = asyncio.Event(), asyncio.Event()
+    source = Bars(state.fixture.clock(), quote_gate=(entered, release))
+    market, _source = install(state, source)
+    task = asyncio.create_task(state.worker.capture_builtin_signal_v1(scope=scope, market=market))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert not task.done()
+        state.worker._entry_publication_generation_v2 = object()
+        release.set()
+        with pytest.raises(ValueError, match="WORKER_SIGNAL_OWNER_CHANGED"):
+            await asyncio.wait_for(task, timeout=10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    owner = state.worker._strategy_signal_owner_v1
+    assert source.calls == 1 and source.quote_calls == 1
+    assert owner._current is None
+    assert state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_channel_replacement_in_final_catalog_callback_prevents_signal_issue(
+    model_worker: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from multi_exchange_trader.execution.native_node import NativeChannel
+    from multi_exchange_trader.execution.worker_strategy_signal_v1 import (
+        WorkerStrategySignalOwnerV1,
+    )
+
+    state = model_worker
+    scope = approved_fixture(state)
+    market, source = install(state)
+    assembly = state.worker._assembly
+    original_channel = assembly.channel
+    replacement = NativeChannel(original_channel.scope, original_channel.native_account_id)
+    original_current = WorkerStrategySignalOwnerV1._require_catalog_current_v1
+    calls = 0
+
+    def replace_channel_after_catalog_current(
+        owner: Any,
+        receipt: Any,
+        revision: str,
+        entry_read: Any,
+        entry_read_slot: object | None,
+    ) -> None:
+        nonlocal calls
+        original_current(owner, receipt, revision, entry_read, entry_read_slot)
+        calls += 1
+        assembly.channel = replacement
+
+    monkeypatch.setattr(
+        WorkerStrategySignalOwnerV1,
+        "_require_catalog_current_v1",
+        replace_channel_after_catalog_current,
+    )
+    try:
+        with pytest.raises(ValueError, match="WORKER_SIGNAL_OWNER_CHANGED"):
+            await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
+    finally:
+        assembly.channel = original_channel
+
+    owner = state.worker._strategy_signal_owner_v1
+    assert calls == 1 and source.calls == 1 and source.quote_calls == 1
+    assert owner._current is None
+    assert state.worker._operations == 0
+    assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
+
+
+async def test_catalog_revocation_after_quote_await_refuses_signal_publication(
     model_worker: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from multi_exchange_trader.execution.worker_strategy_signal_v1 import (
@@ -278,20 +453,20 @@ async def test_final_capture_callback_cannot_revoke_catalog_receipt_before_signa
     scope = approved_fixture(state)
     market, source = install(state)
     original = WorkerStrategySignalOwnerV1._closed_guard
-    calls = 0
+    revoked = False
 
     def revoke_after_last_guard(owner: Any, token: object, epoch: object,
                                 roots: tuple[object, ...]) -> None:
-        nonlocal calls
+        nonlocal revoked
         original(owner, token, epoch, roots)
-        calls += 1
-        if calls == 2:
+        if not revoked and source.calls == 1 and source.quote_calls == 1:
             owner._catalog_producer._revoke()
+            revoked = True
 
     monkeypatch.setattr(WorkerStrategySignalOwnerV1, "_closed_guard", revoke_after_last_guard)
     with pytest.raises(ValueError):
         await state.worker.capture_builtin_signal_v1(scope=scope, market=market)
-    assert calls == 2 and source.calls == 1
+    assert revoked and source.calls == 1 and source.quote_calls == 1
     assert state.worker._strategy_signal_owner_v1._current is None
     assert state.worker.runtime.journal.list_commands() == () and not state.strategy.commands
 
