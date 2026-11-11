@@ -226,6 +226,7 @@ async def test_cost_allowance_issuer_binds_original_funding_fee_catalog_and_expl
         read = await fixture.capture(binding)
         now = datetime.now(UTC)
         mark_source = read.selected_mark.reference.source
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
         funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
         policy = replace(policy_v2(), scope=SCOPE, max_stop_gap_quote_per_base=Decimal("0.25"))
         template = proposal_v2()
@@ -238,7 +239,7 @@ async def test_cost_allowance_issuer_binds_original_funding_fee_catalog_and_expl
                 template.entry,
                 side="BUY",
                 limit_price=Decimal("50"),
-                origin_quote_id=mark_source.observation_id,
+                origin_quote_id=last_trade_quote.reference.observation_id,
                 valid_until=now + timedelta(seconds=2),
             ),
         )
@@ -270,6 +271,96 @@ async def test_cost_allowance_issuer_binds_original_funding_fee_catalog_and_expl
         await fixture.close()
 
 
+@pytest.mark.parametrize(
+    ("side", "limit", "stop", "expected_fee"),
+    [("LONG", "100", "90", "0.1045")],
+)
+async def test_cost_issuer_accepts_distinct_source_ltp_favorable_limits_and_conservative_fees(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, side: str, limit: str, stop: str,
+    expected_fee: str,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    fixture.mark_price = "140"
+    fixture.last_trade_price = "95"
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        now = fixture.clock()
+        mark_source = read.selected_mark.reference.source
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
+        funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
+        policy = replace(policy_v2(), scope=SCOPE, max_stop_gap_quote_per_base=Decimal("0.25"))
+        template = proposal_v2()
+        proposal = replace(template, scope=SCOPE, side=side, stop_price=Decimal(stop),
+            entry=replace(template.entry, side="BUY" if side == "LONG" else "SELL",
+                limit_price=Decimal(limit),
+                origin_quote_id=last_trade_quote.reference.observation_id, valid_until=now + timedelta(seconds=2)))
+        cost = fixture.assembler.issue_cost_allowance_v2(read, policy=policy, proposal=proposal,
+            holding_until=funding.next_funding_at)
+        assert read.selected_mark.value == Decimal("140")
+        assert fixture.assembler.issue_current_last_trade_quote_v2(read).last_price == Decimal("95")
+        assert proposal.entry.limit_price == Decimal(limit)
+        assert cost.fee_quote_per_base == Decimal(expected_fee)
+        assert fixture.assembler.require_cost_allowance_v2(read, cost, policy=policy) is cost
+        assert fixture.journal.list_commands() == ()
+    finally:
+        await fixture.close()
+
+
+@pytest.mark.parametrize(
+    ("side", "limit", "stop"),
+    [("LONG", "150", "145"), ("SHORT", "130", "140")],
+)
+async def test_cost_issuer_rejects_adverse_limit_vs_current_mark(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, side: str, limit: str, stop: str,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    fixture.mark_price = "140"
+    fixture.last_trade_price = "95"
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
+        funding = fixture.marks.project_funding_v1(read.selected_mark.reference.source, symbol="BTCUSDT")
+        template = proposal_v2()
+        proposal = replace(template, scope=SCOPE, side=side, stop_price=Decimal(stop),
+            entry=replace(template.entry, side="BUY" if side == "LONG" else "SELL",
+                limit_price=Decimal(limit),
+                origin_quote_id=last_trade_quote.reference.observation_id,
+                valid_until=fixture.clock() + timedelta(seconds=2)))
+        policy = replace(policy_v2(), scope=SCOPE, max_stop_gap_quote_per_base=Decimal("0.25"))
+        with pytest.raises(RiskV2Rejected, match="^RISK_V2_LIMIT_NOT_MARK_FAVORABLE$"):
+            fixture.assembler.issue_cost_allowance_v2(read, policy=policy, proposal=proposal,
+                holding_until=funding.next_funding_at)
+        assert fixture.journal.list_commands() == ()
+    finally:
+        await fixture.close()
+
+
+async def test_short_cost_issuer_rejects_without_enforced_fill_fee_upper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    fixture = Fixture(monkeypatch, tmp_path)
+    fixture.mark_price = "140"
+    fixture.last_trade_price = "95"
+    try:
+        binding = await fixture.auth()
+        read = await fixture.capture(binding)
+        quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
+        template = proposal_v2()
+        proposal = replace(template, scope=SCOPE, side="SHORT", stop_price=Decimal("160"),
+            entry=replace(template.entry, side="SELL", limit_price=Decimal("150"),
+                origin_quote_id=quote.reference.observation_id,
+                valid_until=fixture.clock() + timedelta(seconds=2)))
+        policy = replace(policy_v2(), scope=SCOPE, max_stop_gap_quote_per_base=Decimal("0.25"))
+        with pytest.raises(RiskV2Rejected, match="^RISK_V2_SELL_EXECUTION_UPPER_UNAVAILABLE$"):
+            fixture.assembler.issue_cost_allowance_v2(read, policy=policy, proposal=proposal,
+                holding_until=fixture.clock() + timedelta(hours=8))
+        assert fixture.journal.list_commands() == ()
+    finally:
+        await fixture.close()
+
+
 async def test_cost_issuer_rechecks_narrow_policy_expiry_after_final_owner_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -279,6 +370,7 @@ async def test_cost_issuer_rechecks_narrow_policy_expiry_after_final_owner_callb
         read = await fixture.capture(binding)
         now = fixture.clock()
         mark_source = read.selected_mark.reference.source
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
         funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
         policy = replace(policy_v2(), scope=SCOPE, max_quote_age_seconds=Decimal("2.5"),
             max_evidence_age_seconds=Decimal(30))
@@ -292,7 +384,7 @@ async def test_cost_issuer_rechecks_narrow_policy_expiry_after_final_owner_callb
                 template.entry,
                 side="BUY",
                 limit_price=Decimal("50"),
-                origin_quote_id=mark_source.observation_id,
+                origin_quote_id=last_trade_quote.reference.observation_id,
                 valid_until=now + timedelta(seconds=4),
             ),
         )
@@ -334,6 +426,7 @@ async def test_cost_admission_rechecks_narrow_proposal_expiry_after_final_owner_
         read = await fixture.capture(binding)
         now = fixture.clock()
         mark_source = read.selected_mark.reference.source
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
         funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT")
         policy = replace(policy_v2(), scope=SCOPE, max_quote_age_seconds=Decimal(10),
             max_evidence_age_seconds=Decimal(30))
@@ -347,7 +440,7 @@ async def test_cost_admission_rechecks_narrow_proposal_expiry_after_final_owner_
                 template.entry,
                 side="BUY",
                 limit_price=Decimal("50"),
-                origin_quote_id=mark_source.observation_id,
+                origin_quote_id=last_trade_quote.reference.observation_id,
                 valid_until=now + timedelta(seconds=2),
             ),
         )
@@ -398,6 +491,7 @@ async def test_cost_allowance_issuer_refuses_missing_or_unbounded_inputs(
         read = await fixture.capture(binding)
         now = datetime.now(UTC)
         mark_source = read.selected_mark.reference.source
+        last_trade_quote = fixture.assembler.issue_current_last_trade_quote_v2(read)
         funding = fixture.marks.project_funding_v1(mark_source, symbol="BTCUSDT") if failure != "missing-funding" else None
         policy = replace(policy_v2(), scope=SCOPE)
         if failure == "missing-stop-gap-cap":
@@ -412,7 +506,7 @@ async def test_cost_allowance_issuer_refuses_missing_or_unbounded_inputs(
             )
             assert now - funding_server_time > timedelta(seconds=1)
         template = proposal_v2()
-        origin_quote_id = mark_source.observation_id
+        origin_quote_id = last_trade_quote.reference.observation_id
         if failure == "mixed-instrument-source":
             origin_quote_id = next(
                 mark.reference.observation_id for mark in read.marks if mark.instrument != SCOPE.instrument

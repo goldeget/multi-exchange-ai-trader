@@ -500,12 +500,13 @@ class BybitLinearSourceAssemblerV1:
         proposal: c.LinearEntryProposalV2,
         holding_until: datetime,
     ) -> c.LinearCostAllowanceV2:
-        """Issue costs using the revision-bound explicit stop-gap risk budget.
+        """Issue a source-bound next-funding estimate using explicit stop-gap risk budget.
 
-        This covers exactly the next funding event. Longer horizons need another
-        complete funding schedule observation and are rejected. The configured
-        stop-gap amount is a user-declared risk budget, not an exchange-guaranteed
-        execution-price bound; a missing value fails closed.
+        This covers exactly the next funding event; it does not guarantee that a
+        position closes or refreshes before that event. Longer horizons need an
+        approved strategy horizon plus enforced exit/refresh owner and are rejected.
+        The configured stop-gap amount is a user-declared risk budget, not an
+        exchange-guaranteed execution-price bound; a missing value fails closed.
         """
         self.require_current_v1(read)
         slot = self._current
@@ -552,11 +553,29 @@ class BybitLinearSourceAssemblerV1:
         if len(selected_marks) != 1:
             raise RiskV2Rejected("RISK_V2_MARK_COVERAGE_REQUIRED")
         mark = selected_marks[0]
-        if (proposal.entry.origin_quote_id != mark.reference.observation_id
-                or read.selected_mark.reference.source.observation_id != mark.reference.observation_id
-                or decimal_fraction_v2(proposal.entry.limit_price)
-                != decimal_fraction_v2(read.selected_mark.value)):
+        last_trade_quote = self.issue_current_last_trade_quote_v2(read)
+        if (proposal.entry.origin_quote_id != last_trade_quote.reference.observation_id
+                or read.selected_mark.reference.source.observation_id != mark.reference.observation_id):
             raise RiskV2Rejected("RISK_V2_SOURCE_MISMATCH")
+        limit_price = decimal_fraction_v2(proposal.entry.limit_price)
+        stop_price_value = decimal_fraction_v2(proposal.stop_price)
+        price_tick = decimal_fraction_v2(spec.price_tick.value)
+        minimum_price = decimal_fraction_v2(spec.min_price.value)
+        maximum_price = decimal_fraction_v2(spec.max_price.value)
+        if (limit_price / price_tick).denominator != 1 or (stop_price_value / price_tick).denominator != 1:
+            raise RiskV2Rejected("RISK_V2_INVALID_PRICE_TICK")
+        if not (minimum_price <= limit_price <= maximum_price
+                and minimum_price <= stop_price_value <= maximum_price):
+            raise RiskV2Rejected("RISK_V2_INVALID_PRICE_TICK")
+        if ((proposal.side == "LONG" and stop_price_value >= limit_price)
+                or (proposal.side == "SHORT" and stop_price_value <= limit_price)):
+            raise RiskV2Rejected("RISK_V2_INVALID_STOP")
+        mark_price = decimal_fraction_v2(read.selected_mark.value)
+        if ((proposal.side == "LONG" and limit_price > mark_price)
+                or (proposal.side == "SHORT" and limit_price < mark_price)):
+            raise RiskV2Rejected("RISK_V2_LIMIT_NOT_MARK_FAVORABLE")
+        if proposal.side == "SHORT":
+            raise RiskV2Rejected("RISK_V2_SELL_EXECUTION_UPPER_UNAVAILABLE")
         funding_sources = tuple(
             source for source in slot.mark_sources
             if source.query == (("category", "linear"), ("symbol", slot.scope.instrument.symbol))
@@ -679,6 +698,8 @@ class BybitLinearSourceAssemblerV1:
         )
         entry_price = decimal_fraction_v2(proposal.entry.limit_price)
         stop_price = decimal_fraction_v2(proposal.stop_price)
+        # This owner currently issues fee allowances for LONG only. SHORT fills
+        # may execute above their limit floor, with no enforceable fee ceiling.
         fee_per_base = finite_decimal_v2(taker_rate * (entry_price + stop_price))
         funding_per_base = finite_decimal_v2(
             max(abs(lower_fraction), abs(upper_fraction)) * decimal_fraction_v2(spec.max_price.value)

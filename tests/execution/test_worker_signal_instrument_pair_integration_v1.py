@@ -1,7 +1,7 @@
-"""Same-worker join of current signal/plan with an actual-fee restored T4 receipt.
+"""Same-worker horizon block preserves the actual-fee restored T4 receipt.
 
 Every Bybit HTTP request in this test is handled by the existing synthetic
-restored/source fixtures. The pair snapshot performs no network or order I/O.
+restored/source fixtures. The horizon block must not cause extra network or order I/O.
 """
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ import test_bybit_linear_entry_producer_v1 as source_support
 import test_worker_strategy_signal_v1 as signal_support
 from restored_monitoring_io_support import admit, restored_case
 
-from multi_exchange_trader.account.instrument_envelope import HttpsOrigin
 from multi_exchange_trader.execution import risk_domain_v2 as domain_v2
 from multi_exchange_trader.execution.monitoring_budget import MonitoringReadBudget
 from multi_exchange_trader.execution.native_instrument_receipts import (
@@ -26,12 +25,12 @@ from multi_exchange_trader.execution.native_instrument_receipts import (
 )
 from multi_exchange_trader.execution.native_monitor_client import MonitoringBybitExecutionClient
 from multi_exchange_trader.execution.observation_instrument_v1 import ACTUAL_ACCOUNT_FEE_V1
-from multi_exchange_trader.execution.worker_entry_model_v2 import WorkerModelPlanV2
+from multi_exchange_trader.execution.risk_v2_math import RiskV2Rejected
 from multi_exchange_trader.trading_product import InstrumentKey
 
 
 @pytest.mark.asyncio
-async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_receipt(
+async def test_same_worker_horizon_block_preserves_actual_fee_t4_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,21 +165,31 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
             )
             domain = replace(domain, source_generation=entry_owner._journal_epoch)
             inputs = replace(inputs, risk_domain_sha256=domain_v2.risk_domain_sha256_v2(domain))
-            plan_handle = h.worker.prepare_entry_plan_v2(
-                inputs=inputs,
-                domain=domain,
-                policy_revision=signal.policy_revision,
-                publication_generation=signal.publication_generation,
-            )
-            assert type(plan_handle) is WorkerModelPlanV2
-            prepared = h.worker._entry_model_owner_v2._current[1]
-            source_slot = h.worker._entry_model_owner_v2._assembler._current
-            assert source_slot is not None and source_slot.result is prepared.source_read
-            assert prepared.source_read is h.worker._entry_model_owner_v2._read
+            entry_owner = h.worker._entry_model_owner_v2
+            source_slot = entry_owner._assembler._current
+            assert source_slot is not None and source_slot.result is read
+            assert read is entry_owner._read
             assert signal.scope.instrument == InstrumentKey("BYBIT", "LINEAR", "BTCUSDT")
 
-            # Confirm the same T4 handle remains current after preparing the
-            # signal and plan. Model reads do not substitute a DEMO/native label.
+            fixture_requests = tuple(fixture.requests)
+            restored_requests = tuple(h.io.sends)
+            commands = h.worker.runtime.journal.list_commands()
+            submissions = tuple(h.assembly.bridge._submissions)
+            native_command_count = h.assembly.node.kernel.exec_engine.command_count
+            with pytest.raises(RiskV2Rejected, match="^RISK_V2_HOLDING_HORIZON_REQUIRED$"):
+                h.worker.prepare_entry_plan_v2(
+                    inputs=inputs,
+                    domain=domain,
+                    policy_revision=signal.policy_revision,
+                    publication_generation=signal.publication_generation,
+                )
+            assert entry_owner._current is None and entry_owner._producer._current is None
+            assert entry_owner._risk_assessment_current is None
+            assert entry_owner._read is read and entry_owner._assembler._current is source_slot
+            assert h.worker._entry_publication_frame_v2 is None
+
+            # Confirm the same T4 handle remains current after the blocked plan
+            # attempt. Model reads do not substitute a DEMO/native label.
             current_view = h.session.require_native_instrument_receipt_v1(
                 receipt,
                 binding=h.worker.binding,
@@ -225,53 +234,11 @@ async def test_same_worker_pair_joins_current_signal_plan_and_actual_fee_t4_rece
             failed_identity_links = tuple(label for label, passed in identity_checks if not passed)
             assert not failed_identity_links, failed_identity_links
 
-            fixture_requests = tuple(fixture.requests)
-            restored_requests = tuple(h.io.sends)
-            commands = h.worker.runtime.journal.list_commands()
-            submissions = tuple(h.assembly.bridge._submissions)
-            native_command_count = h.assembly.node.kernel.exec_engine.command_count
-
-            pair = h.worker.snapshot_builtin_signal_risk_instrument_pair_v1(
-                signal_handle, plan_handle
-            )
-
-            assert pair.status == "OBSERVED_PAIR_UNMAPPED"
-            assert pair.financial_authority is False and pair.trading_enabled is False
-            assert pair.signal_id == signal.signal_id
-            assert pair.signal_catalog_revision == signal.catalog_revision
-            assert pair.plan_catalog_revision == prepared.inputs.risk_inputs.catalog_revision
-            assert pair.public_catalog_revision == prepared.source_read.catalog.revision
-            assert pair.policy_revision == signal.policy_revision
-            assert pair.publication_generation == signal.publication_generation
-            assert pair.instrument == signal.scope.instrument
-            assert pair.public_source_environment == "PUBLIC_MAINNET"
-            public_view = fixture.catalog._risk_current(
-                source_slot.catalog_receipt,
-                expected_revision=signal.catalog_revision,
-            )
-            public_observation = next(
-                item for item in public_view.catalog.observations
-                if item.key == signal.scope.instrument
-            )
-            assert pair.public_source_id == public_view.source_id
-            assert pair.public_endpoint == public_observation.source.endpoint
-            assert pair.public_specification_revision == public_observation.specification_revision
-            assert pair.public_raw_row_sha256 == public_observation.raw_row_sha256
-            assert pair.public_response_time == public_observation.response_time
-            assert pair.public_received_at == public_observation.source.received_at
-            assert pair.demo_origin == HttpsOrigin("https", "api-demo.bybit.com", 443)
-            assert pair.demo_target_fingerprint == native_view.target_fingerprint
-            assert pair.demo_native_specification_revision == native_evidence.projection.specification_revision
-            assert pair.demo_native_semantics_sha256 == native_evidence.native_semantics_sha256
-            assert pair.demo_receipt_issued_at == native_view.issued_at
-            assert not hasattr(pair, "receipt") and not hasattr(pair, "fee")
-
-            # The join is a pure currentness snapshot: no extra reads, command
-            # mutation, native command, or order submission occurs here.
+            # The horizon gate publishes no plan and performs no additional
+            # reads, command mutation, native command, or order submission.
             assert tuple(fixture.requests) == fixture_requests
             assert tuple(h.io.sends) == restored_requests
-            assert h.worker.runtime.journal.list_commands() == commands
-            assert h.worker.runtime.journal.list_commands() == ()
+            assert h.worker.runtime.journal.list_commands() == commands == ()
             assert tuple(h.assembly.bridge._submissions) == submissions == ()
             assert h.assembly.node.kernel.exec_engine.command_count == native_command_count
             assert all(request.method == "GET" for request in fixture.requests)

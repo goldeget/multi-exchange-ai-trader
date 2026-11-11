@@ -95,6 +95,8 @@ def value_linear_admission_v2(
     account_gross = c._gross_components_v2(account.components, prices=prices)
     reserved_gross = c._gross_components_v2(reservations.components, prices=prices)
     quantity = _fraction_v2(sizing.envelope.base_quantity)
+    # Mark-to-market admission valuation only; it does not cap fill price or
+    # future account exposure.
     proposed = quantity * _fraction_v2(prices[policy.scope.instrument])
     combined = _fraction_v2(account_gross) + _fraction_v2(reserved_gross) + proposed
     if proposed > _fraction_v2(policy.caps.max_order_admission_notional):

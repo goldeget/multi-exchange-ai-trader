@@ -79,8 +79,8 @@ test('operator can save an unset partial policy without activating orders',async
  await expect(page.getByText('연결된 전략이 없는 거래 대상: BYBIT/LINEAR/SOLUSDT')).toBeVisible();
  await page.getByRole('button',{name:'LINEAR 위험관리 입력 시작'}).click();
  await expect(page.getByLabel('실제 체결 금액 상한 선택')).toHaveValue('');
- await page.getByLabel('진입 심사 시 표시가격 기준 주문 명목 금액 상한 (USDT)').fill('100.00');
- await page.getByLabel('진입 심사 시 표시가격 기준 계좌 명목 금액 상한 (USDT)').fill('200');
+ await page.getByLabel('진입 심사 주문 명목 평가 상한 (현재 표시가격 기준, USDT)').fill('100.00');
+ await page.getByLabel('진입 심사 계좌 명목 평가 상한 (현재 표시가격 기준, USDT)').fill('200');
  await page.getByLabel('진입 심사 평가 기준').selectOption('LINEAR_MARK_GROSS_AT_ADMISSION_V1');
  await page.getByLabel('실제 체결 금액 상한 선택').selectOption('HARD_EXECUTION_QUOTE_CAP');
  await page.getByLabel('실제 체결 금액 상한 (USDT)').fill('300.00');

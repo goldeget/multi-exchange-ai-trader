@@ -160,9 +160,9 @@ function AutomaticSettingsEditor(){
      {select('새 초안 주문 수량 산정 방식',risk.sizing_rule,{LOSS_FIXED:'거래당 손실액 기준'},value=>changeRisk('sizing_rule',value||null))}
      {select('새 초안 증거금 모드',risk.margin_mode,choices.margin_mode,value=>changeRisk('margin_mode',value||null))}
      {select('새 초안 포지션 모드',risk.position_mode,{ONE_WAY:'단방향'},value=>changeRisk('position_mode',value||null))}
-     <Field label="진입 심사 시 표시가격 기준 주문 명목 금액 상한 (USDT)" value={risk.caps?.max_order_admission_notional??''} disabled={disabled} onChange={text=>changeCap('max_order_admission_notional',text||null)}/>
-     <Field label="진입 심사 시 표시가격 기준 계좌 명목 금액 상한 (USDT)" value={risk.caps?.max_account_admission_notional??''} disabled={disabled} onChange={text=>changeCap('max_account_admission_notional',text||null)}/>
-     {select('진입 심사 평가 기준',risk.caps?.valuation_rule,{LINEAR_MARK_GROSS_AT_ADMISSION_V1:'진입 심사 시 현재 표시가격 기준 총 명목 금액'},value=>changeCap('valuation_rule',value||null))}
+     <Field label="진입 심사 주문 명목 평가 상한 (현재 표시가격 기준, USDT)" value={risk.caps?.max_order_admission_notional??''} disabled={disabled} onChange={text=>changeCap('max_order_admission_notional',text||null)}/>
+     <Field label="진입 심사 계좌 명목 평가 상한 (현재 표시가격 기준, USDT)" value={risk.caps?.max_account_admission_notional??''} disabled={disabled} onChange={text=>changeCap('max_account_admission_notional',text||null)}/>
+     {select('진입 심사 평가 기준',risk.caps?.valuation_rule,{LINEAR_MARK_GROSS_AT_ADMISSION_V1:'심사 시 현재 표시가격 기준 (실제 체결 상한 아님)'},value=>changeCap('valuation_rule',value||null))}
      {select('실제 체결 금액 상한 선택',risk.caps?.turnover_requirement,{NOT_REQUIRED:'별도 체결 금액 상한을 요구하지 않음',HARD_EXECUTION_QUOTE_CAP:'실제 체결 금액 상한 요구'},value=>changeCap('turnover_requirement',value||null))}
      <Field label="실제 체결 금액 상한 (USDT)" value={risk.caps?.max_execution_quote_amount??''} disabled={disabled} onChange={text=>changeCap('max_execution_quote_amount',text||null)}/>
     </>}
